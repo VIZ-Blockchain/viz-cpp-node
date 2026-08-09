@@ -14,7 +14,7 @@ header-includes: |
   \setlength{\abovedisplayskip}{8pt}
   \setlength{\belowdisplayskip}{8pt}
 abstract: |
-  Prediction markets aggregate dispersed information into probabilistic forecasts that consistently outperform polls and expert panels, yet their adoption is constrained by a structural liquidity problem: providers of market depth bear adverse selection risk that deters retail participation. We present the **Onix Protocol**, a hybrid architecture that decouples the *pricing* function from the *settlement* function in prediction markets. By pairing automated market maker pricing — a Constant Product Market Maker (CPMM) for binary outcomes and a Logarithmic Market Scoring Rule (LMSR) for multi-outcome markets — with parimutuel (totalizator) settlement, we achieve a **structural guarantee** that liquidity-provider principal is never at risk from betting outcomes. We formalize the protocol's economic invariants, prove the LP principal guarantee for both market types, describe a "Lazy" liquidity pool enabling passive retail participation, analyze the dispute resolution mechanism under DAO governance, and discuss the experimental hypotheses this system is designed to test. The protocol is implemented as consensus-level operations on the VIZ distributed ledger.
+  Prediction markets aggregate dispersed information into probabilistic forecasts that consistently outperform polls and expert panels, yet their adoption is constrained by a structural liquidity problem: providers of market depth bear adverse selection risk that deters retail participation. We present the **Onix Protocol**, a hybrid architecture that decouples the *pricing* function from the *settlement* function in prediction markets. By pairing automated market maker pricing — a Constant Product Market Maker (CPMM) for binary outcomes and a Logarithmic Market Scoring Rule (LMSR) for multi-outcome markets — with parimutuel (totalizator) settlement, we achieve a **structural guarantee** that liquidity-provider principal is never at risk from betting outcomes. We formalize the protocol's economic invariants, prove the LP principal guarantee for both market types, and resolve the central tension of any curve-priced market — that an early exit through the pricing curve realizes a trading P&L against the very LPs the protocol protects — with a *deferred outcome-contingent claim* mechanism, for which we prove a second no-mint / LP-safe invariant. We describe a "Lazy" liquidity pool enabling passive retail participation, analyze the dispute resolution mechanism under DAO governance, and discuss the experimental hypotheses this system is designed to test. The protocol is implemented as consensus-level operations on the VIZ distributed ledger.
 
   \vspace{0.9\baselineskip}\noindent
   **Keywords:** prediction markets, automated market makers, parimutuel betting, LMSR, liquidity provision, DAO governance, mechanism design
@@ -60,10 +60,11 @@ This work poses and seeks to answer the following questions through a deployed e
 
 Our contributions are:
 
-1. **A formal proof** that combining AMM pricing with parimutuel settlement yields a structural LP principal guarantee for both binary (CPMM) and multi-outcome (LMSR) prediction markets.
-2. **The "Lazy Pool" mechanism** — an automated capital deployment system with graduated recall and opportunity-cost protection that enables passive retail LP participation, plus an opt-in, default-off pool-funded leverage subsystem whose pool exposure is *bounded* (worst-case shortfall capped by borrower collateral) and isolated from the Theorem 1 LP guarantee.
-3. **A two-mode dispute resolution framework** combining bonded oracles with DAO committee arbitration, including a full game-theoretic analysis of oracle incentive compatibility.
-4. **An experimental protocol** implemented as consensus-level operations on a production distributed ledger, with explicit hypotheses and measurable outcomes.
+1. **A formal proof** that combining AMM pricing with parimutuel settlement yields a structural LP principal guarantee for both binary (CPMM) and multi-outcome (LMSR) prediction markets (Theorem 1).
+2. **A deferred outcome-contingent claim mechanism** that resolves the curve-exit / parimutuel tension — allowing bettors and leveraged positions to exit early without realizing a trading P&L against LP depth — together with a proof (Theorem 2) that it cannot create an uncovered shortfall, mint tokens, or touch LP principal.
+3. **The "Lazy Pool" mechanism** — an automated capital deployment system with graduated recall and opportunity-cost protection that enables passive retail LP participation, plus an opt-in, default-off pool-funded leverage subsystem whose pool exposure is *bounded* (worst-case shortfall capped by borrower collateral) and isolated from the Theorem 1 LP guarantee.
+4. **A two-mode dispute resolution framework** combining bonded oracles with DAO committee arbitration, including a full game-theoretic analysis of oracle incentive compatibility.
+5. **An experimental protocol** implemented as consensus-level operations on a production distributed ledger, with explicit hypotheses and measurable outcomes.
 
 ---
 
@@ -373,6 +374,8 @@ On these two paths the design target is full recovery, $\text{recovered} = \min(
 
 **Risk isolation and reward.** Leverage lending is confined to a governed fraction of $B_{\text{free}}$ (`leverage_fund_percent`), so worst-case pool exposure is capped at the subsystem level and cannot reach the market-LP principal that Theorem 1 protects. Interest earned accrues to the pool through the same $\rho$ accumulator (§6.3). Pool depositors therefore earn from two sources — losers'-pool fee shares (risk-free, Theorem 1) and leverage interest (bounded credit risk, opt-in) — and the two are accounted identically but governed independently. The honest summary: the pool's *market-LP* principal is never at risk; its *leverage lending* carries bounded, opt-in, default-off credit risk (§12.2).
 
+**Early close of a leveraged position.** The borrower's *upside* on any early close is handled uniformly with ordinary early exits by the deferred-claim mechanism of §6.8: the pool recovers its obligation $\Omega$ first from the close value, and only the non-negative residual $\max(V_{\text{close}} - \Omega, 0)$ becomes an *outcome-contingent deferred claim* rather than an immediate curve payout. This is what removes the volatility-harvest path and keeps early leverage exits inside the Theorem 2 bound (§6.8.4), so a leveraged early exit can never mint tokens or draw on LP principal.
+
 ### 6.7 Design Decision: Real Depth Only (No Virtual/Phantom Liquidity)
 
 A natural proposal is to seed a market's pricing curve with *virtual* (phantom) liquidity — a reserve offset $\phi$ added to flatten price impact but backed by no real capital and deleted at settlement, optionally tuned by governance. In the closed bet→cancel→settle loop this is value-conservative (it is the virtual-AMM technique), and it is tempting as a cold-start "stabilizer" for new, thin markets. Onix **deliberately does not implement it.** The same cold-start benefit is already delivered by Lazy-Pool auto-allocation (§6.2) — but with *real* capital, which additionally earns fees, has an accountable owner, and follows demand per market. We reject phantom depth because, applied carelessly, it damages the two things the protocol exists to protect — market structure and trust:
@@ -383,6 +386,79 @@ A natural proposal is to seed a market's pricing curve with *virtual* (phantom) 
 4. **It has no owner, no yield, no accountability.** Virtual depth bears no risk and earns no fee for anyone real; it is a service nobody is paid for and nobody answers for. For the markets it touches, it deletes the retail safe-yield product that is the protocol's core hypothesis (Q3, H1).
 
 The Lazy Pool is the same idea done with real numbers: auto-allocation smooths the launch of new markets, but the capital is redeemable, leverage-safe, fee-earning, owned by depositors, and self-correcting per market via graduated recall (§6.4). Onix therefore keeps **only real numbers** — every unit of depth is real capital that can be withdrawn, earns, and is accountable. This is a conscious tradeoff: we forgo a cheap virtual stabilizer to preserve the integrity of the price signal and the solvency of every real-money path.
+
+### 6.8 Early Exit via Deferred Outcome-Contingent Claims
+
+#### 6.8.1 The Curve-Exit / Parimutuel Tension
+
+The Onix market is a hybrid: a CPMM (binary) / LMSR (multi) **curve** prices both entry and early exit, while positions *held to resolution* settle parimutuel (§5). This creates a structural tension. Any round-trip through the curve — buy, then sell before settlement — realizes a trading P&L against the curve's depth, which is the LPs, exactly like Uniswap impermanent loss. But Theorem 1 promises LPs *principal protection* with fee-only upside. The two properties are in direct conflict on any early-exit path.
+
+Two consensus paths exit against the curve on a binary market:
+
+- **Leverage** (`liquidate_position` / `pm_leverage_close`) — always, and force-closed at settlement, amplified by the pool loan (§6.6).
+- **Regular bet cancel** (`cancel_bet`, a curve-priced refund) — during the betting window.
+
+In the naive design both paths route a signed residual $\text{residual} = \text{stake} - \text{curve\_refund}$ to the market's $\text{forfeit\_pool}$. When an early exit is *profitable* ($\text{curve\_refund} > \text{stake}$), the residual is negative and $\text{forfeit\_pool}$ turns negative. At settlement the winners' pool is
+
+$$\text{winners\_pool} = S_{\text{lose}} - \text{fees} + \text{forfeit\_pool},$$
+
+so if early-exit (especially leveraged) profit outran the losing stakes, $\text{winners\_pool} < 0$. Floored to zero, the shortfall — call it $\text{uncovered}$ — is charged to LP principal, or, once LP principal is exhausted, effectively *minted*. This is not hypothetical: it is reachable under a gate-respecting CPMM simulation (a one-sided pump produces $\text{uncovered} = 7316$ milli-VIZ), and an adversarial replay corpus hit it in $1163/1988$ paired trajectories.
+
+The root cause is precise: **a curve-priced exit pays a bonding-curve value that is not bounded by the losing pool**, whereas settlement pays parimutuel (bounded by $S_{\text{lose}}$). The unbounded gap lands on the LP — breaking the very guarantee the architecture exists to provide.
+
+#### 6.8.2 The Deferred-Claim Mechanism
+
+Onix resolves the tension by making early exits *not* extract curve value from LPs at all. Instead, an exit records an **outcome-contingent deferred claim**, funded at settlement from a *bounded slice of the losing pool*.
+
+**Recorded on exit.** A deferred-claim object stores $(\text{position\_id}, \text{kind} \in \{\text{bet}, \text{leverage}\}, \text{chosen\_outcome}, \text{claim\_amount}, \text{exit\_time})$.
+
+**Regular bet cancel.** Principal is returned *immediately and unconditionally*,
+$$\text{refund} = \min(\text{curve\_refund}, \text{stake}),$$
+because it is the bettor's own money. A cancel can cut losses or break even but never realizes curve-profit at cancel time. The profit tail
+$$\text{claim\_amount} = \max(\text{curve\_refund} - \text{stake}, 0)$$
+becomes a deferred claim on the chosen outcome. Crucially, only a *non-negative* residual $\text{stake} - \text{refund} \ge 0$ is ever routed to $\text{forfeit\_pool}$; the negative-residual path that produced $\text{uncovered}$ is eliminated.
+
+**Leverage close / liquidate.** Collateral is *not* separately returned — it is first-loss margin for the pool. The pool recovers its obligation $\Omega = \lambda m (1 + r)$ from the close value $V_{\text{close}}$ first; if $V_{\text{close}} < \Omega$, the collateral covers the gap. The residual
+$$\text{claim\_amount} = \max(V_{\text{close}} - \Omega, 0)$$
+becomes a deferred claim on the chosen outcome. Two distinct predicates now govern a leveraged position, and they must not be conflated: *solvency* ($V_{\text{close}} \ge \Omega$, which governs loan recovery to the pool) versus *outcome-win* (which governs the right to a claim). A position can be solvent yet on the losing outcome — the pool is made whole and the claim is zero.
+
+#### 6.8.3 Settlement Distribution
+
+At settlement the deferred claims are funded from a capped bucket:
+
+1. Compute the bucket, clamped to the settlement headroom $H$ (§6.8.4) so it can never exceed the pool available to winners:
+   $$\text{bucket} = \min\!\left(\left\lfloor \frac{\texttt{pm\_early\_exit\_reward\_cap\_percent} \cdot S_{\text{lose}}}{10000} \right\rfloor,\; H\right)$$
+   (default cap $= 3300$ bp $= 33\%$ of the losing pool; the clamp binds only when fees are large enough that the cap would otherwise over-draw the pool).
+2. Collect deferred claims on the **winning outcome only**; losing-outcome claims pay zero.
+3. Pay them **FIFO by exit_time** (first out, first paid) until the bucket is drained. There is no per-position cap — FIFO ordering plus the total bucket *is* the bound. A claim the remaining bucket cannot fully fund is paid partially; the unfunded remainder is a haircut.
+4. **Any unused bucket returns to the winners' pool**, where held winning bets share it parimutuel.
+
+#### 6.8.4 Theorem: Bounded Early Exit, No Uncovered Shortfall
+
+**Theorem 2 (Bounded Early Exit).** *Let $c = \texttt{pm\_early\_exit\_reward\_cap\_percent}/10000 \in [0,1)$, and let the funding bucket be clamped to the settlement headroom:*
+$$\text{bucket} = \min\!\big(\lfloor c\, S_{\text{lose}}\rfloor,\; H\big), \qquad H = \max\!\big(0,\; S_{\text{lose}} - \text{fees} - f_{\text{fixed}}^{\text{paid}} + \text{honest\_forfeits}\big),$$
+*where $H$ is the winners' pool available immediately before claims are paid and $\text{honest\_forfeits} \ge 0$. Then, for any market and any valid fee parameters, the paid early-exit claims never exceed the bucket, the winners' pool is non-negative, and LP principal is never touched by early exits:*
+$$\text{paid\_claims} \le \text{bucket} \le H, \qquad \text{winners\_pool} = H - \text{paid\_claims} \ge 0.$$
+
+*Proof.* The FIFO distribution (§6.8.3) stops paying once cumulative payments reach the bucket, so $\text{paid\_claims} \le \text{bucket}$. By the clamp, $\text{bucket} \le H$, hence $\text{paid\_claims} \le H$. The winners' pool is exactly $H$ minus what was paid to early exiters, so $\text{winners\_pool} = H - \text{paid\_claims} \ge 0$. No shortfall is charged to LP principal, and because outflow never exceeds $S_{\text{lose}} + L + \sum_{\mathcal{W}} a_i$, no tokens are minted. After the mechanism of §6.8.2 only non-negative residuals reach $\text{forfeit\_pool}$, so $\text{honest\_forfeits} \ge 0$ and $H$ is well defined. $\blacksquare$
+
+The clamp is what makes the guarantee *unconditional*. Without it, one would need the governance invariant $\theta_{\text{total}}/10000 + c \le 1$ (with $\theta_{\text{total}} = \theta_{\text{oracle}} + \theta_{\text{creator}} + \theta_{\text{liq}}$), giving the intuitive bound $\text{winners\_pool} \ge (1-c)\,S_{\text{lose}} - \text{fees} \ge 0$. That invariant is *not* enforced by parameter validation — per-market fees are bounded only by $\theta_{\text{total}} \le 100\%$ at market creation, with no chain-level cap on the creator or liquidity fee — so a valid market with high fees combined with a non-zero cap could otherwise drive $\text{winners\_pool}$ negative and charge the shortfall to LP principal. In the default regime (fees $\approx 2\%$, cap $33\%$) the $\min$ is inactive and $\text{bucket} = \lfloor c\,S_{\text{lose}}\rfloor$, recovering the intended cap exactly; the clamp binds only in the adversarial high-fee corner, where it preserves solvency at the cost of a deeper early-exit haircut.
+
+**Corollary 3 (No-mint, LP-safe, loser-never-profits).** *Under Theorem 2: (i) an $\text{uncovered}$ shortfall is impossible by construction, so no minting occurs and LP principal — including the Lazy Pool's market-LP principal — is never touched by early exits or by leverage impermanent loss; (ii) a claim on a losing outcome pays zero, so a losing outcome never profits; and (iii) held winners receive at least $(1-c)\,S_{\text{lose}}$ of the losing pool plus any unused bucket.*
+
+#### 6.8.5 Economic Interpretation: A Bounded Liquidity Discount
+
+The deferred claim reframes early exit as a *choice* with clean incentives. A holder who stays to resolution receives a full parimutuel share of the losing pool. A holder who exits early instead receives (a) immediate return of principal (regular bet) or loan-satisfied collateral treatment (leverage), plus (b) a *capped, priority-ordered, outcome-contingent* claim of at most $c$ of the losing pool, paid FIFO. Because the early-exit payoff is strictly a capped-and-contingent version of the hold payoff, **there is no arbitrage against holding**: one cannot exit early to extract *more* than holding would have yielded. The discount is deliberate — it is the price of liquidity and of transferring outcome risk earlier — and it is exactly what makes the LP guarantee survive a curve that also prices exits.
+
+This also gives leverage a coherent economic identity. Under the deferred-claim rule, borrowing from the Lazy Pool to open a position is a leveraged *directional* bet: the borrower amplifies exposure to a chosen outcome, the pool is repaid its loan and interest first from the curve close value, and the borrower's upside is a bounded contingent claim that competes FIFO with other early exiters for the capped bucket. The volatility-harvest interpretation — open, ride the curve, cash out the swing at LP expense — is structurally removed.
+
+#### 6.8.6 Governance Parameter and Implementation
+
+The cap is a median-voted validator parameter `pm_early_exit_reward_cap_percent` (uint16, basis points, default $3300$), added to `chain_properties_pm` with `validate()` bounding it to $\le 10000$. Deferred claims live in a dedicated `pm_deferred_claim_object` (indexed by market and by exit order), included in the snapshot allowlist with an import handler. A virtual operation `pm_early_exit_claim_paid`(account, market, kind, outcome, claimed, paid) is emitted in the settlement distribution loop — exposing any bucket-exhaustion haircut via the gap between `claimed` and `paid` — and routed to the exiter's account history (a bare balance adjustment would leave no trace). A read API `get_deferred_claims` returns the FIFO queue, empty on a settled market once claims are consumed.
+
+Three defensive measures harden the mechanism against adversarial parameter extremes and denial-of-service. First and most important, the funding bucket is **clamped to the settlement headroom** $H$ (§6.8.4): the amount actually drawn for claims is $\min(\lfloor c\,S_{\text{lose}}\rfloor, H)$, which is what makes Theorem 2 unconditional rather than contingent on a $\text{fees} + \text{cap} \le 100\%$ governance invariant — the latter is not enforced by parameter validation, since the creator and liquidity fees have no chain-level cap. Second, the per-market count of deferred-claim objects is capped by `MAX_PM_DEFERRED_CLAIMS_PER_MARKET`; beyond the cap an early exit skips claim creation and the tail simply stays in the curve paying zero — it is deliberately *not* routed to $\text{forfeit\_pool}$, which would double-count and thereby mint. Third, an always-on diagnostic fires if $\text{uncovered} > 0$ ever occurs (unreachable once the bucket is clamped), and a $\lfloor \cdot \rfloor_{\ge 0}$ floor on the winners' pool remains as a final backstop. These are belt-and-suspenders: the clamp gives the guarantee by construction, and the diagnostic makes any latent violation loud rather than silent.
+
+**Verification.** The conservation identity of Theorem 2 was validated in a settlement model across adversarial scenarios (one-sided pumps, thin losing sides, bucket exhaustion, fee extremes, and $\Omega > \text{total stake}$ from long-lived leverage) and in the `consensus_sim` harness. It was further confirmed end-to-end on the VIZ testnet: a cancel recorded a deferred claim; at settlement the virtual operation reported the claim paid at the capped bucket with a visible haircut ($\text{claimed} > \text{paid}$), and the claim was consumed — the full lifecycle behaving exactly as the model predicts.
 
 ---
 
