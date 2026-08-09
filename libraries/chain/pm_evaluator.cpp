@@ -647,8 +647,32 @@ namespace {
         int64_t paid_claims = 0;
         {
             const auto& mp = median(db);
-            const int64_t bucket = (int64_t)(fc::uint128_t((uint64_t)losers_sum)
+            int64_t bucket = (int64_t)(fc::uint128_t((uint64_t)losers_sum)
                 * fc::uint128_t(mp.pm_early_exit_reward_cap_percent) / fc::uint128_t(10000u)).lo;
+            // ADVERSARIAL FIX (own F1 review, goal #350 paper Theorem 2): the reward CAP alone does
+            // NOT bound solvency. Per-market fees are capped only by oracle+creator+liquidity ≤ 100%
+            // at creation (pm_operations.cpp:64) — NOT by any chain param, so validate() can't guard
+            // it — and a valid market can push fees near 100%. With the default early-exit cap (33%)
+            // that makes fees + bucket exceed losers_sum, and compute_settlement would floor
+            // winners_pool at 0 and charge the shortfall to LP principal (`uncovered`, F1) — reachable
+            // with VALID default params, not just extreme medians. Clamp the bucket to the settlement
+            // headroom (== winners_pool BEFORE claims) so paid_claims can never drive winners_pool
+            // negative → Theorem 2 holds unconditionally, no LP hit, no mint. This only ever REDUCES
+            // the bucket (min), so it is strictly more conservative than before. Fee math MUST mirror
+            // parimutuel.cpp:13-25 exactly (same int64 order/flooring) so headroom == the pot the
+            // split will actually see.
+            {
+                const int64_t oracle_fee  = losers_sum * (int64_t)mkt.oracle_fee_percent    / 10000;
+                const int64_t creator_fee = losers_sum * (int64_t)mkt.creator_fee_percent   / 10000;
+                const int64_t liq_fee     = losers_sum * (int64_t)mkt.liquidity_fee_percent / 10000;
+                int64_t avail = losers_sum - oracle_fee - creator_fee - liq_fee;
+                if (avail < 0) avail = 0;
+                const int64_t fixed_paid = (mkt.oracle_fixed_fee.value < avail)
+                    ? mkt.oracle_fixed_fee.value : avail;
+                int64_t headroom = avail - fixed_paid + mkt.forfeit_pool.value;
+                if (headroom < 0) headroom = 0;
+                if (bucket > headroom) bucket = headroom;
+            }
             const auto& cidx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
             auto cit = cidx.lower_bound(boost::make_tuple(mkt.id, pm_deferred_claim_id_type()));
             std::vector<const pm_deferred_claim_object*> consumed;
