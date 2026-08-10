@@ -70,8 +70,13 @@ Round 3 — against the F1/F2/F3 fix commits (`93e43e7` → `5ff694e` → `f3ff9
 | --- | --- | --- |
 | `t14_f2_ledger.cpp` | F2 fix + F1 fix | F2 holds: the `t12` chain now costs 27 457 instead of being free and `k` is invariant under the same truncation convention as `place_bet`. F1 does not: `compute_settlement` never assigns `settle_result::uncovered`, so `5ff694e`'s LP charge is dead code — and the curve-priced cancel makes a negative `forfeit_pool` reachable with no leverage, emitting up to 138 463 on a 200 000 market |
 
-`t10_conserve` and `t13_penalty` re-run unchanged against this head: `t13` is fixed (payouts back to
-principal at 2e6 / 4e6 / uint32-max), `t10` is bit-identical to the pre-fix run.
+Round 4 — early-exit / deferred-claim settlement pass (against head `dd6c5d1`):
+
+| file | target | what it shows |
+| --- | --- | --- |
+| `t15_early_exit_headroom.cpp` | `499246e9` (headroom clamp) + F1/#300 conservation | The early-exit deferred-claim pass had NO test coverage. Models the settle-pass verbatim (`pm_evaluator.cpp:647-700`) and settles through the real `compute_settlement`. **A:** with the bucket UNCLAMPED, the default 33% cap + a valid 90%-fee market overdraws the pot → `uncovered = 23 000` charged to LP principal, reachable with default params. **B:** the real clamped code caps the bucket to headroom (33 000 → 10 000), `uncovered = 0`, ledger balances. **C:** a 1 680-combination sweep of valid (fees, cap, forfeit, claim) confirms the clamp is solvency-neutral — 0 unbalanced ledgers and 0 claim-induced `uncovered` regressions vs the no-claim baseline. The 400 `uncovered_hits` are the pre-existing negative-`forfeit_pool` case (the F1 LP-charge target), not the claim path. Exit code 0 on pass. |
+
+`t10_conserve`, `t13_penalty` and `t14_f2_ledger` re-run unchanged against this head; `t15` is new.
 
 ## Live corroboration
 
