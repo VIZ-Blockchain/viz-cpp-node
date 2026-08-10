@@ -10,6 +10,20 @@ endif()
 
 cmake_minimum_required(VERSION 3.16)
 
+# Default to a Release build when the caller doesn't specify one. Without this,
+# a bare `cmake ..` (or an IDE that doesn't pass -DCMAKE_BUILD_TYPE) configures
+# with empty optimization flags, producing an unoptimized node. Single-config
+# generators only; multi-config generators (MSVC, Ninja Multi-Config) pick the
+# type at build time and leave CMAKE_BUILD_TYPE empty by design.
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT _is_multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING
+        "Choose the build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set; defaulting to Release")
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
 set(CHAIN_NAME "VIZ")
 
 
@@ -117,7 +131,7 @@ endif(CCACHE_FOUND)
 if(WIN32)
 
     message(STATUS "Configuring VIZ on WIN32")
-    set(PLATFORM_SPECIFIC_LIBS) # Păstrăm inițializarea pentru alte biblioteci
+    set(PLATFORM_SPECIFIC_LIBS) # Keep the initialization for other libraries
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
@@ -164,7 +178,7 @@ if(WIN32)
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
     endif(FULL_STATIC_BUILD)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
-    # bcrypt trebuie sa fie dupa toate librariile Boost statice
+    # bcrypt must come after all the static Boost libraries
     list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
         # We remove the explicit addition of bcrypt to PLATFORM_SPECIFIC_LIBS, as it is now linked globally
     endif(MSVC)

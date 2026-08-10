@@ -24,16 +24,16 @@ else()
     )
 endif()
 
-# Target comun care depinde de fișierul generat
+# Common target that depends on the generated file
 add_custom_target(build_hardfork_hpp DEPENDS "${hardfork_hpp_out}")
 
-# Marchează fișierul ca generat
+# Mark the file as generated
 set_source_files_properties("${hardfork_hpp_out}" PROPERTIES GENERATED TRUE)
 
-# Include dir-ul binar
+# Include the binary include dir
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
 
-# Variabila folosită mai jos în add_library
+# Variable used below in add_library
 set(hardfork_hpp_file "${hardfork_hpp_out}")
 
 ## SORT .cpp by most likely to change / break compile
