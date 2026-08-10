@@ -114,6 +114,32 @@ if(CCACHE_FOUND)
     set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
 endif(CCACHE_FOUND)
 
+# Precompiled headers (opt-in, default OFF). When ON, the heaviest libraries
+# (chain, protocol, wallet) precompile a curated set of stable third-party
+# headers (Boost.MultiIndex, FC reflection/serialization, std) once per target
+# instead of re-parsing them in every translation unit. See each library's
+# pch.hpp for the header list and rationale.
+#
+# Left OFF by default so it cannot affect existing/CI builds until a maintainer
+# opts in and measures. If ccache is in use, PCH only helps when ccache is told
+# not to hash the (large, stable) PCH timestamp: export
+#   CCACHE_SLOPPINESS=pch_defines,time_macros
+# before building, otherwise ccache conservatively disables its own cache for
+# PCH-using compilations and you lose the ccache win without gaining the PCH one.
+option(ENABLE_PCH "Enable precompiled headers for heavy libraries" OFF)
+if(ENABLE_PCH)
+    message(STATUS "ENABLE_PCH: ON (precompiling stable third-party headers for chain/protocol/wallet)")
+    if(CCACHE_FOUND AND NOT "$ENV{CCACHE_SLOPPINESS}" MATCHES "pch_defines")
+        message(WARNING
+            "ENABLE_PCH is ON and ccache is active, but CCACHE_SLOPPINESS does not "
+            "include pch_defines,time_macros. ccache will likely disable caching for "
+            "PCH-using compilations. Export "
+            "CCACHE_SLOPPINESS=pch_defines,time_macros before building.")
+    endif()
+else()
+    message(STATUS "ENABLE_PCH: OFF")
+endif()
+
 if(WIN32)
 
     message(STATUS "Configuring VIZ on WIN32")

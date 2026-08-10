@@ -50,6 +50,10 @@ target_link_libraries(
 )
 target_include_directories( graphene_${CURRENT_TARGET} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+if(ENABLE_PCH)
+    target_precompile_headers(graphene_${CURRENT_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pch.hpp")
+endif()
+
 if(MSVC)
     set_source_files_properties(wallet.cpp PROPERTIES COMPILE_FLAGS "/bigobj")
 endif(MSVC)
