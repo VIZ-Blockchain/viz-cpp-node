@@ -6,7 +6,7 @@ VIZ is a Graphene blockchain with a Fair-DPOS consensus algorithm (vote weight s
 
 ## Building
 
-See [documentation/building.md](documentation/building.md) for detailed build instructions, including
+See [docs/node/building.md](docs/node/building.md) for detailed build instructions, including
 compile-time options, and specific commands for Linux (Ubuntu LTS) or macOS X.
 
 ## Running in docker
@@ -16,7 +16,7 @@ Auto-built image [vizblockchain/vizd](https://hub.docker.com/r/vizblockchain/viz
 Docker image tags:
 
 * **latest** - built from master branch, used to run production VIZ network
-* **testnet** - built from master branch, could be used to run [local test network](documentation/testnet.md)
+* **testnet** - built from master branch, could be used to run [local test network](docs/node/docker.md#testnet-node)
 
 Example run:
 

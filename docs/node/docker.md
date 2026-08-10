@@ -110,6 +110,35 @@ docker run -d \
   vizblockchain/vizd:testnet
 ```
 
+### Testnet bootstrap
+
+When a node starts without seed nodes, it tries to open a `snapshot.json`
+file holding the initial users and their balances. If found, liquid tokens are
+transferred from the `CHAIN_INITIATOR_NAME` account to user accounts as vesting
+(shares).
+
+Initial users and their keys are defined in
+`libraries/protocol/include/graphene/protocol/config.hpp`:
+
+- `CHAIN_INITIATOR_NAME` (`viz`) — holds the initial balance.
+- `CHAIN_COMMITTEE_ACCOUNT` — the initial active validator.
+
+`viz` keys:
+
+- private: `5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4`
+- public: `VIZ6MyX5QiXAXRZk7SYCiqpi6Mtm8UbHWDFSV8HPpt7FJyahCnc2T`
+
+`committee` keys:
+
+- private: `5Hw9YPABaFxa2LooiANLrhUK5TPryy8f7v9Y1rk923PuYqbYdfC`
+- public: `VIZ6Yt7d6LsngBoXQr47aLv97bJVs7jyr7esZTM4UUSpLUf3nbRKS`
+
+To ease testing, several additional users are immediately available: `alice`,
+`bob`, `charlie`, `chuck`, `dan`, `frank`. They all share the same keys:
+
+- private: `5J9DBCRX5D2ZUUuy9qV2ef9p5sfA3ydHsDs2G531bob7wbEigDJ`
+- public: `VIZ5zTAE2hiGcqYaDTQeEBqTtPeoWtSNjpznwmbvqJXesrK1Qn3e8`
+
 ---
 
 ## Building Images Locally

@@ -4,7 +4,8 @@ on:
   push:
     branches: [ windows_build, master ]
     paths-ignore:
-      - 'documentation/**'
+      - 'docs/**'
+      - '@l10n/**'
       - '**.md'
 
 permissions:
