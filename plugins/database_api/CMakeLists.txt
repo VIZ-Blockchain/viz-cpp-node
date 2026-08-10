@@ -17,17 +17,10 @@ list(APPEND ${CURRENT_TARGET}_SOURCES
      proposal_api_object.cpp
 )
 
-if(BUILD_SHARED_LIBRARIES)
-    add_library(graphene_${CURRENT_TARGET} SHARED
+add_library(graphene_${CURRENT_TARGET} ${VIZ_LIBRARY_TYPE}
                 ${${CURRENT_TARGET}_HEADERS}
                 ${${CURRENT_TARGET}_SOURCES}
                 )
-else()
-    add_library(graphene_${CURRENT_TARGET} STATIC
-                ${${CURRENT_TARGET}_HEADERS}
-                ${${CURRENT_TARGET}_SOURCES}
-                )
-endif()
 
 add_library(graphene::${CURRENT_TARGET} ALIAS graphene_${CURRENT_TARGET})
 set_property(TARGET graphene_${CURRENT_TARGET} PROPERTY EXPORT_NAME ${CURRENT_TARGET})

@@ -8,17 +8,10 @@ list(APPEND CURRENT_TARGET_SOURCES
      p2p_plugin.cpp
      )
 
-if(BUILD_SHARED_LIBRARIES)
-    add_library(graphene_${CURRENT_TARGET} SHARED
+add_library(graphene_${CURRENT_TARGET} ${VIZ_LIBRARY_TYPE}
                 ${CURRENT_TARGET_HEADERS}
                 ${CURRENT_TARGET_SOURCES}
                 )
-else()
-    add_library(graphene_${CURRENT_TARGET} STATIC
-                ${CURRENT_TARGET_HEADERS}
-                ${CURRENT_TARGET_SOURCES}
-                )
-endif()
 
 add_library(graphene::${CURRENT_TARGET} ALIAS graphene_${CURRENT_TARGET})
 
