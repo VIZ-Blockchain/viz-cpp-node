@@ -22,7 +22,7 @@ out="$here/out"; mkdir -p "$out"
 
 # Cases that link the real consensus math. The rest are self-contained (native
 # unsigned __int128 stands in for fc::uint128_t) and need only -std=c++17.
-linked="t14_f2_ledger dump t2_reach t3_lp t3b_loan t3c_weight t4_cancel t5_threshold t6_cycle t10_conserve t13_penalty"
+linked="t14_f2_ledger t15_early_exit_headroom dump t2_reach t3_lp t3b_loan t3c_weight t4_cancel t5_threshold t6_cycle t10_conserve t13_penalty"
 
 build_objs() {
     [ -f "$out/parimutuel.o" ] && return 0
