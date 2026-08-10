@@ -757,6 +757,12 @@ namespace {
         drop_range(db.get_index<pm_commit_index>().indices().get<by_market>());
         drop_range(db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>());
         drop_range(db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>());
+        // Backstop: every terminal path that can hold deferred claims already clears them —
+        // settle_market consumes them, refund_all_bets purges them on void/no-contest/missed-
+        // resolution, and accept-expired markets are pending (never had bets). This drop is a
+        // defensive net so no overlooked or future finalize path can leave a claim row dangling
+        // in shared memory / drift the snapshot. Money-neutral: the range is normally empty here.
+        drop_range(db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>());
         drop_unique(db.get_index<pm_dispute_index>().indices().get<by_market>());
         drop_unique(db.get_index<pm_lazy_allocation_index>().indices().get<by_market>());
         db.remove(mkt);
