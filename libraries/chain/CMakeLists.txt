@@ -43,6 +43,7 @@ if(BUILD_SHARED_LIBRARIES)
 
             # As database takes the longest to compile, start it first
             database.cpp
+            database_hardfork.cpp
             fork_database.cpp
 
             chain_evaluator.cpp
@@ -98,6 +99,7 @@ else()
 
             # As database takes the longest to compile, start it first
             database.cpp
+            database_hardfork.cpp
             fork_database.cpp
 
             chain_evaluator.cpp
