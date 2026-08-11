@@ -67,6 +67,16 @@ option(Boost_USE_STATIC_LIBS "Build with Boost static libraries usage" TRUE)
 
 option(BUILD_SHARED_LIBRARIES "Build shared libraries" FALSE)
 
+# Single source of truth for the library linkage type. Each library/plugin uses
+# add_library(<name> ${VIZ_LIBRARY_TYPE} ...) instead of duplicating the full
+# source list across if(BUILD_SHARED_LIBRARIES)/else() branches. Set at root
+# scope so it propagates into every add_subdirectory below.
+if(BUILD_SHARED_LIBRARIES)
+    set(VIZ_LIBRARY_TYPE SHARED)
+else()
+    set(VIZ_LIBRARY_TYPE STATIC)
+endif()
+
 option(BUILD_TESTNET "Build source for test network (ON OR OFF)" FALSE)
 message(STATUS "BUILD_TESTNET: ${BUILD_TESTNET}")
 if(BUILD_TESTNET)

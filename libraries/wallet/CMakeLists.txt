@@ -19,17 +19,10 @@ list(APPEND ${CURRENT_TARGET}_SOURCES
         wallet.cpp
         )
 
-if(BUILD_SHARED_LIBRARIES)
-    add_library(graphene_${CURRENT_TARGET} SHARED
+add_library(graphene_${CURRENT_TARGET} ${VIZ_LIBRARY_TYPE}
             ${${CURRENT_TARGET}_HEADERS}
             ${${CURRENT_TARGET}_SOURCES}
             )
-else()
-    add_library(graphene_${CURRENT_TARGET} STATIC
-            ${${CURRENT_TARGET}_HEADERS}
-            ${${CURRENT_TARGET}_SOURCES}
-            )
-endif()
 # I don't know why graphene_app is required twice in the following line, I just know the linker breaks if it isn't.
 target_link_libraries(
         graphene_${CURRENT_TARGET}
