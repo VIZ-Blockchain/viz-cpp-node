@@ -42,6 +42,7 @@ add_library(graphene_chain ${VIZ_LIBRARY_TYPE}
 
             # As database takes the longest to compile, start it first
             database.cpp
+            database_hardfork.cpp
             fork_database.cpp
 
             chain_evaluator.cpp
