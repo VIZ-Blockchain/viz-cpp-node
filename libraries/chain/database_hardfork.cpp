@@ -8,17 +8,29 @@
  *
  * These methods rely only on the database members declared in database.hpp
  * (_hardfork_times, _hardfork_versions, _log_hardforks) and on the same object
- * indexes and helpers the rest of the chain library uses, so this file needs
- * the same include surface as database.cpp for the hardfork path.
+ * indexes and helpers the rest of the chain library uses. The include set below
+ * mirrors the graphene/chain/* headers database.cpp pulls in for the hardfork
+ * path (apply_hardfork touches proposal_index, required_approval_index, and the
+ * full range of core object indexes), so keep it in sync with database.cpp.
  */
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/database_exceptions.hpp>
+#include <graphene/chain/db_with.hpp>
+#include <graphene/chain/index.hpp>
+#include <graphene/chain/evaluator_registry.hpp>
+#include <graphene/chain/custom_operation_interpreter.hpp>
+#include <graphene/chain/operation_notification.hpp>
+#include <graphene/chain/chain_evaluator.hpp>
 #include <graphene/chain/chain_objects.hpp>
+#include <graphene/chain/block_summary_object.hpp>
+#include <graphene/chain/compound.hpp>
+#include <graphene/chain/transaction_object.hpp>
+#include <graphene/chain/shared_db_merkle.hpp>
+#include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/committee_objects.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
-#include <graphene/chain/custom_operation_interpreter.hpp>
 
 #include <graphene/protocol/chain_operations.hpp>
 
