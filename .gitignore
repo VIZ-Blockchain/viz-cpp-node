@@ -24,21 +24,9 @@ libraries/wallet/api_documentation.cpp
 libraries/wallet/doxygen
 
 programs/cli_wallet/cli_wallet
-programs/js_operation_serializer/js_operation_serializer
 programs/vizd/vizd
-programs/vizd/test
-programs/delayed_node
 programs/build_helpers/cat-parts
-programs/size_checker/size_checker
 programs/util/get_dev_key
-programs/util/inflation_model
-
-tests/app_test
-tests/chain_bench
-tests/chain_test
-tests/plugin_test
-tests/intense_test
-tests/performance_test
 
 wallet.json
 node_data_dir
@@ -58,7 +46,7 @@ build-*/
 
 node_modules/*
 
-.qoder/logs/*
+.qoder/
 # Local design specs and implementation plans (not part of repo)
 docs/superpowers/
 
