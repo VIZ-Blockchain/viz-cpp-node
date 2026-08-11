@@ -1276,6 +1276,27 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // get_account_commits(account, [open_only=true])
+    // The account's commit-reveal commitments (pm_commit_object) in id order. A hidden/batch bet is a
+    // two-step flow: pm_commit_bet stores a commitment + escrow, then pm_reveal_bet(commit_id, …) reveals
+    // it — and the reveal op needs the on-chain commit_id, which the client otherwise had no way to look
+    // up (only the by_commit_account index existed, unexposed). By default returns only OPEN commits
+    // (status==0, still revealable); pass open_only=false to include revealed(1)/forfeited(2) for history.
+    DEFINE_API(prediction_market_api, get_account_commits) {
+        CHECK_ARG_MIN_SIZE(1, 2)
+        auto account = args.args->at(0).as<account_name_type>();
+        bool open_only = args.args->size() > 1 ? args.args->at(1).as<bool>() : true;
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<pm_commit_object> out;
+            const auto& idx = db.get_index<pm_commit_index>().indices().get<by_commit_account>();
+            auto range = idx.equal_range(account);
+            for (auto it = range.first; it != range.second; ++it)
+                if (!open_only || it->status == 0) out.push_back(*it);
+            return out;
+        });
+    }
+
     DEFINE_API(prediction_market_api, get_pm_chain_properties) {
         CHECK_ARG_SIZE(0)
         auto& db = pimpl->database();
