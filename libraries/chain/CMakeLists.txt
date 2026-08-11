@@ -172,6 +172,10 @@ add_dependencies(graphene_chain graphene_protocol graphene_utilities build_hardf
 target_link_libraries(graphene_chain graphene_protocol graphene_utilities fc chainbase appbase ${PATCH_MERGE_LIB})
 target_include_directories(graphene_chain PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../")
 
+if(ENABLE_PCH)
+    target_precompile_headers(graphene_chain PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pch.hpp")
+endif()
+
 if(WITH_COVERAGE)
     target_compile_options(graphene_chain PRIVATE --coverage)
     target_link_options(graphene_chain PUBLIC --coverage)

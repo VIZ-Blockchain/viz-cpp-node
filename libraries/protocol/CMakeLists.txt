@@ -59,6 +59,10 @@ target_link_libraries(graphene_${CURRENT_TARGET} fc)
 target_include_directories(graphene_${CURRENT_TARGET}
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}/include")
 
+if(ENABLE_PCH)
+    target_precompile_headers(graphene_${CURRENT_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pch.hpp")
+endif()
+
 if(WITH_COVERAGE)
     target_compile_options(graphene_${CURRENT_TARGET} PRIVATE --coverage)
     target_link_options(graphene_${CURRENT_TARGET} PUBLIC --coverage)
