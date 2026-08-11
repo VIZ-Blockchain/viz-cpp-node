@@ -101,7 +101,7 @@ elif command -v dnf &>/dev/null; then
     install_deps_fedora
 else
     warn "Unsupported package manager. Please install dependencies manually."
-    warn "See documentation/building.md for the required package list."
+    warn "See docs/node/building.md for the required package list."
     exit 1
 fi
 
