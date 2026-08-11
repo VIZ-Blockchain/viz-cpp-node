@@ -693,7 +693,7 @@ namespace graphene { namespace protocol {
             uint16_t pm_leverage_max_position_ratio_percent = 5;     ///< max position as % of liquidity_sum (POS)
             uint32_t pm_leverage_expiration_buffer_sec       = 86400; ///< leverage disabled N sec before expiration
             uint16_t pm_leverage_m_factor_percent           = 50;    ///< M_effective = M_max × this% (VIZ DLT relaxation)
-            uint32_t pm_leverage_funding_rate_ppm_per_day    = 50;    ///< funding on the loan per 24h, in ppm (1e6). 0.005%/day = 50 ppm; 0 disables
+            uint32_t pm_leverage_funding_rate_ppm_per_day    = 100;   ///< funding on the loan per 24h, in ppm (1e6). 0.01%/day = 100 ppm (~3.65%/yr); 0 disables
             uint16_t pm_conversion_profit_cost_percent      = 50;    ///< fee % of unrealized profit on convert
             // Garbage collection of terminal markets
             uint32_t pm_closed_market_retention_sec         = 432000; ///< 5 d: a market and its whole object
