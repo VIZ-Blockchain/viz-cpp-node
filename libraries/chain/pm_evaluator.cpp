@@ -1025,6 +1025,27 @@ void pm_oracle_update_evaluator::do_apply(const pm_oracle_update_operation& o) {
             db.adjust_balance(owner, -delta);
         } else if (delta.amount < 0) {
             share_type withdraw = share_type(-delta.amount);
+            // #3 (audit 2026-08-12, owner choice A): top-ups are always allowed, but an oracle may not
+            // WITHDRAW insurance while it still carries an OPEN OBLIGATION — a market it could still be
+            // slashed on. Pulling insurance to the floor right before a deterministic slash (missed
+            // resolution / dispute loss) made the insurance theater. Two slash paths → two cheap probes;
+            // a resolved market with no open dispute is NOT a slash risk (it just settles mechanically),
+            // so no O(N) history walk is needed:
+            //   (1) any market of this oracle still awaiting resolution (status 1) — by_oracle_status probe;
+            //   (2) any OPEN dispute (status 0) filed on one of this oracle's markets — few, fee-gated.
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
+            auto mit = midx.lower_bound(boost::make_tuple(o.owner, (int8_t)1));
+            FC_ASSERT(!(mit != midx.end() && mit->oracle == o.owner && mit->status == 1),
+                      "Cannot withdraw insurance while this oracle has markets awaiting resolution; "
+                      "resolve or close them first (top-ups are always allowed)");
+            const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_auto_close>();
+            for (auto dit = didx.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec()));
+                 dit != didx.end() && dit->status == 0; ++dit) {
+                const auto& dm = db.get<pm_market_object, by_id>(dit->market);
+                FC_ASSERT(dm.oracle != o.owner,
+                          "Cannot withdraw insurance while a dispute against this oracle is open; "
+                          "it resolves first (top-ups are always allowed)");
+            }
             FC_ASSERT(oracle.insurance.value - withdraw.value >= mp.pm_min_oracle_insurance.amount.value,
                       "Withdrawal would push insurance below minimum");
             db.adjust_balance(owner, asset(withdraw, TOKEN_SYMBOL));
