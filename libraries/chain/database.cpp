@@ -3782,6 +3782,7 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_pm::pm_leverage_funding_rate_ppm_per_day);
                 calc_median(&chain_properties_pm::pm_conversion_profit_cost_percent);
                 calc_median(&chain_properties_pm::pm_early_exit_reward_cap_percent);
+                calc_median(&chain_properties_pm::pm_closed_market_retention_sec);
             }
 
             modify(wso, [&](validator_schedule_object &_wso) {
