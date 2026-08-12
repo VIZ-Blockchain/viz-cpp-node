@@ -322,6 +322,12 @@ namespace graphene { namespace chain {
             share_type        min_tokens = 0; ///< slippage floor for queued batch bets
             share_type        resolved_amount;
             time_point_sec    created_time;
+            // #1-C (audit 2026-08-12): market liquidity_sum at the moment this CPMM bet hit the curve.
+            // A cancel re-prices the refund at THIS depth (current ratio, entry k) so an early exit is
+            // rewarded only for genuine odds movement, never for depth the bettor inflated themselves
+            // with their own add_liquidity (self-liquidity tail). 0 = unset (LMSR/old bets) → no
+            // normalization (legacy behaviour). See pm-fix-1c-depth-normalized-cancel.md.
+            share_type        entry_liquidity = 0;
         };
 
         struct by_market;
@@ -847,7 +853,7 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_outcome_object, graphene::chain::pm
 
 FC_REFLECT((graphene::chain::pm_bet_object),
     (id)(market)(account)(side)(outcome_index)(amount)(weight)(price)(time_penalty)(mode)(epoch)(status)
-    (min_tokens)(resolved_amount)(created_time))
+    (min_tokens)(resolved_amount)(created_time)(entry_liquidity))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_bet_object, graphene::chain::pm_bet_index)
 
 FC_REFLECT((graphene::chain::pm_liquidity_object),

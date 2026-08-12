@@ -1372,6 +1372,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
             bet.mode         = o.mode;
             bet.status       = 0;
             bet.created_time = now;
+            bet.entry_liquidity = mkt.liquidity_sum; // #1-C: depth at entry for depth-neutral cancel
             bet.time_penalty = compute_time_penalty(mkt, now, mp.pm_max_time_penalty); // B9
         });
 
@@ -1553,12 +1554,36 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
         share_type new_reserve_in = share_type((int64_t)(mkt.k / denom).lo);
         const int64_t curve_refund = reserve_in.value - new_reserve_in.value; // > 0 by construction
         FC_ASSERT(curve_refund >= 0, "curve-priced refund underflow");
+        // #1-C (audit 2026-08-12): re-price the capped/tail split at the bet's ENTRY depth so an early
+        // exit is never rewarded for depth the bettor inflated themselves (self-liquidity tail). Scale
+        // both reserves by entry_liquidity/liquidity_sum (same ratio, entry k) and mirror-of-buy on
+        // those: bets keep k invariant, liquidity ops scale k by f² and liquidity_sum by f, so
+        // sqrt(k_entry/k_now) == L_entry/L_now EXACTLY → deterministic, sqrt-free. CLAMP to the real
+        // curve_refund: normalization may only REDUCE the payout, never raise it (kills the inflation
+        // vector without opening a shrink-side one). Only the payout split uses this; the REAL reserve
+        // mutation below is unchanged (k invariant). See pm-fix-1c-depth-normalized-cancel.md.
+        int64_t curve_refund_pricing = curve_refund;
+        {
+            const int64_t Lentry = bet.entry_liquidity.value;
+            const int64_t Lnow   = mkt.liquidity_sum.value;
+            if (Lentry > 0 && Lnow > 0 && Lnow != Lentry) {
+                const fc::uint128_t rin_n  = fc::uint128_t((uint64_t)reserve_in.value)  * fc::uint128_t((uint64_t)Lentry) / fc::uint128_t((uint64_t)Lnow);
+                const fc::uint128_t rout_n = fc::uint128_t((uint64_t)reserve_out.value) * fc::uint128_t((uint64_t)Lentry) / fc::uint128_t((uint64_t)Lnow);
+                const fc::uint128_t denom_n = rout_n + fc::uint128_t((uint64_t)bet.weight.value);
+                if (rin_n.hi == 0 && rout_n.hi == 0 && rin_n.lo > 0 && (denom_n.hi > 0 || denom_n.lo > 0)) {
+                    const int64_t new_rin_n = (int64_t)(rin_n * rout_n / denom_n).lo;
+                    int64_t cref_n = (int64_t)rin_n.lo - new_rin_n;
+                    if (cref_n < 0) cref_n = 0;
+                    if (cref_n < curve_refund_pricing) curve_refund_pricing = cref_n; // clamp: only reduce
+                }
+            }
+        }
         // F1/#300: pay at most the stake (min(curve_refund, stake)) — a cancel cuts losses or breaks
         // even but never realizes curve PROFIT against LP depth. The profit tail becomes an OUTCOME-
         // CONTINGENT deferred claim, paid from the bounded early-exit bucket at settlement (winning side
         // only). residual = stake − paid ≥ 0, so forfeit_pool never goes negative on a cancel.
-        const int64_t capped = curve_refund < bet.amount.value ? curve_refund : bet.amount.value;
-        const int64_t tail   = curve_refund - capped; // ≥ 0: curve profit, deferred as a claim
+        const int64_t capped = curve_refund_pricing < bet.amount.value ? curve_refund_pricing : bet.amount.value;
+        const int64_t tail   = curve_refund_pricing - capped; // ≥ 0: curve profit, deferred as a claim
         refund = share_type(capped);
         const int64_t residual = bet.amount.value - capped; // ≥ 0 → forfeit_pool
         db.modify(mkt, [&](pm_market_object& m) {
@@ -3397,7 +3422,10 @@ void database::process_pm_markets() {
                             });
                         modify(mkt, [&](pm_market_object& m) { m.bets_sum += bet.amount; });
                     }
-                    modify(bet, [&](pm_bet_object& b) { b.status = 0; b.weight = tokens; });
+                    modify(bet, [&](pm_bet_object& b) {
+                        b.status = 0; b.weight = tokens;
+                        if (mkt.market_type == 0) b.entry_liquidity = mkt.liquidity_sum; // #1-C: depth at fill
+                    });
                     settled++;
                 } else {
                     // Slippage: refund
