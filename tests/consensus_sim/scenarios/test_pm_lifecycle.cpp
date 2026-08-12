@@ -5669,4 +5669,369 @@ BOOST_AUTO_TEST_CASE(early_exit_deferred_claim_paid_from_bucket) {
     BOOST_CHECK_EQUAL(remaining, 0u); // all claims consumed at settlement (none leak to GC)
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARGIN SAFETY 1 — pool bad debt is a TRANSFER, never a MINT.
+//
+// A leveraged position CAN leave the pool with bad debt (pool_received < loan) when the
+// price collapses faster than liquidation can react — that loss is real and is absorbed by
+// LP principal (pool free_balance). The consensus-critical invariant is that this is a
+// zero-sum TRANSFER inside the market, not new tokens: chain current_supply must be
+// unchanged by the whole open→adverse-move→liquidate sequence, and no balance/pool field
+// goes negative. This mirrors leverage_cancel_bet_cascade_bad_debt's proven setup (skew
+// reserves with a big A-bet, open leverage on the expensive side, cancel to collapse the
+// price and cascade-liquidate) but asserts the money-supply invariant the other case omits.
+BOOST_AUTO_TEST_CASE(leverage_bad_debt_is_transfer_not_mint) {
+    auto gp = make_genesis_params(0x5A31u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lev-baddebt", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skip."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    {
+        chain_properties_pm props;
+        props.pm_leverage_enabled                    = true;
+        props.pm_leverage_expiration_buffer_sec      = 0;
+        props.pm_leverage_fund_percent               = 100;
+        props.pm_leverage_max_per_position_bp        = 10000;
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_lazy_alloc_percent                  = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && !mp.pm_leverage_enabled; ++i) produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_leverage_enabled);
+    }
+
+    const pm_lazy_pool_id_type pool_id(0);
+    auto lev_used  = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).leverage_fund_used.value; };
+    auto pool_free = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).free_balance.value; };
+
+    const int64_t D = unit * 100;
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(D), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 60), TOKEN_SYMBOL); // reserves 3M/3M
+    cm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+    cm.allow_cancellation = true;
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto bob_key = derive_key("bob"), trader_key = derive_key("trader");
+    create_and_fund(node, gp, when, "bob",    bob_key,    share_type(unit * 70));
+    create_and_fund(node, gp, when, "trader", trader_key, share_type(unit * 25));
+
+    // Snapshot supply AFTER all funding/account creation, just before the leverage lifecycle.
+    const int64_t supply_before = node.db().get_dynamic_global_properties().current_supply.amount.value;
+    const uint32_t num_before   = node.db().head_block_num();
+
+    // bob bets A (6M) → reserves skew to (9M, 1M): side A is now expensive.
+    pm_place_bet_operation bb;
+    bb.account = "bob"; bb.market_id = 0; bb.side = 0; bb.outcome_index = -1;
+    bb.amount = asset(share_type(unit * 60), TOKEN_SYMBOL); bb.mode = 0;
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    uint64_t bob_bet_id = 0; bool found = false;
+    for (const auto& b : node.db().get_index<pm_bet_index>().indices())
+        if (b.market == pm_market_id_type(0) && b.account == account_name_type("bob") && b.status == 0) {
+            bob_bet_id = b.id._id; found = true; break;
+        }
+    BOOST_REQUIRE(found);
+
+    // trader opens leverage on the expensive side A at reserves (9M,1M).
+    pm_leverage_open_operation op;
+    op.account = "trader"; op.market_id = 0; op.outcome_index = 0;
+    op.collateral = asset(share_type(unit * 20), TOKEN_SYMBOL); op.loan = asset(share_type(unit * 10), TOKEN_SYMBOL);
+    op.min_tokens = 0; op.max_slippage_percent = 0;
+    node.push_pending_transaction(sign_ops({op}, trader_key, node));
+    produce(node, gp, when);
+    const pm_leverage_position_id_type pos_id(0);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 0);
+
+    // bob cancels his A-bet → the price collapses and the cancel-cascade liquidates the trader's
+    // now-underwater position, forcing bad debt onto the pool.
+    pm_cancel_bet_operation cancel;
+    cancel.account = "bob"; cancel.bet_id = bob_bet_id; cancel.min_return = 0;
+    node.push_pending_transaction(sign_ops({cancel}, bob_key, node));
+    produce(node, gp, when);
+
+    const auto& pos = node.db().get<pm_leverage_position_object>(pos_id);
+    const int64_t supply_after = node.db().get_dynamic_global_properties().current_supply.amount.value;
+    const uint32_t num_after   = node.db().head_block_num();
+    const int64_t inflation    = (int64_t)(num_after - num_before) * CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK;
+
+    BOOST_TEST_MESSAGE("bad-debt-transfer: pos.status=" << (int)pos.status
+                       << " cv=" << pos.cancel_value_at_liquidation.value
+                       << " loan=" << pos.loan.value << " pool_received=" << pos.pool_received.value
+                       << " lev_used=" << lev_used() << " pool_free=" << pool_free()
+                       << " supply_delta=" << (supply_after - supply_before) << " inflation=" << inflation);
+
+    // The position was liquidated with genuine bad debt (the interesting case).
+    BOOST_CHECK_EQUAL(pos.status, 1);
+    BOOST_CHECK_LT(pos.pool_received.value, pos.loan.value);   // pool recovered < loan: real loss
+    BOOST_CHECK_EQUAL(lev_used(), 0);                          // loan cleared off the books
+    // Invariants: the loss is a transfer, not a mint.
+    BOOST_CHECK_GE(pool_free(), 0);                            // LP principal absorbed it, never negative
+    BOOST_CHECK_EQUAL(supply_after - supply_before, inflation);// supply moved by block inflation ALONE
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARGIN SAFETY 2 — a profitable early close never mints, and the forfeit pot stays ≥ 0.
+//
+// The other side of the ledger: when a position closes IN PROFIT (voluntary close after a
+// same-side whale pushes cancel_value above obligation), the pool recovers exactly its
+// obligation, the bettor's profit becomes an outcome-contingent deferred claim, and the
+// market pot (forfeit_pool) gets total_bet − obligation. The #141 pot_retained clamp keeps
+// that ≥ 0. This drives open → same-side whale → voluntary convert → resolve → settle and
+// asserts current_supply moved by block inflation alone and forfeit_pool never went negative.
+BOOST_AUTO_TEST_CASE(leverage_profit_close_never_mints) {
+    auto gp = make_genesis_params(0x5A32u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lev-profit", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skip."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    {
+        chain_properties_pm props;
+        props.pm_leverage_enabled                    = true;
+        props.pm_leverage_expiration_buffer_sec      = 0;
+        props.pm_leverage_fund_percent               = 100;
+        props.pm_leverage_max_per_position_bp        = 10000;
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_lazy_alloc_percent                  = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && !mp.pm_leverage_enabled; ++i) produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_leverage_enabled);
+    }
+
+    const pm_lazy_pool_id_type pool_id(0);
+    auto pool_free = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).free_balance.value; };
+
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(unit * 100), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 60), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(90);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto trader_key = derive_key("trader"), whale_key = derive_key("whale");
+    create_and_fund(node, gp, when, "trader", trader_key, share_type(unit * 60));
+    create_and_fund(node, gp, when, "whale",  whale_key,  share_type(unit * 40));
+
+    const int64_t supply_before = node.db().get_dynamic_global_properties().current_supply.amount.value;
+    const uint32_t num_before   = node.db().head_block_num();
+
+    // trader opens leverage on A.
+    pm_leverage_open_operation op;
+    op.account = "trader"; op.market_id = 0; op.outcome_index = 0;
+    op.collateral = asset(share_type(unit * 20), TOKEN_SYMBOL); op.loan = asset(share_type(unit * 10), TOKEN_SYMBOL);
+    op.min_tokens = 0; op.max_slippage_percent = 0;
+    node.push_pending_transaction(sign_ops({op}, trader_key, node));
+    produce(node, gp, when);
+    const pm_leverage_position_id_type pos_id(0);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 0);
+
+    // whale piles onto the SAME side A → pushes cancel_value above obligation (position in profit).
+    pm_place_bet_operation wb;
+    wb.account = "whale"; wb.market_id = 0; wb.side = 0; wb.outcome_index = -1;
+    wb.amount = asset(share_type(unit * 20), TOKEN_SYMBOL); wb.mode = 0;
+    node.push_pending_transaction(sign_ops({wb}, whale_key, node));
+    produce(node, gp, when);
+
+    // trader voluntarily closes in profit: pool takes obligation, profit becomes a deferred claim,
+    // forfeit_pool gets total_bet − obligation (must be ≥ 0 via the #141 clamp).
+    pm_leverage_close_operation clo;
+    clo.account = "trader"; clo.position_id = 0; clo.min_return = 0;
+    node.push_pending_transaction(sign_ops({clo}, trader_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 4); // 4 = voluntary close
+
+    // Let betting_expiration pass so the oracle can resolve early (allow_early_resolution requires
+    // now >= betting_expiration), then resolve A (side 0) so the deferred claim pays and the market
+    // settles fully.
+    for (int i = 0; i < 40 && node.head_block_time() < node.db().get<pm_market_object>(pm_market_id_type(0)).betting_expiration; ++i)
+        produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0; rm.decision_url = "";
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+    const uint32_t grace = (uint32_t)mp.pm_dispute_grace_sec;
+    const int blocks = (int)((grace + 240) / CHAIN_BLOCK_INTERVAL) + 80;
+    for (int i = 0; i < blocks && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+
+    const auto& mkt = node.db().get<pm_market_object>(market_id);
+    const int64_t supply_after = node.db().get_dynamic_global_properties().current_supply.amount.value;
+    const uint32_t num_after   = node.db().head_block_num();
+    const int64_t inflation    = (int64_t)(num_after - num_before) * CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK;
+
+    BOOST_TEST_MESSAGE("profit-close: forfeit_pool=" << mkt.forfeit_pool.value
+                       << " supply_delta=" << (supply_after - supply_before) << " inflation=" << inflation
+                       << " pool_free=" << pool_free());
+
+    BOOST_CHECK_GE(mkt.forfeit_pool.value, 0);                 // #141 clamp: pot never negative
+    BOOST_CHECK_GE(pool_free(), 0);
+    BOOST_CHECK_EQUAL(supply_after - supply_before, inflation);// no mint across the whole lifecycle
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARGIN ABUSE PROBE (defense holds) — a Sybil can open many leverage positions on one
+// market (no per-market / per-account count cap, no minimum loan), but their forced
+// settlement is THROTTLED, so it is not a single-block DoS.
+//
+// I probed the following attack: (1) there is NO per-market / per-account position-count cap
+// and NO minimum loan (validate only requires loan>0, collateral>0), so an attacker can open
+// many cheap positions on one market; (2) settle_market → force_close_positions (L540) has no
+// per-block cap. The hoped-for exploit was that resolving such a market would liquidate ALL
+// positions in one block (unbounded work → block-time blowup). It does NOT: process_pm_markets
+// §2d force-closes open positions the moment betting is over (betting_expiration passed or
+// status ≥ 3), and that sweep IS capped — it shares the single per-block `done < cap` budget
+// with every other cron section. So positions drain at ≤ cap per block BEFORE settle_market's
+// (uncapped, idempotent) backstop ever sees them. This test documents both facts: the opens
+// are unlimited (Sybil surface is real), but the per-block liquidation work is bounded by the
+// consensus cap (the DoS is mitigated). It is a regression guard: if a future refactor removes
+// the §2d throttle, closures per block would exceed cap and this test fails.
+BOOST_AUTO_TEST_CASE(leverage_sybil_settlement_is_cap_throttled) {
+    auto gp = make_genesis_params(0x5A33u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lev-sybil", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skip."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const uint32_t CAP = 5;
+    {
+        chain_properties_pm props;
+        props.pm_leverage_enabled                    = true;
+        props.pm_leverage_expiration_buffer_sec      = 0;   // allow leverage right up to betting close
+        props.pm_leverage_fund_percent               = 100;
+        props.pm_leverage_max_per_position_bp        = 10000; // no per-position throttle
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_lazy_alloc_percent                  = 0;
+        props.pm_processing_cap_per_block            = (uint16_t)CAP; // low cap to observe throttling
+        props.pm_leverage_funding_rate_ppm_per_day   = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && (!mp.pm_leverage_enabled || mp.pm_processing_cap_per_block != CAP); ++i)
+            produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_leverage_enabled);
+        BOOST_REQUIRE_EQUAL((uint32_t)mp.pm_processing_cap_per_block, CAP);
+    }
+
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(unit * 400), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 200), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(120);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(240);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    // Sybil: open N positions across N accounts, all < 24h before betting close.
+    const int N = 12; // > 2 × CAP
+    for (int i = 0; i < N; ++i) {
+        const std::string who = "lev" + std::to_string(i) + "xx"; // valid 3+ char names
+        auto k = derive_key(who);
+        create_and_fund(node, gp, when, who, k, share_type(unit * 20));
+        pm_leverage_open_operation op;
+        op.account = who; op.market_id = 0; op.outcome_index = (uint8_t)(i % 2);
+        op.collateral = asset(share_type(unit * 3), TOKEN_SYMBOL);
+        op.loan       = asset(share_type(unit * 1), TOKEN_SYMBOL);
+        op.min_tokens = 0; op.max_slippage_percent = 0;
+        node.push_pending_transaction(sign_ops({op}, k, node));
+        produce(node, gp, when);
+    }
+
+    auto count_open = [&]{
+        uint32_t n = 0;
+        for (const auto& p : node.db().get_index<pm_leverage_position_index>().indices())
+            if (p.market == pm_market_id_type(0) && p.status == 0) ++n;
+        return n;
+    };
+    const uint32_t opened = count_open();
+    // FINDING (surface is real): no position-count cap blocked opening N positions.
+    BOOST_REQUIRE_EQUAL(opened, (uint32_t)N);
+
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0; rm.decision_url = "";
+    // Let betting close first so early resolution is permitted.
+    for (int i = 0; i < 60 && node.head_block_time() < node.db().get<pm_market_object>(pm_market_id_type(0)).betting_expiration; ++i)
+        produce(node, gp, when);
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+
+    // Watch per-block closures through the whole drain + settlement. The DEFENSE claim: no single
+    // block ever closes more than CAP positions (the §2d sweep shares the consensus per-block budget).
+    const pm_market_id_type market_id(0);
+    uint32_t prev_open = count_open();
+    uint32_t max_closed_in_one_block = 0;
+    const uint32_t grace = (uint32_t)mp.pm_dispute_grace_sec;
+    const int blocks = (int)((grace + 240) / CHAIN_BLOCK_INTERVAL) + 200;
+    for (int i = 0; i < blocks; ++i) {
+        produce(node, gp, when);
+        uint32_t now_open = count_open();
+        uint32_t closed = prev_open > now_open ? (prev_open - now_open) : 0;
+        if (closed > max_closed_in_one_block) max_closed_in_one_block = closed;
+        prev_open = now_open;
+        if (now_open == 0 && node.db().get<pm_market_object>(market_id).payout_status == 3) break;
+    }
+
+    BOOST_TEST_MESSAGE("sybil-settle: opened " << opened << " positions; max closed in a single block = "
+                       << max_closed_in_one_block << " (cap=" << CAP << "); all closed="
+                       << (count_open() == 0));
+
+    // All positions eventually close (liveness) ...
+    BOOST_CHECK_EQUAL(count_open(), 0u);
+    // ... but never more than CAP in one block: the settlement liquidation work is throttled by
+    // the consensus per-block cap, so a Sybil position-flood is NOT a single-block DoS. If this
+    // ever fails (> CAP closed in a block), the §2d throttle regressed and settle_market's
+    // unbounded force_close_positions is being reached with a backlog — a real DoS.
+    BOOST_CHECK_LE(max_closed_in_one_block, CAP);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
