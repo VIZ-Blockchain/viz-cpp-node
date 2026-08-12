@@ -602,6 +602,29 @@ namespace {
                     }
                 }
             }
+            // #5 (audit 2026-08-12): route forfeit_pool on void instead of orphaning it. On a normal
+            // resolution forfeit_pool flows into winners_pool (paid via adjust_balance); zeroing it to
+            // nowhere here left those real tokens in current_supply with no owner → a growing
+            // conservation deficit (replay-halt risk). Bettors present → return pro-rata by stake
+            // (mirrors the win≥0 path, tokens re-enter accounted balances); none → burn from supply.
+            const int64_t fpool = mkt.forfeit_pool.value; // ≥ 0 by construction
+            if (fpool > 0) {
+                if (total_bets > 0) {
+                    int64_t paid = 0;
+                    for (size_t i = 0; i < participants.size(); ++i) {
+                        int64_t share = (i + 1 == participants.size())
+                            ? fpool - paid
+                            : (int64_t)(fc::uint128_t((uint64_t)fpool)
+                                * fc::uint128_t((uint64_t)participants[i].second) / fc::uint128_t((uint64_t)total_bets)).lo;
+                        if (share > 0) {
+                            db.adjust_balance(db.get_account(participants[i].first), asset(share_type(share), TOKEN_SYMBOL));
+                            paid += share;
+                        }
+                    }
+                } else {
+                    db.burn_asset(asset(share_type(-fpool), TOKEN_SYMBOL)); // no bettors → remove from supply
+                }
+            }
             purge_deferred_claims(db, mkt.id); // F1/#300: no winning outcome → early-exit claims pay 0
             db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
             return;
@@ -1690,7 +1713,18 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     // exit early settle in full at settlement.
     if (mkt.finalized_time == time_point_sec()) {
         const auto& mp = median(db);
-        FC_ASSERT(mkt.liquidity_sum.value - withdraw.value >= mp.pm_min_liquidity.amount.value,
+        int64_t floor = mp.pm_min_liquidity.amount.value;
+        // #2 (audit 2026-08-12): a live market with OPEN leverage backs outstanding loans with its
+        // curve depth. pm_min_liquidity (~100) is ~50× below pm_leverage_min_market_liquidity (~5000),
+        // so an unchecked withdraw could shrink the curve far under what the loans need and leave the
+        // pool holding under-collateralized positions. Raise the floor to the leverage minimum while
+        // any position on this market is open.
+        const auto& lidx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
+        auto lit = lidx.lower_bound(boost::make_tuple(mkt.id, (uint8_t)0, pm_leverage_position_id_type()));
+        const bool has_open_leverage = (lit != lidx.end() && lit->market == mkt.id && lit->status == 0);
+        if (has_open_leverage && mp.pm_leverage_min_market_liquidity.amount.value > floor)
+            floor = mp.pm_leverage_min_market_liquidity.amount.value;
+        FC_ASSERT(mkt.liquidity_sum.value - withdraw.value >= floor,
                   "Withdrawal would drop market liquidity below the minimum");
     }
 
@@ -1726,6 +1760,14 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     } else {
         db.modify(lp, [&](pm_liquidity_object& l) { l.amount -= withdraw; l.earned_fee = 0; });
     }
+
+    // #2 cascade backstop: the raised floor above bounds AGGREGATE depth, but shrinking the reserves
+    // can still push an individual position (opened when depth was higher) under its threshold. Re-run
+    // the liquidation cascade so the pool is never left holding an underwater position after a
+    // legitimate withdraw. reason 0 = curve-move liquidation (residuals defer as outcome claims; the
+    // market is live, so not a void). No-op when nothing crossed its threshold.
+    if (mkt.market_type == 0)
+        cascade_liquidate(db, mkt.id, -1, 0);
 }
 
 // ─── 11. pm_resolve_market ───────────────────────────────────────────────────
