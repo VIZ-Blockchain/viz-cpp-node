@@ -41,6 +41,18 @@ losing pool**.
   (own money, not borrowed). A cancel can cut losses or break even but never realizes
   curve-profit at cancel time.
 - **Profit tail** `max(curve_refund − stake, 0)` → deferred claim on the chosen outcome.
+- **Depth-normalized pricing (audit #1-C):** the capped/tail split is re-priced at the bet's
+  *entry* curve depth, not the current one. `pm_bet_object.entry_liquidity` records
+  `liquidity_sum` at the moment the CPMM bet hit the curve (instant `place_bet` and batch fill).
+  On cancel both reserves are scaled by `entry_liquidity / liquidity_sum` (mirror-of-buy on the
+  scaled reserves). Because bets keep `k` invariant while liquidity ops scale `k` by `f²` and
+  `liquidity_sum` by `f`, `sqrt(k_entry / k_now) == L_entry / L_now` **exactly** → deterministic,
+  sqrt-free (no integer sqrt). The result is **clamped to the real `curve_refund`** so
+  normalization may only *reduce* the payout, never raise it. This kills the self-liquidity
+  inflation vector (bet → own `add_liquidity` inflates depth → larger `curve_refund` → cancel
+  mints a bigger tail → withdraw returns the liquidity whole = cash-neutral guaranteed profit)
+  without opening a shrink-side one. Falls back to legacy pricing when `entry_liquidity` is
+  absent (bets predating the field).
 
 ### Leverage close / liquidate
 - **Collateral is NOT separately returned** — it is first-loss margin for the pool. The pool

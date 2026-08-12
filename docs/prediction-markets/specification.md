@@ -468,6 +468,8 @@ Each deposit is an independent position. Multiple deposits by the same user are 
 
 **Preconditions:** market live (not resolved) and betting still open (`time < betting_expiration`, or an open-ended market with no deadline); `resulting liquidity_sum ≥ pm_min_liquidity`. Once betting closes — or, for an open-ended market, once the oracle resolves — the position is locked until **settlement** (not merely resolution): the principal backs the pending F1 shortfall charge until `finalized_time` is stamped by the auto-payout / void / expiry sweep (see below).
 
+**Leverage-aware withdraw floor (audit #2):** while **any** leverage position on the market is still open, the withdraw floor is raised from `pm_min_liquidity` (~100) to `pm_leverage_min_market_liquidity` (~5000). Outstanding pool loans are backed by curve depth; an unchecked withdraw could shrink the curve below what the loans require and leave the pool holding under-collateralized positions. As a backstop, the liquidation cascade is re-run after a CPMM withdraw to catch individual positions squeezed by the reduced depth.
+
 ```
 // Price-neutral: shrink both reserves by (L − withdraw_amount) / L, where L =
 // liquidity_sum BEFORE the withdrawal. Mirror of the proportional add — the reserve
@@ -555,6 +557,8 @@ if amount_returned <= 0: amount_returned = 0
 ```
 
 Symmetric for side B.
+
+**Depth-normalized pricing (audit #1-C):** the refund/tail split is computed on the reserves scaled to the bet's *entry* depth — reserves are multiplied by `entry_liquidity / liquidity_sum` (recorded in `pm_bet_object.entry_liquidity`), then clamped so normalization may only *reduce* the payout. This closes the self-liquidity vector (bet → own `add_liquidity` inflates curve depth → larger `curve_refund`) without opening a shrink-side one. See `early-exit-deferred-claim.md`.
 
 ### Slippage Protection
 
@@ -674,6 +678,8 @@ Oracle calls `oracle-no-contest` with `market_id` and `reason`.
 5. Market: `resolved_outcome = -1`, `payout_status = 1`
 6. Grace period starts (disputable)
 
+**`forfeit_pool` routing on void (audit #5):** any accumulated `forfeit_pool` (commit-forfeits, leverage-exit residual) is **not** zeroed into nowhere — that would orphan real tokens in `current_supply` (a growing conservation deficit / replay-halt risk). It is routed like the `winners_pool ≥ 0` path: if bettors are present it is paid **pro-rata by stake** (`adjust_balance`); if none, it is **burned from supply** (`burn_asset`). Token conservation holds on the void path.
+
 ### 3-Outcome Resolution (No-Contest Dispute)
 
 Resolver chooses one of:
@@ -709,6 +715,12 @@ bonus_i = floor(penalty_amount × stakes[user_id] / total_stakes)
 Each participant receives: full refund (principal) + proportional bonus.
 
 Market finalized: status=3, payout_status=2.
+
+### Insurance withdrawal gate (audit #3)
+
+An oracle may **top up** its insurance at any time, but may **not withdraw** below `pm_min_oracle_insurance` while it still carries an **open obligation** it could be slashed on. Otherwise insurance is theater: an oracle could withdraw it to the minimum right before a deterministic slash (missed resolution / dispute loss), leaving nothing to slash.
+
+The slashable set is defined by the invariant `finalized_time == 0` — a market still awaiting resolution (status 1) **or** resolved-but-unsettled / within the dispute-grace window (status 3, `finalized_time` not yet stamped). Checking only *already-open* disputes would miss the resolve → withdraw → dispute race (resolve a lone market, withdraw while no dispute is filed yet, then lose a dispute against emptied insurance); gating on `finalized_time` subsumes it — an oracle stays bonded until every market it took is fully **settled**, not merely resolved. Computed-on-read via the `(oracle, finalized_time, id)` index (no stored counter, no migration/drift); status-0 pending-accept markets are skipped, so a creator cannot grief-lock an oracle's insurance with sham markets.
 
 ---
 
@@ -885,7 +897,13 @@ Encryption: ECIES shared-secret `ECDH(sender_memo_private, recipient_memo_public
 ### Deposit
 
 - First depositor: `shares = amount`
-- Subsequent: `new_shares = amount × total_shares / free_balance`
+- Subsequent: `new_shares = amount × total_shares / pool_equity`, where (audit #4)
+  `pool_equity = free_balance + allocated_balance + leverage_fund_used − pending_withdrawals`
+  — the governance NAV. Pricing off `free_balance` alone (or omitting `leverage_fund_used`)
+  understates equity by the lent principal while leverage loans are outstanding (that principal
+  is solvency-checked to return ≥ loan on close), letting a depositor time entry against open
+  loans and over-mint reward weight, skimming yield from honest LPs. Falls back to `1:1`
+  (`shares = amount`) when `pool_equity ≤ 0`.
 - Lock timer: `unlock_time = now + pm_lazy_lock_sec`
 - Reward settlement before share calculation: `pending += shares × (pool.rps − user.snapshot) / PRECISION`
 
