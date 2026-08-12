@@ -6034,4 +6034,83 @@ BOOST_AUTO_TEST_CASE(leverage_sybil_settlement_is_cap_throttled) {
     BOOST_CHECK_LE(max_closed_in_one_block, CAP);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MARGIN SAFETY 4 — minimum-loan floor (#536 defense-in-depth) bounds the Sybil flood.
+//
+// pm_leverage_open now requires loan ≥ pm_min_liquidity at the evaluator (validate() only checks
+// loan>0). This caps the number of simultaneously-open positions at fund_total / pm_min_liquidity
+// (each locks ≥ that much of the capped leverage fund), so the liquidation backlog surfaced by
+// leverage_sybil_settlement_is_cap_throttled is bounded by construction. Asserts BOTH directions:
+// a sub-floor loan is REJECTED, and a loan exactly AT the floor is ACCEPTED (so the Sybil case
+// above — which borrows exactly pm_min_liquidity — still opens; the floor bounds, not blocks).
+BOOST_AUTO_TEST_CASE(leverage_min_loan_floor_enforced) {
+    auto gp = make_genesis_params(0x5A34u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lev-minloan", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skip."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value; // == the loan floor
+    {
+        chain_properties_pm props;
+        props.pm_leverage_enabled                    = true;
+        props.pm_leverage_expiration_buffer_sec      = 0;
+        props.pm_leverage_fund_percent               = 100;
+        props.pm_leverage_max_per_position_bp        = 10000;
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_lazy_alloc_percent                  = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && !mp.pm_leverage_enabled; ++i) produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_leverage_enabled);
+    }
+
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(unit * 100), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 60), TOKEN_SYMBOL); // 6000 ≥ leverage min
+    cm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto trader_key = derive_key("trader");
+    create_and_fund(node, gp, when, "trader", trader_key, share_type(unit * 40));
+
+    // (a) sub-floor loan (pm_min_liquidity − 1) → REJECTED by the #536 gate.
+    pm_leverage_open_operation bad;
+    bad.account = "trader"; bad.market_id = 0; bad.outcome_index = 0;
+    bad.collateral = asset(share_type(unit * 20), TOKEN_SYMBOL);
+    bad.loan       = asset(share_type(unit - 1), TOKEN_SYMBOL);
+    bad.min_tokens = 0; bad.max_slippage_percent = 0;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({bad}, trader_key, node)),
+                      std::runtime_error);
+    // no position was created by the rejected op
+    BOOST_CHECK(node.db().get_index<pm_leverage_position_index>().indices().empty());
+
+    // (b) loan exactly at the floor → ACCEPTED.
+    pm_leverage_open_operation ok;
+    ok.account = "trader"; ok.market_id = 0; ok.outcome_index = 0;
+    ok.collateral = asset(share_type(unit * 20), TOKEN_SYMBOL);
+    ok.loan       = asset(share_type(unit), TOKEN_SYMBOL);
+    ok.min_tokens = 0; ok.max_slippage_percent = 0;
+    node.push_pending_transaction(sign_ops({ok}, trader_key, node));
+    produce(node, gp, when);
+    const pm_leverage_position_id_type pos_id(0);
+    BOOST_CHECK_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 0);
+    BOOST_TEST_MESSAGE("min-loan floor: sub-floor loan rejected, at-floor loan accepted (floor=" << unit << ")");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

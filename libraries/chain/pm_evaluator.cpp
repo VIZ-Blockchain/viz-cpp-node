@@ -2340,6 +2340,17 @@ void pm_leverage_open_evaluator::do_apply(const pm_leverage_open_operation& o) {
     FC_ASSERT(mkt.liquidity_sum >= mp.pm_leverage_min_market_liquidity.amount,
               "Market liquidity below leverage minimum");
     FC_ASSERT(o.collateral.symbol == TOKEN_SYMBOL && o.loan.symbol == TOKEN_SYMBOL, "Must be VIZ");
+    // #536 defense-in-depth (audit 2026-08-12): floor the loan at pm_min_liquidity. validate() only
+    // requires loan>0, so without this a Sybil could open unbounded near-zero-loan positions on a
+    // market — each consuming a slice of the (capped) leverage fund and a settlement-cron force-close
+    // slot, building a liquidation backlog that throttles PM cron throughput for ~N/cap blocks (see
+    // consensus_sim leverage_sybil_settlement_is_cap_throttled, PR #151). A minimum loan bounds the
+    // global open-position count to fund_total / pm_min_liquidity (every open position locks ≥ this
+    // much of leverage_fund_used), so the backlog is bounded by construction. Reuses the existing
+    // median-voted pm_min_liquidity (no new chain property / serialization change); governance can
+    // still raise the floor by voting it up.
+    FC_ASSERT(o.loan.amount >= mp.pm_min_liquidity.amount,
+              "Leverage loan below minimum (pm_min_liquidity)");
 
     const auto& acct = db.get_account(o.account);
     FC_ASSERT(acct.balance >= o.collateral, "Insufficient balance for collateral");
