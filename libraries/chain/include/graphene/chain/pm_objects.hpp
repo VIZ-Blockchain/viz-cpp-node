@@ -202,6 +202,7 @@ namespace graphene { namespace chain {
         struct by_result_expiration;
         struct by_payout_status;
         struct by_finalized;
+        struct by_oracle_finalized;
         typedef multi_index_container<
             pm_market_object,
             indexed_by<
@@ -262,6 +263,20 @@ namespace graphene { namespace chain {
                         member<pm_market_object, pm_market_id_type, &pm_market_object::id>
                     >,
                     composite_key_compare<std::less<time_point_sec>, std::less<pm_market_id_type>>
+                >,
+                // (oracle, finalized_time, id): one oracle's OPEN obligations. finalized_time==0 sorts
+                // first, so lower_bound((oracle, 0)) walks only that oracle's still-live markets (status
+                // 1 awaiting resolution AND status 3 resolved-but-unsettled, i.e. still in the dispute
+                // grace) — a small bounded set, not the oracle's resolved history. Used by the #3
+                // insurance-withdrawal gate: an oracle is slashable until a market is fully SETTLED
+                // (finalized_time set), not merely resolved.
+                ordered_unique<tag<by_oracle_finalized>,
+                    composite_key<pm_market_object,
+                        member<pm_market_object, account_name_type, &pm_market_object::oracle>,
+                        member<pm_market_object, time_point_sec, &pm_market_object::finalized_time>,
+                        member<pm_market_object, pm_market_id_type, &pm_market_object::id>
+                    >,
+                    composite_key_compare<string_less, std::less<time_point_sec>, std::less<pm_market_id_type>>
                 >
             >,
             allocator<pm_market_object>

@@ -1027,25 +1027,22 @@ void pm_oracle_update_evaluator::do_apply(const pm_oracle_update_operation& o) {
             share_type withdraw = share_type(-delta.amount);
             // #3 (audit 2026-08-12, owner choice A): top-ups are always allowed, but an oracle may not
             // WITHDRAW insurance while it still carries an OPEN OBLIGATION — a market it could still be
-            // slashed on. Pulling insurance to the floor right before a deterministic slash (missed
-            // resolution / dispute loss) made the insurance theater. Two slash paths → two cheap probes;
-            // a resolved market with no open dispute is NOT a slash risk (it just settles mechanically),
-            // so no O(N) history walk is needed:
-            //   (1) any market of this oracle still awaiting resolution (status 1) — by_oracle_status probe;
-            //   (2) any OPEN dispute (status 0) filed on one of this oracle's markets — few, fee-gated.
-            const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
-            auto mit = midx.lower_bound(boost::make_tuple(o.owner, (int8_t)1));
-            FC_ASSERT(!(mit != midx.end() && mit->oracle == o.owner && mit->status == 1),
-                      "Cannot withdraw insurance while this oracle has markets awaiting resolution; "
-                      "resolve or close them first (top-ups are always allowed)");
-            const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_auto_close>();
-            for (auto dit = didx.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec()));
-                 dit != didx.end() && dit->status == 0; ++dit) {
-                const auto& dm = db.get<pm_market_object, by_id>(dit->market);
-                FC_ASSERT(dm.oracle != o.owner,
-                          "Cannot withdraw insurance while a dispute against this oracle is open; "
-                          "it resolves first (top-ups are always allowed)");
-            }
+            // slashed on. Pulling insurance to the floor right before a deterministic slash made it
+            // theater. A market is slashable until it is fully SETTLED (finalized_time set), NOT merely
+            // resolved: between resolve and settlement it sits in the dispute grace window, where a
+            // dispute can still be filed and lost (owner-found race — checking only ALREADY-open disputes
+            // missed the resolve→withdraw→dispute sequence). finalized_time==0 captures exactly that
+            // window (status 1 awaiting resolution AND status 3 resolved-but-unsettled). Cheap: the
+            // by_oracle_finalized index puts finalized_time==0 first, so we walk only this oracle's small
+            // set of still-live markets, not its resolved history. Skip status 0 (pending-accept, not yet
+            // an obligation) so a creator cannot grief-lock an oracle's insurance with a sham market.
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle_finalized>();
+            for (auto mit = midx.lower_bound(boost::make_tuple(o.owner, time_point_sec()));
+                 mit != midx.end() && mit->oracle == o.owner && mit->finalized_time == time_point_sec(); ++mit)
+                FC_ASSERT(mit->status < 1,
+                          "Cannot withdraw insurance while this oracle has unsettled markets (awaiting "
+                          "resolution or still in the dispute window); settle them first (top-ups are "
+                          "always allowed)");
             FC_ASSERT(oracle.insurance.value - withdraw.value >= mp.pm_min_oracle_insurance.amount.value,
                       "Withdrawal would push insurance below minimum");
             db.adjust_balance(owner, asset(withdraw, TOKEN_SYMBOL));
