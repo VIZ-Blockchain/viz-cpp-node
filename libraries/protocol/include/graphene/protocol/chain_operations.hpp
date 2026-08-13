@@ -742,6 +742,18 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_commit_no_reveal_penalty_percent <= 10000, "pm_commit_no_reveal_penalty_percent out of range");
                 FC_ASSERT(pm_batch_epoch_blocks > 0, "pm_batch_epoch_blocks must be positive");
                 FC_ASSERT(pm_reveal_window_blocks > 0, "pm_reveal_window_blocks must be positive");
+                // A commit's reveal deadline can fall up to (batch_epoch + reveal_window) blocks
+                // after the commit (pm_commit_bet), and its escrow is only refunded/forfeited by the
+                // reveal-forfeit cron at that deadline. gc_market deletes commit rows unconditionally
+                // once a market has been finalized for pm_closed_market_retention_sec. Require the
+                // retention to strictly exceed the worst-case reveal deadline so a still-unrevealed
+                // commit can never be garbage-collected before its escrow is returned — makes the
+                // "commit is always cleared before GC" invariant hold by construction, not by the
+                // default parameter magnitudes (5 d vs ~11 min) alone.
+                FC_ASSERT(pm_closed_market_retention_sec
+                              > (uint64_t)(pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL,
+                    "pm_closed_market_retention_sec must exceed the worst-case commit reveal deadline "
+                    "((pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL)");
                 FC_ASSERT(pm_processing_cap_per_block > 0, "pm_processing_cap_per_block must be positive");
                 FC_ASSERT(pm_lazy_alloc_percent <= 10000, "pm_lazy_alloc_percent out of range");
                 FC_ASSERT(pm_lazy_max_total_alloc_percent <= 10000, "pm_lazy_max_total_alloc_percent out of range");
