@@ -979,6 +979,15 @@ inline uint32_t import_pm_disputes(graphene::chain::database& db, const fc::vari
             obj.auto_close_time          = v["auto_close_time"].as<fc::time_point_sec>();
             obj.proposed_outcome         = static_cast<int16_t>(v["proposed_outcome"].as_int64());
             obj.status                   = static_cast<uint8_t>(v["status"].as_uint64());
+            // M5 (audit 2026-08-13): the oracle's rebuttal pair was dropped on import, so an
+            // imported dispute that had already been answered regressed to the awaiting_response
+            // stage — gauge seeding and pm_oracle_dispute_left_open then decremented the wrong
+            // bucket on close (permanent display drift). Contains-guarded: snapshots exported
+            // before this fix carry no such keys.
+            if (v.get_object().contains("oracle_response"))
+                set_shared_string(obj.oracle_response, v["oracle_response"]);
+            if (v.get_object().contains("oracle_response_time"))
+                obj.oracle_response_time = v["oracle_response_time"].as<fc::time_point_sec>();
         });
         ++count;
     }
