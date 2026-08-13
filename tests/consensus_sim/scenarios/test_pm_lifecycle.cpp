@@ -6139,4 +6139,105 @@ BOOST_AUTO_TEST_CASE(leverage_min_loan_floor_enforced) {
     BOOST_TEST_MESSAGE("min-loan floor: sub-floor loan rejected, at-floor loan accepted (floor=" << unit << ")");
 }
 
+// M2 (audit 2026-08-13, batch A): a PARTIAL pm_transfer_position must create the recipient bet
+// inheriting the source bet's #1-C entry_liquidity anchor. Pre-fix the new bet defaulted to
+// entry_liquidity=0, which the #1-C depth normalizer treats as "legacy — skip", letting a split
+// position's cancel-refund bypass the liquidity-growth cap.
+BOOST_AUTO_TEST_CASE(partial_transfer_inherits_entry_liquidity) {
+    auto gp = make_genesis_params(0x7a11u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-xfer-entry-liq", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping transfer anchor scenario.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    // viz registers as oracle and creates a self-oracle binary market (auto-active).
+    pm_oracle_register_operation oreg;
+    oreg.owner = gp.initiator_name; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(300);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(600);
+    cm.allow_cancellation = true;
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).status, 1); // active (self-oracle)
+
+    // alice places an INSTANT bet — the evaluator records the #1-C depth anchor at entry.
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    produce(node, gp, when);
+
+    // Snapshot alice's bet attributes BEFORE the transfer (references are invalidated by produce).
+    share_type src_weight(0), src_entry_liq(0);
+    int64_t src_bet_id = -1;
+    {
+        const auto& bidx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = bidx.lower_bound(boost::make_tuple(market_id, pm_bet_id_type()));
+             it != bidx.end() && it->market == market_id; ++it) {
+            if (it->account == "alice" && it->status == 0) {
+                src_weight    = it->weight;
+                src_entry_liq = it->entry_liquidity;
+                src_bet_id    = it->id._id;
+                break;
+            }
+        }
+    }
+    BOOST_REQUIRE_GE(src_bet_id, 0);
+    BOOST_REQUIRE_GT(src_weight.value, 1);     // need at least 2 weight to split
+    BOOST_REQUIRE_GT(src_entry_liq.value, 0);  // instant bet must record a depth anchor
+    const share_type half_weight(src_weight.value / 2);
+
+    // Partial transfer of half the weight to bob.
+    pm_transfer_position_operation xt;
+    xt.from = "alice"; xt.to = "bob"; xt.bet_id = src_bet_id; xt.amount = half_weight;
+    node.push_pending_transaction(sign_ops({xt}, alice_key, node));
+    produce(node, gp, when);
+
+    // Re-read: alice keeps the remainder, bob holds the new split bet. BOTH must carry the SAME
+    // non-zero anchor the source bet had. Pre-fix bob's bet had entry_liquidity == 0.
+    const pm_bet_object* alice_now = nullptr;
+    const pm_bet_object* bob_now   = nullptr;
+    {
+        const auto& bidx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = bidx.lower_bound(boost::make_tuple(market_id, pm_bet_id_type()));
+             it != bidx.end() && it->market == market_id; ++it) {
+            if (it->account == "alice" && it->status == 0) alice_now = &*it;
+            if (it->account == "bob"   && it->status == 0) bob_now   = &*it;
+        }
+    }
+    BOOST_REQUIRE(alice_now != nullptr);
+    BOOST_REQUIRE(bob_now != nullptr);
+    BOOST_CHECK_EQUAL(alice_now->weight.value, src_weight.value - half_weight.value);
+    BOOST_CHECK_EQUAL(bob_now->weight.value,   half_weight.value);
+    BOOST_CHECK_EQUAL(alice_now->entry_liquidity.value, src_entry_liq.value);
+    BOOST_CHECK_EQUAL(bob_now->entry_liquidity.value,   src_entry_liq.value); // the M2 invariant
+    BOOST_TEST_MESSAGE("partial transfer anchor: alice+bob entry_liquidity=" << src_entry_liq.value
+                       << " weight " << (src_weight.value - half_weight.value) << "+" << half_weight.value);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
