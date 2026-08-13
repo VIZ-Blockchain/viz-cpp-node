@@ -122,3 +122,48 @@ jobs:
                 -DBUILD_SHARED_LIBRARIES=FALSE \
                 -DCHAINBASE_CHECK_LOCKING=FALSE ..
           make -j"$(nproc)" vizd
+
+  # L3 (audit 2026-08-13): the tree's PM unit tests (LMSR vector parity, parimutuel
+  # conservation, leverage math, meta parsing, chain-properties validate() sweep) were
+  # only ever run manually — CI proved compilation alone. Gated on the `pm-tests` label
+  # (like check-boost-range) so the default PR build stays fast; add the label to any PR
+  # touching PM consensus math, evaluators, crons, or chain properties. Builds only the
+  # tests/pm targets (chain/protocol/fc compile as make-dependencies); the consensus_sim
+  # harness is configured by BUILD_CONSENSUS_TESTS but never built here.
+  pm_tests:
+    name: PM unit tests (ctest)
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'pm-tests')
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install distro Boost and build deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libboost-all-dev libssl-dev \
+            libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
+            libtool ncurses-dev pkg-config zlib1g-dev
+
+      - name: Configure and build PM test targets
+        run: |
+          set -euo pipefail
+          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
+          mkdir -p build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBRARIES=FALSE \
+                -DCHAINBASE_CHECK_LOCKING=FALSE \
+                -DBUILD_CONSENSUS_TESTS=ON ..
+          make -j"$(nproc)" \
+            pm_lmsr_vectors_tests pm_parimutuel_tests pm_leverage_tests \
+            pm_meta_parse_tests pm_props_validate_tests
+
+      - name: Run ctest (PM suite)
+        run: |
+          set -euo pipefail
+          cd build
+          ctest -R '^pm_' --output-on-failure
