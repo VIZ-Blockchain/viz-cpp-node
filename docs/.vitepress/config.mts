@@ -358,6 +358,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
       text: t.predictionMarketsSection,
       items: [
         { text: t.pmHub, link: p('/prediction-markets/') },
+        { text: 'Guides — по ролям и фичам', link: p('/prediction-markets/guides/') },
         { text: t.onixOverview, link: p('/prediction-markets/onix') },
         { text: t.onixWhitepaper, link: p('/prediction-markets/whitepaper') },
         { text: t.onixSpecification, link: p('/prediction-markets/specification') },

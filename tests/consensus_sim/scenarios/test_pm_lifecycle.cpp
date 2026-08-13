@@ -750,23 +750,33 @@ BOOST_AUTO_TEST_CASE(bet_cancellation_reverses_cpmm) {
     BOOST_REQUIRE(found);
 
     const asset alice_pre_cancel = node.db().get_account("alice").balance;
-    const share_type bets_sum_pre = node.db().get<pm_market_object>(market_id).bets_sum;
+    const share_type bets_sum_pre    = node.db().get<pm_market_object>(market_id).bets_sum;
+    const share_type forfeit_pre     = node.db().get<pm_market_object>(market_id).forfeit_pool;
 
     pm_cancel_bet_operation cancel;
     cancel.account = "alice"; cancel.bet_id = alice_bet_id; cancel.min_return = 0;
     node.push_pending_transaction(sign_ops({cancel}, alice_key, node));
     produce(node, gp, when);
 
-    // Canceller refunded full stake; bet now cancelled (status 1); market bets_sum reduced by stake.
+    // F2/#1-C curve-priced cancel: the refund is the mirror-of-buy sale on the CURRENT curve
+    // (bob's opposing bet already shifted it), capped at the stake by F1 (a cancel never realizes
+    // curve profit against LP depth — the profit tail defers to settlement). So the canceller
+    // recovers ≤ stake, not necessarily the whole stake; the stake − refund residual routes to
+    // forfeit_pool (accrues to the rest of the market — nothing minted or lost).
     const int64_t refund = (node.db().get_account("alice").balance - alice_pre_cancel).amount.value;
     const auto& bet = node.db().get<pm_bet_object>(pm_bet_id_type(alice_bet_id));
     const share_type bets_sum_post = node.db().get<pm_market_object>(market_id).bets_sum;
+    const share_type forfeit_post  = node.db().get<pm_market_object>(market_id).forfeit_pool;
     BOOST_TEST_MESSAGE("cancel: refund=" << refund
                        << " bet.status=" << (int)bet.status
-                       << " bets_sum " << bets_sum_pre.value << " -> " << bets_sum_post.value);
-    BOOST_CHECK_EQUAL(refund, unit);
+                       << " bets_sum " << bets_sum_pre.value << " -> " << bets_sum_post.value
+                       << " forfeit " << forfeit_pre.value << " -> " << forfeit_post.value);
+    BOOST_CHECK_GT(refund, 0);
+    BOOST_CHECK_LE(refund, unit);                           // F1 cap: a cancel never returns more than the stake
+    BOOST_CHECK_EQUAL(refund, 38095);                       // deterministic curve-priced refund for this fixture
     BOOST_CHECK_EQUAL(bet.status, 1);
     BOOST_CHECK_EQUAL((bets_sum_pre - bets_sum_post).value, unit);
+    BOOST_CHECK_EQUAL((forfeit_post - forfeit_pre).value, unit - refund); // residual conserved into the market
 }
 
 // #5 — Oracle misses the resolution deadline. With no report by result_expiration the
@@ -790,6 +800,10 @@ BOOST_AUTO_TEST_CASE(oracle_missed_refunds_and_slashes) {
 
     const auto& mp = node.db().get_validator_schedule_object().median_props;
     const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    // Short dispute grace so the missed-resolution void (result_expiration + grace, per the
+    // reachability fix 7b038a90) fires within the test's advance window.
+    publish_fast_pm_props(node, gp, when, chain_properties_pm{});
 
     pm_oracle_register_operation oreg;
     oreg.owner = gp.initiator_name; oreg.insurance = mp.pm_min_oracle_insurance;
@@ -917,6 +931,7 @@ BOOST_AUTO_TEST_CASE(lazy_active_market_penalty) {
         cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name; // self-oracle → active at creation
         cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
         cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+        cm.liquidity_fee_percent = mp.pm_lazy_min_liquidity_fee_percent; // meet the pool's min-fee gate
         cm.betting_expiration = node.head_block_time() + fc::seconds(300);
         cm.result_expiration  = node.head_block_time() + fc::seconds(600);
         cm.dispute_mode = 0;
@@ -1008,6 +1023,7 @@ BOOST_AUTO_TEST_CASE(lazy_recall_is_time_gated) {
     cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
     cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
     cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.liquidity_fee_percent = mp.pm_lazy_min_liquidity_fee_percent; // meet the pool's min-fee gate
     cm.betting_expiration = node.head_block_time() + fc::seconds(2000);
     cm.result_expiration  = node.head_block_time() + fc::seconds(4000);
     cm.dispute_mode = 0;
@@ -1461,6 +1477,7 @@ BOOST_AUTO_TEST_CASE(lazy_yield_and_emergency_penalty) {
     cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
     cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
     cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.liquidity_fee_percent = mp.pm_lazy_min_liquidity_fee_percent; // meet the pool's min-fee gate
     cm.betting_expiration = node.head_block_time() + fc::seconds(30);
     cm.result_expiration  = node.head_block_time() + fc::seconds(90);
     cm.allow_early_resolution = true;
@@ -1614,9 +1631,14 @@ BOOST_AUTO_TEST_CASE(leverage_open_and_close) {
                        << " (expect -" << expect_profit << ")");
     BOOST_CHECK_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 4); // closed
     BOOST_CHECK_EQUAL(lev_used(), 0);                       // loan repaid
-    BOOST_CHECK_EQUAL(pool_earned(), expect_profit);        // pool kept the interest
+    BOOST_CHECK_EQUAL(pool_earned(), expect_profit);        // pool kept exactly its interest (obligation − loan)
     BOOST_CHECK_EQUAL(pool_free(), D + expect_profit);      // free == D + interest (loan back + profit)
-    BOOST_CHECK_EQUAL(trader_delta, -expect_profit);        // zero-sum: trader's loss == pool's gain
+    // F1 deferred-claim (audit #300/F1): a profitable voluntary close pays the pool its full
+    // obligation NOW, but the trader's surplus (cv − obligation) becomes an outcome-contingent
+    // deferred claim settled at resolution — NOT credited to the balance at close. So the
+    // immediate balance delta is exactly −collateral. (The full close→resolve→settle payout is
+    // exercised by leverage_profit_close_never_mints.)
+    BOOST_CHECK_EQUAL(trader_delta, -(int64_t)C);           // collateral out; surplus is a deferred claim
 }
 
 // #50 — Cancel-bet liquidation cascade (Case B) with pool bad debt. A large same-side bet is
@@ -1729,7 +1751,7 @@ BOOST_AUTO_TEST_CASE(leverage_cancel_bet_cascade_bad_debt) {
                        << " (expect D-baddebt=" << (D - (L - cv)) << ") trader_delta=" << trader_delta);
 
     BOOST_CHECK_EQUAL(pos.status, 1);                       // liquidated by the cancel cascade
-    BOOST_CHECK_EQUAL(cv, 500000);                          // engineered underwater cancel_value
+    BOOST_CHECK_EQUAL(cv, 272727);                          // engineered underwater cancel_value (depth-normalized, audit #1-C)
     BOOST_CHECK_LT(pos.pool_received.value, pos.loan.value);// BAD DEBT: pool recovered < loan
     BOOST_CHECK_EQUAL(pos.pool_received.value, cv);         // pool got exactly cancel_value
     BOOST_CHECK_EQUAL(pos.bettor_received.value, 0);        // liquidated trader gets nothing
@@ -3494,19 +3516,23 @@ BOOST_AUTO_TEST_CASE(leverage_resolve_vop_at_settlement) {
     const pm_leverage_position_id_type pos_id(0);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 0);
 
-    // Past betting, resolve to A; then settle (force-close the open position).
-    for (int i = 0; i < 15; ++i) produce(node, gp, when);
-    pm_resolve_market_operation rm;
-    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
-    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
-    produce(node, gp, when);
-
+    // Connect the leverage-resolve vop listener BEFORE resolving: a leverage position
+    // force-closes at resolution (it does not wait for the market's payout finalization,
+    // see pm-leverage-close-timing), so pm_leverage_resolve is emitted in/near the resolve
+    // block — connecting after would miss it.
     std::vector<pm_leverage_resolve_operation> resolves;
     node.db().enable_plugins_on_push_transaction(true);
     auto conn = node.db().post_apply_operation.connect([&](const operation_notification& note) {
         if (note.op.which() == operation::tag<pm_leverage_resolve_operation>::value)
             resolves.push_back(note.op.get<pm_leverage_resolve_operation>());
     });
+
+    // Past betting, resolve to A; then settle (force-close the open position).
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
 
     for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
@@ -6032,6 +6058,85 @@ BOOST_AUTO_TEST_CASE(leverage_sybil_settlement_is_cap_throttled) {
     // ever fails (> CAP closed in a block), the §2d throttle regressed and settle_market's
     // unbounded force_close_positions is being reached with a backlog — a real DoS.
     BOOST_CHECK_LE(max_closed_in_one_block, CAP);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARGIN SAFETY 4 — minimum-loan floor (#536 defense-in-depth) bounds the Sybil flood.
+//
+// pm_leverage_open now requires loan ≥ pm_min_liquidity at the evaluator (validate() only checks
+// loan>0). This caps the number of simultaneously-open positions at fund_total / pm_min_liquidity
+// (each locks ≥ that much of the capped leverage fund), so the liquidation backlog surfaced by
+// leverage_sybil_settlement_is_cap_throttled is bounded by construction. Asserts BOTH directions:
+// a sub-floor loan is REJECTED, and a loan exactly AT the floor is ACCEPTED (so the Sybil case
+// above — which borrows exactly pm_min_liquidity — still opens; the floor bounds, not blocks).
+BOOST_AUTO_TEST_CASE(leverage_min_loan_floor_enforced) {
+    auto gp = make_genesis_params(0x5A34u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lev-minloan", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skip."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value; // == the loan floor
+    {
+        chain_properties_pm props;
+        props.pm_leverage_enabled                    = true;
+        props.pm_leverage_expiration_buffer_sec      = 0;
+        props.pm_leverage_fund_percent               = 100;
+        props.pm_leverage_max_per_position_bp        = 10000;
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_lazy_alloc_percent                  = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && !mp.pm_leverage_enabled; ++i) produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_leverage_enabled);
+    }
+
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(unit * 100), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 60), TOKEN_SYMBOL); // 6000 ≥ leverage min
+    cm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto trader_key = derive_key("trader");
+    create_and_fund(node, gp, when, "trader", trader_key, share_type(unit * 40));
+
+    // (a) sub-floor loan (pm_min_liquidity − 1) → REJECTED by the #536 gate.
+    pm_leverage_open_operation bad;
+    bad.account = "trader"; bad.market_id = 0; bad.outcome_index = 0;
+    bad.collateral = asset(share_type(unit * 20), TOKEN_SYMBOL);
+    bad.loan       = asset(share_type(unit - 1), TOKEN_SYMBOL);
+    bad.min_tokens = 0; bad.max_slippage_percent = 0;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({bad}, trader_key, node)),
+                      std::runtime_error);
+    // no position was created by the rejected op
+    BOOST_CHECK(node.db().get_index<pm_leverage_position_index>().indices().empty());
+
+    // (b) loan exactly at the floor → ACCEPTED.
+    pm_leverage_open_operation ok;
+    ok.account = "trader"; ok.market_id = 0; ok.outcome_index = 0;
+    ok.collateral = asset(share_type(unit * 20), TOKEN_SYMBOL);
+    ok.loan       = asset(share_type(unit), TOKEN_SYMBOL);
+    ok.min_tokens = 0; ok.max_slippage_percent = 0;
+    node.push_pending_transaction(sign_ops({ok}, trader_key, node));
+    produce(node, gp, when);
+    const pm_leverage_position_id_type pos_id(0);
+    BOOST_CHECK_EQUAL(node.db().get<pm_leverage_position_object>(pos_id).status, 0);
+    BOOST_TEST_MESSAGE("min-loan floor: sub-floor loan rejected, at-floor loan accepted (floor=" << unit << ")");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

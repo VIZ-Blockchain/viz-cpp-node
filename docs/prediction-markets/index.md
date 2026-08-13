@@ -35,6 +35,7 @@ flowchart TD
 
 | Page | What it is |
 |------|-----------|
+| [Guides (по ролям и фичам)](./guides/) | Пояснительные статьи для участников: беттер, создатель рынка, оракул, LP, плечевой трейдер — простым языком. |
 | [Overview](./onix) | One-page positioning: AMM-priced parimutuel with structurally risk-free liquidity. |
 | [Whitepaper](./whitepaper) | The industry thesis — LP guarantee, Onix Binary (CPMM) + Onix Multi (LMSR), oracles, lazy pool, leverage, governance. |
 | [Specification](./specification) | Formal spec: parameters, state machine, pricing, settlement, disputes, lazy pool, leverage, and the **[On-Chain Object Model](./specification#17-on-chain-object-model)** (every `pm_*_object` and its lookup index). |
