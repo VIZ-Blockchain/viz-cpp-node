@@ -229,6 +229,16 @@
 // (the tail stays in the curve, pays 0 like bucket-exhaustion) — the exit itself still succeeds.
 // Generous: far above any count the bounded reward bucket (≤ cap%·losers) could ever fund.
 #define MAX_PM_DEFERRED_CLAIMS_PER_MARKET     10000
+// M3 (audit 2026-08-13): dispute ballots are free, so without a cap a Sybil can build an unbounded
+// ballot set — the dispute-finalize cron walks EVERY ballot (account + lazy-pool lookup each) in one
+// cap slot, and get_dispute_votes returns them all unpaginated. Cap NEW ballot rows per disputed
+// market; revising an existing ballot is always allowed.
+#define MAX_PM_DISPUTE_VOTES_PER_MARKET       10000
+// M4 (audit 2026-08-13): cap on live (unrevealed) batch commits per market. Commit escrow costs
+// only the 20% no-reveal penalty (80% refunded), so without a cap a spammer can queue an unbounded
+// backlog that the §1 forfeit cron must drain through the shared pm_processing_cap_per_block,
+// starving settlements/voids. Enforced via pm_market_object.open_commits (O(1) at commit time).
+#define MAX_PM_OPEN_COMMITS_PER_MARKET        10000
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

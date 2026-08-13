@@ -526,6 +526,8 @@ void pm_commit_bet_evaluator::do_apply(const pm_commit_bet_operation& o) {
     FC_ASSERT(o.escrow_amount.amount >= mp.pm_min_batch_bet.amount, "Escrow below minimum batch bet");
     FC_ASSERT(o.no_reveal_fee_percent == mp.pm_commit_no_reveal_penalty_percent,
               "no_reveal_fee_percent must equal current consensus value");
+    // M4: cap the per-market unrevealed commit backlog (O(1) counter, decremented on reveal/forfeit).
+    FC_ASSERT(mkt.open_commits < MAX_PM_OPEN_COMMITS_PER_MARKET, "Open commit cap reached for this market");
 
     const auto& acct = db.get_account(o.account);
     FC_ASSERT(acct.balance >= o.escrow_amount, "Insufficient balance for escrow");
@@ -547,6 +549,7 @@ void pm_commit_bet_evaluator::do_apply(const pm_commit_bet_operation& o) {
         c.reveal_deadline       = reveal_dl;
         c.status                = 0;
     });
+    db.modify(mkt, [](pm_market_object& m) { m.open_commits++; }); // M4: paired with reveal/forfeit dec
 }
 
 // ─── 7. pm_reveal_bet ────────────────────────────────────────────────────────
@@ -576,6 +579,8 @@ void pm_reveal_bet_evaluator::do_apply(const pm_reveal_bet_operation& o) {
         db.adjust_balance(db.get_account(o.account), asset(surplus, TOKEN_SYMBOL));
 
     db.modify(commit, [](pm_commit_object& c) { c.status = 1; });
+    // M4: the commit left the unrevealed backlog (clamp: pre-M4 snapshots import the counter as 0).
+    db.modify(mkt, [](pm_market_object& m) { if (m.open_commits > 0) m.open_commits--; });
 
     db.create<pm_bet_object>([&](pm_bet_object& bet) {
         bet.market        = commit.market;
@@ -1078,6 +1083,15 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
             v.time         = now;
         });
     } else {
+        // M3: ballots are free — cap NEW rows per disputed market so a Sybil cannot build an
+        // unbounded ballot set (the finalize cron walks every ballot in one cap slot, and
+        // get_dispute_votes returns them all). The counting walk stops at cap+1, so enforcing
+        // the cap is itself bounded work.
+        uint32_t ballots = 0;
+        for (auto c = vidx.lower_bound(boost::make_tuple(mkt.id, account_name_type()));
+             c != vidx.end() && c->market == mkt.id && ballots <= MAX_PM_DISPUTE_VOTES_PER_MARKET; ++c)
+            ++ballots;
+        FC_ASSERT(ballots < MAX_PM_DISPUTE_VOTES_PER_MARKET, "Dispute ballot cap reached");
         db.create<pm_dispute_vote_object>([&](pm_dispute_vote_object& v) {
             v.market       = mkt.id;
             v.voter        = o.voter;
@@ -1433,7 +1447,13 @@ void pm_leverage_open_evaluator::do_apply(const pm_leverage_open_operation& o) {
     const int64_t collateral = o.collateral.amount.value;
 
     // Constraint 1: leverage-fund availability + per-position cap.
-    int64_t free_amount = pool.free_balance.value - pool.leverage_fund_used.value;
+    // M7: free_balance is ALREADY net of active loans — open does `free -= loan` and
+    // close/convert/liquidate do `free += obligation/pool_received` with `leverage_fund_used -= loan`.
+    // Subtracting leverage_fund_used here again double-deducted outstanding loans and understated the
+    // pool's real lending capacity (conservative logic bug, not an exploit). free_balance IS the hard
+    // solvency floor for a new loan. (Open design note: fund_total below is based on free vs NAV —
+    // left as-is pending the spec call, see audit M7.)
+    int64_t free_amount = pool.free_balance.value;
     FC_ASSERT(loan <= free_amount, "Loan exceeds pool free capital");
     int64_t fund_total = (int64_t)(fc::uint128_t((uint64_t)pool.free_balance.value)
                          * fc::uint128_t(mp.pm_leverage_fund_percent) / fc::uint128_t(100u)).lo;

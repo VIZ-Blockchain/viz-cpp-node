@@ -745,6 +745,10 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_dispute_reward_multiplier >= 10000 && pm_dispute_reward_multiplier <= 1000000,
                     "pm_dispute_reward_multiplier must be in [10000, 1000000]");
                 FC_ASSERT(pm_commit_no_reveal_penalty_percent <= 10000, "pm_commit_no_reveal_penalty_percent out of range");
+                // M4: keep the batch-bet floor economically meaningful — voting it toward zero makes
+                // commit-spam nearly free (each forfeit costs only the 20% penalty on the escrow,
+                // and that escrow feeds the §1 cron backlog capped by MAX_PM_OPEN_COMMITS_PER_MARKET).
+                FC_ASSERT(pm_min_batch_bet.amount >= 100, "pm_min_batch_bet must be >= 0.1 VIZ");
                 FC_ASSERT(pm_batch_epoch_blocks > 0, "pm_batch_epoch_blocks must be positive");
                 FC_ASSERT(pm_reveal_window_blocks > 0, "pm_reveal_window_blocks must be positive");
                 // A commit's reveal deadline can fall up to (batch_epoch + reveal_window) blocks

@@ -192,6 +192,13 @@ namespace graphene { namespace chain {
             // so a griefer cannot force unbounded per-block work at settlement. Monotonic pre-settlement
             // (claims are only created, never removed, before the market settles).
             uint32_t          deferred_claim_count = 0;
+            // M4 (audit 2026-08-13): live (status 0, unrevealed) batch-commit count for this market.
+            // Bounded by MAX_PM_OPEN_COMMITS_PER_MARKET at pm_commit_bet, decremented on reveal and on
+            // the §1 forfeit cron — so a spammer cannot build an unbounded commit backlog that
+            // throttles the shared pm_processing_cap_per_block (each escrow costs only the 20%
+            // no-reveal penalty, refunded 80% otherwise). GC never sees status-0 rows by construction
+            // (retention strictly exceeds the worst-case reveal deadline), so no GC adjustment needed.
+            uint32_t          open_commits = 0;
         };
 
         struct by_creator;
@@ -859,7 +866,7 @@ FC_REFLECT((graphene::chain::pm_market_object),
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)
     (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(decision_url)(decision_reason)
-    (deferred_claim_count))
+    (deferred_claim_count)(open_commits))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_market_object, graphene::chain::pm_market_index)
 
 FC_REFLECT((graphene::chain::pm_outcome_object),

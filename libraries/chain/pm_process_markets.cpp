@@ -1065,11 +1065,13 @@ void database::process_pm_markets() {
             if (refund.value > 0)
                 adjust_balance(get_account(commit.account), asset(refund, TOKEN_SYMBOL));
 
-            if (penalty.value > 0) {
-                const auto* mkt_ptr = find<pm_market_object>(commit.market);
-                if (mkt_ptr)
-                    modify(*mkt_ptr, [&](pm_market_object& m) { m.forfeit_pool += penalty; });
-            }
+            const auto* mkt_ptr = find<pm_market_object>(commit.market);
+            if (mkt_ptr)
+                modify(*mkt_ptr, [&](pm_market_object& m) {
+                    if (penalty.value > 0) m.forfeit_pool += penalty;
+                    // M4: commit left the unrevealed backlog (clamp: pre-M4 snapshots import 0).
+                    if (m.open_commits > 0) m.open_commits--;
+                });
 
             push_virtual_operation(pm_commit_forfeit_operation(
                 commit.account, commit.id._id, commit.market._id,
@@ -1508,7 +1510,12 @@ void database::process_pm_markets() {
 
     // ── 6. Batch epoch settle ─────────────────────────────────────────────────
     // At global epoch boundary execute all queued (status=5) bets for batch markets.
-    if (mp.pm_commit_reveal_enabled && mp.pm_batch_epoch_blocks > 0 &&
+    // L1: NOT gated on pm_commit_reveal_enabled — the kill-switch stops NEW commitments
+    // (pm_commit_bet asserts the flag; new markets cannot set allow_batch while it is off), but it
+    // must NOT freeze funds already in the queue. Gating §6 on the flag stranded revealed-but-
+    // unexecuted bets for as long as the market stayed active. Drain the queue regardless; batch-A
+    // H2 additionally refunds any residual status 5/6 at terminal settle as a backstop.
+    if (mp.pm_batch_epoch_blocks > 0 &&
         (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0)) {
 
         const auto& midx = get_index<pm_market_index>().indices().get<by_status>();

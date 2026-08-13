@@ -900,6 +900,10 @@ inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::varia
             // predate it and correctly default to 0). Without this the cap would reset on reimport.
             if (v.get_object().contains("deferred_claim_count"))
                 obj.deferred_claim_count = static_cast<uint32_t>(v["deferred_claim_count"].as_uint64());
+            // M4: live unrevealed-commit backlog counter (contains-guarded — pre-M4 snapshots
+            // default to 0; reveal/forfeit decrements are clamped, so drift can only relax the cap).
+            if (v.get_object().contains("open_commits"))
+                obj.open_commits = static_cast<uint32_t>(v["open_commits"].as_uint64());
             // NB: `metadata` is no longer a consensus field (moved off-chain to the
             // prediction_market_api plugin); older snapshots that still carry it are ignored.
         });

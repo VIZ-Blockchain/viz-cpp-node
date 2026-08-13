@@ -140,6 +140,39 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             return ub[7];
         }
 
+        // H3: expected_payout used to walk every bet of the market PER POSITION — O(N²) from
+        // get_market_full / get_account_positions, so one natural UI call on a market built with N
+        // cheap bets was a read-DoS. Cache the per-market, per-side winner aggregate for the head
+        // block: a single O(N) pass per market per block, however many positions query it. Same
+        // thread_local-per-head-block pattern as oracle_below_risk_floor (display-only plugin cache,
+        // no consensus input).
+        const std::pair<share_type, fc::uint128_t>& winner_agg(const database& db,
+                                                               const pm_market_object& mkt,
+                                                               int16_t side) {
+            struct entry { uint32_t epoch = 0; std::map<int16_t, std::pair<share_type, fc::uint128_t>> sides; };
+            static thread_local std::map<pm_market_id_type, entry> cache;
+            const uint32_t epoch = db.head_block_num();
+            auto cit = cache.find(mkt.id);
+            if (cit == cache.end() || cit->second.epoch != epoch) {
+                if (cache.size() > 512) cache.clear(); // bound per-block working set
+                entry e; e.epoch = epoch;
+                const bool binary = (mkt.market_type == 0);
+                const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
+                for (auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
+                     it != bidx.end() && it->market == mkt.id; ++it) {
+                    if (it->status != 0 && it->status != 3) continue;
+                    int16_t s = binary ? (int16_t)it->side : it->outcome_index;
+                    auto& a = e.sides[s];
+                    a.first  += it->amount;
+                    a.second += fc::uint128_t((uint64_t)it->weight.value);
+                }
+                cit = cache.emplace(mkt.id, std::move(e)).first;
+            }
+            static const std::pair<share_type, fc::uint128_t> zero{share_type(0), fc::uint128_t(0)};
+            auto sit = cit->second.sides.find(side);
+            return sit != cit->second.sides.end() ? sit->second : zero;
+        }
+
         // Parimutuel payout this bet would receive if its side wins (or its realized
         // payout once settled). Byte-mirrors settle_market() in pm_evaluator.cpp.
         share_type expected_payout(const database& db, const pm_bet_object& bet,
@@ -153,19 +186,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             if (resolved && myside != mkt.resolved_outcome) return 0; // already a loser
             const int16_t winside = resolved ? mkt.resolved_outcome : myside;
 
-            // Aggregate winning-side amount and curve weight (weight_sum is not stored).
-            share_type    winners_amount = 0;
-            fc::uint128_t win_weight = 0;
-            const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
-            for (auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
-                 it != bidx.end() && it->market == mkt.id; ++it) {
-                if (it->status != 0 && it->status != 3) continue;
-                int16_t s = binary ? (int16_t)it->side : it->outcome_index;
-                if (s == winside) {
-                    winners_amount += it->amount;
-                    win_weight += fc::uint128_t((uint64_t)it->weight.value);
-                }
-            }
+            // Aggregate winning-side amount and curve weight (weight_sum is not stored) —
+            // cached per market per head block (H3), so position loops stay O(N + positions).
+            const auto& agg = winner_agg(db, mkt, winside);
+            const share_type    winners_amount = agg.first;
+            const fc::uint128_t win_weight     = agg.second;
 
             int64_t losers_sum = mkt.bets_sum.value - winners_amount.value;
             if (losers_sum < 0) losers_sum = 0;
