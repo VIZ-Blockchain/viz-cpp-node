@@ -116,6 +116,14 @@ namespace {
     // BETS), which CPMM/LMSR/lazy-pool liquidity never touches (liquidity only feeds the
     // curve reserves → bet WEIGHT). So deeper liquidity cannot pin these odds; only the order
     // flow can. `binary` selects the bet shape (side vs outcome_index).
+    // Blocks sufficient for the settle/void/auto-close crons to traverse the dispute grace
+    // window from a just-resolved or just-past-deadline market. grace has a 1 h consensus floor
+    // (M6), so the old fixed 120-300 block waits no longer reach the cutoff — derive the bound.
+    int cron_grace_blocks(simulated_node& node) {
+        const uint64_t grace = node.db().get_validator_schedule_object().median_props.pm_dispute_grace_sec;
+        return (int)(grace / CHAIN_BLOCK_INTERVAL) + 500;
+    }
+
     void run_drift_market(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
                           bool binary, int outcome_count, int feeBp,
                           const std::vector<int16_t>& outc, const std::vector<int64_t>& stk,
@@ -202,7 +210,7 @@ namespace {
         pm_resolve_market_operation rm; rm.oracle = gp.initiator_name; rm.market_id = market_id._id; rm.winning_outcome = 0;
         node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
         produce(node, gp, when);
-        for (int i = 0; i < 300 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i) produce(node, gp, when);
+        for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i) produce(node, gp, when);
         BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
     }
 }
@@ -242,11 +250,15 @@ namespace {
         BOOST_CHECK(market_cluster_absent(node.db(), mid));             // whole cluster reclaimed
     }
 
-    // Publish PM props with test-short timers (grace + GC retention = 30s) so the crons fire fast.
+    // Publish PM props with test-short timers so the crons fire fast. grace is pinned to the
+    // 1 h consensus floor (M6); retention 30s must still exceed the worst-case commit reveal
+    // deadline ((epoch + reveal_window) blocks), so the batch windows are shrunk to match.
     void publish_fast_pm_props(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
                                chain_properties_pm props) {
-        props.pm_dispute_grace_sec           = 30;
+        props.pm_dispute_grace_sec           = 3600;
         props.pm_closed_market_retention_sec = 30;  // GC 30s after death (5 d in production)
+        props.pm_batch_epoch_blocks          = 2;   // keep (epoch+reveal)*3s < retention
+        props.pm_reveal_window_blocks        = 5;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
@@ -325,12 +337,12 @@ BOOST_AUTO_TEST_CASE(binary_market_lifecycle) {
     // settles within a handful of blocks (default grace is 12h — impractical for a test).
     {
         chain_properties_pm props;                 // inline consensus defaults
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     // viz registers as oracle and creates a self-oracle binary market (auto-active).
@@ -424,7 +436,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_flips_outcome) {
     // Short PM timers (defaults are 12h/3d/14d) + small dispute fee so a bettor can file.
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec          = 30;
+        props.pm_dispute_grace_sec          = 3600;
         props.pm_oracle_dispute_response_sec = 5;
         props.pm_dispute_vote_period_sec     = 15;
         props.pm_dispute_auto_close_sec      = 600;   // > voting_end so finalize wins the race
@@ -432,8 +444,8 @@ BOOST_AUTO_TEST_CASE(committee_dispute_flips_outcome) {
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
         BOOST_REQUIRE_EQUAL(mp.pm_dispute_vote_period_sec, 15u);
     }
 
@@ -501,7 +513,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_flips_outcome) {
     const asset bob_pre = node.db().get_account("bob").balance;
 
     // Advance past voting_end → finalize flips to B → auto-payout settles.
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -540,7 +552,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_lazy_pool_voting_weight) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec           = 30;
+        props.pm_dispute_grace_sec           = 3600;
         props.pm_oracle_dispute_response_sec = 5;
         props.pm_dispute_vote_period_sec     = 15;
         props.pm_dispute_auto_close_sec      = 600;
@@ -608,7 +620,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_lazy_pool_voting_weight) {
     node.push_pending_transaction(sign_ops({dv}, carol_key, node));
     produce(node, gp, when);
 
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -846,7 +858,7 @@ BOOST_AUTO_TEST_CASE(oracle_missed_refunds_and_slashes) {
     BOOST_REQUIRE_GT(expect_slash, 0);
 
     // Never resolve. Advance past result_expiration (+60s) so the missed-oracle cron fires.
-    for (int i = 0; i < 120 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).status != 3; ++i)
         produce(node, gp, when);
 
@@ -1093,7 +1105,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_upholds_oracle) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec           = 30;
+        props.pm_dispute_grace_sec           = 3600;
         props.pm_oracle_dispute_response_sec = 5;
         props.pm_dispute_vote_period_sec     = 15;
         props.pm_dispute_auto_close_sec      = 600;
@@ -1101,8 +1113,8 @@ BOOST_AUTO_TEST_CASE(committee_dispute_upholds_oracle) {
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     // A SEPARATE oracle account (not the block-producing validator) so its balance reflects
@@ -1176,7 +1188,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_upholds_oracle) {
     produce(node, gp, when);
 
     // Advance past voting_end → finalize upholds → auto-payout settles.
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -1225,7 +1237,7 @@ BOOST_AUTO_TEST_CASE(dispute_good_faith_oracle_not_slashed) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec           = 30;
+        props.pm_dispute_grace_sec           = 3600;
         props.pm_oracle_dispute_response_sec = 5;
         props.pm_dispute_vote_period_sec     = 15;
         props.pm_dispute_auto_close_sec      = 600;
@@ -1233,8 +1245,8 @@ BOOST_AUTO_TEST_CASE(dispute_good_faith_oracle_not_slashed) {
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac");
@@ -1300,7 +1312,7 @@ BOOST_AUTO_TEST_CASE(dispute_good_faith_oracle_not_slashed) {
     node.push_pending_transaction(sign_ops({dv}, gp.initiator_key, node));
     produce(node, gp, when);
 
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -1443,12 +1455,12 @@ BOOST_AUTO_TEST_CASE(lazy_yield_and_emergency_penalty) {
     // deposit is still locked at emergency-withdraw time.
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     const pm_lazy_pool_id_type pool_id(0);
@@ -1501,7 +1513,10 @@ BOOST_AUTO_TEST_CASE(lazy_yield_and_emergency_penalty) {
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
 
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
+                    node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+        produce(node, gp, when);
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
@@ -1783,13 +1798,13 @@ BOOST_AUTO_TEST_CASE(account_mode_dispute_resolver_flips) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     // External oracle + a separate resolver account (must differ from oracle & creator).
@@ -1865,7 +1880,7 @@ BOOST_AUTO_TEST_CASE(account_mode_dispute_resolver_flips) {
     produce(node, gp, when);
 
     // Advance past result_expiration + grace → auto-payout settles.
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -1910,7 +1925,7 @@ BOOST_AUTO_TEST_CASE(oracle_no_contest_refund_and_compensate) {
     {
         chain_properties_pm props;
         props.pm_dispute_fee       = asset(unit * 2, TOKEN_SYMBOL);
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
@@ -1971,7 +1986,7 @@ BOOST_AUTO_TEST_CASE(oracle_no_contest_refund_and_compensate) {
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 1);
 
     // Nobody disputes → after the grace the market settles: refund + penalty distribution.
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -2016,7 +2031,7 @@ BOOST_AUTO_TEST_CASE(dispute_overrides_no_contest) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec           = 30;
+        props.pm_dispute_grace_sec           = 3600;
         props.pm_oracle_dispute_response_sec = 5;
         props.pm_dispute_vote_period_sec     = 15;
         props.pm_dispute_auto_close_sec      = 600;
@@ -2024,8 +2039,8 @@ BOOST_AUTO_TEST_CASE(dispute_overrides_no_contest) {
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -2083,7 +2098,7 @@ BOOST_AUTO_TEST_CASE(dispute_overrides_no_contest) {
     node.push_pending_transaction(sign_ops({dv}, gp.initiator_key, node));
     produce(node, gp, when);
 
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -2126,7 +2141,7 @@ BOOST_AUTO_TEST_CASE(dispute_auto_close_refunds_fee) {
     // auto_close fires well before voting would finalize.
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec           = 30;
+        props.pm_dispute_grace_sec           = 3600;
         props.pm_oracle_dispute_response_sec = 5;
         props.pm_dispute_vote_period_sec     = 600;
         props.pm_dispute_auto_close_sec      = 5;
@@ -2186,7 +2201,7 @@ BOOST_AUTO_TEST_CASE(dispute_auto_close_refunds_fee) {
     const asset bob_after_dispute = node.db().get_account("bob").balance; // fee already debited
 
     // Nobody votes; advance past auto_close_time → the cron voids the market.
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -2228,12 +2243,12 @@ BOOST_AUTO_TEST_CASE(position_transfer_changes_owner) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -2300,7 +2315,7 @@ BOOST_AUTO_TEST_CASE(position_transfer_changes_owner) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -2459,12 +2474,12 @@ BOOST_AUTO_TEST_CASE(lmsr_multi_market_lifecycle) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -2514,7 +2529,7 @@ BOOST_AUTO_TEST_CASE(lmsr_multi_market_lifecycle) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 200 &&
+    for (int i = 0; i < cron_grace_blocks(node) &&
                     node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
 
@@ -2616,13 +2631,13 @@ BOOST_AUTO_TEST_CASE(dispute_bans_creator_from_new_markets) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
@@ -2799,12 +2814,12 @@ BOOST_AUTO_TEST_CASE(oracle_fixed_fee_external_vs_self) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac");
@@ -2877,7 +2892,7 @@ BOOST_AUTO_TEST_CASE(oracle_fixed_fee_external_vs_self) {
     produce(node, gp, when);
 
     const asset orac_before = node.db().get_account("orac").balance;
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(m0).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(m0).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(m0).payout_status, 3);
 
@@ -2908,12 +2923,12 @@ BOOST_AUTO_TEST_CASE(time_weighted_lp_fee_split) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto alice_key = derive_key("alice"), bob_key = derive_key("bob"), lp2_key = derive_key("lp2");
@@ -2957,7 +2972,7 @@ BOOST_AUTO_TEST_CASE(time_weighted_lp_fee_split) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -2990,12 +3005,12 @@ BOOST_AUTO_TEST_CASE(zero_volume_resolution_stamps_oracle) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -3025,7 +3040,7 @@ BOOST_AUTO_TEST_CASE(zero_volume_resolution_stamps_oracle) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -3369,12 +3384,12 @@ BOOST_AUTO_TEST_CASE(payout_vop_per_bettor) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -3420,7 +3435,7 @@ BOOST_AUTO_TEST_CASE(payout_vop_per_bettor) {
             payouts.push_back(note.op.get<pm_payout_operation>());
     });
 
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -3471,7 +3486,7 @@ BOOST_AUTO_TEST_CASE(leverage_resolve_vop_at_settlement) {
         props.pm_leverage_max_per_position_bp        = 10000;
         props.pm_leverage_max_position_ratio_percent = 100;
         props.pm_lazy_alloc_percent                  = 0;
-        props.pm_dispute_grace_sec                   = 30;
+        props.pm_dispute_grace_sec                   = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
@@ -3534,7 +3549,7 @@ BOOST_AUTO_TEST_CASE(leverage_resolve_vop_at_settlement) {
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
 
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -3695,12 +3710,12 @@ BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table) {
     // Short settle grace so the auto-payout cron fires quickly after resolution.
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 5;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 5; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 5u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -3871,7 +3886,7 @@ BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0; // A wins
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -3931,12 +3946,12 @@ BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table_multi) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 5;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 5; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 5u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -4093,7 +4108,7 @@ BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table_multi) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0; // A
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -4144,12 +4159,12 @@ BOOST_AUTO_TEST_CASE(odds_drift_long_market_1000_bets) {
 
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 5;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 5; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 5u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     pm_oracle_register_operation oreg;
@@ -4289,7 +4304,7 @@ BOOST_AUTO_TEST_CASE(odds_drift_long_market_1000_bets) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 300 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 }
@@ -4309,11 +4324,11 @@ BOOST_AUTO_TEST_CASE(odds_drift_binary_skewed) {
 
     const auto& mp = node.db().get_validator_schedule_object().median_props;
     const int64_t unit = mp.pm_min_liquidity.amount.value;
-    { chain_properties_pm props; props.pm_dispute_grace_sec = 5;
+    { chain_properties_pm props; props.pm_dispute_grace_sec = 3600;
       versioned_chain_properties_update_operation vp; vp.owner = gp.initiator_name; vp.props = props;
       node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-      for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 5; ++i) produce(node, gp, when);
-      BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 5u); }
+      for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+      BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u); }
     pm_oracle_register_operation oreg; oreg.owner = gp.initiator_name;
     oreg.insurance = mp.pm_min_oracle_insurance; oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
     node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
@@ -4361,11 +4376,11 @@ BOOST_AUTO_TEST_CASE(odds_drift_multi_1000) {
 
     const auto& mp = node.db().get_validator_schedule_object().median_props;
     const int64_t unit = mp.pm_min_liquidity.amount.value;
-    { chain_properties_pm props; props.pm_dispute_grace_sec = 5;
+    { chain_properties_pm props; props.pm_dispute_grace_sec = 3600;
       versioned_chain_properties_update_operation vp; vp.owner = gp.initiator_name; vp.props = props;
       node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-      for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 5; ++i) produce(node, gp, when);
-      BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 5u); }
+      for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+      BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u); }
     pm_oracle_register_operation oreg; oreg.owner = gp.initiator_name;
     oreg.insurance = mp.pm_min_oracle_insurance; oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
     node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
@@ -4424,13 +4439,13 @@ BOOST_AUTO_TEST_CASE(oracle_rebuttal_and_decision_reason) {
     const int64_t unit = mp.pm_min_liquidity.amount.value;
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac"), judge_key = derive_key("judge");
@@ -4535,13 +4550,13 @@ BOOST_AUTO_TEST_CASE(resolver_unban_lifts_ban) {
     const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
@@ -4665,13 +4680,13 @@ BOOST_AUTO_TEST_CASE(creator_ban_auto_expires) {
     const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
@@ -4778,13 +4793,13 @@ BOOST_AUTO_TEST_CASE(ban_expired_vop_emitted) {
     const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
@@ -5026,7 +5041,7 @@ BOOST_AUTO_TEST_CASE(gc_resolved_market_after_retention) {
     rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
     node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
     produce(node, gp, when);
-    for (int i = 0; i < 120 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
 
@@ -5160,7 +5175,7 @@ BOOST_AUTO_TEST_CASE(gc_oracle_missed_after_retention) {
     produce(node, gp, when);
 
     // Never resolve — advance past result_expiration; the missed-oracle cron closes it.
-    for (int i = 0; i < 120 && node.db().get<pm_market_object>(market_id).status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).status, 3);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
@@ -5226,7 +5241,7 @@ BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
     produce(node, gp, when);
 
     // Nobody votes — advance past auto_close_time; the cron voids the market.
-    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
         produce(node, gp, when);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
     BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).resolved_outcome, -1); // voided
@@ -5460,12 +5475,12 @@ BOOST_AUTO_TEST_CASE(supply_conserved_binary_lifecycle) {
     // Short dispute grace so the auto-payout cron settles within a few blocks.
     {
         chain_properties_pm props;
-        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_grace_sec = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
-        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
-        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
     }
 
     // Oracle "viz" with a nonzero % fee schedule so oracle/creator/LP takes are all exercised.
@@ -5579,7 +5594,7 @@ BOOST_AUTO_TEST_CASE(early_exit_deferred_claim_paid_from_bucket) {
         props.pm_leverage_max_per_position_bp        = 10000;
         props.pm_leverage_max_position_ratio_percent = 100;
         props.pm_lazy_alloc_percent                  = 0;
-        props.pm_dispute_grace_sec                   = 30;
+        props.pm_dispute_grace_sec                   = 3600;
         versioned_chain_properties_update_operation vp;
         vp.owner = gp.initiator_name; vp.props = props;
         node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
@@ -6238,6 +6253,305 @@ BOOST_AUTO_TEST_CASE(partial_transfer_inherits_entry_liquidity) {
     BOOST_CHECK_EQUAL(bob_now->entry_liquidity.value,   src_entry_liq.value); // the M2 invariant
     BOOST_TEST_MESSAGE("partial transfer anchor: alice+bob entry_liquidity=" << src_entry_liq.value
                        << " weight " << (src_weight.value - half_weight.value) << "+" << half_weight.value);
+}
+
+// L3 gap (audit batch C, 2026-08-13): the lazy-pool FIFO withdraw queue. A leverage loan drains
+// free_balance to 0, then depositors emergency-withdraw — their payouts are QUEUED as owed
+// requests; free_balance must stay >= 0 (pre-fix it went negative: the pool handed out capital
+// still deployed as a loan). Every later capital return (a fresh deposit, the leverage close)
+// pays the OLDEST request first; a return smaller than the head request goes entirely to the
+// head, never pro-rata to later requests.
+BOOST_AUTO_TEST_CASE(lazy_withdraw_fifo_queue) {
+    auto gp = make_genesis_params(0xF1F0u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lazy-fifo", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping lazy-withdraw FIFO scenario.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    // Same sizing knobs as leverage_open_and_close; pin the pool profit so the close-return math
+    // is exact. Lazy auto-allocation off: the whole free_balance is leverage capital.
+    {
+        chain_properties_pm props;
+        props.pm_leverage_enabled                    = true;
+        props.pm_leverage_expiration_buffer_sec      = 0;
+        props.pm_leverage_fund_percent               = 100;
+        props.pm_leverage_max_per_position_bp        = 10000;
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_leverage_pool_profit_percent        = 10;
+        props.pm_lazy_alloc_percent                  = 0;
+        // No emergency penalty: this test is about queue ordering, and a penalty on dave's final
+        // locked exit would leave half the leverage profit stranded in free_balance.
+        props.pm_lazy_emergency_penalty_percent      = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && !mp.pm_leverage_enabled; ++i) produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_leverage_enabled);
+    }
+
+    const pm_lazy_pool_id_type pool_id(0);
+    auto pool_free    = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).free_balance.value; };
+    auto pool_pending = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).pending_withdrawals.value; };
+    auto queue_sum    = [&]{
+        share_type s(0);
+        for (const auto& r : node.db().get_index<pm_lazy_withdraw_request_index>().indices().get<by_id>())
+            s += r.amount;
+        return s.value;
+    };
+    auto queue_head   = [&]{
+        const auto& q = node.db().get_index<pm_lazy_withdraw_request_index>().indices().get<by_id>();
+        return q.empty() ? account_name_type() : q.begin()->account;
+    };
+    auto dep_shares   = [&](const account_name_type& who){
+        const auto& didx = node.db().get_index<pm_lazy_deposit_index>().indices().get<by_deposit_account>();
+        auto it = didx.find(who);
+        return it == didx.end() ? int64_t(-1) : it->shares.value;
+    };
+
+    // alice (initiator) deposits the pool's whole capital.
+    const int64_t D = unit * 100;
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(D), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(pool_free(), D);
+
+    // Self-oracle market with deep reserves so the 10x-scaled leverage position stays solvent.
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 600), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto trader_key = derive_key("trader");
+    create_and_fund(node, gp, when, "trader", trader_key, share_type(unit * 210));
+    // Fund all helper accounts NOW: create_and_fund spends from the initiator (alice), and the
+    // alice0 snapshot below must not include this funding.
+    auto carol_key = derive_key("carol");
+    create_and_fund(node, gp, when, "carol", carol_key, share_type(unit * 50));
+    auto dave_key = derive_key("dave");
+    create_and_fund(node, gp, when, "dave", dave_key, share_type(unit * 40));
+
+    // The loan drains free_balance to exactly 0.
+    const int64_t L = unit * 100;
+    pm_leverage_open_operation lo;
+    lo.account = "trader"; lo.market_id = 0; lo.outcome_index = 0;
+    lo.collateral = asset(share_type(unit * 200), TOKEN_SYMBOL);
+    lo.loan       = asset(share_type(L), TOKEN_SYMBOL);
+    lo.min_tokens = 0; lo.max_slippage_percent = 0;
+    node.push_pending_transaction(sign_ops({lo}, trader_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(pool_free(), 0);
+
+    const asset alice0 = node.db().get_account(gp.initiator_name).balance;
+
+    // alice emergency-withdraws everything: nothing liquid → the whole payout is QUEUED.
+    pm_lazy_withdraw_operation wa;
+    wa.account = gp.initiator_name; wa.shares = 0; wa.emergency = true;
+    node.push_pending_transaction(sign_ops({wa}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(pool_free(), 0);                 // never negative
+    BOOST_CHECK_EQUAL(pool_pending(), D);
+    BOOST_CHECK_EQUAL(queue_sum(), D);
+    BOOST_CHECK(queue_head() == gp.initiator_name);
+    BOOST_CHECK_EQUAL(dep_shares(gp.initiator_name), -1);   // full burn removed the deposit
+    BOOST_CHECK_EQUAL((node.db().get_account(gp.initiator_name).balance - alice0).amount.value, 0);
+
+    // carol's deposit is capital returning to the pool: it pays the queued head (alice), not carol.
+    pm_lazy_deposit_operation dc;
+    dc.account = "carol"; dc.amount = asset(share_type(unit * 40), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dc}, carol_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(pool_free(), 0);
+    BOOST_CHECK_EQUAL(queue_sum(), D - unit * 40);                 // alice got carol's 40u
+    BOOST_CHECK_EQUAL((node.db().get_account(gp.initiator_name).balance - alice0).amount.value, unit * 40);
+
+    const asset carol0 = node.db().get_account("carol").balance;
+
+    // carol emergency-withdraws: free is 0 again → second request joins the queue behind alice's.
+    pm_lazy_withdraw_operation wc;
+    wc.account = "carol"; wc.shares = 0; wc.emergency = true;
+    node.push_pending_transaction(sign_ops({wc}, carol_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(pool_free(), 0);
+    BOOST_CHECK_EQUAL(pool_pending(), D);
+    BOOST_CHECK_EQUAL(queue_sum(), D);
+    BOOST_CHECK(queue_head() == gp.initiator_name);    // alice still first
+    BOOST_CHECK_EQUAL((node.db().get_account("carol").balance - carol0).amount.value, 0);
+
+    // dave's smaller deposit covers only PART of the head request: it must go entirely to alice,
+    // carol (later request) gets nothing — FIFO, not pro-rata.
+    pm_lazy_deposit_operation dd;
+    dd.account = "dave"; dd.amount = asset(share_type(unit * 30), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dd}, dave_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(pool_free(), 0);
+    BOOST_CHECK_EQUAL(queue_sum(), D - unit * 30);
+    BOOST_CHECK(queue_head() == gp.initiator_name);
+    BOOST_CHECK_EQUAL((node.db().get_account(gp.initiator_name).balance - alice0).amount.value, unit * 70);
+    BOOST_CHECK_EQUAL((node.db().get_account("carol").balance - carol0).amount.value, 0);   // FIFO proof
+
+    // The leverage close returns loan + profit (110u): clears BOTH remaining requests; the surplus
+    // stays liquid as dave's capital + the pool's profit.
+    pm_leverage_close_operation cl;
+    cl.account = "trader"; cl.position_id = 0; cl.min_return = 0;
+    node.push_pending_transaction(sign_ops({cl}, trader_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(pool_pending(), 0);
+    BOOST_CHECK_EQUAL(queue_sum(), 0);
+    BOOST_CHECK_GE(pool_free(), 0);
+    BOOST_CHECK_EQUAL((node.db().get_account(gp.initiator_name).balance - alice0).amount.value, D);       // alice whole
+    BOOST_CHECK_EQUAL((node.db().get_account("carol").balance - carol0).amount.value, unit * 40);         // carol whole
+
+    // dave exits last (emergency, locked). The leverage-close profit was folded into
+    // reward_per_share, so as the ONLY remaining shareholder dave collects it on top of his
+    // principal; what stays in free is at most rps rounding dust.
+    const asset dave0 = node.db().get_account("dave").balance;
+    pm_lazy_withdraw_operation wd;
+    wd.account = "dave"; wd.shares = 0; wd.emergency = true;
+    node.push_pending_transaction(sign_ops({wd}, dave_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(pool_pending(), 0);
+    BOOST_CHECK_EQUAL(queue_sum(), 0);
+    BOOST_CHECK_GE(pool_free(), 0);
+    BOOST_CHECK_LT(pool_free(), unit);                                // only rounding dust
+    const int64_t dave_delta = (node.db().get_account("dave").balance - dave0).amount.value;
+    BOOST_CHECK_GE(dave_delta, unit * 30);                            // principal back in full
+    BOOST_CHECK_LE(dave_delta + pool_free(), unit * 30 + L);          // profit ≤ loan (R ≤ 100%)
+    BOOST_TEST_MESSAGE("lazy FIFO: queue drained oldest-first; final free=" << pool_free()
+                       << " (dust), dave_delta=" << dave_delta << ", pending=0");
+}
+
+// L3 gap (audit batch C, 2026-08-13): pm_oracle_update accounting and gates. Top-ups move VIZ
+// from the owner's balance into insurance and back on withdrawal; withdrawal is floor-gated AND
+// obligation-gated (blocked while the oracle still has an unsettled market — the #3 audit fix);
+// fee_percent is capped by the median; a wrong signer cannot touch the profile.
+BOOST_AUTO_TEST_CASE(oracle_profile_update_and_insurance_gate) {
+    auto gp = make_genesis_params(0x0A0Eu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-oracle-upd", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping oracle-update scenario.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t floor_ins = mp.pm_min_oracle_insurance.amount.value;
+    auto find_oracle = [&]() -> const pm_oracle_object* {
+        const auto& oidx = node.db().get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(gp.initiator_name);
+        return it == oidx.end() ? nullptr : &*it;
+    };
+
+    pm_oracle_register_operation oreg;
+    oreg.owner = gp.initiator_name; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE(find_oracle() != nullptr);
+
+    // Top-up: balance → insurance, 1:1.
+    const int64_t X = floor_ins * 5;
+    const asset bal0 = node.db().get_account(gp.initiator_name).balance;
+    pm_oracle_update_operation up;
+    up.owner = gp.initiator_name;
+    up.insurance_delta = asset(share_type(X), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({up}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(find_oracle()->insurance.value, floor_ins + X);
+    BOOST_CHECK_EQUAL((bal0 - node.db().get_account(gp.initiator_name).balance).amount.value, X);
+
+    // Profile fields: fee at the median cap (boundary OK), fixed_fee, rules_url.
+    pm_oracle_update_operation uf;
+    uf.owner = gp.initiator_name;
+    uf.fee_percent = mp.pm_max_oracle_fee_percent;
+    uf.fixed_fee   = asset(share_type(123456), TOKEN_SYMBOL);
+    uf.rules_url   = std::string("https://example.com/rules");
+    node.push_pending_transaction(sign_ops({uf}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(find_oracle()->fee_percent, mp.pm_max_oracle_fee_percent);
+    BOOST_CHECK_EQUAL(find_oracle()->fixed_fee.value, 123456);
+    BOOST_CHECK_EQUAL(to_string(find_oracle()->rules_url), std::string("https://example.com/rules"));
+
+    // Above-cap fee and wrong signer are both rejected.
+    pm_oracle_update_operation ub;
+    ub.owner = gp.initiator_name;
+    ub.fee_percent = (uint16_t)(mp.pm_max_oracle_fee_percent + 1);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({ub}, gp.initiator_key, node)),
+                      std::runtime_error);
+    auto mallory_key = derive_key("mallory");
+    create_and_fund(node, gp, when, "mallory", mallory_key, share_type(mp.pm_min_liquidity.amount.value * 4));
+    pm_oracle_update_operation ua;
+    ua.owner = gp.initiator_name;
+    ua.rules_url = std::string("pwned");
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({ua}, mallory_key, node)),
+                      std::runtime_error);
+
+    // Withdraw exactly the top-up (no obligations yet): back to the floor, balance refunded.
+    const asset bal1 = node.db().get_account(gp.initiator_name).balance;
+    pm_oracle_update_operation uw;
+    uw.owner = gp.initiator_name;
+    uw.insurance_delta = asset(share_type(-X), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({uw}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(find_oracle()->insurance.value, floor_ins);
+    BOOST_CHECK_EQUAL((node.db().get_account(gp.initiator_name).balance - bal1).amount.value, X);
+
+    // Withdrawing below the floor is rejected.
+    pm_oracle_update_operation u2;
+    u2.owner = gp.initiator_name;
+    u2.insurance_delta = asset(share_type(-1), TOKEN_SYMBOL);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({u2}, gp.initiator_key, node)),
+                      std::runtime_error);
+
+    // Open an obligation (self-oracle market, status 1, unsettled): top-ups stay allowed,
+    // withdrawals are gated until settlement (#3 audit fix — insurance theater prevention).
+    pm_oracle_update_operation ut;
+    ut.owner = gp.initiator_name;
+    ut.insurance_delta = asset(share_type(X), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({ut}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(find_oracle()->insurance.value, floor_ins + X);
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(mp.pm_min_liquidity.amount.value * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(300);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(600);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(pm_market_id_type(0)).status, 1);
+
+    pm_oracle_update_operation ug;
+    ug.owner = gp.initiator_name;
+    ug.insurance_delta = asset(share_type(-X), TOKEN_SYMBOL);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({ug}, gp.initiator_key, node)),
+                      std::runtime_error);
+    BOOST_TEST_MESSAGE("oracle update: top-up/withdraw 1:1, cap+floor asserts, unsettled-market "
+                       "withdrawal gate, wrong-signer rejection");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
