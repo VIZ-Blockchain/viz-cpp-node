@@ -1222,6 +1222,9 @@ void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operati
             nb.status        = 0;
             nb.created_time  = bet.created_time;
             nb.time_penalty  = bet.time_penalty; // B9: inherit — same risk taken at the same time
+            // M2: inherit the #1-C depth anchor — defaulting to 0 would mark the split bet as
+            // "legacy" and let its cancel-refund bypass the liquidity-growth cap.
+            nb.entry_liquidity = bet.entry_liquidity;
         });
     }
 }
@@ -1616,6 +1619,9 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
         // penalise by pos.created_time (leverage opens are gated ≥24h before expiry, so this is
         // virtually always 0 unless the market runs a very wide percentage window).
         b.time_penalty  = compute_time_penalty(mkt, pos.created_time, mp.pm_max_time_penalty);
+        // M2: #1-C depth anchor at conversion (§6 "depth at fill" convention) — leaving it 0 would
+        // mark the bet "legacy" and let its cancel-refund bypass the liquidity-growth cap.
+        b.entry_liquidity = mkt.liquidity_sum;
     });
     db.modify(mkt, [&](pm_market_object& m) {
         if (pos.outcome_index == 0) m.a_bets_sum += pos.total_bet;

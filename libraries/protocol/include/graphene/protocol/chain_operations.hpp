@@ -735,6 +735,11 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_dispute_approve_min_percent <= 10000, "pm_dispute_approve_min_percent out of range");
                 FC_ASSERT(pm_oracle_penalty_percent <= 10000, "pm_oracle_penalty_percent out of range");
                 FC_ASSERT(pm_no_contest_penalty_percent <= 10000, "pm_no_contest_penalty_percent out of range");
+                // M6: grace anchors the settle-sweep (§5) cutoff and the missed-resolution / auto-close
+                // crons. Zero grace races the cleanup crons against settlement — a commit-forfeit can land
+                // on an already-settled market and burn tokens, and an instant resolve+settle orphans queued
+                // bets. Default is 12 h; floor at 1 h so only pathological governance votes are rejected.
+                FC_ASSERT(pm_dispute_grace_sec >= 3600, "pm_dispute_grace_sec must be >= 3600 (1 h structural floor)");
                 // Reward multiplier is a bp multiplier (10000 = 1x). Floor at 10000 so a vindicated
                 // disputer at least recovers the fee; cap at 100x.
                 FC_ASSERT(pm_dispute_reward_multiplier >= 10000 && pm_dispute_reward_multiplier <= 1000000,

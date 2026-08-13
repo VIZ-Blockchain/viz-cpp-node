@@ -858,6 +858,15 @@ inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::varia
             obj.result_expiration  = v["result_expiration"].as<fc::time_point_sec>();
             if (v.get_object().contains("finalized_time"))
                 obj.finalized_time = v["finalized_time"].as<fc::time_point_sec>();
+            // H1: without this, pending markets (status 0) import with accept_deadline=epoch and the
+            // pending-acceptance cron voids them on the very next block — consensus divergence between
+            // a snapshot-imported node and a replaying node. contains-guarded for pre-field snapshots.
+            if (v.get_object().contains("accept_deadline"))
+                obj.accept_deadline = v["accept_deadline"].as<fc::time_point_sec>();
+            if (v.get_object().contains("decision_url"))
+                set_shared_string(obj.decision_url, v["decision_url"]);
+            if (v.get_object().contains("decision_reason"))
+                set_shared_string(obj.decision_reason, v["decision_reason"]);
             obj.resolved_outcome   = static_cast<int16_t>(v["resolved_outcome"].as_int64());
             obj.reserve_a          = v["reserve_a"].as<share_type>();
             obj.reserve_b          = v["reserve_b"].as<share_type>();
@@ -1816,6 +1825,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             while (!pm_lev_idx.empty())  { db.remove(*pm_lev_idx.begin()); }
             const auto& pm_cbn_idx  = db.get_index<pm_creator_ban_index>().indices();
             while (!pm_cbn_idx.empty())  { db.remove(*pm_cbn_idx.begin()); }
+            // M1: exported/imported but previously missed here — leftover rows from a prior
+            // snapshot conflict on by_id and abort the hot-reload import.
+            const auto& pm_lwr_idx  = db.get_index<pm_lazy_withdraw_request_index>().indices();
+            while (!pm_lwr_idx.empty())  { db.remove(*pm_lwr_idx.begin()); }
+            const auto& pm_dcl_idx  = db.get_index<pm_deferred_claim_index>().indices();
+            while (!pm_dcl_idx.empty())  { db.remove(*pm_dcl_idx.begin()); }
+            if (db.has_index<pm_market_meta_index>()) { // non-consensus; absent without prediction_market_api
+                const auto& pm_mtm_idx = db.get_index<pm_market_meta_index>().indices();
+                while (!pm_mtm_idx.empty()) { db.remove(*pm_mtm_idx.begin()); }
+            }
 
             ilog(CLOG_ORANGE "Existing objects cleared" CLOG_RESET);
         }

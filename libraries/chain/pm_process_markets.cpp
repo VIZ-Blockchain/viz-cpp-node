@@ -557,6 +557,19 @@ namespace pm_detail {
         const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
         auto first = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
 
+        // H2: queued / revealed-pending batch bets (status 5/6) hold escrowed stake, but the §6
+        // executor only runs on status-1 markets — the market is terminal here, so these stakes
+        // would stay frozen forever (and drift the PM supply invariant once GC drops the rows).
+        // They never touched the curve, so a nominal refund is conservation-correct on every
+        // outcome (win<0 void AND win>=0 normal settle). Refund before either branch.
+        for (auto it = first; it != bidx.end() && it->market == mkt.id; ) {
+            const auto& bet = *it; ++it;
+            if (bet.status != 5 && bet.status != 6) continue;
+            db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+            db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: queued stake refunded (market terminal)
+            db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
+        }
+
         // Void / no-contest finalization: refund every active bet, return LP, and slash the
         // no-contest penalty (pm_no_contest_penalty_percent of the dispute fee) from the oracle,
         // distributed pro-rata to the refunded bettors as compensation (spec §3.9). Only the
@@ -794,17 +807,52 @@ namespace pm_detail {
         db.remove(mkt);
     }
 
-    void refund_all_bets(database& db, const pm_market_object& mkt) {
+    void refund_all_bets(database& db, const pm_market_object& mkt,
+                         std::vector<std::pair<account_name_type, int64_t>>* out_participants = nullptr,
+                         int64_t* out_total = nullptr) {
         const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
         auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
         while (it != bidx.end() && it->market == mkt.id) {
-            if (it->status == 0) {
+            // H2: statuses 5/6 (queued / revealed-pending batch bets) hold escrowed stake, but the
+            // §6 executor only runs on status-1 markets — a terminal market would orphan them and
+            // burn the stake. They never touched the curve, so a nominal refund is correct.
+            if (it->status == 0 || it->status == 5 || it->status == 6) {
+                if (out_participants) out_participants->emplace_back(it->account, it->amount.value);
+                if (out_total) *out_total += it->amount.value;
                 db.adjust_balance(db.get_account(it->account), asset(it->amount, TOKEN_SYMBOL));
                 db.pm_adjust_frozen(it->account, 1, -it->amount); // UNLOCK: stake refunded (missed-resolution/auto-close)
                 db.modify(*it, [](pm_bet_object& b) { b.status = 2; });
             }
             ++it;
         }
+    }
+
+    // H4: same routing as #5 (settle win<0). The §2 missed-resolution and §3 dispute-auto-close
+    // crons used to leave forfeit_pool in the market object — GC then dropped the row and those
+    // real tokens stayed in current_supply with no owner, breaking the re-armed PM supply
+    // invariant on the next snapshot import. Bettors present → return pro-rata by refunded stake;
+    // none → burn from supply.
+    void route_forfeit_on_void(database& db, const pm_market_object& mkt,
+                               const std::vector<std::pair<account_name_type, int64_t>>& participants,
+                               int64_t total_bets) {
+        const int64_t fpool = mkt.forfeit_pool.value; // ≥ 0 by construction
+        if (fpool <= 0) return;
+        if (total_bets > 0) {
+            int64_t paid = 0;
+            for (size_t i = 0; i < participants.size(); ++i) {
+                int64_t share = (i + 1 == participants.size())
+                    ? fpool - paid
+                    : (int64_t)(fc::uint128_t((uint64_t)fpool)
+                        * fc::uint128_t((uint64_t)participants[i].second) / fc::uint128_t((uint64_t)total_bets)).lo;
+                if (share > 0) {
+                    db.adjust_balance(db.get_account(participants[i].first), asset(share_type(share), TOKEN_SYMBOL));
+                    paid += share;
+                }
+            }
+        } else {
+            db.burn_asset(asset(share_type(-fpool), TOKEN_SYMBOL)); // no bettors → remove from supply
+        }
+        db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
     }
 
     void return_liquidity(database& db, const pm_market_object& mkt) {
@@ -1070,7 +1118,10 @@ void database::process_pm_markets() {
                 }
             }
 
-            refund_all_bets(*this, mkt);
+            std::vector<std::pair<account_name_type, int64_t>> participants; // H4
+            int64_t total_bets = 0;
+            refund_all_bets(*this, mkt, &participants, &total_bets);
+            route_forfeit_on_void(*this, mkt, participants, total_bets); // H4: forfeit must not be GC'd with the market
             return_liquidity(*this, mkt);
 
             pm_oracle_dec_active(*this, mkt);   // leaves active set (1 → 3, missed-resolution void)
@@ -1191,7 +1242,10 @@ void database::process_pm_markets() {
                 }
             }
 
-            refund_all_bets(*this, mkt);
+            std::vector<std::pair<account_name_type, int64_t>> participants; // H4
+            int64_t total_bets = 0;
+            refund_all_bets(*this, mkt, &participants, &total_bets);
+            route_forfeit_on_void(*this, mkt, participants, total_bets); // H4: forfeit must not be GC'd with the market
             return_liquidity(*this, mkt);
 
             // Anti-freeze: the dispute stalled through no fault of the disputer → return the
