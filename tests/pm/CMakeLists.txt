@@ -57,3 +57,16 @@ target_include_directories(pm_meta_parse_tests
 )
 
 add_test(NAME pm_meta_parse COMMAND pm_meta_parse_tests)
+
+# HF14 chain_properties_pm::validate() boundary sweep (audit 2026-08-13, batch C / L3).
+# Governance params are median-voted, so validate() is the ONLY consensus gate against
+# pathological values; probes every ratio cap / floor / cross-field invariant at its boundary.
+add_executable(pm_props_validate_tests props_validate_test.cpp)
+
+target_link_libraries(pm_props_validate_tests
+    PRIVATE graphene_protocol
+            fc
+            Boost::unit_test_framework
+)
+
+add_test(NAME pm_props_validate COMMAND pm_props_validate_tests)
