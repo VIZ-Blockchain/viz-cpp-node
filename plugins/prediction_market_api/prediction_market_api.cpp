@@ -37,6 +37,15 @@
    (args.args->at(_I).as<_T>()) :      \
    static_cast<_T>(_D)
 
+// Batch-D DoS guards (adversarial review 2026-08-14). The webserver response cache only hits
+// byte-identical requests; an attacker walks `from` (+1 per call) to miss it every time, so the
+// work itself must be bounded, not just the page:
+//  - MAX_PM_PAGE_FROM: no skip-walk deeper than this (limit caps the page, from caps the skip).
+//  - MAX_PM_SORT_POOL: volume/expiration sorts materialize the whole matching set before sorting;
+//    above this size the listing degrades to newest-first paging instead of sorting.
+static const uint32_t MAX_PM_PAGE_FROM = 1000000u;
+static const uint32_t MAX_PM_SORT_POOL = 32768u;
+
 namespace graphene { namespace plugins { namespace prediction_market_api {
 
     namespace {
@@ -110,6 +119,15 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // closed-market prefix. Display-only; both are time-dependent so they're computed on read.
         struct oracle_awaiting_info { uint32_t count = 0; uint32_t oldest_age = 0; };
         oracle_awaiting_info oracle_awaiting(const database& db, const account_name_type& owner) {
+            // D5: cached per (head block, oracle) — the walk is O(this oracle's active markets) and
+            // get_market_full / get_oracle used to redo it on every call (winner_agg pattern).
+            struct oa_entry { uint32_t epoch = 0; oracle_awaiting_info v; };
+            static thread_local std::map<account_name_type, oa_entry> cache;
+            const uint32_t epoch = db.head_block_num();
+            auto cit = cache.find(owner);
+            if (cit != cache.end() && cit->second.epoch == epoch) return cit->second.v;
+            if (cache.size() > 512) cache.clear(); // practically bounded by the oracle count anyway
+
             oracle_awaiting_info r;
             int64_t oldest = 0;
             const auto now = db.head_block_time();
@@ -122,6 +140,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     if (age > oldest) oldest = age;
                 }
             r.oldest_age = (uint32_t)(oldest < 0 ? 0 : oldest);
+            cache[owner] = oa_entry{epoch, r};
             return r;
         }
 
@@ -251,6 +270,15 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // Per-outcome amount + curve-weight aggregate (live from active/resolved bets). Shared by
         // get_market_weight_sums and get_market_full.
         pm_market_weight_sums_api_object make_weight_sums(const database& db, const pm_market_object& mkt) {
+            // D5: cached per (head block, market) — winner_agg pattern. Repeated get_market_full /
+            // get_market_weight_sums calls on one market used to redo this O(bets) walk every time.
+            struct ws_entry { uint32_t epoch = 0; pm_market_weight_sums_api_object v; };
+            static thread_local std::map<pm_market_id_type, ws_entry> cache;
+            const uint32_t epoch = db.head_block_num();
+            auto cit = cache.find(mkt.id);
+            if (cit != cache.end() && cit->second.epoch == epoch) return cit->second.v;
+            if (cache.size() > 512) cache.clear(); // bound per-block working set
+
             const bool binary = (mkt.market_type == 0);
             std::vector<share_type> amt(mkt.outcome_count, share_type(0));
             std::vector<share_type> wgt(mkt.outcome_count, share_type(0));
@@ -277,6 +305,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     out.outcomes.push_back({(int16_t)i, label, amt[i], wgt[i]});
                 }
             }
+            cache[mkt.id] = ws_entry{epoch, out};
             return out;
         }
 
@@ -627,6 +656,27 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         return result;
     }
 
+    // Id-order paging over a market index range: newest = reverse walk, oldest = forward. No
+    // materialization, no sort, early stop after the page — the cheap path, and the fallback for
+    // volume/expiration when the matching set exceeds MAX_PM_SORT_POOL.
+    template <typename It>
+    static std::vector<fc::variant> page_markets_id_order(
+        const graphene::chain::database& db, It first, It last,
+        bool newest, uint32_t from, uint32_t limit) {
+        std::vector<fc::variant> result;
+        result.reserve(limit);
+        if (newest) {
+            auto itr = last;
+            while (from > 0 && itr != first) { --itr; --from; }
+            while (result.size() < limit && itr != first) { --itr; result.push_back(market_card(db, *itr)); }
+        } else {
+            auto itr = first;
+            while (from > 0 && itr != last) { ++itr; --from; }
+            while (result.size() < limit && itr != last) { result.push_back(market_card(db, *itr)); ++itr; }
+        }
+        return result;
+    }
+
     DEFINE_API(prediction_market_api, get_market) {
         CHECK_ARG_SIZE(1)
         auto market_id = args.args->at(0).as<int64_t>();
@@ -652,6 +702,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto show_risky = GET_OPTIONAL_ARG(3, bool, false); // reveal under-insured markets
         auto order  = GET_OPTIONAL_ARG(4, std::string, std::string("oldest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -709,6 +760,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit  = args.args->at(2).as<uint32_t>();
         auto order  = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -717,17 +769,15 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             auto range = idx.equal_range(oracle);
             if (order == "volume" || order == "expiration") {
                 std::vector<const pm_market_object*> ms;
-                for (auto itr = range.first; itr != range.second; ++itr) ms.push_back(&*itr);
-                return page_markets_sorted(db, ms, order, from, limit);
-            } else if (order == "oldest") {
-                auto itr = range.first;
-                while (from > 0 && itr != range.second) { ++itr; --from; }
-                while (result.size() < limit && itr != range.second) { result.push_back(market_card(db, *itr)); ++itr; }
-            } else { // "newest" (default)
-                auto itr = range.second;
-                while (from > 0 && itr != range.first) { --itr; --from; }
-                while (result.size() < limit && itr != range.first) { --itr; result.push_back(market_card(db, *itr)); }
+                for (auto itr = range.first; itr != range.second; ++itr) {
+                    ms.push_back(&*itr);
+                    if (ms.size() > MAX_PM_SORT_POOL) break;   // D1: too big to sort — degrade below
+                }
+                if (ms.size() <= MAX_PM_SORT_POOL)
+                    return page_markets_sorted(db, ms, order, from, limit);
+                // set too large for a full sort: degrade to newest-first paging without sorting
             }
+            result = page_markets_id_order(db, range.first, range.second, order != "oldest", from, limit);
             return result;
         });
     }
@@ -746,6 +796,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit  = args.args->at(3).as<uint32_t>();
         auto order  = GET_OPTIONAL_ARG(4, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -754,17 +805,15 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             auto range = idx.equal_range(boost::make_tuple(oracle, status));
             if (order == "volume" || order == "expiration") {
                 std::vector<const pm_market_object*> ms;
-                for (auto itr = range.first; itr != range.second; ++itr) ms.push_back(&*itr);
-                return page_markets_sorted(db, ms, order, from, limit);
-            } else if (order == "oldest") {
-                auto itr = range.first;
-                while (from > 0 && itr != range.second) { ++itr; --from; }
-                while (result.size() < limit && itr != range.second) { result.push_back(market_card(db, *itr)); ++itr; }
-            } else { // "newest" (default)
-                auto itr = range.second;
-                while (from > 0 && itr != range.first) { --itr; --from; }
-                while (result.size() < limit && itr != range.first) { --itr; result.push_back(market_card(db, *itr)); }
+                for (auto itr = range.first; itr != range.second; ++itr) {
+                    ms.push_back(&*itr);
+                    if (ms.size() > MAX_PM_SORT_POOL) break;   // D1: too big to sort — degrade below
+                }
+                if (ms.size() <= MAX_PM_SORT_POOL)
+                    return page_markets_sorted(db, ms, order, from, limit);
+                // set too large for a full sort: degrade to newest-first paging without sorting
             }
+            result = page_markets_id_order(db, range.first, range.second, order != "oldest", from, limit);
             return result;
         });
     }
@@ -782,6 +831,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from   = args.args->at(1).as<uint32_t>();
         auto limit  = args.args->at(2).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -810,6 +860,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from   = args.args->at(1).as<uint32_t>();
         auto limit  = args.args->at(2).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -840,6 +891,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit   = args.args->at(2).as<uint32_t>();
         auto order   = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -848,17 +900,15 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             auto range = idx.equal_range(creator);
             if (order == "volume" || order == "expiration") {
                 std::vector<const pm_market_object*> ms;
-                for (auto itr = range.first; itr != range.second; ++itr) ms.push_back(&*itr);
-                return page_markets_sorted(db, ms, order, from, limit);
-            } else if (order == "oldest") {
-                auto itr = range.first;
-                while (from > 0 && itr != range.second) { ++itr; --from; }
-                while (result.size() < limit && itr != range.second) { result.push_back(market_card(db, *itr)); ++itr; }
-            } else { // "newest" (default)
-                auto itr = range.second;
-                while (from > 0 && itr != range.first) { --itr; --from; }
-                while (result.size() < limit && itr != range.first) { --itr; result.push_back(market_card(db, *itr)); }
+                for (auto itr = range.first; itr != range.second; ++itr) {
+                    ms.push_back(&*itr);
+                    if (ms.size() > MAX_PM_SORT_POOL) break;   // D1: too big to sort — degrade below
+                }
+                if (ms.size() <= MAX_PM_SORT_POOL)
+                    return page_markets_sorted(db, ms, order, from, limit);
+                // set too large for a full sort: degrade to newest-first paging without sorting
             }
+            result = page_markets_id_order(db, range.first, range.second, order != "oldest", from, limit);
             return result;
         });
     }
@@ -899,6 +949,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit     = args.args->at(2).as<uint32_t>();
         auto order     = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_bet_object> result;
@@ -929,6 +980,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit   = args.args->at(2).as<uint32_t>();
         auto order   = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_position_api_object> result;
@@ -962,6 +1014,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from      = args.args->at(1).as<uint32_t>();
         auto limit     = args.args->at(2).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_liquidity_object> result;
@@ -988,6 +1041,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit   = args.args->at(2).as<uint32_t>();
         auto order   = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_leverage_position_object> result;
@@ -1013,6 +1067,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from      = args.args->at(1).as<uint32_t>();
         auto limit     = args.args->at(2).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_leverage_position_object> result;
@@ -1062,6 +1117,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from  = args.args->at(0).as<uint32_t>();
         auto limit = args.args->at(1).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_oracle_object> result;
@@ -1091,6 +1147,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // D6 note: the per-vote get_account() walk below is bounded — pm_dispute_vote_evaluator caps
+    // ballots at MAX_PM_DISPUTE_VOTES_PER_MARKET (M3), so this API is O(≤10k) per call. No
+    // pagination: the projection fields must tally every ballot.
     DEFINE_API(prediction_market_api, get_dispute_votes) {
         CHECK_ARG_SIZE(1)
         auto market_id = args.args->at(0).as<int64_t>();
@@ -1206,6 +1265,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from   = args.args->at(1).as<uint32_t>();
         auto limit  = args.args->at(2).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -1289,6 +1349,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         uint32_t from  = args.args->size() > 1 ? args.args->at(1).as<uint32_t>() : 0;
         uint32_t limit = args.args->size() > 2 ? args.args->at(2).as<uint32_t>() : 100;
         FC_ASSERT(limit <= 1000, "limit must be <= 1000");
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_deferred_claim_object> out;
@@ -1370,60 +1431,34 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto show_risky   = GET_OPTIONAL_ARG(8, bool, false); // reveal markets of under-insured oracles
         auto status       = GET_OPTIONAL_ARG(9, int8_t, (int8_t)-1); // -1 = any lifecycle status
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             const bool need_status = (status != (int8_t)-1);
             const bool need_market = (sort == "volume" || sort == "expiration" || need_status);
-            struct entry { const pm_market_meta_object* m; int64_t vol; int64_t exp; int64_t mid; };
-            std::vector<entry> es;
+            const bool sorted = (sort == "volume" || sort == "expiration");
             const auto& idx = db.get_index<pm_market_meta_index>().indices().get<by_meta_category>();
-            for (auto itr = idx.lower_bound(category);
-                 itr != idx.end() && to_string(itr->category) == category; ++itr) {
-                if (hide_children && itr->child) continue;                    // parent-only listing by default
-                if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) continue;
-                if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
-                if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) continue; // case-insensitive tags
-                const auto* mk = need_market ? db.find<pm_market_object>(itr->market) : nullptr;
-                if (need_status && (!mk || mk->status != status)) continue;   // server-side lifecycle filter
-                if (!show_risky) { // hide markets whose oracle is under-insured (aggregate risk floor)
-                    const auto* mko = mk ? mk : db.find<pm_market_object>(itr->market);
-                    if (mko && oracle_below_risk_floor(db, mko->oracle)) continue;
-                }
-                es.push_back({ &*itr,
-                    mk ? mk->bets_sum.value : 0,
-                    mk ? (int64_t)mk->betting_expiration.sec_since_epoch() : std::numeric_limits<int64_t>::max(),
-                    (int64_t)itr->market._id });
-            }
-            if (sort == "volume")
-                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.vol > b.vol; });
-            else if (sort == "expiration")
-                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.exp < b.exp; });
-            else if (sort == "oldest")
-                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.mid < b.mid; });
-            else // "newest"
-                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.mid > b.mid; });
 
-            std::vector<fc::variant> result;
-            result.reserve(std::min<size_t>(limit, es.size()));
-            for (uint32_t i = from; i < es.size() && result.size() < limit; ++i) {
-                fc::variant v; fc::to_variant(pm_market_meta_object(*es[i].m), v);
+            // D2: shared row builder (byte-identical output for both paths).
+            auto emit_row = [&](const pm_market_meta_object& mm, const pm_market_object* mk) -> fc::variant {
+                fc::variant v; fc::to_variant(pm_market_meta_object(mm), v);
                 fc::mutable_variant_object o(v.get_object());
                 if (need_market)
-                    // surface the bets_sum already computed for the sort → exact client-side volume
+                    // surface the bets_sum already loaded → exact client-side volume
                     // badge + global cross-category ranking, no extra get_market_weight_sums call
-                    o["volume"] = es[i].vol;
+                    // (pruned market → 0, same shape the pre-D2 code emitted)
+                    o["volume"] = mk ? mk->bets_sum.value : 0;
                 // The meta object carries no lifecycle state, so category/tag browsing rendered every
                 // card as "active". Attach the live status/result from the market (query-time, bounded
                 // by `limit`) so cards show the right badge and can mark the resolved winner.
-                if (const auto* mk = db.find<pm_market_object>(es[i].m->market)) {
-                    o["status"]           = mk->status;
-                    o["payout_status"]    = mk->payout_status;
-                    o["resolved_outcome"] = mk->resolved_outcome;
+                if (const auto* mko = db.find<pm_market_object>(mm.market)) {
+                    o["status"]           = mko->status;
+                    o["payout_status"]    = mko->payout_status;
+                    o["resolved_outcome"] = mko->resolved_outcome;
                 }
                 // Emit tags / banned_jurisdictions as ARRAYS (not raw CSV) and expose a reconstructed
                 // `metadata` object, matching market_card so clients read market.metadata.tags uniformly
                 // across every listing — the UI never parses raw meta CSV (owner 2026-07-12).
-                const auto& mm = *es[i].m;
                 fc::variant tags_arr   = csv_to_array(to_string(mm.tags));
                 fc::variant banned_arr = csv_to_array(to_string(mm.banned_jurisdictions));
                 o["tags"]                 = tags_arr;
@@ -1435,8 +1470,88 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                   ("condition_id", to_string(mm.condition_id))("description", to_string(mm.description))
                   ("event", to_string(mm.event))("event_title", to_string(mm.event_title));
                 o["metadata"] = fc::variant(std::move(md));
-                result.push_back(fc::variant(std::move(o)));
+                return fc::variant(std::move(o));
+            };
+
+            std::vector<fc::variant> result;
+            result.reserve(limit);
+
+            // newest/oldest: by_meta_category is (category, market id), so the range walked in the
+            // desired direction IS the sort order — filter on the fly and stop at the page. No
+            // full-slice scan, no sort (the old materialize+stable_sort-by-id was redundant).
+            if (!sorted) {
+                const bool newest = (sort != "oldest");
+                auto first = idx.lower_bound(category);
+                auto last  = idx.upper_bound(category);
+                auto take = [&](decltype(first) itr) {
+                    const auto* mk = need_market ? db.find<pm_market_object>(itr->market) : nullptr;
+                    if (hide_children && itr->child) return;                    // parent-only by default
+                    if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) return;
+                    if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) return;
+                    if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) return; // case-insensitive tags
+                    if (need_status && (!mk || mk->status != status)) return;   // server-side lifecycle filter
+                    if (!show_risky) { // hide markets whose oracle is under-insured (aggregate risk floor)
+                        const auto* mko = mk ? mk : db.find<pm_market_object>(itr->market);
+                        if (mko && oracle_below_risk_floor(db, mko->oracle)) return;
+                    }
+                    if (from > 0) { --from; return; }
+                    if (result.size() < limit) result.push_back(emit_row(*itr, mk));
+                };
+                if (newest) {
+                    for (auto itr = last; itr != first && (from > 0 || result.size() < limit); ) { --itr; take(itr); }
+                } else {
+                    for (auto itr = first; itr != last && (from > 0 || result.size() < limit); ++itr) take(itr);
+                }
+                return result;
             }
+
+            // volume/expiration: the sort needs the matching set — materialize it, but capped;
+            // beyond MAX_PM_SORT_POOL the listing degrades to a newest-first walk instead.
+            struct entry { const pm_market_meta_object* m; const pm_market_object* mk; int64_t key; };
+            std::vector<entry> es;
+            bool over = false;
+            for (auto itr = idx.lower_bound(category);
+                 itr != idx.end() && to_string(itr->category) == category; ++itr) {
+                const auto* mk = db.find<pm_market_object>(itr->market); // need_market is true here
+                if (hide_children && itr->child) continue;
+                if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) continue;
+                if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
+                if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) continue;
+                if (need_status && (!mk || mk->status != status)) continue;
+                if (!show_risky) {
+                    if (mk && oracle_below_risk_floor(db, mk->oracle)) continue;
+                }
+                es.push_back({ &*itr, mk,
+                    !mk ? ((sort == "volume") ? (int64_t)0 : std::numeric_limits<int64_t>::max())
+                        : ((sort == "volume") ? (int64_t)mk->bets_sum.value
+                                              : (int64_t)mk->betting_expiration.sec_since_epoch()) });
+                if (es.size() > MAX_PM_SORT_POOL) { over = true; break; }
+            }
+            if (over) {
+                auto first = idx.lower_bound(category);
+                for (auto itr = idx.upper_bound(category); itr != first && (from > 0 || result.size() < limit); ) {
+                    --itr;
+                    const auto* mk = need_market ? db.find<pm_market_object>(itr->market) : nullptr;
+                    if (hide_children && itr->child) continue;
+                    if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) continue;
+                    if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
+                    if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) continue;
+                    if (need_status && (!mk || mk->status != status)) continue;
+                    if (!show_risky) {
+                        const auto* mko = mk ? mk : db.find<pm_market_object>(itr->market);
+                        if (mko && oracle_below_risk_floor(db, mko->oracle)) continue;
+                    }
+                    if (from > 0) { --from; continue; }
+                    result.push_back(emit_row(*itr, mk));
+                }
+                return result;
+            }
+            if (sort == "volume")
+                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.key > b.key; });
+            else // "expiration"
+                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.key < b.key; });
+            for (uint32_t i = from; i < es.size() && result.size() < limit; ++i)
+                result.push_back(emit_row(*es[i].m, es[i].mk));
             return result;
         });
     }
@@ -1452,6 +1567,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto limit = args.args->at(2).as<uint32_t>();
         auto show_risky = GET_OPTIONAL_ARG(3, bool, false); // reveal markets of under-insured oracles
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
@@ -1477,6 +1593,14 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         CHECK_ARG_SIZE(0)
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
+            // D3: the result only changes when meta rows change, i.e. on a new block at the earliest —
+            // cache it per head block (winner_agg pattern) instead of rescanning the whole meta index
+            // (~56k rows × 3 to_string + CSV parse + 2 sorts) on every call.
+            static thread_local uint32_t cache_epoch = 0;
+            static thread_local pm_market_categories_api_object cache;
+            const uint32_t epoch = db.head_block_num();
+            if (cache_epoch == epoch) return cache;
+            cache = pm_market_categories_api_object();
             std::map<std::string, uint32_t>                            cat_total;
             std::map<std::string, std::map<std::string, uint32_t>>     cat_sub;
             std::map<std::string, uint32_t>                            tag_count;
@@ -1514,7 +1638,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             std::stable_sort(out.hot_tags.begin(), out.hot_tags.end(),
                 [](const pm_tag_count& a, const pm_tag_count& b){ return a.count > b.count; });
             if (out.hot_tags.size() > 20) out.hot_tags.resize(20);
-            return out;
+            cache = out;
+            cache_epoch = epoch;
+            return cache;
         });
     }
 
@@ -1560,6 +1686,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from      = GET_OPTIONAL_ARG(1, uint32_t, 0u);
         auto limit     = GET_OPTIONAL_ARG(2, uint32_t, 1000u);
         FC_ASSERT(limit <= 1000, "limit must be <= 1000");
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_kline_api_object> out;
@@ -1824,18 +1951,22 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             std::vector<pm_leverage_position_object> my_leverage;
             std::vector<pm_liquidity_object>         my_liquidity;
             if (account != account_name_type()) {
+                // D5: each sub-list capped — a repeated get_market_full on a heavily-used market
+                // must not rebuild unbounded per-account sections.
+                static const size_t MY_CAP = 1000;
                 const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market_account>();
                 for (auto it = bidx.lower_bound(boost::make_tuple(mkt.id, account, pm_bet_id_type()));
-                     it != bidx.end() && it->market == mkt.id && it->account == account; ++it)
+                     it != bidx.end() && it->market == mkt.id && it->account == account
+                     && my_positions.size() < MY_CAP; ++it)
                     my_positions.push_back(pm_position_api_object{
                         pm_bet_object(*it), expected_payout(db, *it, mkt), mkt.status, mkt.resolved_outcome});
                 const auto& lidx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
                 for (auto it = lidx.lower_bound(boost::make_tuple(mkt.id, (uint8_t)0, pm_leverage_position_id_type()));
-                     it != lidx.end() && it->market == mkt.id; ++it)
+                     it != lidx.end() && it->market == mkt.id && my_leverage.size() < MY_CAP; ++it)
                     if (it->account == account) my_leverage.push_back(pm_leverage_position_object(*it));
                 const auto& qidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
                 for (auto it = qidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
-                     it != qidx.end() && it->market == mkt.id; ++it)
+                     it != qidx.end() && it->market == mkt.id && my_liquidity.size() < MY_CAP; ++it)
                     if (it->provider == account) my_liquidity.push_back(pm_liquidity_object(*it));
             }
 
@@ -1857,6 +1988,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto from  = args.args->at(0).as<uint32_t>();
         auto limit = args.args->at(1).as<uint32_t>();
         FC_ASSERT(limit <= 1000);
+        FC_ASSERT(from <= MAX_PM_PAGE_FROM);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_lazy_allocation_object> result;
