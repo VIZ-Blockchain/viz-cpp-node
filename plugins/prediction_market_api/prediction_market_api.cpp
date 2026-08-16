@@ -1785,6 +1785,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             if (free_amount <= 0 || fund_available <= 0) fail("fund_availability", "Leverage fund exhausted");
             const int64_t pos_room = pos_cap - collateral; // loan headroom vs market-size cap
             if (pos_room <= 0) fail("position_size", "Collateral already at/above market position cap");
+            // Per-position cap vs loan floor: if pool is too small, max loan < pm_min_liquidity → no valid loan exists.
+            // The evaluator enforces loan >= pm_min_liquidity (anti-Sybil, pm_evaluator.cpp:1439), so quote must
+            // surface this impossibility rather than returning available:true for loans that will fail at apply.
+            if (per_pos_cap < mp.pm_min_liquidity.amount)
+                fail("loan_floor_above_cap", "Per-position cap below minimum loan (pool too small for leverage)");
 
             // Only search when structurally eligible (no blocking constraint above, valid collateral).
             const bool eligible = out.failed_constraints.empty() && collateral > 0;
