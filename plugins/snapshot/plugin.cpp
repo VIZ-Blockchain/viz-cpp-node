@@ -2447,53 +2447,6 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 // mainnet/fresh chains strict. (B1: PR #124 — was hardcoded -9079, fatal on healthy
                 // chains. See journal 2026-07-15, q#199.)
                 const int64_t PM_SUPPLY_LEGACY_RESIDUAL = pm_supply_legacy_residual;
-                // ── TEMP instr (drift-400 localization, 2026-08-16): per-market CPMM reserve residual.
-                // reserve_a+reserve_b is the PHYSICAL token hold of a CPMM market; its sources are the
-                // active user LP (provider != ""), held bets (status 0/5/6) and active leverage
-                // (collateral+loan). The residual (reserve - sources) is the uncounted dust that makes the
-                // TOKEN invariant drift from its anchor. LMSR (market_type 1) holds no reserve (its tokens
-                // live directly in bet.amount / liquidity.amount), so it is skipped. Remove before mainnet.
-                {
-                    std::map<pm_market_id_type, int64_t> drift400_bets, drift400_lp, drift400_lev;
-                    {
-                        const auto& idx = db.get_index<pm_bet_index>().indices();
-                        for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                            if (itr->status == 0 || itr->status == 5 || itr->status == 6)
-                                drift400_bets[itr->market] += itr->amount.value;
-                    }
-                    {
-                        const auto& idx = db.get_index<pm_liquidity_index>().indices();
-                        for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                            if (itr->status == 0 && itr->provider.size() > 0)
-                                drift400_lp[itr->market] += itr->amount.value;
-                    }
-                    {
-                        const auto& idx = db.get_index<pm_leverage_position_index>().indices();
-                        for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                            if (itr->status == 0)
-                                drift400_lev[itr->market] += itr->collateral.value + itr->loan.value;
-                    }
-                    int64_t drift400_sum = 0; uint64_t drift400_n = 0;
-                    const auto& mkt_idx = db.get_index<pm_market_index>().indices();
-                    for (auto i = mkt_idx.begin(); i != mkt_idx.end(); ++i) {
-                        if (i->market_type != 0) continue; // CPMM only
-                        const int64_t reserve = i->reserve_a.value + i->reserve_b.value;
-                        const int64_t sources = drift400_bets[i->id] + drift400_lp[i->id] + drift400_lev[i->id];
-                        const int64_t resid   = reserve - sources;
-                        if (resid != 0) {
-                            ++drift400_n; drift400_sum += resid;
-                            ilog("drift400 mkt id=${id} st=${st} ra=${ra} rb=${rb} ab=${ab} bb=${bb} "
-                                 "bs=${bs} ls=${ls} fp=${fp} src=${s} res=${r} resid=${x}",
-                                 ("id", i->id._id)("st", (int)i->status)
-                                 ("ra", i->reserve_a.value)("rb", i->reserve_b.value)
-                                 ("ab", i->a_bets_sum.value)("bb", i->b_bets_sum.value)
-                                 ("bs", i->bets_sum.value)("ls", i->liquidity_sum.value)
-                                 ("fp", i->forfeit_pool.value)
-                                 ("s", sources)("r", reserve)("x", resid));
-                        }
-                    }
-                    ilog("drift400 TOTAL nonzero=${n} sum_resid=${sr}", ("n", drift400_n)("sr", drift400_sum));
-                }
                 ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
                      "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
                      "Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "

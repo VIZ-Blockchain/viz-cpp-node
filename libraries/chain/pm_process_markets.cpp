@@ -778,6 +778,14 @@ namespace pm_detail {
     // network-wide. Nothing else holds an id-reference to a settled market, so no dangling refs.
     void gc_market(database& db, const pm_market_object& mkt) {
         const pm_market_id_type mid = mkt.id;
+        // Conservation backstop (drift-400, 2026-08-16): forfeit_pool holds real tokens (routed
+        // leverage-exit dust / commit forfeits). Every terminal path routes it to zero before
+        // finalization, but a legacy market (e.g. voided before the #5/H4 forfeit-routing fix) can
+        // reach GC with a non-zero pool. At GC there are no bettors/LPs left to return to, so burn it
+        // from supply — otherwise db.remove(mkt) silently orphans those tokens and the re-armed PM
+        // supply invariant drifts on the next snapshot import (exactly the -400 seen on testnet).
+        if (mkt.forfeit_pool.value > 0)
+            db.burn_asset(asset(share_type(-mkt.forfeit_pool.value), TOKEN_SYMBOL));
         // Composite (market, …)-keyed indexes: drop the whole market range.
         auto drop_range = [&](const auto& idx) {
             for (auto it = idx.lower_bound(boost::make_tuple(mid));
