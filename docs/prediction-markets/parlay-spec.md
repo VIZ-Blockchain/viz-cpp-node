@@ -1,8 +1,12 @@
 # Parlay (accumulator) & system bets — design specification
 
-Status: **draft for review** (goal #423, owner decision q#593=B: spec now, implementation after
-mainnet launch). Consensus-level primitive, F1 rigor: every money path below must survive the
-adversarial checklist before implementation starts.
+Status: **design locked on scope & pricing** (owner 2026-08-18): leg quoting = **execution price**
+of the stake's virtual size (q#600=A); first implementation round = **binary legs + plain parlay
+only**, M-of-N systems are phase 2 (q#601=A). Implementation starts after mainnet launch
+(q#593=B). The governance parameters below are **new** `pm_parlay_*` / `pm_system_*` median
+parameters introduced by this feature — nothing existing changes; the listed defaults are the
+proposed launch values. Consensus-level primitive, F1 rigor: every money path below must survive
+the adversarial checklist before implementation starts.
 
 ## Problem
 
@@ -187,11 +191,14 @@ the same curve reads the bet form uses, with `min_payout` as the slippage guard.
 `get_account_parlays`, `get_market_parlays` (newest-first default per q#383=A), parlay card in
 activity (History/Active tabs).
 
-## Open questions (owner)
+## Decisions log
 
-1. Margin default: 5% ok, or thinner (3%) to undercut classic books?
-2. `max_payout` 100k VIZ / `max_multiplier` 1000× — sane launch caps?
-3. Execution-price quoting accepted (vs mid + bigger margin)?
-4. Systems (M of N) in the first implementation round or strictly phase 2?
-5. Parlay legs restricted to binary markets at launch (multi adds LMSR quote complexity), or both
-   from day one?
+- **q#600=A (2026-08-18):** leg price = execution price of the stake's virtual size on the live
+  curve (not mid) — the curve manipulator pays their own slippage first.
+- **q#601=A (2026-08-18):** first round = binary legs + plain parlay; M-of-N systems and multi
+  (LMSR) legs are phase 2. Object layout for systems is still specified above so the state shape
+  doesn't churn between rounds.
+- Launch defaults for the new `pm_parlay_*` parameters (margin 500 bp, max_payout 100k VIZ,
+  max_multiplier 1000×, max_legs 8, kill-switch default **off**) stand as proposed unless the
+  owner overrides specific values before implementation; all are median-votable post-launch
+  anyway, the defaults only seed the very first median.
