@@ -1388,6 +1388,10 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // Early-exit deferred claims (F1/#300): outcome-contingent, forward-only (no seed) → MUST be
     // in the snapshot or they vanish on reload and the winners'/bucket accounting diverges.
     EXPORT_INDEX(pm_deferred_claim_index, pm_deferred_claim_object, "pm_deferred_claim")
+    // In-flight settlement state (#432 D). A settlement now spans blocks, so a snapshot can be
+    // taken mid-flight: without this the market would come back at payout_status 4 with no
+    // cursor or accumulators — wedged forever, and its escrow would vanish from the invariant.
+    EXPORT_INDEX(pm_settlement_index,     pm_settlement_object,     "pm_settlement")
     EXPORT_INDEX(pm_creator_ban_index,    pm_creator_ban_object,    "pm_creator_ban")
 
     // NON-consensus PM metadata (titles/images/tags/event). Serialized only when the operator opts
@@ -1845,6 +1849,8 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             while (!pm_lwr_idx.empty())  { db.remove(*pm_lwr_idx.begin()); }
             const auto& pm_dcl_idx  = db.get_index<pm_deferred_claim_index>().indices();
             while (!pm_dcl_idx.empty())  { db.remove(*pm_dcl_idx.begin()); }
+            const auto& pm_stl_idx  = db.get_index<pm_settlement_index>().indices();
+            while (!pm_stl_idx.empty())  { db.remove(*pm_stl_idx.begin()); }
             if (db.has_index<pm_market_meta_index>()) { // non-consensus; absent without prediction_market_api
                 const auto& pm_mtm_idx = db.get_index<pm_market_meta_index>().indices();
                 while (!pm_mtm_idx.empty()) { db.remove(*pm_mtm_idx.begin()); }
@@ -2070,6 +2076,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("pm_deferred_claim")) { // F1/#300: outcome-contingent early-exit claims (forward-only, no seed)
             auto n = detail::import_simple_objects<pm_deferred_claim_object, pm_deferred_claim_index>(db, state["pm_deferred_claim"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} pm_deferred_claim objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_settlement")) { // #432 D: resume a settlement that was in flight when the snapshot was taken
+            auto n = detail::import_simple_objects<pm_settlement_object, pm_settlement_index>(db, state["pm_settlement"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_settlement objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("pm_creator_ban")) {
             auto n = detail::import_simple_objects<pm_creator_ban_object, pm_creator_ban_index>(db, state["pm_creator_ban"].get_array());
@@ -2431,8 +2441,19 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                         if (itr->status == 0)                                       // UNVERIFIED: collateral+loan held only while active
                             pm_leverage += itr->collateral.value + itr->loan.value;
                 }
+                // #432 D: a settlement spans blocks, so a snapshot can catch one mid-flight. Rows
+                // already released no longer count above, and payouts already made are in account
+                // balances — `escrow` is the difference and keeps the two sides equal at any block
+                // boundary. SIGNED: phase 3 pays early-exit claims out of a pot whose rows are still
+                // standing, so it is legitimately negative until phase 4 releases them.
+                int64_t pm_settling = 0;
+                {
+                    const auto& idx = db.get_index<pm_settlement_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_settling += itr->escrow.value;
+                }
                 const int64_t pm_token = pm_bets + pm_user_lp + pm_lazy + pm_commit
-                    + pm_dispute + pm_forfeit + pm_insurance + pm_leverage;
+                    + pm_dispute + pm_forfeit + pm_insurance + pm_leverage + pm_settling;
 
                 const int64_t summed_token = base_token + pm_token;
                 const int64_t expected_supply = dgp.current_supply.amount.value;
@@ -2454,14 +2475,15 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                      "invite_balance=${ib} validator_pending=${vp} vesting_fund=${vf} "
                      "reward_fund=${rf} committee_fund=${cf}. "
                      "PM: bets=${pb} user_lp=${pl} lazy=${plz} commit=${pc} dispute=${pd} "
-                     "forfeit=${pf} insurance=${pi} leverage=${plv}" CLOG_RESET,
+                     "forfeit=${pf} insurance=${pi} leverage=${plv} settling=${pst}" CLOG_RESET,
                      ("cs", expected_supply)("sm", summed_token)("bt", base_token)("pm", pm_token)
                      ("d", summed_token - expected_supply)
                      ("ab", acc_balance)("ar", acc_reserved)("eb", escrow_balance)("ef", escrow_fee)
                      ("ib", invite_balance)("vp", validator_pending)("vf", vesting_fund)
                      ("rf", reward_fund)("cf", committee_fund)
                      ("pb", pm_bets)("pl", pm_user_lp)("plz", pm_lazy)("pc", pm_commit)
-                     ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage));
+                     ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage)
+                     ("pst", pm_settling));
                 if (pm_delta != PM_SUPPLY_LEGACY_RESIDUAL) {
                     // ENFORCED (issue #127): after the leverage-exit residual fix the PM accounting
                     // is satoshi-exact, so any drift away from the expected residual is a genuine

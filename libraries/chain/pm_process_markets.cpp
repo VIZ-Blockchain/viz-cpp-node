@@ -831,6 +831,7 @@ namespace pm_detail {
         // defensive net so no overlooked or future finalize path can leave a claim row dangling
         // in shared memory / drift the snapshot. Money-neutral: the range is normally empty here.
         drop_range(db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>());
+        drop_unique(db.get_index<pm_settlement_index>().indices().get<by_settlement_market>());
         drop_unique(db.get_index<pm_dispute_index>().indices().get<by_market>());
         drop_unique(db.get_index<pm_lazy_allocation_index>().indices().get<by_market>());
         if (!drained) return false;                     // resume next block; market object stays

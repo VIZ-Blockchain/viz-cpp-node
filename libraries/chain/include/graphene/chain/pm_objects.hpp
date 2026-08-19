@@ -697,6 +697,57 @@ namespace graphene { namespace chain {
             allocator<pm_deferred_claim_object>
         > pm_deferred_claim_index;
 
+        // In-flight settlement state (#432 fix D). Settling a market is a two-pass job — pass one
+        // aggregates the losing stake and the winners' curve weight, pass two turns those into
+        // per-row payouts — and the per-block row budget can cut it at any point, so both passes'
+        // partial results have to survive the pause. This object carries them. It exists ONLY while
+        // a market is settling: created when the cron picks the market up, removed at finalization,
+        // so the cost tracks settlements in flight instead of every market that ever existed (the
+        // reason this is not a dozen extra fields on pm_market_object).
+        //
+        // Per-winner payout depends only on `winners_pool`, `weight_total` and the row's own fields,
+        // so phase 4 needs no memory of the rows it already paid — that is what makes the cut clean.
+        // The void (no-contest) path reuses the same accumulators for its two pro-rata
+        // distributions, preserving the "last participant absorbs the remainder" rounding.
+        // See docs/prediction-markets/settlement-work-bounds.md.
+        class pm_settlement_object : public object<pm_settlement_object_type, pm_settlement_object> {
+        public:
+            pm_settlement_object() = delete;
+            template<typename Constructor, typename Allocator>
+            pm_settlement_object(Constructor&& c, allocator<Allocator>) { c(*this); }
+
+            id_type            id;
+            pm_market_id_type  market;
+            uint8_t            phase  = 1;  ///< 1 force-close, 2 aggregate, 3 claims, 4 payout, 5 finalize
+            int64_t            cursor = 0;  ///< next row id to process within the current phase
+
+            share_type         stake_total;   ///< phase 2: losers_sum (normal) / total active stake (void)
+            fc::uint128_t      weight_total;  ///< phase 2: sum of winner curve weight (128-bit, as in compute_settlement)
+            share_type         winners_pool;  ///< set at 3->4, once paid claims are final
+            share_type         uncovered;     ///< set at 3->4: shortfall charged to LP principal (F1)
+            share_type         distributed;   ///< phase 4: profit paid (normal) / oracle-penalty share paid (void)
+            share_type         lp_bonus;      ///< phase 4: time-penalty taken (normal) / forfeit share paid (void)
+            share_type         paid_claims;   ///< phase 3: drawn from the bounded early-exit bucket
+
+            /// Conservation accumulator: += stake when a row is released, -= amount when someone is
+            /// paid. The PM supply invariant counts it as PM-held, so a snapshot taken mid-settlement
+            /// balances exactly. SIGNED on purpose — phase 3 pays early-exit claims out of a pot whose
+            /// rows are still standing, so it legitimately goes negative until phase 4 releases them.
+            /// Finalization asserts it is back to zero.
+            share_type         escrow;
+        };
+
+        struct by_settlement_market;
+        typedef multi_index_container<
+            pm_settlement_object,
+            indexed_by<
+                ordered_unique<tag<by_id>, member<pm_settlement_object, pm_settlement_id_type, &pm_settlement_object::id>>,
+                // At most one in-flight settlement per market.
+                ordered_unique<tag<by_settlement_market>, member<pm_settlement_object, pm_market_id_type, &pm_settlement_object::market>>
+            >,
+            allocator<pm_settlement_object>
+        > pm_settlement_index;
+
         class pm_lazy_allocation_object : public object<pm_lazy_allocation_object_type, pm_lazy_allocation_object> {
         public:
             pm_lazy_allocation_object() = delete;
@@ -906,6 +957,11 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_lazy_withdraw_request_object, graph
 FC_REFLECT((graphene::chain::pm_deferred_claim_object),
     (id)(market)(account)(kind)(outcome_index)(claim_amount)(exit_time))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_deferred_claim_object, graphene::chain::pm_deferred_claim_index)
+
+FC_REFLECT((graphene::chain::pm_settlement_object),
+    (id)(market)(phase)(cursor)(stake_total)(weight_total)(winners_pool)(uncovered)
+    (distributed)(lp_bonus)(paid_claims)(escrow))
+CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_settlement_object, graphene::chain::pm_settlement_index)
 
 FC_REFLECT((graphene::chain::pm_lazy_deposit_object),
     (id)(account)(shares)(principal)(reward_snapshot)(pending_rewards)(unlock_time))
