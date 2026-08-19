@@ -1,12 +1,69 @@
-# Parlay (accumulator) & system bets — design specification
+# Parlay (accumulator) & system bets — considered and REJECTED
 
-Status: **design locked on scope & pricing** (owner 2026-08-18): leg quoting = **execution price**
-of the stake's virtual size (q#600=A); first implementation round = **binary legs + plain parlay
-only**, M-of-N systems are phase 2 (q#601=A). Implementation starts after mainnet launch
-(q#593=B). The governance parameters below are **new** `pm_parlay_*` / `pm_system_*` median
-parameters introduced by this feature — nothing existing changes; the listed defaults are the
-proposed launch values. Consensus-level primitive, F1 rigor: every money path below must survive
-the adversarial checklist before implementation starts.
+Status: **rejected as a consensus primitive** (owner decision 2026-08-19, q#603=A). The full
+design below is kept as an archived record of *why* the idea does not fit the protocol, so the
+next "let's add parlays" proposal starts from the argued rejection, not from scratch.
+
+## Why rejected
+
+The platform's core trust invariant is that **liquidity providers and the Lazy Pool are
+principal-protected by construction**: betting is zero-sum between bettors (winners split the
+losers' pool), and the pool/LPs only collect fees and floors. A depositor does not have to trust
+market creators or oracles with their principal. That invariant is what makes a *decentralized*
+prediction market with permissionless market creation and competing oracles viable at all.
+
+A real parlay needs a counterparty holding directional risk at odds fixed at bet time. Making the
+Lazy Pool that counterparty breaks the invariant — depositors become hostages of every market
+creator's quality — and it is not fixable with parameters:
+
+1. **Leg correlation is a structural adverse-selection hole.** `W = S·(1−m)/Π p_i` is only fair
+   for *independent* legs. In a permissionless world, market creators can construct correlated
+   legs at will ("X wins the match" + "X wins map 2", the same real-world fact wrapped by two
+   different oracles). `Π p_i` systematically underprices such combos, giving the attacker a
+   persistent +EV against the pool. Correlation between markets is real-world semantics —
+   undetectable on-chain in principle. Centralized bookmakers solve this with human traders and
+   per-combo limits; the protocol has no such layer.
+2. **Leg prices come from manipulable curves.** Execution-price quoting (q#600=A) defends against
+   one-shot curve manipulation right before opening, but a thin parimutuel curve is still not an
+   honest probability. Fixed odds against a price source the attacker can influence means the
+   pool pays for someone else's control of the source.
+3. **What it took to make the one existing pool-fronted product safe (leverage, F1/#300).**
+   Leverage is the only place where the pool fronts funds, and it produced exactly this failure
+   class: position profit exceeding the losers' pool, shortfall landing on LPs. It is **solved** —
+   the early-exit reward cap plus the deferred outcome-contingent claim make
+   `winners_pool ≥ (1−cap)·losers − fees ≥ 0`, i.e. `uncovered == 0` **by construction**, with the
+   LP-charge path kept only as a defensive fallback behind a loud invariant-violation log. The
+   point is what that guarantee costs: leverage is a *bounded, collateralized* loan with
+   liquidation sweeps, and it still took a dedicated cap, a deferred-claim design and an
+   always-on invariant to bound. A parlay book has multiplicative payouts, no collateral to
+   liquidate and no per-leg bound to cap against — the same guarantee has nothing to hang on.
+4. **Consensus complexity vs. one UX feature.** Ten new median parameters, new objects, new
+   settlement paths (void re-pricing, dispute interactions, escrow FIFO) — all of it money-path
+   attack surface to audit before mainnet.
+
+A parlay book works when the market maker is a centralized, fully trusted party. That is
+explicitly not this protocol's trust model.
+
+## What replaces it
+
+- The **coupon** (one transaction, N independent `pm_place_bet` ops) already ships in the
+  Forecaster client — a multi-bet without a counterparty.
+- A client-side **auto-roll** ("sequential parlay") can deliver the accumulator feel with zero
+  consensus changes: the client re-stakes a leg's winnings on the next leg after it resolves.
+  Counterparty = the ordinary parimutuel pools; odds are not fixed upfront, which is honest under
+  parimutuel pricing. May later be hardened with a small "conditional bet after market X
+  resolves" operation if on-chain execution guarantees are wanted.
+- If a fully trusted market maker ever emerges, a parlay book could run as a **separate opt-in
+  risk fund** (explicitly *not* the Lazy Pool), where depositors knowingly accept bookmaker risk.
+  Out of scope until then.
+
+---
+
+# Archived design (pre-rejection, 2026-08-18)
+
+Everything below this line documents the design as it stood before the rejection, including the
+q#600/q#601 scope decisions that were locked while it was still a candidate. It is retained for
+reference only — none of it is planned work.
 
 ## Problem
 

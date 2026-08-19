@@ -44,7 +44,7 @@ flowchart TD
 | [Plugin API](../plugins/prediction-market-api) | `prediction_market_api` — read-only access to markets, bets, oracles, disputes, the lazy pool, and the median-voted parameters. |
 | [Workflows & interaction diagrams](./workflows) | One canonical binary market traced through every participant, with the zero-sum master ledger for normal and disputed resolution. |
 | [Concept analysis (Onix vs 90 concepts)](./concepts-analysis) | How the on-chain implementation maps onto the prediction-market theory atlas — what's solved, inherent, not needed, or roadmap. |
-| [Parlay & system bets (design spec)](./parlay-spec) | Draft consensus primitive: all-or-nothing accumulators priced off the live curves, lazy-pool counterparty, «M of N» systems. Post-mainnet roadmap. |
+| [Parlay & system bets — considered and rejected](./parlay-spec) | Why accumulators are **not** a VIZ primitive: a pool counterparty would break the principal-protection invariant LPs and the Lazy Pool rest on. Archived design kept as the argued record. |
 
 ## Governance
 
