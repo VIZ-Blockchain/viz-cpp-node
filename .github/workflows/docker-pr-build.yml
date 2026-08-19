@@ -105,10 +105,17 @@ jobs:
           submodules: recursive
 
       - name: Install distro Boost and build deps
+        # Runners fetch packages from azure.archive.ubuntu.com; when that mirror goes quiet
+        # apt keeps retrying it and the job hangs for hours instead of failing (seen
+        # 2026-08-19). Pin the canonical mirror, bound the wait, and cap the step.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update
+          $apt install -y --no-install-recommends \
             build-essential cmake libboost-all-dev libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
@@ -141,10 +148,17 @@ jobs:
           submodules: recursive
 
       - name: Install distro Boost and build deps
+        # Runners fetch packages from azure.archive.ubuntu.com; when that mirror goes quiet
+        # apt keeps retrying it and the job hangs for hours instead of failing (seen
+        # 2026-08-19). Pin the canonical mirror, bound the wait, and cap the step.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update
+          $apt install -y --no-install-recommends \
             build-essential cmake libboost-all-dev libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
