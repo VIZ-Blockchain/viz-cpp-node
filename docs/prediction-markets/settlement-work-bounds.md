@@ -109,17 +109,54 @@ budget (`pm_settle_rows_per_block`, shared across all settling markets, oldest m
 | 4 payout | pay winners / flip losers, one virtual op per row | yes |
 | 5 finalize | fees, LP settlement, dust, `payout_status = 3`, `finalized_time` | yes |
 
+#### Where the resume state lives
+
+Walking the current `settle_market()` end to end gives the exact state a paused settlement has to
+carry, and it is more than a cursor: the money split is a two-pass algorithm. Pass one produces the
+aggregates (`losers_sum`, total winner weight), pass two turns them into per-row payouts. Cut the
+function at any block boundary and both passes need their partial results preserved, plus the
+running totals that finalization needs for the dust.
+
+That state does **not** go on `pm_market_object`. It is twelve fields carried by every market that
+ever existed, when only the handful currently settling can use them — the object is already ~40
+fields wide and markets are the most numerous object on the chain. Instead one
+`pm_settlement_object` is created when a market enters settlement, keyed uniquely by market, and
+removed at finalization, so the cost is proportional to settlements *in flight*:
+
+| field | phase | meaning |
+|---|---|---|
+| `phase`, `cursor` | all | current phase and the next row id to process in it |
+| `stake_total` | 2 | `losers_sum` (normal) / total active stake (void) |
+| `weight_total` | 2 | Σ winner curve weight, 128-bit as in `compute_settlement` |
+| `winners_pool`, `uncovered` | set at 3→4 | the split constants, once claims are final |
+| `distributed` | 4 | Σ profit paid — finalize routes `winners_pool − distributed` as dust |
+| `lp_bonus` | 4 | Σ time-penalty taken from winners |
+| `paid_claims` | 3 | drawn from the bounded early-exit bucket |
+| `escrow` | all | signed conservation accumulator (below) |
+
+Per-winner payout depends only on `winners_pool`, `weight_total` and the row's own fields, so phase
+4 needs no memory of the rows it already paid — that is what makes the cut clean. The void path
+reuses the same fields (its two pro-rata distributions accumulate in `distributed` and `lp_bonus`),
+keeping "the last participant absorbs the remainder" rounding identical to today's.
+
+Because the object is removed at finalization, a market that is *not* settling has no settlement
+row at all, and garbage collection drops it with the rest of the cluster.
+
 Rules that make it safe:
 
-* **Determinism.** Phase, cursor and accumulators live in `pm_market_object`; the budget is a
+* **Determinism.** Phase, cursor and accumulators live in the settlement object; the budget is a
   median-voted parameter. Every node therefore processes exactly the same rows in the same blocks.
 * **The market is closed to everything else while settling.** `payout_status = 4` ("settling")
   keeps §5 from re-entering, keeps `pm_dispute_create` out (it requires `payout_status == 1`), and
   GC cannot fire because `finalized_time` is stamped only in phase 5.
 * **Conservation at every block boundary.** Money released from a row but not yet paid out is held
-  in an explicit `settle_escrow` accumulator on the market: `+= amount` when a row is released,
-  `-= payout` when someone is paid. The PM supply invariant counts `settle_escrow` as
-  PM-held, so a snapshot taken mid-settlement balances exactly; finalize asserts it reaches zero.
+  in an explicit `escrow` accumulator: `+= amount` when a row is released, `-= payout` when someone
+  is paid. The PM supply invariant counts it as PM-held, so a snapshot taken mid-settlement
+  balances exactly; finalize asserts it reaches zero. The accumulator is **signed**: phase 3 pays
+  early-exit claims out of a losing pot whose rows are still standing, so it legitimately goes
+  negative before phase 4 releases them. That is not a deficit — the tokens are in real account
+  balances and the rows that will fund them are still counted as PM-held, so the two sides of the
+  invariant move together either way.
 * **Progress.** A market with N rows finishes in about N / budget blocks; the floor of 100 on the
   budget makes starvation impossible.
 * **The rows themselves cannot move.** Every operation that creates, splits or removes a bet row —
