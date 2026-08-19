@@ -118,10 +118,39 @@ Rules that make it safe:
 
 `gc_market()` gets the same treatment — it deletes a bounded number of rows per block.
 
-## 5. Tuning
+## 5. What a row actually costs
 
-`pm_settle_rows_per_block` is the knob that trades settlement latency against block time. It must
-be set from a measured cost per row on the target hardware, not guessed: the benchmark
-(`tests/consensus_sim`) drives a market with a large row count and reports the wall-clock of the
-settling block. Raising `pm_min_bet` shortens the queue instead, at the price of excluding small
-bettors — prefer tuning the budget first.
+Measured with `tests/consensus_sim/bench/settle_bench.cpp` (`make pm_settle_bench`), which drives
+real markets of growing row count through a real chain and times the block that settles them.
+Release build, no sanitizers, no account_history plugin:
+
+| rows | idle block | settling block | per row | gc block | gc per row |
+|---|---|---|---|---|---|
+| 500 | 0.28 ms | 1.24 ms | 1.93 µs | 0.59 ms | 0.62 µs |
+| 2 000 | 0.29 ms | 3.61 ms | 1.66 µs | 1.54 ms | 0.62 µs |
+| 8 000 | 0.29 ms | 13.95 ms | 1.71 µs | 5.50 ms | 0.65 µs |
+
+Settlement is linear in rows at **~1.7 µs/row**, garbage collection at ~0.62 µs/row. Extrapolating:
+roughly **600 000 rows fill one second** of block time and ~1.7 M rows fill the whole three-second
+interval. Treat that as a **lower** bound — the benchmark bets from ten accounts (a real market has
+thousands, so lookups are less cache-friendly) and the simulated node runs no account_history
+plugin, so the virtual operation pushed per row costs almost nothing there while an API node pays
+to index it.
+
+That is the shape of the risk with fix A alone: an organic market is nowhere near the limit (the
+734-row testnet market settles in ~1.2 ms), but a spammer who is willing to stake 1 VIZ per row can
+buy ~1.7 seconds of settlement work in a single block for about a million VIZ. Cheap enough to be
+worth closing, which is fix D.
+
+## 6. Tuning
+
+`pm_settle_rows_per_block` trades settlement latency against block time, and the measurement above
+is what it should be set from:
+
+* the default **2 000** costs ~3.4 ms of settlement work per block (about 0.1 % of the interval)
+  and drains a million-row market in ~500 blocks, i.e. under half an hour;
+* raising it to 10 000 costs ~17 ms/block and drains the same market in ~100 blocks;
+* the floor of 100 exists so that progress is always guaranteed.
+
+Raising `pm_min_bet` shortens the queue instead, at the price of excluding small bettors — prefer
+tuning the budget first.
