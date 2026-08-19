@@ -1,47 +1,47 @@
 ---
-title: "Оракул — как объявлять исход и отвечать за него"
-description: "Оракул объявляет результат рынка (pm_resolve_market), несёт залог-страховку (insurance) и репутацию (reliability_score). Штрафы за неверный/пропущенный резолв; risk-floor скрывает недофинансированного оракула из листингов."
+title: "Oracle — how to announce an outcome and answer for it"
+description: "The oracle announces the market result (pm_resolve_market), carries an insurance bond and a reputation (reliability_score). Penalties for an incorrect/missed resolution; the risk-floor hides an underfunded oracle from the listings."
 ---
 
-# Оракул: как объявлять исход и отвечать за него
+# Oracle: how to announce an outcome and answer for it
 
-Оракул — это аккаунт, который говорит цепи, чем закончилось событие. От него зависит, кому уйдёт призовой пул. Поэтому оракул на VIZ не просто «нажимает кнопку»: он несёт **денежный залог** и **репутацию**, и отвечает ими за честность и своевременность.
+An oracle is the account that tells the chain how the event ended. Who gets the prize pool depends on it. That is why an oracle on VIZ does not merely "press a button": it carries a **money bond** and a **reputation**, and answers with both for honesty and timeliness.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Вы объявляете победивший исход операцией `pm_resolve_market` (только после закрытия ставок). Выплаты угадавшим начисляются автоматически. Чтобы вам доверяли рынки и деньги, вы держите **insurance** — залог в VIZ, привязанный к вашему оракул-аккаунту. Если insurance проседает ниже **risk-floor** относительно объёма обслуживаемых ставок, нода **скрывает ваши рынки из листингов** — механизм защищает беттеров от недокапитализированного оракула.
+You announce the winning outcome with the `pm_resolve_market` operation (only after betting closes). Payouts to those who called it right are credited automatically. To be trusted with markets and money, you hold **insurance** — a VIZ bond tied to your oracle account. If insurance sags below the **risk-floor** relative to the volume of bets you serve, the node **hides your markets from the listings** — the mechanism protects bettors from an undercapitalised oracle.
 
-За ошибки и молчание вас штрафуют из накопленной репутации и залога: неверный резолв, оспоренный и отменённый диспутом; пропуск дедлайна (`result_expiration`), когда рынок умирает как missed-resolution. Ваша **репутация** (`reliability_score`, 0..10000 bp) складывается из точности, вердиктов по спорам, отзывчивости и пунктуальности — и видна всем при выборе оракула.
+For mistakes and silence you are penalised out of your accrued reputation and bond: an incorrect resolution, challenged and overturned by a dispute; a missed deadline (`result_expiration`), when the market dies as missed-resolution. Your **reputation** (`reliability_score`, 0..10000 bp) is made up of accuracy, dispute verdicts, responsiveness and punctuality — and is visible to everyone choosing an oracle.
 
-## Что вы делаете по шагам
+## What you do step by step
 
-**Готовитесь.** Заводите insurance на оракул-аккаунт (`pm_oracle_update`) — держите его с запасом над risk-floor, иначе рынки скроют. Правило floor: рынок виден, если insurance ≥ порога и ≥ кратного суммы ставок под вашим управлением.
+**Get ready.** Fund insurance on the oracle account (`pm_oracle_update`) — keep it with a margin above the risk-floor, otherwise your markets will be hidden. The floor rule: a market is visible if insurance ≥ the threshold and ≥ a multiple of the sum of bets under your management.
 
-**Ждёте закрытия ставок.** Резолвить можно только после `betting_expiration`. Раньше — нельзя (нет смысла объявлять исход, пока ставки идут). Если рынок создан с `allow_early_resolution` и исход уже определённо известен, можно закрыть досрочно — окно спора при этом схлопывается к моменту резолва.
+**Wait for betting to close.** Resolution is only possible after `betting_expiration`. Not before (there is no point announcing an outcome while bets are still coming in). If the market was created with `allow_early_resolution` and the outcome is already known for sure, you can close it early — the dispute window then collapses to the moment of resolution.
 
-**Объявляете исход.** `pm_resolve_market` с победившим исходом. Нода делит пул: угадавшие получают выплаты автоматически (виртуальная `pm_payout`), проигравшие исходы обнуляются. За резолв вам начисляется **oracle fee** (ограничен медиан-параметром сети, максимум `pm_max_oracle_fee_percent`).
+**Announce the outcome.** `pm_resolve_market` with the winning outcome. The node splits the pool: those who called it right are paid automatically (virtual `pm_payout`), and losing outcomes are zeroed out. For the resolution you are credited an **oracle fee** (capped by a network median parameter, at most `pm_max_oracle_fee_percent`).
 
-**Если исхода нет.** Событие отменено, источник пропал, ничья без победителя → вместо резолва объявляете **no-contest** (`pm_no_contest`): ставки возвращаются, никто не выигрывает и не проигрывает. Это честный выход, а не штраф — но делать его надо вовремя, до дедлайна.
+**If there is no outcome.** The event was cancelled, the source disappeared, a draw with no winner → instead of resolving you declare **no-contest** (`pm_no_contest`): bets are refunded, nobody wins and nobody loses. That is an honest exit, not a penalty — but it has to be done in time, before the deadline.
 
-**Проходите окно спора.** После объявления беттеры могут оспорить исход в grace-периоде (`pm_dispute_create`). Если диспут признаёт вашу правоту — вы получаете подтверждение репутации; если ваш резолв признан неверным — штраф. Подробно — в статье про диспуты.
+**Get through the dispute window.** After the announcement, bettors can challenge the outcome within the grace period (`pm_dispute_create`). If the dispute finds you were right, your reputation is confirmed; if your resolution is found incorrect, you are penalised. Details — in the article on disputes.
 
-## За что штрафуют
+## What you are penalised for
 
-- **Неверный резолв.** Объявили не тот исход, диспут это подтвердил → штраф из залога/репутации, выплаты пересчитываются.
-- **Пропуск дедлайна.** Не объявили исход до `result_expiration` → рынок гибнет как missed-resolution, вас слэшат. Не молчите: если источник не дал результат — делайте no-contest.
-- **Систематическая медлительность.** Поздние (но сделанные) резолвы роняют фактор пунктуальности в `reliability_score`. Опоздание больше не равно своевременности.
+- **Incorrect resolution.** You announced the wrong outcome and a dispute confirmed it → penalty from the bond/reputation, payouts are recomputed.
+- **Missed deadline.** You did not announce the outcome before `result_expiration` → the market dies as missed-resolution and you are slashed. Do not stay silent: if the source did not give a result, declare no-contest.
+- **Systematic slowness.** Late (but completed) resolutions drag down the punctuality factor in `reliability_score`. Being late is no longer the same as being on time.
 
-## Что нужно понимать оракулу
+## What an oracle needs to understand
 
-- **Insurance — это доверие в цифрах.** Держите его выше floor с запасом; он проседает от накопленного слэша и растёт с обслуживаемым объёмом. Недофинансированный оракул исчезает из листингов — рынки будто «пропадают».
-- **Репутация публична и составная.** `reliability_score` = точность (accuracy) + вердикты по спорам + отзывчивость + пунктуальность − штрафы (decaying penalty-stamps) − баны, со сжатием к средней при малом числе резолвов. В интерфейсе показывается как процент (bp/100).
-- **Резолв необратим по эффекту, но оспорим.** Выплаты идут сразу, но окно спора может их отменить и наказать вас. Ошиблись — честнее самому инициировать корректировку, чем ждать слэша.
-- **Своевременность = деньги.** No-contest вовремя лучше, чем молчание до дедлайна. Автоматизируйте резолв, если обслуживаете много рынков.
+- **Insurance is trust in numbers.** Keep it above the floor with a margin; it sags from accumulated slashing and grows with the volume you serve. An underfunded oracle disappears from the listings — the markets seem to "vanish".
+- **Reputation is public and composite.** `reliability_score` = accuracy + dispute verdicts + responsiveness + punctuality − penalties (decaying penalty-stamps) − bans, shrunk toward the average when the number of resolutions is small. In the interface it is shown as a percentage (bp/100).
+- **A resolution is irreversible in effect, but disputable.** Payouts go out immediately, but the dispute window can cancel them and punish you. If you got it wrong, it is more honest to initiate the correction yourself than to wait for a slashing.
+- **Timeliness = money.** A no-contest on time is better than silence until the deadline. Automate resolution if you serve many markets.
 
-## Роли рядом с вами
+## Roles next to you
 
-- **Создатель рынка** — выбирает вас оракулом и задаёт окно спора.
-- **Беттер** — доверяет вам исход и может оспорить его.
-- **Диспутер** — участник спора, который проверяет ваш вердикт.
+- **Market creator** — chooses you as the oracle and sets the dispute window.
+- **Bettor** — trusts you with the outcome and can challenge it.
+- **Disputer** — a participant in the dispute who checks your verdict.
 
-Дальше по теме: «Диспуты» (как оспаривается исход и чем это грозит оракулу), «Создатель рынка» (кто и как вас назначает), «Оракул и разрешение» (дедлайны, missed-resolution, no-contest в деталях).
+More on the topic: "Disputes" (how an outcome is challenged and what it means for the oracle), "Market creator" (who appoints you and how), "Oracle and resolution" (deadlines, missed-resolution, no-contest in detail).

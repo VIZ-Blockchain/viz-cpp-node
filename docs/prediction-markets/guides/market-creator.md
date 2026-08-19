@@ -1,51 +1,51 @@
 ---
-title: "Создатель рынка — как завести вопрос на VIZ"
-description: "Как создать рынок предсказаний: задать вопрос и исходы, внести стартовую ликвидность, выбрать оракула и режим спора, назначить комиссию. Ликвидность principal-protected и возвращается сама на сеттле."
+title: "Market creator — how to open a question on VIZ"
+description: "How to create a prediction market: set the question and outcomes, put up initial liquidity, choose an oracle and a dispute mode, set the fee. Liquidity is principal-protected and comes back on its own at settlement."
 ---
 
-# Создатель рынка: как завести вопрос
+# Market creator: how to open a question
 
-Вы формулируете вопрос, на который люди будут ставить: «кто победит», «случится ли событие к дате», «да/нет». Создать рынок на VIZ может любой аккаунт — это обычная подписанная операция `pm_create_market`, без разрешений и модерации. Разберём, что вы задаёте и за что отвечаете.
+You formulate the question people will bet on: "who wins", "will the event happen by a date", "yes/no". Any account can create a market on VIZ — it is an ordinary signed `pm_create_market` operation, with no permissions and no moderation. Let's go through what you set and what you answer for.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Рынок — это вопрос + набор исходов + **кривая ликвидности**, по которой считается цена. Вы вносите стартовую ликвидность (свой залог), задаёте комиссию рынка, выбираете **оракула** (кто объявит исход) и **режим спора** (как исход можно оспорить). После создания рынок живёт сам: люди ставят, цена плывёт, на дедлайне оракул объявляет результат, нода автоматически рассчитывает выплаты.
+A market is a question + a set of outcomes + a **liquidity curve** that the price is computed along. You put up the initial liquidity (your own stake), set the market fee, choose an **oracle** (who announces the outcome) and a **dispute mode** (how the outcome can be challenged). Once created, the market lives on its own: people bet, the price floats, at the deadline the oracle announces the result, and the node computes the payouts automatically.
 
-Ваш стартовый залог не «сгорает» — прямая ликвидность рынка **principal-protected**: она задаёт глубину кривой, зарабатывает на комиссиях и **возвращается вам целиком** на сеттлменте (плюс накопленная доля комиссий). Вы не контрагент ставок и не рискуете принципалом от исхода — этим рынок VIZ отличается от «банкира», который может уйти в минус.
+Your initial stake does not "burn" — direct market liquidity is **principal-protected**: it sets the depth of the curve, earns from fees and is **returned to you in full** at settlement (plus your accrued share of fees). You are not the counterparty to the bets and you do not risk principal on the outcome — that is what makes a VIZ market different from a "bookmaker" who can go into the red.
 
-## Что вы задаёте при создании
+## What you set at creation
 
-**Вопрос и исходы.** Текст вопроса, метаданные (заголовок, событие, теги, картинка-ссылка). Тип рынка: **бинарный** (два исхода, CPMM-кривая) или **мульти-исходный** (до 64 исходов, LMSR). Мультивариант удобен, когда исходов много (кто из N победит); подробно — в статье про мульти-рынки.
+**Question and outcomes.** The text of the question, the metadata (title, event, tags, image link). The market type: **binary** (two outcomes, CPMM curve) or **multi-outcome** (up to 64 outcomes, LMSR). A multi-outcome market is convenient when there are many outcomes (which of N wins); details — in the article on multi-outcome markets.
 
-**Стартовую ликвидность.** Сколько VIZ вы кладёте в кривую. Чем больше — тем «глубже» рынок: ставки двигают цену плавнее, крупные игроки входят без резких скачков. Это ваш principal-protected капитал (см. статью про активного LP).
+**Initial liquidity.** How much VIZ you put into the curve. The more, the "deeper" the market: bets move the price more smoothly, and large players can enter without sharp jumps. This is your principal-protected capital (see the article on the active LP).
 
-**Комиссию рынка.** Процент, который удерживается со ставок и идёт поставщикам ликвидности (вам и другим LP) как доход. Ограничена медиан-параметром сети сверху.
+**Market fee.** The percentage withheld from bets and paid to liquidity providers (you and other LPs) as income. Capped from above by a network median parameter.
 
-**Оракула.** Аккаунт, который отвечает за объявление исхода. Это можете быть вы сами или доверенный специализированный оракул (например, зеркалящий Polymarket/Kalshi). Оракул несёт **залог-страховку (insurance)** и репутацию: за неверный или пропущенный резолв его штрафуют — см. статью про оракула.
+**Oracle.** The account responsible for announcing the outcome. That can be you yourself or a trusted specialised oracle (for example, one mirroring Polymarket/Kalshi). The oracle carries an **insurance bond** and a reputation: it is penalised for an incorrect or missed resolution — see the article on the oracle.
 
-**Режим и окно спора.** Как исход можно оспорить после объявления: через комитет или голосованием аккаунтов, и в течение какого grace-периода. Это защита беттеров от неверного резолва.
+**Dispute mode and window.** How the outcome can be challenged after it is announced: by a committee or by an account vote, and within what grace period. This protects bettors from an incorrect resolution.
 
-**Сроки.** `betting_expiration` — когда закрывается приём ставок; `result_expiration` — дедлайн, к которому оракул обязан объявить исход. Опция `allow_early_resolution` разрешает оракулу закрыть рынок раньше, если исход уже известен.
+**Deadlines.** `betting_expiration` — when bets stop being accepted; `result_expiration` — the deadline by which the oracle must announce the outcome. The `allow_early_resolution` option lets the oracle close the market earlier if the outcome is already known.
 
-## Что происходит после создания
+## What happens after creation
 
-- **Рынок открыт.** Люди ставят, комиссии капают вам как LP. Вы можете доложить ликвидности или вывести часть (price-neutral, без потери принципала).
-- **Закрытие ставок.** На `betting_expiration` приём ставок прекращается.
-- **Разрешение.** Оракул объявляет исход. Нода делит пул: угадавшие получают выплаты автоматически, ваш LP-принципал + доля комиссий возвращаются на сеттле **безусловно**.
-- **Если исхода нет.** Оракул объявляет **no-contest** (событие отменено, источник пропал) → ставки возвращаются беттерам, ваша ликвидность — вам, оракул без штрафа. Если же оракул **промолчал** до дедлайна (`result_expiration` + grace), рынок гибнет как **missed-resolution**: ставки тоже возвращаются, но оракула штрафуют (см. «[Оракул и разрешение](./resolution)»).
+- **The market is open.** People bet, fees accrue to you as an LP. You can add more liquidity or withdraw part of it (price-neutral, with no loss of principal).
+- **Betting closes.** At `betting_expiration` bets stop being accepted.
+- **Resolution.** The oracle announces the outcome. The node splits the pool: those who called it right are paid automatically, and your LP principal + share of fees are returned at settlement **unconditionally**.
+- **If there is no outcome.** The oracle declares **no-contest** (event cancelled, source disappeared) → bets are refunded to the bettors, your liquidity comes back to you, and the oracle is not penalised. But if the oracle **stayed silent** until the deadline (`result_expiration` + grace), the market dies as **missed-resolution**: bets are still refunded, but the oracle is penalised (see "[Oracle and resolution](./resolution)").
 
-## Что нужно понимать создателю
+## What a creator needs to understand
 
-- **Вы не банкир.** Прямая ликвидность рынка не покрывает выигрыши из своего кармана — призовой пул формируют проигравшие ставки. Ваш принципал защищён.
-- **Оракул — критичный выбор.** От него зависит, будет ли рынок честно разрешён. Плохой оракул = споры и штрафы. Берите проверенного или будьте оракулом сами и держите insurance выше risk-floor, иначе рынок скроют из листингов.
-- **Комиссия — баланс.** Выше комиссия = больше ваш доход, но дороже игрокам и меньше объём. Ниже — привлекательнее для беттеров.
-- **Глубина решает.** Тонкая ликвидность = резкие скачки цены от каждой ставки, что отпугивает крупных игроков. Стартовый залог задаёт качество рынка.
-- **Метаданные важны.** Рынок без on-chain-названия/тегов хуже находится в клиентах и сложнее резолвится автоматикой.
+- **You are not the bookmaker.** Direct market liquidity does not cover the winnings out of your own pocket — the prize pool is formed by the losing bets. Your principal is protected.
+- **The oracle is a critical choice.** Whether the market is resolved honestly depends on it. A bad oracle = disputes and penalties. Take a proven one, or be the oracle yourself and keep insurance above the risk-floor, otherwise your market will be hidden from the listings.
+- **The fee is a balance.** A higher fee = more income for you, but a more expensive market for the players and less volume. A lower one is more attractive to bettors.
+- **Depth decides.** Thin liquidity = sharp price jumps on every bet, which scares off large players. The initial stake sets the quality of the market.
+- **Metadata matters.** A market with no on-chain title/tags is harder to find in clients and harder for automation to resolve.
 
-## Роли рядом с вами
+## Roles next to you
 
-- **Беттер** — тот, кто ставит на ваши исходы.
-- **Оракул** — объявляет результат; вы его выбираете при создании.
-- **Активный LP** — может добавить глубины в ваш рынок помимо вашего стартового залога.
+- **Bettor** — the one who bets on your outcomes.
+- **Oracle** — announces the result; you choose it at creation.
+- **Active LP** — can add depth to your market on top of your initial stake.
 
-Дальше по теме: «Оракул и разрешение» (кого выбрать и как он отвечает), «Активный LP» (механика ликвидности и возврата принципала), «Диспуты» (режимы спора), «Мульти-исходные рынки» (когда исходов больше двух).
+More on the topic: "Oracle and resolution" (who to choose and what they answer for), "Active LP" (the mechanics of liquidity and principal return), "Disputes" (dispute modes), "Multi-outcome markets" (when there are more than two outcomes).

@@ -1,107 +1,107 @@
 ---
-title: "События и метаданные — как клиент собирает рынки в матчи"
-description: "Как Forecaster агрегирует рынки в «События»: ключи метаданных event / event_title / child, родительский и дочерние рынки, что индексирует нода и как создать рынок, который клиент распознает как событие."
+title: "Events and metadata — how the client assembles markets into matches"
+description: "How Forecaster aggregates markets into \"Events\": the event / event_title / child metadata keys, the parent and the child markets, what the node indexes and how to create a market the client will recognise as an event."
 ---
 
-# События и метаданные: как рынки собираются в матчи
+# Events and metadata: how markets are assembled into matches
 
-Один реальный матч — это обычно несколько рынков: «кто победит», «тотал убийств», «первый Рошан».
-On-chain это независимые `pm_market_object`, но клиент (Forecaster) показывает их одной карточкой
-события со ставками по исходам и ссылкой «ещё N линий». Склейка происходит **только через
-метаданные** — специальных «родительских» объектов в консенсусе нет, и это осознанно: протокол
-остаётся минимальным, а группировку задаёт создатель рынка при создании.
+A single real-world match is usually several markets: "who wins", "total kills", "first Roshan".
+On chain these are independent `pm_market_object`s, but the client (Forecaster) shows them as one event
+card with bets on outcomes and a "N more lines" link. The grouping happens **through metadata only** —
+there are no special "parent" objects in consensus, and that is deliberate: the protocol stays
+minimal, while the grouping is set by the market creator at creation time.
 
-## Короткая модель
+## The short model
 
-- Каждый рынок несёт свободное текстовое поле `metadata` (JSON-строка в `pm_create_market`).
-- Нода парсит из него **белый список ключей** и строит индексы; всё остальное игнорирует.
-- Рынки с одинаковым `event` — «одно событие». Рынок без `child` — лицевой (родительский),
-  с `child: 1` — дочерняя линия (проп).
-- Forecaster: таб «События» группирует активные рынки по `event`, лицевым показывает
-  винлайн-рынок, дочерние прячет из общих лент и раскрывает на странице события.
+- Every market carries a free-form text field `metadata` (a JSON string in `pm_create_market`).
+- The node parses a **whitelist of keys** out of it and builds indexes; everything else is ignored.
+- Markets with the same `event` are "one event". A market without `child` is the front (parent) one,
+  a market with `child: 1` is a child line (a prop).
+- Forecaster: the "Events" tab groups active markets by `event`, shows the winner-line market as the
+  front one, hides the children from the general feeds and reveals them on the event page.
 
-## Ключи метаданных, которые индексирует нода
+## The metadata keys the node indexes
 
-Нода извлекает из `metadata` только эти поля (остальные ключи не индексируются, но остаются
-в сыром JSON — клиенты могут читать их сами):
+The node extracts only these fields from `metadata` (other keys are not indexed, but remain in the
+raw JSON — clients can read them themselves):
 
-| Ключ | Тип | Зачем |
+| Key | Type | What for |
 |------|-----|-------|
-| `title` | строка | Человекочитаемый вопрос рынка (заголовок карточки). |
-| `category` | строка | Раздел листингов (`esports`, `sports`, `crypto`…) — индекс `by_category`. |
-| `subcategory` | строка | Уточнение раздела (опционально). |
-| `tags` | массив или CSV | Теги для фильтров; клиент читает **массив** `market.metadata.tags`, который нода пересобирает сама. |
-| `image` | строка (URL) | Обложка карточки (ссылка, не хостится on-chain). |
-| `description` | строка | Краткие правила резолва — «как оракул решит исход». |
-| `event` | строка (slug) | **Ключ склейки события.** Все рынки одного матча ставят одинаковый `event`. |
-| `event_title` | строка | Человекочитаемое имя события («Dota 2: MOUZ vs Vici — TI 2026»). |
-| `child` | 1 / true | **Дочерняя линия (проп).** Прячется из лент по категории/тегу; видна на странице события. |
-| `banned_jurisdictions` | массив или CSV | Юрисдикционный фильтр клиентов. |
-| `condition_id` | строка | Дедуп-идентификатор источника (для зеркалирующих парсеров). |
+| `title` | string | The human-readable question of the market (the card headline). |
+| `category` | string | The listing section (`esports`, `sports`, `crypto`…) — the `by_category` index. |
+| `subcategory` | string | A refinement of the section (optional). |
+| `tags` | array or CSV | Tags for filters; the client reads the **array** `market.metadata.tags`, which the node rebuilds itself. |
+| `image` | string (URL) | The card cover (a link, not hosted on chain). |
+| `description` | string | Short resolution rules — "how the oracle will decide the outcome". |
+| `event` | string (slug) | **The event grouping key.** All markets of one match set the same `event`. |
+| `event_title` | string | The human-readable name of the event ("Dota 2: MOUZ vs Vici — TI 2026"). |
+| `child` | 1 / true | **A child line (a prop).** Hidden from the category/tag feeds; visible on the event page. |
+| `banned_jurisdictions` | array or CSV | The jurisdiction filter for clients. |
+| `condition_id` | string | The source's dedup identifier (for mirroring parsers). |
 
-Правила разбора: `metadata` должен быть валидным JSON-объектом (не-JSON просто не индексируется);
-`tags`/`banned_jurisdictions` принимаются и массивом, и CSV-строкой; `child` принимается как
-`true`, `1` или `"1"`. Теги матчатся без учёта регистра.
+Parsing rules: `metadata` must be a valid JSON object (non-JSON is simply not indexed);
+`tags`/`banned_jurisdictions` are accepted both as an array and as a CSV string; `child` is accepted as
+`true`, `1` or `"1"`. Tags are matched case-insensitively.
 
-## Как указать «родительский» рынок
+## How to designate the "parent" market
 
-Родитель не указывается явно — он **вычисляется отсутствием `child`**:
+The parent is not designated explicitly — it is **derived from the absence of `child`**:
 
-1. Всем рынкам матча проставьте одинаковый `event` (стабильный slug: латиница, дефисы —
-   например `dota2-mouz-vg-2026-07-12`) и одинаковый `event_title`.
-2. Главному рынку матча («кто победит» / moneyline) — **не ставьте** `child`. Это и есть
-   родитель: он остаётся видимым во всех лентах и станет лицом карточки события.
-3. Всем остальным линиям (тоталы, форы, спецрынки) — `child: 1`. Они исчезают из общих
-   лент (не шумят в категориях), но полностью доступны на странице события и по прямой ссылке.
+1. Give all the markets of the match the same `event` (a stable slug: latin letters, hyphens —
+   for example `dota2-mouz-vg-2026-07-12`) and the same `event_title`.
+2. For the main market of the match ("who wins" / moneyline) — **do not set** `child`. That is the
+   parent: it stays visible in all feeds and becomes the face of the event card.
+3. For all the other lines (totals, handicaps, special markets) — `child: 1`. They disappear from the
+   general feeds (no noise in the categories), but remain fully available on the event page and by direct link.
 
-Минимальный пример `metadata` для трёх рынков одного матча:
+A minimal `metadata` example for three markets of one match:
 
 ```json
-// Родитель (винлайн) — БЕЗ child
-{"title":"MOUZ победит Vici Gaming?","category":"esports","tags":["dota-2"],
+// Parent (winner line) — WITHOUT child
+{"title":"Will MOUZ beat Vici Gaming?","category":"esports","tags":["dota-2"],
  "event":"dota2-mouz-vg-2026-07-12","event_title":"Dota 2: MOUZ vs Vici Gaming"}
 
-// Дочерняя линия 1
-{"title":"Тотал убийств больше 45.5 (карта 1)?","category":"esports","tags":["dota-2"],
+// Child line 1
+{"title":"Total kills over 45.5 (map 1)?","category":"esports","tags":["dota-2"],
  "event":"dota2-mouz-vg-2026-07-12","event_title":"Dota 2: MOUZ vs Vici Gaming","child":1}
 
-// Дочерняя линия 2
-{"title":"Первый Рошан — MOUZ?","category":"esports","tags":["dota-2"],
+// Child line 2
+{"title":"First Roshan — MOUZ?","category":"esports","tags":["dota-2"],
  "event":"dota2-mouz-vg-2026-07-12","event_title":"Dota 2: MOUZ vs Vici Gaming","child":1}
 ```
 
-Важно: `event` **иммутабелен на практике** — клиенты склеивают по точному совпадению строки,
-поэтому выберите ключ до создания рынков и используйте его во всех линиях матча одинаково
-(регистр и дефисы имеют значение).
+Important: `event` is **immutable in practice** — clients group by an exact string match, so pick the
+key before creating the markets and use it identically across all the lines of the match
+(case and hyphens matter).
 
-## Что делает нода
+## What the node does
 
-- Строит мета-объект рынка (`pm_market_meta`) с распарсенными полями и индексами: по категории,
-  тегам и **по событию** (`by_meta_event`); мета едет в снапшот.
-- `list_markets_by_category(...)` по умолчанию **прячет дочерние** (`hide_children = true`,
-  8-й аргумент) — ленты показывают только родителей; передайте `false`, чтобы увидеть все линии.
-- `list_markets_by_event(event, from, limit)` отдаёт **все** рынки события — родителя и детей,
-  без фильтра. Это API страницы события.
-- В строках листингов `event_title` отдаётся на верхнем уровне, в полной карточке рынка — внутри
-  `metadata`; `tags` нода пересобирает в массив.
+- Builds the market's meta object (`pm_market_meta`) with the parsed fields and indexes: by category,
+  by tags and **by event** (`by_meta_event`); the meta goes into the snapshot.
+- `list_markets_by_category(...)` **hides children** by default (`hide_children = true`,
+  the 8th argument) — the feeds show only parents; pass `false` to see all the lines.
+- `list_markets_by_event(event, from, limit)` returns **all** the markets of the event — the parent and
+  the children, with no filter. This is the API of the event page.
+- In listing rows `event_title` is returned at the top level, in the full market card — inside
+  `metadata`; `tags` are rebuilt into an array by the node.
 
-## Что делает Forecaster с этим
+## What Forecaster does with it
 
-- **Таб «События»** (спорт-бук вид): активные рынки группируются по `event`; лицевым выбирается
-  рынок, чей заголовок похож на винлайн (`winner` / `moneyline` / `to win`), иначе — первый
-  бинарный; на карточке — исходы с текущими коэффициентами (тап кладёт ногу в купон) и ссылка
-  «ещё N линий».
-- **Страница события** `#/event/<ключ>` — все линии матча одним списком (`list_markets_by_event`).
-- **Карточки** показывают `event_title` над вопросом; крошки «Категория › теги» ведут в листинги.
-- **Ленты по категории/тегу** не показывают дочерние рынки — пропы живут за карточкой события.
+- **The "Events" tab** (the sports-book view): active markets are grouped by `event`; the front market
+  is the one whose headline looks like a winner line (`winner` / `moneyline` / `to win`), otherwise the
+  first binary one; the card shows the outcomes with the current odds (a tap adds a leg to the coupon) and
+  a "N more lines" link.
+- **The event page** `#/event/<key>` — all the lines of the match in one list (`list_markets_by_event`).
+- **Cards** show `event_title` above the question; the "Category › tags" breadcrumbs lead to the listings.
+- **Category/tag feeds** do not show child markets — the props live behind the event card.
 
-Практический вывод для создателя: правильно проставленные `event`/`event_title`/`child` — это
-разница между «десять разрозненных рынков шумят в ленте» и «одна аккуратная карточка матча со
-всеми линиями внутри». Ошиблись в ключе события — линии не склеятся; забыли `child` — пропы
-засорят общие ленты.
+The practical takeaway for a creator: correctly set `event`/`event_title`/`child` is the difference
+between "ten scattered markets making noise in the feed" and "one tidy match card with all the lines
+inside". Get the event key wrong and the lines will not group; forget `child` and the props will
+clutter the general feeds.
 
-## Смотрите также
+## See also
 
-- [Создатель рынка](./market-creator) — стартовая ликвидность, оракул, комиссия.
-- [Мульти-исходные рынки](./multi-outcome) — когда вместо нескольких бинарных лучше один LMSR.
-- [Спецификация](../specification) — формальная модель объектов и индексов.
+- [Market creator](./market-creator) — starting liquidity, the oracle, the fee.
+- [Multi-outcome markets](./multi-outcome) — when one LMSR market beats several binary ones.
+- [Specification](../specification) — the formal model of objects and indexes.

@@ -1,42 +1,42 @@
 ---
-title: "Беттер — как делать ставки на рынках предсказаний VIZ"
-description: "Ставка идёт в общий пул рынка и двигает плавающий коэффициент; выигрыш делится между угадавшими пропорционально долям, выплата автоматическая на резолве."
+title: "Bettor — how to place bets on VIZ prediction markets"
+description: "A bet goes into the shared market pool and moves the floating odds; the prize is split among those who called it right, in proportion to their shares, and the payout is automatic on resolution."
 ---
 
-# Беттер: как делать ставки на рынках предсказаний VIZ
+# Bettor: how to place bets on VIZ prediction markets
 
-Вы пришли поставить на исход — «да/нет», «кто победит», «будет ли событие». На VIZ это работает не как у букмекера с фиксированным коэффициентом, а как **общий пул**. Разберём, что именно происходит с вашими деньгами и как формируется выигрыш.
+You came to bet on an outcome — "yes/no", "who wins", "will the event happen". On VIZ this does not work like a bookmaker with fixed odds, but as a **shared pool**. Let's go through what exactly happens to your money and how the winnings are formed.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Вы ставите VIZ на один из исходов. Ваша ставка идёт в **пул рынка** и двигает цену: чем больше поставили на исход, тем дороже он становится и тем меньше «долей» (weight) вы получаете за следующий токен. Коэффициент не фиксируется в момент ставки — он **плавающий**, его задаёт баланс пула прямо сейчас.
+You stake VIZ on one of the outcomes. Your bet goes into the **market pool** and moves the price: the more has been staked on an outcome, the more expensive it becomes and the fewer "shares" (weight) you get for the next token. The odds are not locked in at the moment of the bet — they are **floating**, set by the balance of the pool right now.
 
-Когда оракул объявляет исход, весь пул делится между теми, кто угадал, пропорционально их долям. Проиграл — теряешь ставку, она уходит победителям. Выиграл — забираешь свою долю призового пула. Никаких «зафиксировал 2.5 и жди» — коэффициент вы видите как текущую цену, и он меняется по мере того, как другие ставят.
+When the oracle announces the outcome, the entire pool is split among those who called it right, in proportion to their shares. Lose, and you lose your bet — it goes to the winners. Win, and you take your share of the prize pool. No "locked in 2.5, now wait": the odds are what you see as the current price, and they change as others bet.
 
-## Что происходит по шагам
+## What happens step by step
 
-**Ставка.** Вы выбираете исход и сумму. Нода считает по кривой пула, сколько долей (weight) вам причитается за эту сумму по текущей цене, и записывает позицию. Сумма уходит в пул, цена исхода сдвигается вверх.
+**The bet.** You choose an outcome and an amount. The node computes along the pool curve how many shares (weight) you are due for that amount at the current price, and records the position. The amount goes into the pool, and the outcome's price shifts up.
 
-**Пока рынок открыт.** Цена живёт: другие ставят, коэффициент плывёт. Вы можете поставить ещё, а на рынках с разрешённой отменой — **отменить** ставку до закрытия (`pm_cancel_bet`). Важно: отмена продаёт вашу позицию обратно по текущей кривой, а не возвращает номинал. Если после вашей ставки рынок сместился, вернётся меньше внесённого — это не штраф, а честная цена выхода; на руки — никогда не больше вашей ставки (а если цена ушла в вашу пользу, излишек по кривой становится отложенным требованием к исходу, а не отдаётся рынку). Детали — «[Отмена ставки](./cancel-bet)».
+**While the market is open.** The price is alive: others bet, the odds float. You can bet more, and on markets where cancellation is allowed you can **cancel** a bet before it closes (`pm_cancel_bet`). Important: cancelling sells your position back along the current curve rather than refunding the nominal. If the market has moved since your bet, you get back less than you put in — that is not a penalty but a fair exit price; you never receive more than your bet (and if the price moved in your favour, the surplus along the curve becomes a deferred claim contingent on the outcome, rather than being handed to the market). Details — "[Cancelling a bet](./cancel-bet)".
 
-**Закрытие ставок.** В момент `betting_expiration` приём ставок прекращается. Дальше — ожидание исхода от оракула.
+**Betting closes.** At `betting_expiration` bets are no longer accepted. After that comes waiting for the outcome from the oracle.
 
-**Разрешение.** Оракул объявляет победивший исход (`pm_resolve_market`). Выплата победителям — **автоматическая** и виртуальная: не нужно нажимать «забрать», выигрыш начисляется на баланс на резолве. Проигравшие исходы обнуляются, их деньги — в призовом поте победителей.
+**Resolution.** The oracle announces the winning outcome (`pm_resolve_market`). Payout to the winners is **automatic** and virtual: there is no "claim" button to press, the winnings are credited to your balance on resolution. Losing outcomes are zeroed out, and their money goes into the winners' prize pot.
 
-**Если исхода нет.** Событие отменено или источник пропал — оракул объявляет **no-contest** (`pm_no_contest`): ставки возвращаются, никто не выигрывает и не проигрывает. А если оракул вовсе промолчал до дедлайна, рынок воидится как **missed-resolution** — ставки вам всё равно возвращаются (оракула при этом штрафуют). В любом случае ваши деньги не «сгорают».
+**If there is no outcome.** The event was cancelled or the source disappeared — the oracle declares **no-contest** (`pm_no_contest`): bets are refunded, nobody wins and nobody loses. And if the oracle stayed silent right up to the deadline, the market is voided as **missed-resolution** — your bets are refunded all the same (and the oracle is penalised for it). Either way, your money never "burns".
 
-## Что нужно понимать беттеру
+## What a bettor needs to understand
 
-- **Коэффициент — не фикс.** Цена, которую вы видите, — это состояние пула сейчас. Ранняя ставка на непопулярный исход даёт больше долей (дешевле вошли); когда толпа набежит, цена уже другая. Подробно — в статье «Почему пул, а не коэффициенты».
-- **Выплата пропорциональна долям, а не «ставке × коэффициент».** Вы делите призовой пот с другими победителями по весу позиций. Итоговый множитель зависит от того, как в итоге распределились ставки по исходам.
-- **Забирать вручную не надо.** Выигрыш и возвраты приходят автоматически на резолве/отмене.
-- **Оракулу можно возразить.** Если исход объявлен неверно, в окне спора его можно оспорить (`pm_dispute_create`) — см. статью про диспуты.
-- **Ликвидный баланс.** Для ставки нужен свободный VIZ; застейканные SHARES не считаются. Кошелёк подскажет, если не хватает.
+- **The odds are not fixed.** The price you see is the state of the pool right now. An early bet on an unpopular outcome buys more shares (you entered cheaper); once the crowd arrives, the price is different. Details — in the article "Why a pool and not odds".
+- **The payout is proportional to shares, not "bet × odds".** You split the prize pot with the other winners by position weight. The final multiplier depends on how the bets ended up distributed across outcomes.
+- **No manual claiming.** Winnings and refunds arrive automatically on resolution/cancellation.
+- **You can challenge the oracle.** If the outcome was announced incorrectly, it can be disputed within the dispute window (`pm_dispute_create`) — see the article on disputes.
+- **Liquid balance.** A bet requires free VIZ; staked SHARES do not count. The wallet will tell you if you are short.
 
-## Роли рядом с вами
+## Roles next to you
 
-- **Оракул** — тот, кто объявит исход и отвечает за это репутацией и залогом-страховкой.
-- **Поставщик ликвидности** — тот, чей капитал задаёт глубину кривой (чтобы ваша ставка не двигала цену слишком резко).
-- **Плечевой трейдер** — ставит на **цену** с заёмом у пула, а не на исход; отдельный инструмент.
+- **Oracle** — the one who announces the outcome and answers for it with reputation and an insurance bond.
+- **Liquidity provider** — the one whose capital sets the depth of the curve (so your bet does not move the price too sharply).
+- **Leverage trader** — bets on the **price** with a loan from the pool rather than on the outcome; a separate instrument.
 
-Дальше — по вкусу: «Почему пул, а не коэффициенты» (механика цены), «Оракул и разрешение» (кто и как объявляет исход), «Диспуты» (как оспорить).
+Where to go next, to taste: "Why a pool and not odds" (price mechanics), "Oracle and resolution" (who announces the outcome and how), "Disputes" (how to challenge it).

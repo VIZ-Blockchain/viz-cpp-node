@@ -1,40 +1,40 @@
 ---
-title: "Купон — несколько ставок одной транзакцией"
-description: "Купон собирает N ставок (pm_place_bet) в одну подписанную транзакцию VIZ. Транзакция атомарна: любая негодная нога отклоняет весь купон, половины не бывает. Это не экспресс — ноги независимы, выплаты не перемножаются."
+title: "Coupon — several bets in one transaction"
+description: "A coupon packs N bets (pm_place_bet) into a single signed VIZ transaction. The transaction is atomic: any invalid leg rejects the whole coupon, there is no half-way state. This is not a parlay — the legs are independent and the payouts are not multiplied together."
 ---
 
-# Купон: несколько ставок одной транзакцией
+# Coupon: several bets in one transaction
 
-Купон — это способ поставить сразу на несколько исходов, не подписывая каждую ставку по отдельности. Вы набираете линии тапами по исходам, задаёте суммы и отправляете всё **одной транзакцией**.
+A coupon is a way to bet on several outcomes at once without signing each bet separately. You collect lines by tapping outcomes, set the amounts and send everything in **one transaction**.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Технически купон — это N операций `pm_place_bet` в одной подписанной транзакции VIZ. Транзакция в цепи **атомарна на записи**: она либо применяется целиком, либо отклоняется целиком. Значит, если хотя бы одна нога негодная — рынок успел закрыться, не хватило баланса на сумму всех ног, сработала защита от проскальзывания — **не пройдёт весь купон**. Состояния «половина ставок поставилась» не существует, и разбирать частичный результат не придётся.
+Technically a coupon is N `pm_place_bet` operations inside one signed VIZ transaction. A transaction on chain is **atomic on write**: it is either applied in full or rejected in full. So if even one leg is invalid — the market has already closed, the balance does not cover the sum of all legs, the slippage protection kicked in — **the whole coupon fails**. There is no such state as "half the bets went through", and you never have to untangle a partial result.
 
-При этом купон **не экспресс (не парлей)**. Каждая нога — обычная самостоятельная ставка в пул своего рынка, со своей выплатой. Коэффициенты не перемножаются: выигрыш по одной ноге не зависит от того, зашли остальные или нет. Купон экономит подписи и делает набор ставок одномоментным — но не создаёт связку «все исходы должны сойтись». Настоящая связка с перемножением — отдельный протокольный примитив, и на уровне ставок его сейчас нет.
+At the same time a coupon is **not a parlay (not an accumulator)**. Each leg is an ordinary standalone bet into the pool of its own market, with its own payout. The odds are not multiplied together: the winnings on one leg do not depend on whether the others came in. A coupon saves signatures and makes a set of bets simultaneous — but it does not create an "all outcomes must hit" bundle. A real bundle with multiplication is a separate protocol primitive, and at the bet level it does not exist yet.
 
-## Как это работает
+## How it works
 
-**Сбор.** В ленте событий и на странице события (вид «Линии») тап по исходу кладёт ногу в купон: рынок, исход, сумма (по умолчанию 1 Ƶ) и ваша защита от проскальзывания. Повторный тап по тому же исходу обновляет ногу, а не плодит дубли. Купон живёт локально в браузере — до отправки он никак не касается цепи.
+**Collecting.** In the event feed and on the event page (the "Lines" view) a tap on an outcome adds a leg to the coupon: market, outcome, amount (1 Ƶ by default) and your slippage protection. Tapping the same outcome again updates the leg instead of creating duplicates. The coupon lives locally in the browser — until it is sent it does not touch the chain in any way.
 
-**Проверка перед отправкой.** Купон, собранный вчера, может тащить рынок, ставки на котором уже закрыты. Такую ногу цепь отвергнет — а вместе с ней и всю транзакцию, поэтому клиент проверяет каждую ногу при открытии купона тем же правилом, что и нода (рынок активен и либо бессрочный, либо дедлайн ещё не наступил), помечает мёртвые и не даёт отправить, пока их не уберут. Отдельно проверяется ликвидный баланс на **сумму всех ног**: пул принимает ставки только свободными VIZ, застейканные доли не считаются.
+**Checks before sending.** A coupon assembled yesterday may still carry a market whose betting has already closed. The chain will reject such a leg — and the whole transaction with it, so the client checks every leg when the coupon is opened, using the same rule as the node (the market is active and either open-ended or its deadline has not passed yet), marks the dead ones and does not allow sending until they are removed. The liquid balance is checked separately, against the **sum of all legs**: the pool only accepts bets in free VIZ, staked shares do not count.
 
-**Отправка.** Все ноги подписываются одним ключом (active) и уходят одной транзакцией. Комиссии сети нет — ограничение задаёт энергия аккаунта, и по ней транзакция из N ставок дешевле, чем N отдельных.
+**Sending.** All legs are signed with one key (active) and go out as one transaction. There is no network fee — the limit is set by the account's energy, and by that measure a transaction of N bets is cheaper than N separate ones.
 
-**Что дальше.** После записи каждая нога живёт своей жизнью: своя доля в пуле своего рынка, свой резолв, своя автоматическая выплата. В «Моей активности» они видны как обычные ставки.
+**What happens next.** Once written, each leg lives its own life: its own share in the pool of its own market, its own resolution, its own automatic payout. In "My activity" they show up as ordinary bets.
 
-## Что нужно понимать
+## What you need to understand
 
-- **Всё или ничего — на записи, а не на исходе.** Атомарность купона про попадание в блок, а не про угадывание. Одна нога проиграла — остальные всё равно считаются и платят.
-- **Выплаты не перемножаются.** Это не экспресс. Хотите большего риска — увеличивайте сумму ноги, а не количество ног.
-- **Одна мёртвая нога рушит отправку.** Закрывшийся рынок, недостаток свободных VIZ на сумму всех ног, сработавшая защита минимума долей — и цепь отклонит купон целиком. Клиент подсвечивает такие ноги заранее.
-- **Скрытые ставки в купон не идут.** Commit-reveal и батч-режим — отдельные пути со своим окном раскрытия; в купон собираются только обычные («мгновенные») ставки.
-- **Купон хранится в браузере.** Пока вы его не отправили, это черновик на вашем устройстве: цепь о нём не знает, и на другом устройстве его не будет.
+- **All or nothing — on write, not on the outcome.** The coupon's atomicity is about landing in a block, not about calling it right. One leg lost — the others still count and still pay.
+- **Payouts are not multiplied together.** This is not a parlay. If you want more risk, increase the amount of a leg, not the number of legs.
+- **One dead leg breaks the submission.** A closed market, not enough free VIZ for the sum of all legs, a triggered minimum-shares protection — and the chain rejects the entire coupon. The client highlights such legs in advance.
+- **Hidden bets do not go into a coupon.** Commit-reveal and batch mode are separate paths with their own reveal window; only ordinary ("instant") bets are collected into a coupon.
+- **The coupon is stored in the browser.** Until you send it, it is a draft on your device: the chain knows nothing about it, and it will not be there on another device.
 
-## Связки
+## Related
 
-- [Беттер](./bettor) — жизненный цикл одиночной ставки, из которых состоит купон.
-- [Почему пул, а не коэффициенты](./why-pool-not-odds) — почему цена ноги плавает и зачем защита минимума долей.
-- [События и метаданные](./events-metadata) — как линии одного матча собираются в карточку события, из которой удобно набирать купон.
-- [Скрытые ставки (commit-reveal)](./commit-reveal) — путь, который в купон не входит, и почему.
-- [Операции `pm_*`](../../protocol/operations/prediction-markets) — `pm_place_bet`, из которых собирается транзакция.
+- [Bettor](./bettor) — the life cycle of the single bet that a coupon is made of.
+- [Why a pool and not odds](./why-pool-not-odds) — why the price of a leg floats and what the minimum-shares protection is for.
+- [Events and metadata](./events-metadata) — how the lines of one match are assembled into an event card, which is a convenient place to build a coupon from.
+- [Hidden bets (commit-reveal)](./commit-reveal) — the path that is not part of a coupon, and why.
+- [`pm_*` operations](../../protocol/operations/prediction-markets) — the `pm_place_bet` operations the transaction is built from.

@@ -1,45 +1,45 @@
 ---
-title: "Плечевой трейдер — ставка на цену с заёмом у пула"
-description: "Плечо: ставка на движение ЦЕНЫ исхода с заёмом у ленивого пула. Flat-наценка + funding-rate, sweep-ликвидация, force-close на закрытии ставок (не ждёт оракула), нельзя открыть при <24ч до betting_expiration. Прибыль — отложенное требование до резолва."
+title: "Leverage trader — betting on price with a loan from the pool"
+description: "Leverage: betting on the movement of an outcome's PRICE with a loan from the lazy pool. Flat markup + funding rate, sweep liquidation, force-close at the betting close (it does not wait for the oracle), cannot be opened when less than 24h remain until betting_expiration. Profit is a deferred claim paid after resolution."
 ---
 
-# Плечевой трейдер: ставка на цену с заёмом у пула
+# Leverage trader: betting on price with a loan from the pool
 
-Плечо — это отдельный инструмент поверх рынка. Вы ставите не «на исход до конца», а **на движение цены** исхода, и берёте заём у ленивого пула, чтобы усилить позицию. Это ближе к маржинальной торговле, чем к обычной ставке.
+Leverage is a separate instrument on top of a market. You are betting not "on the outcome until the end", but **on the movement of the price** of an outcome, and you borrow from the lazy pool to amplify the position. This is closer to margin trading than to an ordinary bet.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Вы вносите залог (collateral) и открываете плечевую позицию (`pm_leverage_open`): система занимает недостающую сумму у **ленивого пула** и ставит увеличенный размер на выбранный исход. Пока цена исхода движется в вашу сторону — растёт нереализованная прибыль; против — позиция приближается к **ликвидации**. За заём вы платите пулу **flat-наценку (markup, ~10%)** и **funding-rate** со временем; это доход пассивных LP.
+You post collateral and open a leverage position (`pm_leverage_open`): the system borrows the missing amount from the **lazy pool** and places the enlarged size on the chosen outcome. While the outcome's price moves your way, unrealized profit grows; against you, the position approaches **liquidation**. For the loan you pay the pool a **flat markup (~10%)** and a **funding rate** over time; that is the income of passive LPs.
 
-Плечо **не ждёт оракула**: позиция принудительно закрывается по цене на момент **закрытия ставок** (`betting_expiration`) — плечо сеттлится по рыночной цене, а не по объявленному исходу. Если цена дошла до порога раньше — позицию ликвидируют «свипом». Прибыль от плеча оформляется как **отложенное требование** и выплачивается после разрешения рынка (из ограниченного пула проигравших), а не мгновенно.
+Leverage **does not wait for the oracle**: the position is force-closed at the price at the moment betting closes (`betting_expiration`) — leverage settles at the market price, not at the announced outcome. If the price hits the threshold earlier, the position is liquidated by a "sweep". Leverage profit is booked as a **deferred claim** and paid out after the market resolves (from a bounded pool of losers), not instantly.
 
-## Что происходит по шагам
+## What happens, step by step
 
-**Открытие.** `pm_leverage_open`: вносите залог, задаёте плечо. Пул выдаёт заём (`pool.free_balance -= loan`), суммарный размер ставится на исход. Открыть можно только если до `betting_expiration` **не меньше 24 часов** — иначе позицию негде «прожить», и открытие отклоняется.
+**Opening.** `pm_leverage_open`: you post collateral and set the leverage. The pool issues the loan (`pool.free_balance -= loan`), and the total size is bet on the outcome. You can only open if **at least 24 hours** remain until `betting_expiration` — otherwise the position has no room to live, and the opening is rejected.
 
-**Пока открыто.** Цена исхода плывёт от ставок. В вашу сторону — прибыль растёт; против — приближается ликвидация. Капает funding-rate в пользу пула. Вы платите за плечо, пока держите позицию.
+**While open.** The outcome's price drifts with bets. Your way — profit grows; against you — liquidation approaches. The funding rate accrues in favor of the pool. You pay for leverage as long as you hold the position.
 
-**Закрытие по своей воле.** `pm_leverage_close` — выходите по текущей цене: возвращаете заём пулу, забираете свою часть (`cancel_value`). Остаток спреда/floor (`curve_residual`) роутится в `forfeit_pool` рынка (идёт победителям на сеттле) — деньги не «замерзают».
+**Closing at will.** `pm_leverage_close` — you exit at the current price: the loan is returned to the pool and you take your share (`cancel_value`). The spread/floor remainder (`curve_residual`) is routed into the market's `forfeit_pool` (it goes to winners at settlement) — money does not "freeze".
 
-**Ликвидация.** Если цена дошла до порога, позицию закрывают автоматически (sweep). Залог идёт на погашение заёма пулу; что сверху — по правилам сеттла.
+**Liquidation.** If the price reaches the threshold, the position is closed automatically (sweep). The collateral repays the loan to the pool; whatever is left follows the settlement rules.
 
-**Force-close на закрытии ставок.** Не закрыли сами — на `betting_expiration` позиция закрывается принудительно по цене этого момента. Плечо **не зависит от резолва оракула**: оно про цену, а не про «кто прав в итоге».
+**Force-close at the betting close.** If you did not close it yourself, at `betting_expiration` the position is force-closed at that moment's price. Leverage **does not depend on the oracle's resolution**: it is about price, not about "who turns out to be right".
 
-**Выплата прибыли.** Прибыль плеча — не мгновенный кэш: это **отложенное требование** (deferred claim), которое гасится после разрешения рынка из ограниченного пула проигравших/форфейтов (кап на выплату). Так система не минтит токены из воздуха.
+**Profit payout.** Leverage profit is not instant cash: it is a **deferred claim** settled after the market resolves, out of a bounded pool of losing stakes/forfeits (with a cap on the payout). This way the system does not mint tokens out of thin air.
 
-## Что нужно понимать плечевому трейдеру
+## What a leverage trader needs to understand
 
-- **Вы ставите на цену, не на исход.** Плечо закрывается по цене на закрытии ставок, а не по объявлению оракула. Можно угадать «цену» и не дождаться исхода — это разные вещи.
-- **Заём — у пула, и он платный.** Flat-наценка + funding-rate идут ленивому пулу. Держать позицию долго дорого; funding работает против вас со временем.
-- **Ликвидация реальна.** Движение против вас закрывает позицию принудительно, залог гасит заём. Плечо усиливает и прибыль, и убыток.
-- **Окно 24 часа.** Нельзя открыть плечо, если до закрытия ставок меньше суток — нужен запас, чтобы позиция могла существовать и корректно закрыться.
-- **Прибыль приходит после резолва.** Не рассчитывайте на мгновенный вывод выигрыша плеча: он оформляется отложенным требованием и гасится на сеттле рынка, в пределах доступного пула.
-- **Инструмент для понимающих.** Плечо сложнее обычной ставки; если нужна простая ставка на исход — см. статью «Беттер».
+- **You bet on price, not on the outcome.** Leverage closes at the price when betting closes, not at the oracle's announcement. You can call the "price" right and never see the outcome — those are different things.
+- **The loan comes from the pool, and it is not free.** The flat markup plus the funding rate go to the lazy pool. Holding a position for a long time is expensive; funding works against you over time.
+- **Liquidation is real.** A move against you closes the position by force, and the collateral repays the loan. Leverage amplifies both profit and loss.
+- **The 24-hour window.** You cannot open leverage if less than a day remains until betting closes — the position needs room to exist and to close correctly.
+- **Profit arrives after resolution.** Do not count on instantly withdrawing leverage winnings: they are booked as a deferred claim and settled at market settlement, within the available pool.
+- **An instrument for those who understand it.** Leverage is more complex than an ordinary bet; if you want a simple bet on the outcome, see the "Bettor" article.
 
-## Роли рядом с вами
+## Roles next to yours
 
-- **Пассивный LP (ленивый пул)** — тот, у кого вы занимаете; ваша наценка и funding — его доход.
-- **Беттер** — ставит на исход без заёма и без ликвидации; более простой путь.
-- **Оракул** — разрешает рынок; на ваше плечо влияет косвенно (прибыль гасится после резолва), но закрытие плеча привязано к цене, а не к его вердикту.
+- **Passive LP (lazy pool)** — the one you borrow from; your markup and funding are their income.
+- **Bettor** — bets on the outcome without a loan and without liquidation; the simpler path.
+- **Oracle** — resolves the market; it affects your leverage indirectly (profit is settled after resolution), but the leverage close is tied to price, not to their verdict.
 
-Дальше по теме: «Пассивный LP (ленивый пул)» (другая сторона вашего заёма), «Плечо (leverage) — механизм» (формулы наценки и ликвидации), «Ранний выход и отложенное требование» (как и когда приходит прибыль плеча).
+Further reading: "Passive LP (lazy pool)" (the other side of your loan), "Leverage — the mechanism" (markup and liquidation formulas), "Early exit and the deferred claim" (how and when leverage profit arrives).

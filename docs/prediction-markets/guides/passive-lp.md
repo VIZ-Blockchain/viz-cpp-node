@@ -1,40 +1,40 @@
 ---
-title: "Пассивный LP — ленивый пул"
-description: "Ленивый пул — пассивный продукт: кладёте VIZ, доход от наценки плеча и комиссий. Доли по equity-цене, FIFO-очередь вывода (free_balance ≥ 0 инвариант), штраф только на награды. Пул — контрагент плечевых трейдеров."
+title: "Passive LP — the lazy pool"
+description: "The lazy pool is a passive product: you deposit VIZ and earn from leverage markup and fees. Shares are minted at the equity price, withdrawals go through a FIFO queue (free_balance ≥ 0 invariant), and the penalty applies only to rewards. The pool is the counterparty to leverage traders."
 ---
 
-# Пассивный LP: ленивый пул
+# Passive LP: the lazy pool
 
-Не хотите выбирать конкретный рынок и следить за глубиной — просто положите VIZ в **ленивый пул**. Это пассивный продукт: ваш капитал автоматически питает систему (в первую очередь плечо) и приносит доход, а вы ничего не мониторите.
+Don't want to pick a particular market and watch its depth — just put VIZ into the **lazy pool**. It is a passive product: your capital automatically feeds the system (leverage first of all) and earns yield, while you monitor nothing.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Вы депонируете VIZ (`pm_lazy_deposit`) и получаете **доли** пула по его текущей equity-цене (не по номиналу: цена доли считается от `free + allocated − pending_withdrawals`, чтобы новый вклад при размещённом капитале не получал завышенный вес). Пул выступает **контрагентом плечевых трейдеров**: заём под плечо фронтит именно ленивый пул, а наценка (markup) и funding-rate возвращаются в пул как доход. Плюс к этому — доля общих комиссий.
+You deposit VIZ (`pm_lazy_deposit`) and receive pool **shares** at the pool's current equity price (not at face value: the share price is computed from `free + allocated − pending_withdrawals`, so that a new deposit made while capital is deployed does not get an inflated weight). The pool acts as the **counterparty to leverage traders**: a leverage loan is fronted by the lazy pool, and the markup plus the funding rate flow back into the pool as yield. On top of that comes a share of general fees.
 
-Ваш принципал в пуле возвращается, но выплата может встать в **FIFO-очередь**, если свободного баланса не хватает прямо сейчас (капитал размещён в открытых плечевых позициях). Инвариант пула — `free_balance ≥ 0`: пул никогда не платит больше, чем реально свободно; заявка на вывод регистрируется и гасится по мере возврата средств. Штраф при досрочном выводе берётся **только с наград**, принципал не режется.
+Your principal in the pool comes back, but the payout may enter a **FIFO queue** if there is not enough free balance right now (capital is deployed in open leverage positions). The pool's invariant is `free_balance ≥ 0`: the pool never pays out more than is actually free; a withdrawal request is registered and settled as funds return. The early-withdrawal penalty is taken **only from rewards** — the principal is not cut.
 
-## Что происходит по шагам
+## What happens, step by step
 
-**Депозит.** `pm_lazy_deposit` — VIZ уходит в пул, вы получаете доли по equity-цене. Дальше пул сам решает, куда направить капитал (плечо, глубина), вы не управляете этим вручную.
+**Deposit.** `pm_lazy_deposit` — VIZ goes into the pool and you receive shares at the equity price. From there the pool itself decides where to route the capital (leverage, depth); you do not steer this manually.
 
-**Доход капает.** Плечевые трейдеры платят наценку и funding — это идёт в yield пула. Ваши доли растут в стоимости. Доход пассивный, ничего нажимать не нужно.
+**Yield accrues.** Leverage traders pay the markup and funding — that goes into the pool's yield. Your shares grow in value. The income is passive; there is nothing to click.
 
-**Вывод — плановый или экстренный.** `pm_lazy_withdraw` (частично, по долям, или всё). Если в пуле хватает свободного баланса — выплата мгновенная. Если капитал размещён — заявка встаёт в FIFO-очередь (`pm_lazy_withdraw_request`) и гасится по мере возврата средств из плеча/глубины. Экстренный вывод берёт штраф — но **только с накопленных наград**, ваш принципал не уменьшается.
+**Withdrawal — planned or emergency.** `pm_lazy_withdraw` (partial, by shares, or everything). If the pool has enough free balance, the payout is instant. If capital is deployed, a request (`pm_lazy_withdraw_request`) enters the **FIFO queue** and is settled as funds return from leverage/depth. An emergency withdrawal takes a penalty — but **only from accrued rewards**; your principal is not reduced.
 
-**Очередь и порядок.** Заявки гасятся в порядке поступления на каждом возврате свободного баланса (закрытие плеча, конверсия, новый депозит). Это защищает пул от ухода в минус — урок раннего дизайна, когда экстренный вывод мог утащить `free_balance` ниже нуля.
+**The queue and its order.** Requests are settled in arrival order on every event that returns free balance (leverage close, conversion, a new deposit). This protects the pool from going negative — a lesson from the early design, when an emergency withdrawal could drag `free_balance` below zero.
 
-## Что нужно понимать пассивному LP
+## What a passive LP needs to understand
 
-- **Пул — контрагент плеча.** В отличие от прямого LP рынка (глубина кривой, principal-protected от исхода), ленивый пул несёт риск плечевых позиций: его капитал заимствуется трейдерами. Доход выше, но и природа риска другая.
-- **Цена доли — по equity, не по номиналу.** Вы получаете доли по реальной стоимости пула, а не 1:1. Это честно распределяет доход между старыми и новыми вкладчиками.
-- **Вывод может ждать.** Если весь свободный баланс размещён, ваша заявка встанет в очередь. Это не потеря — принципал вернётся по мере разгрузки; но мгновенность не гарантирована.
-- **Штраф — только на награды.** Досрочный/экстренный вывод режет доход, но не принципал. `free_balance ≥ 0` — жёсткий инвариант.
-- **Пассивность — плюс и минус.** Вы не выбираете рынки и не мониторите глубину, но и не контролируете, куда пойдёт капитал.
+- **The pool is the counterparty to leverage.** Unlike a direct market LP (curve depth, principal-protected against the outcome), the lazy pool carries the risk of leverage positions: its capital is borrowed by traders. The yield is higher, but the nature of the risk is different.
+- **The share price is equity-based, not face value.** You receive shares at the pool's real value, not 1:1. That distributes yield fairly between old and new depositors.
+- **A withdrawal may wait.** If all free balance is deployed, your request enters the queue. That is not a loss — the principal returns as positions unwind; but immediacy is not guaranteed.
+- **The penalty hits rewards only.** An early/emergency withdrawal cuts yield, not principal. `free_balance ≥ 0` is a hard invariant.
+- **Passivity is both a plus and a minus.** You do not pick markets and do not monitor depth, but you also do not control where the capital goes.
 
-## Роли рядом с вами
+## Roles next to yours
 
-- **Плечевой трейдер** — заимствует у вашего пула, чтобы поставить на цену; его наценка — ваш доход.
-- **Активный LP** — противоположный по духу продукт: ручная глубина конкретного рынка, principal-protected от исхода.
-- **Создатель рынка** — формирует рынки, на которых работает плечо и глубина.
+- **Leverage trader** — borrows from your pool to bet on price; their markup is your income.
+- **Active LP** — the opposite product in spirit: manual depth in a specific market, principal-protected against the outcome.
+- **Market creator** — builds the markets on which leverage and depth operate.
 
-Дальше по теме: «Плечевой трейдер» (кто и как заимствует у пула), «Активный LP» (в чём разница с прямой ликвидностью), «Ленивый пул (детально)» (equity-цена, FIFO-вывод, доходность по шагам).
+Further reading: "Leverage trader" (who borrows from the pool and how), "Active LP" (how it differs from direct liquidity), "The lazy pool in detail" (equity price, FIFO withdrawal, yield step by step).

@@ -1,44 +1,45 @@
 ---
-title: "Гайды по рынкам предсказаний — по ролям и фичам"
-description: "Пояснительные статьи для участников рынков предсказаний VIZ (Onix): каждая роль (беттер, создатель рынка, оракул, LP, плечевой трейдер) и каждая механика простым языком, со ссылками на формальную спецификацию."
+title: "Prediction market guides — by role and by feature"
+description: "Explainer articles for participants of VIZ (Onix) prediction markets: every role (bettor, market creator, oracle, LP, leverage trader) and every mechanic in plain language, with links to the formal specification."
 ---
 
-# Гайды по рынкам предсказаний (Onix)
+# Prediction market guides (Onix)
 
-Пояснительные статьи для **участников** — не спецификация, а «как это работает для вас». Каждая роль
-объяснена от лица участника: короткая модель → по шагам → что важно понимать → связки на соседние
-статьи. Формальные механики и параметры — в [Спецификации](../specification), операции — в
-[Операциях](../../protocol/operations/prediction-markets).
+Explainer articles for **participants** — not a specification, but "how this works for you". Every role
+is explained from the participant's point of view: a short model → step by step → what matters to
+understand → links to neighbouring articles. Formal mechanics and parameters are in the
+[Specification](../specification), operations are in
+[Operations](../../protocol/operations/prediction-markets).
 
-## По ролям — «вы участник»
+## By role — "you are the participant"
 
-| Роль | О чём |
+| Role | What it covers |
 |------|-------|
-| [Беттер](./bettor) | Делаю ставку. Плавающий коэффициент, выплата пропорционально долям, авто-выплата на резолве. |
-| [Создатель рынка](./market-creator) | Завожу вопрос. Стартовая ликвидность, комиссия, выбор оракула и режима спора. |
-| [Оракул](./oracle) | Объявляю исход. Insurance и risk-floor, штрафы за промах, репутация `reliability_score`. |
-| [Активный LP](./active-lp) | Даю глубину кривой рынка. Доход с комиссий, principal-protected, вывод price-neutral. |
-| [Пассивный LP (ленивый пул)](./passive-lp) | Кладу VIZ пассивно. Доход от плеча и комиссий, доли по equity, FIFO-вывод. |
-| [Плечевой трейдер](./leverage-trader) | Ставлю на цену с заёмом у пула. Наценка + funding, ликвидация, force-close на закрытии ставок. |
+| [Bettor](./bettor) | I place a bet. Floating odds, payout proportional to shares, automatic payout on resolution. |
+| [Market creator](./market-creator) | I open a question. Starting liquidity, fee, choice of oracle and dispute mode. |
+| [Oracle](./oracle) | I announce the outcome. Insurance and risk floor, penalties for getting it wrong, `reliability_score` reputation. |
+| [Active LP](./active-lp) | I provide depth for the market curve. Income from fees, principal-protected, price-neutral withdrawal. |
+| [Passive LP (lazy pool)](./passive-lp) | I deposit VIZ passively. Income from leverage and fees, shares by equity, FIFO withdrawal. |
+| [Leverage trader](./leverage-trader) | I bet on the price with a loan from the pool. Markup + funding, liquidation, force-close when betting closes. |
 
-## По фичам — «как устроен механизм»
+## By feature — "how the mechanism is built"
 
-| Фича | О чём |
+| Feature | What it covers |
 |------|-------|
-| [Почему пул, а не коэффициенты](./why-pool-not-odds) | Плавающая цена по кривой (CPMM/LMSR) вместо фиксированных одды. |
-| [Оракул и разрешение](./resolution) | Таймлайн резолва: дедлайны, ранний резолв, missed-resolution, no-contest. |
-| [Диспуты](./disputes) | Как оспорить исход: grace-окно, залог, режимы голосования, награда/штраф. |
-| [Мульти-исходные рынки](./multi-outcome) | Один рынок на много исходов, LMSR vs бинарный CPMM. |
-| [Отмена ставки](./cancel-bet) | Curve-priced выход, кап на stake, разница в forfeit_pool. |
-| [Ленивый пул детально](./lazy-pool) | Доли по equity-цене, источники дохода, FIFO-вывод, инвариант free ≥ 0. |
-| [Ранний выход и отложенное требование](./early-exit) | Прибыль досрочного выхода — deferred claim, гасится на сеттле из пота. |
-| [Скрытые ставки (commit-reveal)](./commit-reveal) | Приватность до раскрытия, окно reveal, форфейт за нераскрытие. |
-| [События и метаданные](./events-metadata) | Как рынки собираются в карточку матча: event / event_title / child, родитель и дочерние линии, что индексирует нода. |
-| [Купон](./coupon) | Несколько ставок одной транзакцией: атомарность на записи, почему это не экспресс, что рушит отправку. |
+| [Why a pool and not odds](./why-pool-not-odds) | A floating price along a curve (CPMM/LMSR) instead of fixed odds. |
+| [Oracle and resolution](./resolution) | The resolution timeline: deadlines, early resolution, missed resolution, no-contest. |
+| [Disputes](./disputes) | How to challenge an outcome: the grace window, the bond, voting modes, reward/penalty. |
+| [Multi-outcome markets](./multi-outcome) | One market for many outcomes, LMSR vs binary CPMM. |
+| [Cancelling a bet](./cancel-bet) | Curve-priced exit, cap on the stake, the difference in `forfeit_pool`. |
+| [The lazy pool in detail](./lazy-pool) | Shares at the equity price, sources of income, FIFO withdrawal, the free ≥ 0 invariant. |
+| [Early exit and deferred claim](./early-exit) | The profit of an early exit is a deferred claim, paid out of the pot at settlement. |
+| [Hidden bets (commit-reveal)](./commit-reveal) | Privacy until the reveal, the reveal window, forfeit for not revealing. |
+| [Events and metadata](./events-metadata) | How markets are assembled into a match card: event / event_title / child, the parent and the child lines, what the node indexes. |
+| [Coupon](./coupon) | Several bets in one transaction: atomicity on write, why this is not a parlay, what breaks the submission. |
 
-## Куда дальше
+## Where to go next
 
-- [Спецификация](../specification) — формальные правила, параметры, объектная модель.
-- [Whitepaper](../whitepaper) — тезис: почему ликвидность без риска, два типа рынков, маховик.
-- [Операции `pm_*`](../../protocol/operations/prediction-markets) — подписанные консенсус-операции.
-- [Workflows](../workflows) — один рынок, проведённый через все роли.
+- [Specification](../specification) — formal rules, parameters, object model.
+- [Whitepaper](../whitepaper) — the thesis: why liquidity without risk, two types of markets, the flywheel.
+- [`pm_*` operations](../../protocol/operations/prediction-markets) — signed consensus operations.
+- [Workflows](../workflows) — a single market carried through all the roles.

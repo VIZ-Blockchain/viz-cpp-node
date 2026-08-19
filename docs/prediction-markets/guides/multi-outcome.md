@@ -1,39 +1,39 @@
 ---
-title: "Мульти-исходные рынки — один вопрос, много вариантов"
-description: "Мульти-рынок: один рынок на несколько исходов (кто из N победит), ценообразование по LMSR вместо CPMM бинарного. Лимит исходов — медиан-параметр pm_max_outcomes; oversize сводится к бинарным. Ставка, доли и выплата — как в пуле."
+title: "Multi-outcome markets — one question, many options"
+description: "A multi-outcome market: one market for several outcomes (which of N wins), priced by LMSR instead of the binary CPMM. The outcome limit is the median parameter pm_max_outcomes; oversized markets are reduced to binary form. The bet, the shares and the payout work as in any pool."
 ---
 
-# Мульти-исходные рынки: один вопрос, много вариантов
+# Multi-outcome markets: one question, many options
 
-Не всякий вопрос сводится к «да/нет». «Кто выиграет турнир из восьми команд?», «какая партия наберёт больше?» — здесь исходов много. Мульти-рынок держит их в **одном** рынке, а не в куче отдельных бинарных.
+Not every question boils down to "yes/no". "Who wins a tournament of eight teams?", "which party gets the most votes?" — here there are many outcomes. A multi-outcome market keeps them in **one** market instead of a pile of separate binary ones.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Бинарный рынок (два исхода) ценится по кривой **CPMM**. Когда исходов больше — рынок использует **LMSR** (logarithmic market scoring rule): одна кривая на все исходы сразу, цена каждого зависит от того, сколько поставили на него относительно других. Сумма «вероятностей» исходов держится согласованной, и вы всегда видите относительную цену каждого варианта.
+A binary market (two outcomes) is priced along a **CPMM** curve. When there are more outcomes, the market uses **LMSR** (logarithmic market scoring rule): one curve for all outcomes at once, where the price of each depends on how much has been staked on it relative to the others. The sum of the outcomes' "probabilities" stays consistent, and you always see the relative price of every option.
 
-Для вас как участника логика та же, что и в пуле: ставите на исход, получаете доли (weight) по текущей цене, на резолве призовой пот делится между угадавшими пропорционально долям. Разница — под капотом (формула цены) и в лимите: число исходов ограничено медиан-параметром сети `pm_max_outcomes`; если исходов больше лимита, рынок сводят к бинарной форме (например, «фаворит vs поле»).
+For you as a participant the logic is the same as in any pool: you bet on an outcome, receive shares (weight) at the current price, and on resolution the prize pot is split among those who called it right in proportion to their shares. The difference is under the hood (the pricing formula) and in the limit: the number of outcomes is capped by the network's median parameter `pm_max_outcomes`; if there are more outcomes than the limit, the market is reduced to binary form (for example, "favourite vs the field").
 
-## Чем отличается от пачки бинарных
+## How it differs from a bundle of binary markets
 
-**Один рынок вместо N.** Вместо десяти отдельных «команда X победит: да/нет» — один рынок с десятью исходами. Ликвидность не размазана по десяти пулам, цена согласована между вариантами.
+**One market instead of N.** Instead of ten separate "team X wins: yes/no" markets — one market with ten outcomes. Liquidity is not smeared across ten pools, and the prices are consistent across the options.
 
-**LMSR вместо CPMM.** Бинарный CPMM держит две стороны; LMSR обобщает это на много исходов через логарифмическую функцию стоимости. Параметр «глубины» LMSR (`lmsr_b`) выводится из внесённой ликвидности и числа исходов — он задаёт, насколько дорого двигать цену. Чем больше ликвидности, тем глубже рынок.
+**LMSR instead of CPMM.** A binary CPMM holds two sides; LMSR generalises that to many outcomes through a logarithmic cost function. The LMSR "depth" parameter (`lmsr_b`) is derived from the liquidity provided and the number of outcomes — it sets how expensive it is to move the price. The more liquidity, the deeper the market.
 
-**Согласованные цены.** В LMSR цены исходов связаны: подорожал один — относительно подешевели остальные. Это ближе к «распределению вероятностей», чем набор независимых бинарных рынков.
+**Consistent prices.** In LMSR the outcome prices are linked: one gets more expensive and the rest get relatively cheaper. That is closer to a "probability distribution" than a set of independent binary markets.
 
-**Связь с событиями.** Крупные события (матч, турнир) часто зеркалятся из внешних источников как набор рынков под общим `event`-ключом — тогда мульти-рынок и связанные бинарные пропы группируются на странице события (см. клиент Forecaster).
+**Relation to events.** Large events (a match, a tournament) are often mirrored from external sources as a set of markets under a common `event` key — then the multi-outcome market and the related binary props are grouped on the event page (see the Forecaster client).
 
-## Что нужно понимать
+## What you need to understand
 
-- **Логика ставки не меняется.** Исход → доли по цене → доля пота на резолве. Мульти отличается ценообразованием, не сутью.
-- **Лимит исходов — параметр сети.** `pm_max_outcomes` медиан-голосуется; рынок с числом исходов сверх лимита создаётся в бинарной форме, а не отклоняется молча.
-- **Глубина важнее при многих исходах.** Тонкая ликвидность на мульти-рынке двигает цены резче — LMSR-глубина распределяется на все варианты.
-- **Ранний вход на недооценённый вариант выгоден.** Как и в бинарном пуле: дешёвая цена = больше долей.
-- **Выплата — по долям.** Никаких заранее фиксированных коэффициентов; итог складывается из финального расклада.
+- **The logic of a bet does not change.** Outcome → shares at the current price → a share of the pot on resolution. Multi-outcome differs in pricing, not in substance.
+- **The outcome limit is a network parameter.** `pm_max_outcomes` is median-voted; a market with more outcomes than the limit is created in binary form rather than silently rejected.
+- **Depth matters more with many outcomes.** Thin liquidity on a multi-outcome market moves prices more sharply — the LMSR depth is spread across all the options.
+- **Entering early on an underpriced option pays off.** Just as in a binary pool: a cheap price means more shares.
+- **The payout follows the shares.** No odds fixed in advance; the result comes out of the final distribution.
 
-## Связки
+## Related
 
-- [Почему пул, а не коэффициенты](./why-pool-not-odds) — как вообще формируется цена в пуле.
-- [Беттер](./bettor) — жизненный цикл ставки (тот же и для мульти).
-- [Создатель рынка](./market-creator) — как выбрать тип рынка при создании.
-- [Спецификация](../specification) — формулы LMSR, `lmsr_b`, лимиты исходов.
+- [Why a pool and not odds](./why-pool-not-odds) — how a price is formed in a pool in the first place.
+- [Bettor](./bettor) — the life cycle of a bet (the same for multi-outcome markets).
+- [Market creator](./market-creator) — how to choose the market type at creation.
+- [Specification](../specification) — the LMSR formulas, `lmsr_b`, outcome limits.

@@ -1,43 +1,43 @@
 ---
-title: "Ранний выход и отложенное требование"
-description: "Прибыль от раннего выхода (отмена ставки или закрытие плеча по кривой) не выплачивается сразу: она записывается как отложенное outcome-contingent требование и гасится на сеттле из ограниченной доли проигравшего пула. Принципал возвращается сразу, LP защищён."
+title: "Early exit and the deferred claim"
+description: "Profit from an early exit (bet cancellation or a curve-priced leverage close) is not paid out immediately: it is booked as a deferred outcome-contingent claim and settled from a bounded slice of the losing pool. The principal comes back right away, and the LP stays protected."
 ---
 
-# Ранний выход и отложенное требование
+# Early exit and the deferred claim
 
-Рынок VIZ — гибрид: вход и ранний выход идут по **кривой** (как на AMM), а расчёт удержанных до конца позиций — **parimutuel** (общий пул). Из-за этого «прибыль от раннего выхода» устроена хитрее, чем кажется. Разберём, почему выигрыш от досрочного выхода приходит не сразу.
+A VIZ market is a hybrid: entry and early exit go through the **curve** (as on an AMM), while positions held to the end are settled **parimutuel** (a common pool). Because of this, "profit from an early exit" is arranged more subtly than it looks. Let's go through why winnings from an early exit do not arrive immediately.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Когда вы выходите досрочно — отменяете ставку (`pm_cancel_bet`) или закрываете плечо (`pm_leverage_close`) — цена вашей позиции по кривой может оказаться **выше** вашей ставки. Но выплатить эту прибыль прямо сейчас нельзя: она не обеспечена проигравшими (рынок ещё не разрешён), и если её отдать из кривой — недостача ляжет на поставщиков ликвидности, а LP на VIZ **principal-protected**. Поэтому прибыльный «хвост» раннего выхода не кэшируется на месте.
+When you exit early — cancel a bet (`pm_cancel_bet`) or close leverage (`pm_leverage_close`) — the curve price of your position may turn out to be **higher** than your stake. But that profit cannot be paid out right now: it is not backed by losers (the market is not resolved yet), and if it were paid out of the curve, the shortfall would fall on liquidity providers — and on VIZ an LP is **principal-protected**. That is why the profitable "tail" of an early exit is not cashed out on the spot.
 
-Вместо этого система возвращает вам **принципал сразу и безусловно** (свои деньги, не больше ставки), а прибыльный хвост записывает как **отложенное требование, привязанное к исходу** (outcome-contingent deferred claim). Оно гасится **на сеттле** из **ограниченной доли проигравшего пула** — то есть только если ваш выбранный исход выиграл и в поте есть чем платить. Так консервация токенов держится, а LP не субсидируют трейдеров.
+Instead, the system returns your **principal immediately and unconditionally** (your own money, never more than the stake) and books the profitable tail as an **outcome-contingent deferred claim**. It is settled **at settlement** from a **bounded slice of the losing pool** — that is, only if your chosen outcome won and there is something in the pot to pay from. This keeps token conservation intact and prevents LPs from subsidizing traders.
 
-## Как это работает
+## How it works
 
-**Принципал — сразу.** Отмена/закрытие возвращает `min(цена_по_кривой, ваша_ставка)` немедленно. Ранний выход может срезать убыток или выйти в ноль, но **не** реализует прибыль в момент выхода.
+**The principal — immediately.** A cancellation/close returns `min(curve_price, your_stake)` at once. An early exit can cut a loss or get you out flat, but it does **not** realize profit at the moment of exit.
 
-**Прибыльный хвост — в отложенное требование.** Разница `max(цена_по_кривой − ставка, 0)` записывается как требование на **выбранный вами исход**. Не кэш, а «если этот исход победит — доплатим на сеттле».
+**The profitable tail — into a deferred claim.** The difference `max(curve_price − stake, 0)` is booked as a claim on **the outcome you chose**. Not cash, but "if this outcome wins, we top you up at settlement".
 
-**Гасится из ограниченного пула.** На разрешении требование оплачивается из **bounded-доли проигравшего пула** (не из кривой, не из LP-принципала). Нет проигравших денег под это — выплата урезается. Никакого молчаливого минта.
+**Settled from a bounded pool.** At resolution the claim is paid from a **bounded slice of the losing pool** (not from the curve, not from LP principal). If there is no loser money behind it, the payout is trimmed. No silent minting.
 
-**Честная цена входа (защита от накрутки).** Сплит «принципал/хвост» пересчитывается по глубине кривой **на момент вашей ставки**, а не текущей. Это закрывает трюк «поставил → сам добавил ликвидности → раздул глубину → снял больший хвост»: нормализация может только уменьшить выплату, не увеличить.
+**A fair entry price (protection against gaming).** The "principal/tail" split is recomputed against the curve depth **at the moment of your bet**, not the current one. That closes the trick of "place a bet → add liquidity yourself → inflate the depth → withdraw a bigger tail": normalization can only decrease the payout, never increase it.
 
-## Почему так
+## Why it works this way
 
-- **LP обещан principal-protected.** Если бы прибыль раннего выхода платилась из кривой, недостача (когда прибыль обгоняет проигравшие ставки) списывалась бы с принципала LP или минтилась — оба варианта ломают гарантию. Отложенное требование переносит выплату на сеттл, где источник — проигравшие, а не LP.
-- **Parimutuel обеспечен только проигравшими.** Прибыль победителя = чужой проигрыш. До резолва «проигравших» ещё нет — значит и прибыль не из чего платить сразу.
+- **LPs are promised principal protection.** If early-exit profit were paid from the curve, the shortfall (when profit outruns losing stakes) would be written off against LP principal or minted — both break the guarantee. The deferred claim moves the payout to settlement, where the source is losers, not LPs.
+- **Parimutuel is backed only by losers.** A winner's profit is someone else's loss. Before resolution there are no "losers" yet — so there is nothing to pay the profit from right away.
 
-## Что нужно понимать
+## What you need to understand
 
-- **Досрочно вы забираете принципал, не прибыль.** Прибыльный хвост ждёт резолва.
-- **Хвост условен по исходу.** Выбранный исход проиграл — хвоста нет; выиграл — гасится из пота (в пределах доступного).
-- **Это защищает LP и консервацию.** Механизм намеренный, а не ограничение кошелька.
-- **Плечо — тот же принцип.** Прибыль плеча тоже приходит после разрешения, из ограниченного пула. См. [Плечевой трейдер](./leverage-trader).
+- **On an early exit you take back principal, not profit.** The profitable tail waits for resolution.
+- **The tail is contingent on the outcome.** If your chosen outcome loses, there is no tail; if it wins, the tail is settled from the pot (within what is available).
+- **This protects LPs and conservation.** The mechanism is deliberate, not a wallet limitation.
+- **Leverage follows the same principle.** Leverage profit also arrives after resolution, from a bounded pool. See [Leverage trader](./leverage-trader).
 
-## Связки
+## Related
 
-- [Отмена ставки](./cancel-bet) — как считается возврат при досрочном выходе.
-- [Плечевой трейдер](./leverage-trader) — почему прибыль плеча отложена.
-- [Активный LP](./active-lp) — чью защиту это обеспечивает.
-- [Спецификация](../specification) — формальная модель deferred-claim и bounded-slice.
+- [Bet cancellation](./cancel-bet) — how the return on an early exit is computed.
+- [Leverage trader](./leverage-trader) — why leverage profit is deferred.
+- [Active LP](./active-lp) — whose protection this provides.
+- [Specification](../specification) — the formal model of the deferred claim and the bounded slice.

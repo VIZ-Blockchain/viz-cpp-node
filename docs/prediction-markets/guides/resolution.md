@@ -1,49 +1,49 @@
 ---
-title: "Оракул и разрешение — как объявляется исход"
-description: "Механизм разрешения рынка: резолв только после закрытия ставок, дедлайн result_expiration, ранний резолв (allow_early_resolution), missed-resolution void после grace, no-contest при отсутствии исхода. Выплаты автоматические."
+title: "Oracle and resolution — how an outcome is announced"
+description: "The market resolution mechanism: resolution only after betting closes, the result_expiration deadline, early resolution (allow_early_resolution), missed-resolution void after grace, no-contest when there is no outcome. Payouts are automatic."
 ---
 
-# Оракул и разрешение: как объявляется исход
+# Oracle and resolution: how an outcome is announced
 
-Это статья про **механизм** разрешения — таймлайн и правила, общие для всех участников. Про обязанности и риски самого оракула — отдельная статья [Оракул](./oracle); здесь мы смотрим, как рынок доходит от закрытия ставок до выплат.
+This article is about the **mechanism** of resolution — the timeline and the rules common to all participants. For the duties and risks of the oracle itself there is a separate article, [Oracle](./oracle); here we look at how a market gets from betting close to payouts.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Разрешить рынок можно только **после закрытия ставок** (`betting_expiration`) — пока идут ставки, объявлять исход бессмысленно. У рынка есть дедлайн `result_expiration`, к которому оракул обязан объявить результат (`pm_resolve_market`). На резолве выплаты угадавшим начисляются **автоматически** (виртуальная `pm_payout`), проигравшие исходы обнуляются, их деньги идут в призовой пот победителей.
+A market can only be resolved **after betting closes** (`betting_expiration`) — while bets are still coming in, announcing an outcome is pointless. A market has a `result_expiration` deadline by which the oracle must announce the result (`pm_resolve_market`). On resolution, payouts to those who called it right are credited **automatically** (virtual `pm_payout`), losing outcomes are zeroed out and their money goes into the winners' prize pot.
 
-Если исхода нет — событие отменено, источник пропал, ничья без победителя — рынок закрывается как **no-contest** (`pm_no_contest`): ставки возвращаются, никто не выигрывает и не проигрывает. А если оракул промолчал до дедлайна и грейса — рынок гибнет как **missed-resolution** (оракула штрафуют). Есть и досрочный путь: рынки с `allow_early_resolution` можно закрыть раньше, если исход уже определённо известен.
+If there is no outcome — the event was cancelled, the source disappeared, a draw with no winner — the market is closed as **no-contest** (`pm_no_contest`): bets are refunded, nobody wins and nobody loses. And if the oracle stayed silent past the deadline and the grace period, the market dies as **missed-resolution** (the oracle is penalised). There is also an early path: markets with `allow_early_resolution` can be closed sooner if the outcome is already known for sure.
 
-## Таймлайн рынка
+## Market timeline
 
-**1. Открыт.** Идут ставки, цена плывёт по кривой. Резолв запрещён.
+**1. Open.** Bets are coming in, the price floats along the curve. Resolution is forbidden.
 
-**2. Закрытие ставок (`betting_expiration`).** Приём ставок прекращён. Начинается окно, в котором оракул может (и должен) объявить исход.
+**2. Betting closes (`betting_expiration`).** Bets are no longer accepted. The window opens in which the oracle can (and must) announce the outcome.
 
-**3. Разрешение (`pm_resolve_market`).** Оракул объявляет победивший исход. Нода делит пул: выплаты автоматические, забирать вручную не нужно. За резолв оракулу — его fee (ограничен медиан-параметром).
+**3. Resolution (`pm_resolve_market`).** The oracle announces the winning outcome. The node splits the pool: payouts are automatic, there is nothing to claim by hand. For the resolution the oracle gets its fee (capped by a median parameter).
 
-**4. Окно спора.** После объявления — grace-период (`pm_dispute_grace_sec`), в котором исход можно оспорить (см. [Диспуты](./disputes)). До финализации спора выплаты не окончательны.
+**4. Dispute window.** After the announcement comes the grace period (`pm_dispute_grace_sec`) in which the outcome can be challenged (see [Disputes](./disputes)). Until the dispute is finalised the payouts are not final.
 
-**5. Сеттлмент.** По подтверждённому исходу проходит расчёт: ликвидность LP возвращается (principal-protected), призовой пот распределён.
+**5. Settlement.** The confirmed outcome is settled: LP liquidity is returned (principal-protected) and the prize pot is distributed.
 
-## Особые пути
+## Special paths
 
-**Ранний резолв (`allow_early_resolution`).** Если рынок создан с этим флагом и исход уже известен наверняка, оракул закрывает досрочно. При этом `result_expiration` сдвигается к моменту резолва (окно спора схлопывается к «сейчас + grace»), но полный `pm_dispute_grace_sec` от анонса диспутерам сохраняется. Поздний резолв (после `result_expiration`) окно, наоборот, не расширяет.
+**Early resolution (`allow_early_resolution`).** If the market was created with this flag and the outcome is already known for certain, the oracle closes it early. `result_expiration` then shifts to the moment of resolution (the dispute window collapses to "now + grace"), but disputers still keep the full `pm_dispute_grace_sec` from the announcement. A late resolution (after `result_expiration`), on the contrary, does not extend the window.
 
-**No-contest (`pm_no_contest`).** Нет исхода — рынок отменяется, ставки возвращаются. Это не штраф участникам: их деньги не «сгорают» из-за того, что источник промолчал. Оракул обязан сделать no-contest вовремя, если результата не будет.
+**No-contest (`pm_no_contest`).** There is no outcome — the market is cancelled and bets are refunded. This is not a penalty on participants: their money does not "burn" because a source went quiet. The oracle must declare no-contest in time if there is not going to be a result.
 
-**Missed-resolution (void по дедлайну).** Оракул не объявил исход и не сделал no-contest до `result_expiration` + grace → крон воидит рынок, оракула слэшат. Важно: void срабатывает только **после** `result_expiration + pm_dispute_grace_sec` (тот же cutoff, что settle-sweep) — чтобы у оракула было реальное окно резолва, а не гонка с дедлайном (это чинил фикс reachability, иначе fixed-deadline рынок без early-флага было невозможно резолвить).
+**Missed-resolution (void on deadline).** The oracle did not announce an outcome and did not declare no-contest before `result_expiration` + grace → the cron voids the market and the oracle is slashed. Important: the void only fires **after** `result_expiration + pm_dispute_grace_sec` (the same cutoff as the settle-sweep) — so that the oracle has a real resolution window rather than a race against the deadline (this was fixed by the reachability fix; otherwise a fixed-deadline market without the early flag was impossible to resolve).
 
-## Что нужно понимать
+## What to understand
 
-- **Резолв — только после закрытия ставок.** Раньше нельзя; ранний путь — отдельный флаг рынка.
-- **Выплаты автоматические.** Ни «claim», ни кнопки: выигрыш и возвраты приходят на резолве/отмене.
-- **Молчание наказуемо.** Нет исхода → no-contest вовремя. Просто «не сделать ничего» = missed-resolution и слэш оракула.
-- **Исход не окончателен до конца грейса.** В окне спора выплаты могут пересчитаться.
-- **Плечо резолва не ждёт.** Плечевые позиции закрываются по цене на `betting_expiration`, независимо от вердикта оракула — см. [Плечевой трейдер](./leverage-trader).
+- **Resolution only after betting closes.** Not before; the early path is a separate market flag.
+- **Payouts are automatic.** No "claim", no buttons: winnings and refunds arrive on resolution/cancellation.
+- **Silence is punished.** No outcome → no-contest in time. Simply "doing nothing" = missed-resolution and a slashing of the oracle.
+- **The outcome is not final until the grace period ends.** Within the dispute window payouts can be recomputed.
+- **Leverage does not wait for resolution.** Leverage positions are closed at the price as of `betting_expiration`, independently of the oracle's verdict — see [Leverage trader](./leverage-trader).
 
-## Роли и связки
+## Roles and links
 
-- [Оракул](./oracle) — кто объявляет исход и чем отвечает.
-- [Диспуты](./disputes) — как оспорить объявленный результат.
-- [Беттер](./bettor) — как выглядит резолв со стороны ставки.
-- [Спецификация](../specification) — формальные дедлайны и cutoff-ы.
+- [Oracle](./oracle) — who announces the outcome and what they answer with.
+- [Disputes](./disputes) — how to challenge an announced result.
+- [Bettor](./bettor) — what resolution looks like from the bet's side.
+- [Specification](../specification) — the formal deadlines and cutoffs.

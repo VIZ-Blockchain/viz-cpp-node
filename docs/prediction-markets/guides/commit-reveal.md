@@ -1,44 +1,44 @@
 ---
-title: "Скрытые ставки — commit-reveal и батчи"
-description: "Скрытая ставка: сначала commit (эскроу без раскрытия исхода/суммы), затем reveal в окне. Приватность до раскрытия защищает от копирования и снайпинга. Не раскрыл — форфейт части эскроу в forfeit_pool. Нужен рынок с allow_batch."
+title: "Hidden bets — commit-reveal and batches"
+description: "A hidden bet: first the commit (escrow without revealing the outcome/amount), then the reveal inside a window. Privacy until the reveal protects you from copying and sniping. Fail to reveal and part of the escrow is forfeited into the forfeit_pool. Requires a market with allow_batch."
 ---
 
-# Скрытые ставки: commit-reveal и батчи
+# Hidden bets: commit-reveal and batches
 
-Иногда важно, чтобы вашу ставку **не видели заранее** — чтобы её не скопировали и не сыграли против неё. Для этого есть двухфазная скрытая ставка: сначала вы «запечатываете» её (commit), потом раскрываете (reveal). Разберём, зачем это и что будет, если не раскрыть.
+Sometimes it matters that your bet is **not visible in advance** — so that it cannot be copied or played against. That is what the two-phase hidden bet is for: first you "seal" it (commit), then you reveal it (reveal). Let's go through why this exists and what happens if you do not reveal.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Обычная ставка видна в цепи сразу — исход, сумма, время. Скрытая ставка прячет это до раскрытия: вы вносите **эскроу** и коммитите ставку (`pm_commit_bet`), не показывая, на какой исход и сколько. Позже, в **окне раскрытия**, вы её раскрываете (`pm_reveal_bet`), и она встаёт в пул как обычная. До раскрытия никто не знает вашу позицию — это защита от копирования, фронт-раннинга и снайпинга крупной ставки.
+An ordinary bet is visible on chain immediately — outcome, amount, time. A hidden bet conceals that until the reveal: you put up **escrow** and commit the bet (`pm_commit_bet`) without showing which outcome and how much. Later, inside the **reveal window**, you reveal it (`pm_reveal_bet`) and it enters the pool like any other bet. Until the reveal nobody knows your position — that is protection against copying, front-running and sniping a large bet.
 
-За приватность есть ответственность: если вы **не раскрыли** ставку в окне, срабатывает **форфейт** — часть эскроу (штраф) уходит в `forfeit_pool` рынка (победителям), остальное возвращается. Скрытые ставки работают только на рынках, где включён батч-режим (`allow_batch`), и требуют минимального эскроу (`pm_min_batch_bet`).
+Privacy comes with responsibility: if you **fail to reveal** the bet inside the window, a **forfeit** kicks in — part of the escrow (the penalty) goes into the market's `forfeit_pool` (to the winners), the rest is refunded. Hidden bets only work on markets where batch mode is enabled (`allow_batch`) and require a minimum escrow (`pm_min_batch_bet`).
 
-## Как это работает по шагам
+## How it works step by step
 
-**Commit.** `pm_commit_bet`: вносите эскроу (≥ `pm_min_batch_bet`, порядка 1 VIZ), коммитите ставку в закрытом виде. В цепи видно, что вы что-то поставили, но не видно исход/сумму. Эскроу списан.
+**Commit.** `pm_commit_bet`: you put up escrow (≥ `pm_min_batch_bet`, on the order of 1 VIZ) and commit the bet in sealed form. The chain shows that you staked something, but not the outcome or the amount. The escrow is debited.
 
-**Окно раскрытия.** Даётся ограниченное окно (эпоха + `pm_reveal_window_blocks`, порядка минут). В нём вы обязаны раскрыть.
+**The reveal window.** You get a limited window (the epoch + `pm_reveal_window_blocks`, on the order of minutes). You must reveal within it.
 
-**Reveal.** `pm_reveal_bet`: показываете исход и сумму, ставка встаёт в пул по текущей цене — дальше как обычная ставка. Чтобы раскрыть, клиенту нужен `commit_id` вашего коммита (`get_account_commits`).
+**Reveal.** `pm_reveal_bet`: you disclose the outcome and the amount, the bet enters the pool at the current price — from there on it is an ordinary bet. To reveal, the client needs the `commit_id` of your commit (`get_account_commits`).
 
-**Не раскрыл → форфейт.** Пропустили окно — автоматический форфейт: штраф (доля эскроу, задаётся `no_reveal_fee_percent`) → `forfeit_pool` рынка, остаток возвращается. Это цена за то, что вы заняли слот и не завершили ставку.
+**No reveal → forfeit.** Miss the window and the forfeit is automatic: the penalty (a fraction of the escrow, set by `no_reveal_fee_percent`) goes into the market's `forfeit_pool`, the remainder is refunded. That is the price for taking a slot and not completing the bet.
 
-## Зачем это нужно
+## Why this exists
 
-- **Приватность намерения.** Крупный игрок не хочет, чтобы его ставку скопировали или сыграли против неё до того, как она встанет в пул.
-- **Анти-снайпинг.** Скрытая фаза мешает подсматривать и опережать чужие ставки.
-- **Батчи.** Коммиты собираются и раскрываются пачками — режим для более честного и приватного набора ставок.
+- **Privacy of intent.** A large player does not want their bet copied or played against before it enters the pool.
+- **Anti-sniping.** The hidden phase makes it harder to peek at and front-run other people's bets.
+- **Batches.** Commits are collected and revealed in batches — a mode for a fairer and more private round of betting.
 
-## Что нужно понимать
+## What you need to understand
 
-- **Две фазы, два действия.** Commit и reveal — разные операции; между ними окно. Забыли раскрыть — потеряли штраф.
-- **Раскрытие обязательно.** Форфейт — не баг, а стимул завершать начатое; штраф идёт победителям через forfeit_pool.
-- **Только на allow_batch-рынках.** Не всякий рынок поддерживает скрытые ставки.
-- **Нужен commit_id.** Для reveal клиент тянет ваши открытые коммиты (`get_account_commits`) — без него раскрыть нечего.
-- **Kill-switch.** Весь commit-reveal — подсистема с медиан-переключателем (`pm_commit_reveal_enabled`); валидаторы могут её отключить без хардфорка.
+- **Two phases, two actions.** Commit and reveal are different operations, with a window in between. Forget to reveal and you lose the penalty.
+- **Revealing is mandatory.** The forfeit is not a bug but an incentive to finish what you started; the penalty goes to the winners through the forfeit_pool.
+- **Only on allow_batch markets.** Not every market supports hidden bets.
+- **You need the commit_id.** To reveal, the client fetches your open commits (`get_account_commits`) — without it there is nothing to reveal.
+- **Kill switch.** The whole of commit-reveal is a subsystem with a median-voted toggle (`pm_commit_reveal_enabled`); validators can disable it without a hard fork.
 
-## Связки
+## Related
 
-- [Беттер](./bettor) — обычная (видимая) ставка, для сравнения.
-- [Почему пул, а не коэффициенты](./why-pool-not-odds) — куда встаёт раскрытая ставка.
-- [Спецификация](../specification) — окна раскрытия, `no_reveal_fee_percent`, батч-механика.
+- [Bettor](./bettor) — the ordinary (visible) bet, for comparison.
+- [Why a pool and not odds](./why-pool-not-odds) — where a revealed bet lands.
+- [Specification](../specification) — reveal windows, `no_reveal_fee_percent`, batch mechanics.

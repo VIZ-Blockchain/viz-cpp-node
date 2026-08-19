@@ -1,40 +1,40 @@
 ---
-title: "Активный LP — прямая ликвидность рынка"
-description: "Прямой LP задаёт глубину кривой конкретного рынка, зарабатывает на комиссиях и штрафах поздних ставок, и principal-protected: вывод price-neutral, а settle_liquidity возвращает принципал безусловно. Плечо LP не касается."
+title: "Active LP — direct market liquidity"
+description: "A direct LP sets the curve depth of a specific market, earns from fees and late-bet penalties, and is principal-protected: withdrawal is price-neutral, and settle_liquidity returns the principal unconditionally. Leverage does not touch the direct LP."
 ---
 
-# Активный LP: прямая ликвидность рынка
+# Active LP: direct market liquidity
 
-Вы даёте рынку глубину: кладёте VIZ в кривую конкретного рынка, чтобы ставки не двигали цену слишком резко. За это вы получаете долю комиссий. Ключевое отличие от «маркет-мейкера-банкира»: на VIZ прямая ликвидность **защищена по принципалу** — вы не можете уйти в минус от исхода.
+You give a market depth: you put VIZ into the curve of a specific market so that bets do not move the price too sharply. In return you receive a share of the fees. The key difference from a "market-maker-as-banker" model: on VIZ, direct liquidity is **principal-protected** — the outcome cannot put you in the red.
 
-## Главное в двух абзацах
+## The gist in two paragraphs
 
-Ваш капитал (`pm_add_liquidity`) встаёт в кривую рынка и определяет, насколько плавно ставки двигают цену. Чем глубже пул, тем комфортнее крупным игрокам и тем больше объём — а значит и комиссий. Вы зарабатываете **процент со ставок** (комиссия рынка) плюс долю **штрафов поздних ставок** (anti-sniping penalty), которые копятся в пользу LP.
+Your capital (`pm_add_liquidity`) enters the market's curve and determines how smoothly bets move the price. The deeper the pool, the more comfortable large players are and the larger the volume — and therefore the fees. You earn a **percentage of bets** (the market fee) plus a share of **late-bet penalties** (the anti-sniping penalty), which accrue in favor of LPs.
 
-Ваш принципал не зависит от того, кто выиграл. Вывод (`pm_withdraw_liquidity`) — **price-neutral**: пропорциональный шринк резервов возвращает ваш принципал + накопленную комиссию, не двигая кривую (round-trip не меняет цену). А на сеттлменте рынка `settle_liquidity` возвращает каждому LP его принципал **безусловно**, плюс бонус (комиссии, невыплаченные победителям остатки, penalty-pool). LP = principal-protected + доход с комиссий.
+Your principal does not depend on who won. Withdrawal (`pm_withdraw_liquidity`) is **price-neutral**: a proportional shrink of the reserves returns your principal plus accrued fees without moving the curve (a round trip does not change the price). And at market settlement, `settle_liquidity` returns each LP's principal **unconditionally**, plus a bonus (fees, remainders undistributed to winners, the penalty pool). LP = principal-protected + fee income.
 
-## Что происходит по шагам
+## What happens, step by step
 
-**Вносите ликвидность.** `pm_add_liquidity` — VIZ уходит в кривую рынка, вы получаете долю пула пропорционально вкладу. Цена от вашего внесения не смещается (вы добавляете симметрично).
+**You add liquidity.** `pm_add_liquidity` — VIZ goes into the market's curve and you receive a pool share proportional to your contribution. Your deposit does not shift the price (you add symmetrically).
 
-**Пока рынок открыт.** Со ставок удерживается комиссия и распределяется LP по долям. Поздние ставки платят anti-sniping-штраф, который тоже идёт в пользу ликвидности. Ваш доход капает по мере оборота.
+**While the market is open.** A fee is withheld from bets and distributed to LPs by share. Late bets pay the anti-sniping penalty, which also goes in favor of liquidity. Your income accrues as turnover grows.
 
-**Выводите (по желанию).** `pm_withdraw_liquidity`, частично или полностью. Вывод price-neutral: вернётся ваш принципал + заработанная комиссия, кривая не сдвинется. Никакого impermanent loss, как в классических AMM: round-trip вход-выход не двигает цену и не съедает капитал.
+**You withdraw (optionally).** `pm_withdraw_liquidity`, partially or fully. The withdrawal is price-neutral: you get back your principal plus earned fees, and the curve does not shift. No impermanent loss as in classic AMMs: an in-and-out round trip neither moves the price nor eats your capital.
 
-**Сеттлмент.** Когда рынок разрешён, ликвидность возвращается **сама**, по мере per-block-сеттла. `settle_liquidity` отдаёт каждому LP принципал безусловно + бонус. Ликвидность заперта с закрытия ставок до сеттлмента (пока считаются выплаты), потом освобождается.
+**Settlement.** Once the market is resolved, liquidity returns **on its own**, through per-block settlement. `settle_liquidity` hands each LP the principal unconditionally plus a bonus. Liquidity is locked from the close of betting until settlement (while payouts are computed), then released.
 
-## Что нужно понимать активному LP
+## What an active LP needs to understand
 
-- **Principal-protected — это про исход, а не про всё на свете.** Вы не теряете принципал от того, кто выиграл рынок. Ваш доход — комиссии и штрафы; риск исхода на вас не переложен.
-- **Вы не контрагент плеча.** Заём плечевых трейдеров фронтит **ленивый пул** (пассивный продукт), а не ваша прямая ликвидность. Плечо вашего принципала не касается. (Есть тонкий дизайн-нюанс с покрытием сверхприбыли плеча — он локализован на пул, не на прямых LP.)
-- **Глубина = объём = доход.** Тонкая ликвидность отпугивает крупных беттеров; ваш вклад напрямую влияет на качество рынка и, через объём, на ваши комиссии.
-- **Лок на время сеттла — нормально.** С закрытия ставок до расчёта выплат ликвидность заперта; это не потеря, а порядок расчёта. Дальше принципал возвращается.
-- **Доход реализуется на сеттле.** Заработанная комиссия (earned_fee) окончательно оформляется при разрешении рынка; до резолва она отражается, но фиксируется в возврате.
+- **Principal-protected refers to the outcome, not to everything under the sun.** You do not lose principal because of who won the market. Your income is fees and penalties; outcome risk is not shifted onto you.
+- **You are not the counterparty to leverage.** Leverage traders' loans are fronted by the **lazy pool** (a passive product), not by your direct liquidity. Leverage does not touch your principal. (There is a subtle design nuance about covering leverage overprofit — it is localized to the pool, not to direct LPs.)
+- **Depth = volume = income.** Thin liquidity scares off large bettors; your contribution directly affects market quality and, through volume, your fees.
+- **The lock during settlement is normal.** From the close of betting until payouts are computed, liquidity is locked; that is the settlement procedure, not a loss. Afterwards the principal returns.
+- **Income is realized at settlement.** Earned fees (earned_fee) are finalized when the market resolves; before resolution they are reflected, but they are booked in the return.
 
-## Роли рядом с вами
+## Roles next to yours
 
-- **Создатель рынка** — вносит стартовую ликвидность (он тоже прямой LP) и задаёт комиссию.
-- **Беттер** — платит комиссию, из которой складывается ваш доход.
-- **Пассивный LP (ленивый пул)** — другой продукт: пассивный капитал, который фронтит плечо; не путать с прямой ликвидностью рынка.
+- **Market creator** — provides the initial liquidity (they are a direct LP too) and sets the fee.
+- **Bettor** — pays the fee that makes up your income.
+- **Passive LP (lazy pool)** — a different product: passive capital that fronts leverage; not to be confused with direct market liquidity.
 
-Дальше по теме: «Пассивный LP (ленивый пул)» (в чём разница и где риск плеча), «Почему пул, а не коэффициенты» (как устроена кривая), «Создатель рынка» (как задаётся комиссия и глубина).
+Further reading: "Passive LP (lazy pool)" (how it differs and where the leverage risk sits), "Why a pool, not odds" (how the curve works), "Market creator" (how the fee and depth are set).

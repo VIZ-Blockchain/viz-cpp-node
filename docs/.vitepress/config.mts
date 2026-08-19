@@ -59,6 +59,7 @@ interface SidebarLabels {
   onixWhitepaper: string;
   onixSpecification: string;
   pmHub: string;
+  pmGuides: string;
   pmWorkflows: string;
   pmConcepts: string;
   proposals: string;
@@ -143,6 +144,7 @@ const en: SidebarLabels = {
   onixWhitepaper: 'Whitepaper',
   onixSpecification: 'Specification',
   pmHub: 'Overview & map',
+  pmGuides: 'Guides — by role and feature',
   pmWorkflows: 'Workflows & diagrams',
   pmConcepts: 'Concept analysis',
   proposals: 'Proposals',
@@ -227,6 +229,7 @@ const ru: SidebarLabels = {
   onixWhitepaper: 'Whitepaper',
   onixSpecification: 'Спецификация',
   pmHub: 'Обзор и карта',
+  pmGuides: 'Гайды — по ролям и фичам',
   pmWorkflows: 'Воркфлоу и диаграммы',
   pmConcepts: 'Анализ концептов',
   proposals: 'Предложения',
@@ -311,6 +314,7 @@ const zhCN: SidebarLabels = {
   onixWhitepaper: '白皮书',
   onixSpecification: '规范',
   pmHub: '总览与地图',
+  pmGuides: '指南 — 按角色与功能',
   pmWorkflows: '工作流与图',
   pmConcepts: '概念分析',
   proposals: '提案',
@@ -358,7 +362,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
       text: t.predictionMarketsSection,
       items: [
         { text: t.pmHub, link: p('/prediction-markets/') },
-        { text: 'Guides — по ролям и фичам', link: p('/prediction-markets/guides/') },
+        { text: t.pmGuides, link: p('/prediction-markets/guides/') },
         { text: t.onixOverview, link: p('/prediction-markets/onix') },
         { text: t.onixWhitepaper, link: p('/prediction-markets/whitepaper') },
         { text: t.onixSpecification, link: p('/prediction-markets/specification') },
