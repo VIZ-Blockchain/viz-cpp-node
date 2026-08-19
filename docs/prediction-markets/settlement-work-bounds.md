@@ -432,6 +432,12 @@ VIZ therefore supports ~10 000 open positions, and constraint 3 caps only the si
 position, not how many of them share one market. At the measured ~1.7 µs per visited row that is
 ~17 ms of work bought by a single 1 VIZ bet, repeated for every bet in the block.
 
+Worth noting where that floor came from: `pm_min_liquidity` was imposed on the loan by the #536
+audit fix, and its own comment states the intent — "bounds the global open-position count to
+`fund_total / pm_min_liquidity`". That reasoning is sound for work measured **per block**, which is
+what every sweep above is. It does not carry to a scan that runs once per transaction: bounding the
+set says nothing about how many times the set is re-walked, and nothing caps the re-walks.
+
 Two honest qualifications. First, the outer loop re-scans from the head of the range after each
 liquidation (`O(K·N)` for K liquidations), but K is self-damping: liquidating a position sells its
 tokens back into the curve, which moves the price *toward* the remaining same-side positions and
