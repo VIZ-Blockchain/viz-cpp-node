@@ -269,6 +269,20 @@ Covered by `void_refund_row_budget_spans_blocks`: 140 rows, budget at its floor 
 ever resolves; the void must span blocks, stay under the budget per block, end with `status = 3`,
 `resolved_outcome = -1`, every row refunded, and the bettors' balances up by exactly the stake.
 
+### 4.4 Known sibling, not yet metered: the batch executor
+
+Cron §6 fills every row queued into a market's current epoch inside one block, and that costs one
+unit of the market-counting cap — the same shape as the settlement bug. It was left out of this
+change deliberately, not by oversight, and it is worth stating plainly: after fix A a queued row
+costs `pm_min_bet` (1 VIZ), exactly what a bet row costs, so the threat is the one already priced
+here, and on an LMSR market each row additionally pays for a curve quote, making it *dearer* per row
+than settlement.
+
+Metering it needs no new state — the LMSR q-vector is persisted into `pm_outcome_object` row by row
+already, so a cursor plus the shared row budget is enough. The visible change is that the epoch
+counter would only advance once its queue is drained, so under a flood an epoch stays open longer
+(the bets themselves keep filling normally). Pending an owner decision.
+
 ## 5. What a row actually costs
 
 Measured with `tests/consensus_sim/bench/settle_bench.cpp` (`make pm_settle_bench`), which drives
