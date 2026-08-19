@@ -9,6 +9,11 @@
 // CHAIN_HARDFORK_REQUIRED_VALIDATORS agree AND this timestamp is reached. With a timestamp in the
 // past the fork therefore activates in whatever block the 17th validator happens to upgrade in —
 // no announceable moment, no coordination window.
+// STILL OPEN (was the original reason this date was a placeholder): pm_processing_cap_per_block
+// bounds the NUMBER of markets touched per block, not the work per market — settle_market walks
+// every bet row of a market in a single block and costs one cap unit. Bet rows per market are
+// uncapped and cost one raw unit each, so the per-block cost is unbounded. Benchmark before relying
+// on the cap.
 #ifdef BUILD_TESTNET
 // Testnet activates earlier so the full PM feature set can be exercised ahead of mainnet.
 #define CHAIN_HARDFORK_14_TIME 1780000000
