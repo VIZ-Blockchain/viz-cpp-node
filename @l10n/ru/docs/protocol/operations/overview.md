@@ -52,6 +52,32 @@
 | 58 | `use_invite_balance_operation` | active | [Инвайты](./invites.md) |
 | 60 | `fixed_award_operation` | regular | [Награды](./awards.md) |
 | 61 | `target_account_sale_operation` | master | [Рынок аккаунтов](./account-market.md) |
+| 64 | `set_reward_sharing_operation` | active | [Валидаторы](./validators.md) |
+| 66 | `pm_oracle_register_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 67 | `pm_oracle_update_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 68 | `pm_create_market_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 69 | `pm_oracle_accept_market_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 70 | `pm_place_bet_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 71 | `pm_commit_bet_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 72 | `pm_reveal_bet_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 73 | `pm_cancel_bet_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 74 | `pm_add_liquidity_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 75 | `pm_withdraw_liquidity_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 76 | `pm_resolve_market_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 77 | `pm_no_contest_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 78 | `pm_dispute_create_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 79 | `pm_dispute_vote_operation` | regular | [Прогнозные рынки](./prediction-markets.md) |
+| 80 | `pm_dispute_resolve_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 81 | `pm_transfer_position_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 82 | `pm_lazy_deposit_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 83 | `pm_lazy_withdraw_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 91 | `pm_leverage_open_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 92 | `pm_leverage_close_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 93 | `pm_leverage_convert_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 98 | `pm_dispute_oracle_respond_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+| 99 | `pm_unban_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
+
+> ID — это фиксированный индекс в едином `operation`-варианте цепи (только добавление). Пропуски в этой таблице — **виртуальные** операции (ниже), чередующиеся по ID — например, 62–63, 65, 84–90, 94–97, 100.
 
 ---
 
@@ -83,6 +109,19 @@
 | 59 | `expire_escrow_ratification_operation` | Истёк дедлайн эскроу | [Виртуальные операции](../virtual-operations.md) |
 | 62 | `bid_operation` | Сделана ставка на аукционе | [Виртуальные операции](../virtual-operations.md) |
 | 63 | `outbid_operation` | Перебитая ставка на аукционе | [Виртуальные операции](../virtual-operations.md) |
+| 65 | `stakeholder_reward_operation` | Выплата reward-sharing участнику | [Валидаторы](./validators.md) |
+| 84 | `pm_batch_settle_operation` | Рассчитана граница batch-эпохи | [Прогнозные рынки](./prediction-markets.md) |
+| 85 | `pm_commit_forfeit_operation` | Escrow commit-reveal форфейтнут (не раскрыт) | [Прогнозные рынки](./prediction-markets.md) |
+| 86 | `pm_auto_payout_operation` | Рынок рассчитан (порыночный маркер выплаты) | [Прогнозные рынки](./prediction-markets.md) |
+| 87 | `pm_dispute_finalize_operation` | Подсчитано голосование комитета | [Прогнозные рынки](./prediction-markets.md) |
+| 88 | `pm_dispute_auto_close_operation` | Анти-фриз авто-закрытие спора | [Прогнозные рынки](./prediction-markets.md) |
+| 89 | `pm_oracle_missed_penalty_operation` | Оракул пропустил дедлайн разрешения | [Прогнозные рынки](./prediction-markets.md) |
+| 90 | `pm_lazy_recall_operation` | Шаг поэтапного отзыва lazy-пула | [Прогнозные рынки](./prediction-markets.md) |
+| 94 | `pm_leverage_liquidate_operation` | Плечевая позиция ликвидирована | [Прогнозные рынки](./prediction-markets.md) |
+| 95 | `pm_leverage_resolve_operation` | Плечевая позиция рассчитана на резолюции | [Прогнозные рынки](./prediction-markets.md) |
+| 96 | `pm_market_accepted_operation` | Рынок запущен (оракул принял / self / авто) | [Прогнозные рынки](./prediction-markets.md) |
+| 97 | `pm_payout_operation` | Паримутюэль-выплата на беттера | [Прогнозные рынки](./prediction-markets.md) |
+| 100 | `pm_ban_expired_operation` | Истёк временный бан оракула/создателя | [Прогнозные рынки](./prediction-markets.md) |
 
 ---
 

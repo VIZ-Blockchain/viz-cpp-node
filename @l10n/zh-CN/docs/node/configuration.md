@@ -158,6 +158,11 @@ skip-virtual-ops = false
 # 允许在链过期时生产（仅用于开发/测试网）
 enable-stale-production = false
 
+# 禁用少数派 fork 检测（仅用于单运营者测试网/分叉）。
+# 与 enable-stale-production 不同，它不会在健康参与度下被自动清除。
+# 切勿在真实的公共网络上启用。
+disable-minority-fork-detection = false
+
 # 生产区块所需的最低参与度 % (0–99)
 required-participation = 33
 
@@ -203,4 +208,4 @@ logger.p2p.appenders = p2p
 | `plugins/chain/plugin.hpp` | `shared-file-size`, `min-free-shared-file-size`, `inc-shared-file-size`, `block-num-check-free-size`, `single-write-thread`, `enable-plugins-on-push-transaction`, `read-wait-micro`, `max-read-wait-retries`, `write-wait-micro`, `max-write-wait-retries`, `skip-virtual-ops`, `clear-votes-before-block`, `track-account-range`, `history-whitelist-ops`, `history-blacklist-ops`, `history-start-block` |
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
-| `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
+| `plugins/validator/validator.hpp` | `enable-stale-production`, `disable-minority-fork-detection`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |

@@ -1,229 +1,157 @@
 # Tech Debt Audit — viz-cpp-node
-Generated: 2026-05-01
-Branch audited: `chore/dead-code-tier-a`
-Scope: source under `libraries/`, `plugins/`, `programs/`, root `CMakeLists.txt`, `documentation/`, `share/vizd/`. Excludes `thirdparty/` (vendored submodules: fc, chainbase, appbase).
 
-> ## Refresh — 2026-06-17 (verified against working tree)
->
-> The May findings below are kept as a historical log. The current state of each verified item:
->
-> **Fixed since May:**
-> - **F008** — `CHAIN_INTERNAL_PLUGINS` lines removed from `plugins/CMakeLists.txt`.
-> - **F009** — `test_api_plugin` no longer registered in `programs/vizd/main.cpp`.
-> - **F017 / F029** — `chain_test` reference removed from `documentation/building.md`.
-> - **F046 / F047 / F048** — `documentation/plugin.md` no longer references the phantom dirs, `newplugin.py`, or the `CHAIN_INTERNAL_PLUGINS` claim.
-> - **F051** — `cat_parts.py` now uses `return False` / `return True`.
->
-> **Partially addressed:**
-> - **F002** — `libraries/network/node.cpp` was split; the file is gone, replaced by `dlt_p2p_node.cpp` (4,113 LOC) + `dlt_p2p_messages.cpp` (26 LOC). The message extraction was trivial — the 4,113-LOC `dlt_p2p_node.cpp` is still a god file. F039's line refs (`node.cpp:4192-4395`) now point into `dlt_p2p_node.cpp`.
-> - **F019** — `remote_node_api.hpp` reduced from 10 `using namespace plugins::*` to 5. Still present.
->
-> **Still open (line/LOC drift):**
-> - **F001** — `database.cpp` grew to **7,975 LOC** (+1,470, much of it stall-monitor work). Still #1 split priority. F036/F037 TODO line refs have shifted.
-> - **F003** — `plugins/snapshot/plugin.cpp` grew to **4,345 LOC** (+1,068). Not split. (Note: path is `plugins/snapshot/`, not `libraries/chain/snapshot/`.)
-> - **F004** wallet.cpp 2,796 · **F005** chain_evaluator.cpp 2,350 · **F006** wallet.hpp 1,554 — roughly unchanged.
-> - **F019** — `remote_node_api.hpp` reduced to 5 `using namespace plugins::*`. **Deferred:** narrowing them needs a local compiler — dozens of bare types resolve through those usings (incl. bare `set<>` with no `using std::set`), so a blind edit would break the build across consumers.
->
-> **Fixed in working tree (pending CI build):**
-> - **F018** — `using namespace std;` in `wallet.hpp` → targeted `using std::{string,vector,map,pair};`.
-> - **F041** — `std::exit(0)` ×2 at `plugins/chain/plugin.cpp:672,698` → `appbase::app().quit()`. (Fixes the bypassed-shutdown bug; quit() likely still exits 0, so not an exit-code change.)
->
-> **⚠️ Obsolete / now backwards — DO NOT ACT ON:**
-> - **F012** — The original `std::cerr` targets (`database.cpp:398,509`, reindex progress) are gone. The 5 remaining `std::cerr` calls (lines 329, 701, 828, 1160, 1174) are the **deliberate stall-watchdog** stderr — written to `cerr` precisely *so the monitor can never block on node locks*. Converting them to `ilog`/`wlog` would defeat the watchdog. **This recommendation is now wrong; leave the watchdog stderr as-is.** F011/F038/F045 snapshot `cerr` line refs have also drifted (file is now 4,345 LOC).
+**Generated:** 2026-08-11 (full re-audit against `master` @ `d4fe3334`)
+**Scope:** source under `libraries/`, `plugins/`, `programs/`, `tests/`, root `CMakeLists.txt`, `.github/workflows/`, `share/vizd/`. Excludes `thirdparty/` (vendored submodules: fc, chainbase, appbase).
+
+> This is a from-scratch re-audit that **replaces** the 2026-05-01 audit and its
+> 2026-06-17 refresh. Those described a tree that has since drifted materially —
+> e.g. they claimed "zero tests / no `tests/` directory" (a `consensus_sim`
+> harness now exists), referenced `libraries/network/node.cpp` (renamed to
+> `dlt_p2p_node.cpp`), and audited a `documentation/` tree that a pending PR
+> removes. The old finding IDs (F001–F051) are **not** carried forward; this
+> document uses a fresh `D###` numbering. Where a current item maps to prior
+> work it is called out inline.
 
 ## Executive summary
 
-- **God-file concentration is the single biggest structural problem.** Five files (`libraries/chain/database.cpp` 6,505 LOC; `libraries/network/node.cpp` 5,759 LOC; `plugins/snapshot/plugin.cpp` 3,277 LOC; `libraries/wallet/wallet.cpp` 2,886 LOC; `libraries/chain/chain_evaluator.cpp` 2,347 LOC) hold ~20.8k LOC, roughly 40% of the real code surface. Three of these five are also the highest-churn files in the last 6 months (snapshot 55, database 38, node 25 commits). Size × churn = where bugs concentrate.
-- **Zero unit tests.** No `tests/` directory anywhere. No `BOOST_AUTO_TEST_CASE` callsites in non-thirdparty code. `documentation/building.md:374` advertises `chain_test` as a build target but no such target exists. `documentation/testing.md` describes a testing process for a system that isn't there.
-- **Documentation drift is systemic, not episodic.** `documentation/plugin.md` references three directories that don't exist (`libraries/plugins`, `external_plugins`, `example_plugins`) and a file that doesn't exist (`programs/util/newplugin.py`). It also describes runtime behavior (`CHAIN_INTERNAL_PLUGINS` "used by argument parsing") that is fictional — the variable is set but never read.
-- **`test_api_plugin` is registered into production `vizd`** (`programs/vizd/main.cpp:72`). Its `test_api_a` / `test_api_b` JSON-RPC methods return hardcoded `"A"` and `"B"`. It's gated on `enable-plugin` config, but live in the production binary's plugin registry.
-- **`using namespace` in public headers, including `using namespace std;`** in `libraries/wallet/include/graphene/wallet/wallet.hpp:16`. Pollutes every consumer of the wallet API. `libraries/wallet/include/graphene/wallet/remote_node_api.hpp:28-38` adds 10 more — a wallet-side dependency rats-nest.
-- **Two implementations of the hardfork concatenator** (`programs/build_helpers/cat-parts.cpp` for MSVC, `programs/build_helpers/cat_parts.py` for everything else). The Python version has latent NameError bugs (`return false` lowercase on lines 14, 16); they are unreachable today only because `hardfork.d` happens to contain only regular `.hf` files.
-- **Plugin glob with dead state.** `plugins/CMakeLists.txt:2-12` walks subdirectories and appends each to `CHAIN_INTERNAL_PLUGINS`, but no other CMake or C++ file ever reads that variable. Pure ceremony.
-- **Console I/O leaks across the logging boundary.** ~75 direct `std::cerr` / `std::cout` / `printf` callsites in libraries+plugins despite `fc::ilog/wlog/elog` being the project standard. `plugins/snapshot/plugin.cpp` has 40+ `std::cerr` callsites alone, with bespoke ANSI-color macros (CLOG_GREEN/ORANGE/etc., lines 50-54) that bypass fc entirely.
-- **Submodules track branches, not tags.** All three (`fc`, `chainbase`, `appbase` in `.gitmodules`) point at moving branches. Reproducible builds from an old commit can silently change.
-- **Layered cleanup work already in flight.** PR #100 (`chore/dead-code-tier-a`) is removing orphan files, dead CMake plumbing, and `#if 0` blocks. This audit complements it: many of the medium-effort architectural items below are out of scope for that PR but are good Tier B candidates.
+- **God-file concentration is still the dominant structural risk, and it now
+  coincides exactly with the highest churn.** The three biggest hand-written
+  translation units are also the three most-changed files in the last six
+  months: `libraries/chain/database.cpp` (7,991 LOC, 130 commits/6mo),
+  `plugins/snapshot/plugin.cpp` (4,657 LOC, 125 commits/6mo), and
+  `libraries/network/dlt_p2p_node.cpp` (4,380 LOC, 125 commits/6mo). Size ×
+  churn is where consensus bugs concentrate. Together with `wallet.cpp` (2,796)
+  and `chain_evaluator.cpp` (2,350) these five hold ~22k LOC.
+- **Tests now exist but are not enforced.** `tests/consensus_sim/` is a real
+  deterministic multi-node harness (32 `BOOST_AUTO_TEST_CASE` scenarios across 10
+  files: determinism replay, equivocation, wedge predicate, smoke) built under
+  ASAN + UBSAN. **But it is gated `OFF` by default (`BUILD_CONSENSUS_TESTS`) and
+  no CI workflow builds or runs it.** The correctness gate is written but not
+  wired in. This is the single highest-value open item.
+- **The build system does no optimization by default.** There is no default
+  `CMAKE_BUILD_TYPE`, and `-O3/-O2` are set only inside the MinGW branch. A bare
+  `cmake ..` (or an IDE configure) produces an unoptimized node. *(Addressed in
+  open PR #146.)*
+- **No precompiled headers despite a 3.16 minimum.** Every TU re-parses the same
+  heavy Boost.MultiIndex / FC reflection headers. *(Opt-in PCH proposed in open
+  PR #148.)*
+- **Massive CMake duplication.** 26 library/plugin `CMakeLists.txt` carry the
+  full source list twice, once per `SHARED`/`STATIC` branch. *(Collapsed in open
+  PR #147, which also fixes a real drift in the chain lib's two branches.)*
+- **`using namespace` in public headers is widespread — 51 occurrences**,
+  including `using namespace std;` in `plugins/account_by_key/.../account_by_key_objects.hpp`
+  and 6 stacked usings in `wallet/remote_node_api.hpp`. These leak into every
+  consumer TU.
+- **Console I/O bypasses the fc logging boundary**, concentrated in
+  `plugins/snapshot/plugin.cpp` (81 `cerr`/`cout`/`printf` callsites with
+  bespoke ANSI-color output). Note: a handful of `std::cerr` calls in
+  `database.cpp` are the deliberate stall-watchdog and must stay.
+- **Submodules track no pinned commit discipline.** `.gitmodules` lists three
+  moving forks with no `branch=`/tag; `submodule update --remote` can silently
+  advance them.
+- **Repo hygiene:** `.qoder/` (168 tracked files, ~6.6 MB of AI-tool scratch)
+  and a stale `documentation/` tree are still tracked. *(Both addressed in open
+  PRs #144 and #145.)*
 
 ## Architectural mental model
 
-VIZ is a Graphene-derived blockchain (sister to Steem/Hive/BitShares lineage) with a Fair-DPOS consensus tweak. The codebase has a clean four-layer shape on paper:
+VIZ is a Graphene-derived blockchain (Steem/Hive/BitShares lineage) with a
+Fair-DPOS consensus tweak, mid-migration to a "VIZ Ledger" DLT positioning
+(snapshot-assisted state storage). Four layers:
 
-1. **`thirdparty/`** — vendored as submodules: `fc` (FC framework: serialization, logging, exceptions, async), `chainbase` (memory-mapped object database), `appbase` (plugin lifecycle / appbase pattern). All are VIZ-Blockchain forks tracking `update` / `lib-boost-1.71` branches.
-2. **`libraries/`** — `protocol` (operations, types, asset), `chain` (state machine, evaluators, hardforks), `network` (P2P, peer_connection), `api` (RPC API helpers), `wallet` (cli_wallet model + remote node API), `time`, `utilities` (BIP39 wordlist, key derivation, plain_keys).
-3. **`plugins/`** — ~25 plugins (account_history, snapshot, witness, p2p, json_rpc, webserver, mongo_db, etc.), all loaded via appbase. Two flavors: data plugins that index chain state, and API plugins that expose JSON-RPC methods.
-4. **`programs/`** — `vizd` (production binary, registers ~20 plugins in `main.cpp:62-88`), `cli_wallet` (interactive wallet CLI), `util` (sign_digest, test_block_log, test_shared_mem — operator/dev tools), `build_helpers` (cat-parts hardfork concatenator, configure_build.py for Win cross-compile).
+1. **`thirdparty/`** — `fc` (serialization, logging, exceptions, async),
+   `chainbase` (mmap object DB), `appbase` (plugin lifecycle). Vendored as
+   submodules.
+2. **`libraries/`** — `protocol` (operations, types, asset), `chain` (state
+   machine, evaluators, hardforks), `network` (P2P — note the recent
+   `node.cpp` → `dlt_p2p_node.cpp` DLT redesign), `api`, `wallet`, `time`,
+   `utilities` (BIP39 wordlist, key derivation).
+3. **`plugins/`** — ~20 appbase plugins registered explicitly in
+   `programs/vizd/main.cpp` `register_plugins()`. Data plugins index chain
+   state; API plugins expose JSON-RPC. `mongo_db` has moved out to
+   `examples-plugins/`.
+4. **`programs/`** — `vizd`, `cli_wallet`, `util`, `build_helpers`.
 
-**Where the model breaks down:**
-
-The clean four-layer story is undermined by god-file concentration. `database.cpp` is the actual heart of the system — block push, fork resolution, undo session management, snapshot integration, hardfork application — all in one 6,500-line file. `network/node.cpp` is similarly omnibus: peer discovery, message routing, sync logic, and peer database all live together in 5,759 lines. Logical separation exists (peer_connection.cpp, message_oriented_connection.cpp are split out) but the bulk of behavior pools in the giants.
-
-The plugin layer has two architectural inconsistencies. First, `plugins/CMakeLists.txt` uses a glob loop and an env var (`CHAIN_INTERNAL_PLUGINS`) that nothing reads — the system claims plugins are auto-discovered but `programs/vizd/main.cpp:62-88` actually hardcodes the registration list. Second, `test_api_plugin` is in that hardcoded list and ships in production.
-
-The chain evolution model is hardfork-driven. `libraries/chain/hardfork.d/` holds 13 `.hf` files (0-preamble, 1.hf through 12.hf) that get concatenated at build time into `hardfork.hpp`. There are 126 `has_hardfork(HARDFORK_*)` conditionals in `libraries/chain/`. Most are necessary for historical replay correctness — removing them would break sync from genesis. This is intrinsic complexity, not debt.
-
-The wallet/CLI layer is the most aggressive offender for header pollution: 12+ `using namespace` directives in public headers, including the canonical `using namespace std;` anti-pattern in `wallet.hpp:16`.
+**Where it breaks down:** the clean layering is undercut by god-file
+concentration in `database.cpp` (block apply, fork resolution, undo sessions,
+snapshot integration, hardfork application, a push-block stall monitor) and by
+`dlt_p2p_node.cpp` / `snapshot/plugin.cpp` each pooling many responsibilities in
+one high-churn TU. An in-flight witness→validator rename is visible in the churn
+history (`witness.cpp`, `witness_guard.cpp` → `validator*`).
 
 ## Findings
 
-| ID    | Category            | File:Line                                                           | Severity | Effort | Description                                                                                                                                                       | Recommendation                                                                                                                                              |
-|-------|---------------------|---------------------------------------------------------------------|----------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| F001  | Architectural decay | `libraries/chain/database.cpp:1`                                    | High     | L      | 6,505-LOC god file: block push, fork resolution, undo state, snapshot import, hardfork apply, p2p side-effects. 38 commits in 6 months — highest churn in chain/. | Extract `apply_block_path` (push/pop/apply), `snapshot_integration`, and `undo_session_lifecycle` into separate translation units. Keep `database.hpp` API stable. |
-| F002  | Architectural decay | `libraries/network/node.cpp:1`                                      | High     | L      | 5,759-LOC god file in p2p layer. Peer discovery, message routing, fetch coordination, sync state — all in one TU. 25 commits in 6mo.                                | Split `node_impl` along the boundaries already implicit in member groupings: `peer_db_node`, `sync_node`, `fetch_node`. Mechanical extraction.              |
-| F003  | Architectural decay | `plugins/snapshot/plugin.cpp:1`                                     | High     | L      | 3,277 LOC and **55 commits in 6 months** — highest churn in the whole repo. Single-file plugin handles import, export, P2P transfer, peer query, ANSI logging.      | Split into `snapshot_import.cpp` / `snapshot_export.cpp` / `snapshot_peer_query.cpp`. The `detail::set_*` helpers (lines 60-90+) deserve their own header.   |
-| F004  | Architectural decay | `libraries/wallet/wallet.cpp:1`                                     | Medium   | L      | 2,886 LOC. Wallet API impl mixes account ops, key management, transaction signing, paid-subscription, social-network forwarding into one class.                   | Extract `wallet_keys_impl`, `wallet_transaction_impl`, `wallet_account_impl` partial classes. Header (1,568 LOC) similarly bloated.                          |
-| F005  | Architectural decay | `libraries/chain/chain_evaluator.cpp:1`                             | Medium   | M      | 2,347-LOC monolith of operation evaluators. New operations are appended; no logical grouping.                                                                     | Group by operation category (account_*, content_*, witness_*, asset_*) into 4-5 evaluator TUs. Each evaluator is independent — low merge risk.              |
-| F006  | Architectural decay | `libraries/wallet/include/graphene/wallet/wallet.hpp:1`             | Medium   | M      | 1,568-LOC public header. Includes too much, drags `private_message`, `social_network`, `tags`, `database_api` types into wallet TU.                              | Forward-declare and move impls to `.cpp`. Reduces compile fan-out for cli_wallet.                                                                            |
-| F007  | Architectural decay | `libraries/protocol/include/graphene/protocol/chain_operations.hpp:1` | Medium   | M      | 1,188-LOC header with all operation structs. Every consumer pays the include cost for every op type.                                                              | Group ops into per-category headers; keep umbrella `chain_operations.hpp` for compatibility.                                                                |
-| F008  | Architectural decay | `plugins/CMakeLists.txt:2,8`                                        | Low      | S      | `set(ENV{CHAIN_INTERNAL_PLUGINS} …)` glob-appends every plugin subdir to an env var. **Never read anywhere** in CMake or source.                                  | Delete the env-var lines; keep the glob if `add_subdirectory` is doing useful work. (Tier A candidate.)                                                     |
-| F009  | Architectural decay | `programs/vizd/main.cpp:72`                                         | High     | S      | `test_api_plugin` registered unconditionally in production `vizd`. Plugin's API returns hardcoded `"A"`/`"B"` (`plugins/test_api/test_api_plugin.cpp:25-37`).      | Wrap registration in `#ifdef BUILD_TESTNET` (or remove the plugin entirely — it has no real consumers).                                                     |
-| F010  | Architectural decay | `programs/build_helpers/cat-parts.cpp:1`                            | Low      | S      | 68-LOC C++ tool used **only on MSVC** (`libraries/chain/CMakeLists.txt:3`). Linux/macOS use `cat_parts.py` (line 8). Compiled into every build regardless.        | Either delete cat-parts.cpp and use Python on MSVC too, or delete cat_parts.py and use the C++ binary everywhere. One implementation, one place.            |
-| F011  | Consistency rot     | `plugins/snapshot/plugin.cpp:50-54`                                 | High     | M      | Bespoke ANSI-color logging macros (`CLOG_GREEN`, `CLOG_ORANGE`, etc.) that pipe to `std::cerr`. ~40 callsites between lines 1100-2500 use this instead of fc::*log.| Replace with fc logging at appropriate levels. fc supports structured fields; cerr-with-ANSI doesn't survive log aggregators.                                |
-| F012  | Consistency rot     | `libraries/chain/database.cpp:398,509`                              | Medium   | S      | `std::cerr` used directly in chain core (during reindex progress reporting). Same path elsewhere uses `ilog`/`wlog`.                                              | Replace with `ilog("…")`. Keep behavior identical; gain log-config compliance.                                                                              |
-| F013  | Consistency rot     | repo-wide                                                           | Medium   | M      | 75 direct console-I/O callsites (`std::cout`, `std::cerr`, `printf`, `fprintf`) across libraries+plugins despite fc-logging being standard.                       | Sweep with `rg "(std::c(out\|err)\|printf\|fprintf)" libraries/ plugins/`; convert to fc::*log. Most are progress messages or warnings.                     |
-| F014  | Consistency rot     | `programs/build_helpers/`                                           | Medium   | S      | Two implementations of "concatenate `.d` files" (`cat-parts.cpp`, `cat_parts.py`). Drift risk: changes in one not reflected in the other.                          | Pick one. See F010.                                                                                                                                          |
-| F015  | Consistency rot     | repo-wide                                                           | Low      | -      | Threading uses both `std::thread`/`std::mutex` (9 callsites) and `fc::thread`/`fc::mutex`/`fc::scoped_lock` (56 callsites).                                       | Document when each is preferred (fc:: integrates with fc::future and the cooperative scheduler; std:: is for one-shot OS threads). Add a short note in CLAUDE.md or developer.md. |
-| F016  | Consistency rot     | `share/vizd/config/`                                                | Low      | S      | 7 config templates (`config.ini`, `config_debug.ini`, `config_debug_mongo.ini`, `config_mongo.ini`, `config_stock_exchange.ini`, `config_testnet.ini`, `config_witness.ini`). Unclear which is canonical. | Add `share/vizd/config/README.md` describing what each template is for. Or delete the ones not exercised by Docker images. |
-| F017  | Consistency rot     | `documentation/building.md:374`                                     | Low      | S      | Lists `chain_test` as a build target. No such target exists in any `CMakeLists.txt`.                                                                              | Remove the line. (Will collapse to F033 once test debt is addressed.)                                                                                       |
-| F018  | Type & contract     | `libraries/wallet/include/graphene/wallet/wallet.hpp:16`            | High     | S      | `using namespace std;` in a public header. Leaks std::* into every TU including this header.                                                                      | Delete the line. Qualify uses with `std::` (mostly `std::string`, `std::vector`).                                                                            |
-| F019  | Type & contract     | `libraries/wallet/include/graphene/wallet/remote_node_api.hpp:28-38` | High     | S      | 10 `using namespace plugins::*` directives at namespace scope in a public header. Names from condenser_api, database_api, follow, social_network, etc. all leak.   | Move usings to .cpp, or replace with `using ns::Type` declarations for only the names actually needed.                                                       |
-| F020  | Type & contract     | `libraries/chain/include/graphene/chain/fork_database.hpp:15`       | Medium   | S      | `using namespace boost::multi_index;` in public header.                                                                                                           | Move into .cpp.                                                                                                                                              |
-| F021  | Type & contract     | `libraries/chain/include/graphene/chain/chain_object_types.hpp:16`  | Medium   | S      | `using namespace boost::multi_index;` in public header.                                                                                                           | Move into .cpp.                                                                                                                                              |
-| F022  | Type & contract     | `libraries/protocol/include/graphene/protocol/operation_util_impl.hpp:9` | Medium | S      | `using namespace graphene::protocol;` in a header that gets transitively included by every operation visitor.                                                     | Use qualified names.                                                                                                                                         |
-| F023  | Type & contract     | `libraries/chain/include/graphene/chain/dlt_block_log.hpp:9`        | Low      | S      | `using namespace graphene::protocol;` in header.                                                                                                                  | Move to .cpp.                                                                                                                                                |
-| F024  | Type & contract     | `libraries/chain/include/graphene/chain/block_log.hpp:9`            | Low      | S      | Same pattern.                                                                                                                                                     | Move to .cpp.                                                                                                                                                |
-| F025  | Type & contract     | repo-wide (libraries+plugins)                                       | Medium   | M      | 14 raw `new T(…)` callsites and 24 raw `delete` callsites in `.cpp` files. C++14 has `make_unique`; the project is C++14.                                         | Sweep: replace `new X(...)` paired with `delete` by `std::unique_ptr`/`std::make_unique`. `new char[N]` + `delete[]` → `std::vector<char>` or `make_unique<char[]>(N)`. |
-| F026  | Type & contract     | `libraries/network/message_oriented_connection.cpp:262`             | Low      | S      | `std::unique_ptr<char[]> padded_message(new char[size_with_padding])` — uses raw `new` even though it's wrapped in unique_ptr.                                    | `auto padded_message = std::make_unique<char[]>(size_with_padding);`                                                                                         |
-| F027  | Test debt           | repo-wide                                                           | Critical | XL     | **Zero unit tests.** No `tests/` dir, no inline `BOOST_AUTO_TEST_CASE`. The chain handles money and consensus and has no automated correctness gate.              | Start with golden-replay regression tests for the highest-risk paths: block push, fork resolution, snapshot import. Even one harness that replays a known mainnet block range would close the largest correctness gap. |
-| F028  | Test debt           | `documentation/testing.md`                                          | Low      | S      | File describes a testing system that doesn't exist.                                                                                                               | Either build the system the doc describes, or rewrite the doc to describe testnet-replay-based validation.                                                  |
-| F029  | Test debt           | `documentation/building.md:374`                                     | Low      | S      | Lists `chain_test` as a `make` target. No such target.                                                                                                            | Delete the line until F027 is addressed.                                                                                                                     |
-| F030  | Test debt           | `plugins/snapshot/plugin.cpp` (3,277 LOC, 55 commits/6mo)           | High     | XL     | Highest-churn file in the repo. Zero tests. Snapshot import is consensus-adjacent (chain replays from snapshot state).                                            | Property tests for the `detail::set_shared_*` helpers (pure functions, easy to test). Round-trip test: export → import → state-equivalent.                  |
-| F031  | Test debt           | `libraries/chain/database.cpp` (6,505 LOC, 38 commits/6mo)          | Critical | XL     | Highest-churn file in chain core. Zero tests. Behavior changes here are validated only by mainnet/testnet observation.                                            | Same approach as F030 but on smaller leaf functions first. `validate_block_header_signature`, `apply_hardfork_*`, undo-session lifecycle are testable in isolation. |
-| F032  | Dependency & config | `.gitmodules`                                                       | Medium   | S      | All three submodules track moving branches (`update`, `lib-boost-1.71`), not pinned commits/tags. Reproducible builds at an old commit can silently shift.         | Pin to commit SHAs. The submodule directory entry already records the SHA — but tracking a branch means a fresh `submodule update --remote` would silently advance it. Audit `.gitmodules` and add `update = none` or pin via tag. |
-| F033  | Dependency & config | `plugins/mongo_db/`                                                 | Medium   | S      | `ENABLE_MONGO_PLUGIN` (`CMakeLists.txt:71`) gates a 5-file plugin with no CI coverage. `Dockerfile-mongo` exists but no workflow exercises it.                    | Either add a CI smoke build or mark the plugin deprecated and remove. The risk is silent bit-rot.                                                            |
-| F034  | Dependency & config | `share/vizd/docker/Dockerfile-lowmem`                               | Low      | S      | Lowmem image documented in `building.md:33` but no workflow builds it. Same bit-rot risk as F033.                                                                 | Add a CI build matrix entry, or consolidate the variant set.                                                                                                 |
-| F035  | Dependency & config | `CMakeLists.txt:42`                                                 | Low      | M      | `BUILD_SHARED_LIBRARIES` option exists but Docker forces FALSE. Many CMakeLists carry dual `if(BUILD_SHARED_LIBRARIES)` branches (e.g., `libraries/chain/CMakeLists.txt:16-71` vs :73-128) — 50+ lines of duplicated source lists per branch. | If shared builds aren't supported in production, drop the option and the duplicated `add_library(... SHARED)` branches.                                     |
-| F036  | Performance         | `libraries/chain/database.cpp:1141`                                 | Low      | -      | TODO: "no easy way to catch boost::interprocess::bad_alloc" — long-standing issue. Not blocking, but a known cliff for shared-mem exhaustion.                     | Track in an issue. Note it in `documentation/shared-memory.md` if user-visible.                                                                              |
-| F037  | Performance         | `libraries/chain/database.cpp:2755`                                 | Low      | M      | TODO: "this method can be skipped for validation-only nodes" — known optimization gap on the validation hot path.                                                 | Add a `skip_*` flag to the apply path; benchmark on a low-mem replay before/after.                                                                           |
-| F038  | Performance         | `plugins/snapshot/plugin.cpp:1100-1471`                             | Low      | S      | Snapshot import logs progress via `std::cerr` line-by-line; on slow stdouts (e.g. journald with rate limiting) this can throttle a multi-GB import.                | Use buffered fc logging or rate-limit progress messages.                                                                                                     |
-| F039  | Error handling      | `libraries/network/node.cpp:4192-4395`                              | Low      | M      | 17 `catch(...)` handlers in this range. Most log via fc; pattern is consistent. But a couple (sample audit needed) may continue silently.                          | Audit each handler: if "log + continue" is the intent, factor into a `LOG_AND_CONTINUE(reason)` helper. Naming makes intent explicit.                       |
-| F040  | Error handling      | `libraries/chain/proposal_evaluator.cpp:75`                         | Medium   | S      | `} catch (...) {` inside a proposal-validation path with no handler body shown in the snippet. Silent failure is consensus-relevant.                              | Verify the handler body. If it swallows, replace with explicit fc::exception conversion + propagate.                                                         |
-| F041  | Error handling      | `plugins/chain/plugin.cpp:506,520`                                  | Medium   | S      | `std::exit(0)` from inside plugin code. Bypasses appbase shutdown sequence. Marked TODO.                                                                          | Replace with `appbase::app().quit()` per the existing TODO. Behavior delta should be small.                                                                  |
-| F042  | Error handling      | repo-wide                                                           | Low      | -      | 23 TODO/FIXME markers in source, several pre-hardfork-2 (`chain_evaluator.cpp:1168` "Remove after hardfork 2"). Hardfork 12 has shipped per `hardfork.d/`.         | Sweep: which TODOs reference hardforks ≤ HF12? Those are dead conditionals — delete the gate, keep the post-fork branch.                                    |
-| F043  | Security            | repo-wide                                                           | Low      | -      | No hardcoded secrets found via simple regex sweep on `password=`, `secret=`, `private_key=`, `api_key=`, `token=` patterns. Passes basic check.                   | n/a — keep this finding to mark that the check was performed.                                                                                                |
-| F044  | Security            | `libraries/wallet/include/graphene/wallet/wallet.hpp:16`            | Low      | S      | `using namespace std;` in cli_wallet's transitive include set. Increases ADL surprise surface in JSON-RPC dispatch (where `std::string` and project string types coexist). | Same fix as F018.                                                                                                                                            |
-| F045  | Security            | `plugins/snapshot/plugin.cpp:2425+`                                 | Medium   | M      | Snapshot peer-query path downloads multi-GB blobs from "trusted" peers. Trust model is encoded in config (`trusted_snapshot_peers`). Verify signature/hash chain on import path is mandatory and not skippable by config. | Audit the import path: confirm `validating snapshot checksum` (line 1165) covers the entire payload and uses a key derived from chain consensus, not a static cert.       |
-| F046  | Documentation drift | `documentation/plugin.md:5-9`                                       | Medium   | S      | References `libraries/plugins`, `external_plugins`, `example_plugins`, and `hello_api`. None exist. The actual plugin layout is `plugins/<name>/`.                | Rewrite the section to describe the real layout. Either do that, or rebuild the directories the doc promises (former is cheaper).                          |
-| F047  | Documentation drift | `documentation/plugin.md:24`                                        | Low      | S      | References `programs/util/newplugin.py`. Doesn't exist (`programs/util/` contains only sign_digest, test_block_log, test_shared_mem, sign_transaction, get_dev_key). | Remove the autogeneration section, or add the script back if it's wanted.                                                                                    |
-| F048  | Documentation drift | `documentation/plugin.md:5`                                         | Medium   | S      | Claims `CHAIN_INTERNAL_PLUGINS` is "used to create a runtime-accessible list of available plugins used by the argument parsing." It isn't — see F008.             | Delete that claim. Plugins are registered explicitly in `programs/vizd/main.cpp:62-88`.                                                                      |
-| F049  | Documentation drift | `documentation/building.md`                                         | Low      | S      | `Dockerfile-lowmem` and `Dockerfile-mongo` documented in the table at line 30-34 but no CI workflow builds them — see F033, F034.                                  | Drop them from the doc table, or add CI coverage so the doc reflects reality.                                                                                |
-| F050  | Documentation drift | `README.md`                                                         | Low      | S      | "Pre-populated seed node entries can be found in the config templates under `share/vizd/config/`" — true, but doesn't say which template to use. Combined with F016, users don't know which `config_*.ini` to start from. | Same fix as F016 (a README in `share/vizd/config/`).                                                                                                         |
-| F051  | Build hygiene       | `programs/build_helpers/cat_parts.py:14,16`                         | Medium   | S      | `return false` and `return true` (lowercase) — `NameError` in Python. Unreachable today only because `hardfork.d/` happens to contain only regular `.hf` files (the buggy branches require subdirs or empty filter).  | Fix to `return False` / `return True`. Two-character change.                                                                                                 |
+| ID   | Category            | Location                                                    | Sev  | Effort | Description | Recommendation |
+|------|---------------------|-------------------------------------------------------------|------|--------|-------------|----------------|
+| D001 | Test enforcement    | `.github/workflows/*`, `CMakeLists.txt:229`                 | High | M | `tests/consensus_sim/` (32 ASAN/UBSAN test cases across 10 scenario files) exists but `BUILD_CONSENSUS_TESTS` defaults OFF and **no CI workflow builds or runs it**. `docker-pr-build.yml` builds only `vizd`. The correctness gate is written but not enforced. | Add a CI job: `cmake -DBUILD_CONSENSUS_TESTS=ON` + run `consensus_sim_tests` on PRs. This is the highest-leverage change in the repo. |
+| D002 | Architectural decay | `libraries/chain/database.cpp` (7,991 LOC, 130 commits/6mo) | High | L | Highest size × churn in the repo. Block apply, fork resolution, undo lifecycle, snapshot import, hardfork apply, stall monitor in one TU. Longest-to-compile file; MSVC needs `/bigobj`. | Extract along functional seams. *(Started in open PR #149 — hardfork cluster → `database_hardfork.cpp`.)* Continue with apply-block path, snapshot integration, undo-session lifecycle. |
+| D003 | Architectural decay | `plugins/snapshot/plugin.cpp` (4,657 LOC, 125 commits/6mo)  | High | L | Highest-churn plugin. Import, export, P2P transfer, peer query, ANSI logging in one file. Also holds 81 console-I/O callsites (D008) and 43 `catch(...)` handlers. | Split into `snapshot_import` / `snapshot_export` / `snapshot_peer_query` + a detail header. |
+| D004 | Architectural decay | `libraries/network/dlt_p2p_node.cpp` (4,380 LOC, 125 commits/6mo) | High | L | God file in the P2P layer (product of the DLT redesign). Peer discovery, routing, fetch coordination, sync state in one TU. | Split `node_impl` along member groupings: peer DB, sync, fetch. Mechanical once the redesign settles. |
+| D005 | Architectural decay | `libraries/wallet/wallet.cpp` 2,796 · `wallet.hpp` 1,557    | Med  | L | Wallet impl and its 1,557-LOC public header mix account ops, keys, signing, paid-subscription, forwarding. Header drags many plugin types into every cli_wallet TU. | Extract partial-class impls; forward-declare in the header, move bodies to `.cpp`. |
+| D006 | Architectural decay | `libraries/chain/chain_evaluator.cpp` (2,350 LOC)           | Med  | M | Monolith of operation evaluators; new ops appended with no grouping. Low churn (9/6mo) so lower priority than D002–D004. | Group by category (account/content/validator/asset) into separate evaluator TUs. |
+| D007 | Type & contract     | 51 `using namespace` in public headers                      | High | M | Leaks into every consumer TU. Worst: `using namespace std;` in `plugins/account_by_key/include/.../account_by_key_objects.hpp:14`; 6 stacked usings in `wallet/include/graphene/wallet/remote_node_api.hpp:19-25`; `using namespace boost::multi_index;` in `chain_object_types.hpp` and `account_by_key_objects.hpp`. | Move usings into `.cpp`, or replace with targeted `using ns::Type;`. Start with `std;` — mechanical, high value. |
+| D008 | Consistency rot     | `plugins/snapshot/plugin.cpp` (~81), `plugins/chain/plugin.cpp` (11), others | Med | M | ~100 direct `std::cerr`/`cout`/`printf` callsites across libs+plugins despite fc logging being standard; snapshot uses bespoke ANSI-color macros. | Convert to `fc::*log`. **Exception:** the ~5 `std::cerr` calls in `database.cpp` are the intentional stall-watchdog (written to cerr precisely so the monitor never blocks on node locks) — leave them. |
+| D009 | Type & contract     | 28 raw `new`/`delete` in `database.cpp`, 14 in `chain_evaluator.cpp`, others | Low | M | Project is C++14; `make_unique` available. Consensus-core files, so verify each pairing before converting. | Sweep `new X()`+`delete` → `unique_ptr`; `new char[N]` → `vector<char>`/`make_unique<char[]>`. Low priority; needs a compiler to verify. |
+| D010 | Build config        | `CMakeLists.txt` — no default `CMAKE_BUILD_TYPE`            | Med  | S | Bare `cmake ..` yields empty optimization flags (unoptimized node); `-O3/-O2` set only in the MinGW branch. | *(Open PR #146.)* Default to Release when unset on single-config generators. |
+| D011 | Build speed         | No `target_precompile_headers` anywhere (min CMake 3.16)    | Med  | M | Every TU re-parses heavy Boost.MultiIndex / FC reflection headers. | *(Open PR #148 — opt-in `ENABLE_PCH` for chain/protocol/wallet.)* |
+| D012 | Build maintenance   | 26 `CMakeLists.txt` with dual `SHARED`/`STATIC` source lists | Med | M | Full source list duplicated per library/plugin; already drifted in `libraries/chain` (SHARED branch listed `invite_evaluator.cpp` twice, missing `invite_objects.hpp`). | *(Open PR #147 — single `VIZ_LIBRARY_TYPE` var; also fixes the chain drift.)* |
+| D013 | Build hygiene       | `programs/build_helpers/` — two hardfork concatenators       | Low  | S | `cat-parts.cpp` (MSVC) and `cat_parts.py` (everyone else); the C++ binary was compiled on every platform. Drift risk. | *(Open PR #146 gates `cat-parts` to MSVC/MinGW.)* Longer term, pick one implementation. |
+| D014 | Dependency & config | `.gitmodules` — 3 submodules, no pinned discipline           | Med  | S | fc/chainbase/appbase track moving forks with no `branch=`/tag. `submodule update --remote` can silently advance them; reproducible builds from an old commit can shift. | Pin to tags or document that the recorded SHA is authoritative and `--remote` is not to be used. Maintainer decision on which commit is canonical. |
+| D015 | Dependency & config | `examples-plugins/mongo_db/` (5 files)                        | Low  | S | Moved out of `plugins/` (good), but no CI smoke build; silent bit-rot risk. | Add a compile-only CI check or mark explicitly unmaintained. |
+| D016 | Documentation       | `share/vizd/config/` — 5 templates, no README                | Low  | S | `config.ini`, `config_debug.ini`, `config_stock_exchange.ini`, `config_testnet.ini`, `config_witness.ini` with no guide to which to use; README points users here without saying which. | Add `share/vizd/config/README.md` with a one-line purpose per template. |
+| D017 | Repo hygiene        | `.qoder/` (168 files, ~6.6MB) + `documentation/` (8 files)   | Low  | S | AI-tool scratch dir and a legacy doc tree still tracked; the `documentation/` tree overlaps the current `docs/` VitePress site and has drifted. | *(Open PRs #144 untrack `.qoder/`; #145 consolidates `documentation/` into `docs/`.)* |
+| D018 | Consistency rot     | Root build scripts: `build_mingv.sh` (typo), mixed dash/underscore naming | Low | S | `build_mingv.sh` is misspelled; `documentation/building.md` tells users to run `build_mingw.sh` which doesn't exist. | *(Open PR #144 renames to `build_mingw.sh`.)* |
+| D019 | Dead conditional    | `chain_evaluator.cpp:1168` "TODO: Remove after hardfork 2"    | Low  | S | 19 TODO/FIXME markers total; this one gates pre-HF4 behavior and is long past. | Verify replay-safety, then delete the gate and keep the post-fork branch. Treat all other hardfork conditionals as append-only (D-note below). |
 
-## Top 5 — if you fix nothing else, fix these
+## Top 5 — if you fix nothing else
 
-### 1. **F027 — Add at least one regression test harness**
-The combination of (a) zero tests, (b) handling of money / consensus, and (c) high-churn god files (snapshot, database, node) is the largest correctness risk in the repo. You don't need full coverage to materially reduce risk; you need *one* fast harness that replays a known block range and asserts on the resulting state hash.
-
-**Concrete starting point:**
-```
-programs/util/test_block_log.cpp  (already exists, deferred per project notes)
-```
-Don't delete it — extend it. Add:
-- A `replay_to_height` driver that opens block_log, applies blocks up to N, prints final state hash.
-- A CI job that runs `replay_to_height 1000000` against a checked-in snapshot + block_log slice.
-- A failing test means a consensus-breaking change. Even one such test catches the worst class of bugs.
-
-This is the kind of test debt that compounds; every week without this is a week where every database.cpp change is rolled out without a safety net.
-
-### 2. **F009 — Stop registering `test_api_plugin` in production `vizd`**
-`programs/vizd/main.cpp:72` currently does:
-```cpp
-appbase::app().register_plugin<graphene::plugins::test_api::test_api_plugin>();
-```
-
-Change to:
-```cpp
-#ifdef BUILD_TESTNET
-appbase::app().register_plugin<graphene::plugins::test_api::test_api_plugin>();
-#endif
-```
-Or remove the plugin entirely (its API methods return literal `"A"` / `"B"` strings — no production consumer would want them). One line, no behavioral risk on the production path.
-
-### 3. **F018 + F019 — Strip `using namespace` from public headers, starting with wallet**
-`libraries/wallet/include/graphene/wallet/wallet.hpp:16` has `using namespace std;`. `remote_node_api.hpp:28-38` has 10 more across plugin namespaces. These leak into every consumer of the wallet API.
-
-**Sketch:**
-```cpp
-// wallet.hpp:16 — DELETE
-- using namespace std;
-
-// .cpp files that depended on it pick up `using std::string;` etc.
-// or qualify call sites.
-```
-Mechanical, but careful work — expect compile errors at every unqualified `string`, `vector`, `pair`, `map` callsite in the wallet TU. Run as one PR; reviewers can scan the diff for surprises.
-
-### 4. **F003 — Split `plugins/snapshot/plugin.cpp` along its natural seams**
-3,277 LOC, 55 commits in 6 months — not a refactor candidate, a refactor *necessity*. The file has clean internal sections already:
-- import path: lines ~1100-1471 (`load_snapshot_from_*`, `import_state_into_db`)
-- export path: separate functions
-- peer query path: lines 2425-2530 (`query_trusted_peers_for_snapshot`)
-- import detail helpers: namespace `detail` at line 60+
-
-**Sketch:**
-```
-plugins/snapshot/
-  plugin.cpp           — entry, init/startup/shutdown, glue
-  snapshot_import.cpp  — load + apply
-  snapshot_export.cpp  — serialize + write
-  snapshot_peer_query.cpp — P2P peer queries
-  detail.hpp           — set_shared_string, set_buffer, set_shared_authority helpers
-```
-No public-API change; pure file-level decomposition. Reviewer cost is low because each callsite stays the same.
-
-### 5. **F008 + F046 + F048 — Consolidate the `plugin.md` / `CHAIN_INTERNAL_PLUGINS` lie**
-Three findings with the same root cause: `documentation/plugin.md` describes a system that doesn't exist (auto-discovered plugins via env var). The CMake glob produces dead state. Pick one of two paths:
-
-**Path A (cheap, recommended):** Rewrite the doc to describe the actual system (plugins registered in `programs/vizd/main.cpp:62-88`, headers under `plugins/<name>/include/graphene/plugins/<name>/`, manual `add_subdirectory` in `plugins/CMakeLists.txt`). Delete `set(ENV{CHAIN_INTERNAL_PLUGINS}…)`. Both are 1-PR changes.
-
-**Path B (expensive):** Build the system the doc describes. Probably not worth it — the existing static registration list is fine.
-
-## Quick wins
-
-Low-effort × Medium-or-higher severity. Each takes <30 min and has near-zero risk.
-
-- [x] **F008** — ~~Delete `set(ENV{CHAIN_INTERNAL_PLUGINS}…)` lines in `plugins/CMakeLists.txt:2,8`.~~ Done (2026-06-17).
-- [x] **F009** — ~~Wrap `test_api_plugin` registration in `#ifdef BUILD_TESTNET` or remove (`programs/vizd/main.cpp:72`).~~ Done — no longer registered (2026-06-17).
-- [ ] ~~**F012** — Replace `std::cerr` with `ilog`/`wlog` at `libraries/chain/database.cpp:398,509`.~~ **OBSOLETE — do not act.** Target lines gone; remaining `cerr` is the intentional stall-watchdog (see 2026-06-17 refresh banner).
-- [x] **F017** — ~~Remove `chain_test` reference from `documentation/building.md:374`.~~ Done (2026-06-17).
-- [x] **F018** — ~~Delete `using namespace std;` at `wallet.hpp:15`.~~ Done (2026-06-17): replaced with `using std::{string,vector,map,pair};`. *(Pending CI build verification.)*
-- [x] **F029** — ~~Same as F017.~~ Done (2026-06-17).
-- [x] **F041** — ~~Replace `std::exit(0)` at `plugins/chain/plugin.cpp:672,698` with `appbase::app().quit()`.~~ Done (2026-06-17). *(Pending CI build verification.)*
-- [x] **F046** — ~~Rewrite `documentation/plugin.md` opening section to match real layout.~~ Done (2026-06-17).
-- [x] **F047** — ~~Remove the `programs/util/newplugin.py` reference at `documentation/plugin.md:24`.~~ Done (2026-06-17).
-- [x] **F048** — ~~Remove the `CHAIN_INTERNAL_PLUGINS` claim from `documentation/plugin.md:5`.~~ Done (2026-06-17).
-- [x] **F051** — ~~Fix `false` → `False`, `true` → `True` at `programs/build_helpers/cat_parts.py:14,16`.~~ Done (2026-06-17).
+1. **D001 — Wire `consensus_sim` into CI.** The tests are already written (ASAN
+   + UBSAN, deterministic multi-node). Turning them from "exists" into "runs on
+   every PR" is the biggest correctness win available and needs no new test
+   code — just a workflow job with `-DBUILD_CONSENSUS_TESTS=ON`.
+2. **D002 — Keep splitting `database.cpp`.** 130 commits in six months into one
+   7,991-LOC file with no per-file test isolation. PR #149 starts it; continue
+   seam by seam.
+3. **D007 — Strip `using namespace` from public headers**, starting with the
+   `std;` in `account_by_key_objects.hpp`. Mechanical, high blast-radius win.
+4. **D010 + D011 + D012 — Land the build PRs (#146/#147/#148).** Default-Release,
+   collapsed CMake, and opt-in PCH together cut both wall-clock build time and
+   the drift surface, at near-zero risk.
+5. **D003 / D004 — Split the two other high-churn god files.** Snapshot and
+   dlt_p2p_node each see ~125 commits/6mo; both are prime bug territory.
 
 ## Things that look bad but are actually fine
 
-This section exists because half the trap of doing an audit on a Graphene-derived blockchain is over-flagging consensus-critical code.
-
-- **`catch(...)` handlers in `libraries/network/peer_connection.cpp:118,130,142,290` and `libraries/network/message_oriented_connection.cpp:222,298`.** These are inside an event loop where any uncaught exception would tear down a peer connection thread. They all log via `dlog`/`wlog`/`elog` and rethrow or set a flag for the connection-closed handler. This is the correct pattern for a fc::thread-driven network layer. Don't "clean up" by removing them.
-- **126 `has_hardfork(HARDFORK_*)` checks in `libraries/chain/`.** These are not "stale migration code." They are required for replay correctness — a node syncing from genesis must reproduce the exact behavior at every height. A hardfork conditional from HF1 still matters because someone, somewhere, is replaying a node from block 1. Only the very oldest pre-genesis-launch branches (e.g., `chain_evaluator.cpp:1168` "Remove after hardfork 2") can be cleaned, and even then very carefully. Treat hardfork code as append-only.
-- **`programs/util/sign_digest.cpp`, `test_block_log.cpp`, `test_shared_mem.cpp`.** These look like dead dev utilities, but per the project's own deferred-cleanup note, they have plausible operator value. `sign_digest` lets witnesses sign things offline; `test_block_log` is the closest thing to a regression-test driver in the repo (and is the natural home for F027). Don't delete in a Tier B sweep — promote them.
-- **`libraries/utilities/words.cpp` at 49,787 lines.** This is a BIP39 wordlist embedded as a C++ array. The size is intrinsic to the data, not a code-quality issue. Don't add it to "god file" findings.
-- **Boost coroutine being found separately from other Boost components** (`CMakeLists.txt:85-89`). Looks like duplication, but this is a known workaround for a Boost CMake config quirk where `coroutine` isn't pulled in by `find_package(Boost ... COMPONENTS thread …)` cleanly across all distributions.
-- **Mixed `std::thread` and `fc::thread`.** `fc::thread` is required for cooperative scheduling with `fc::future`/`fc::async` and the message-bus pattern (see VERIFY_CORRECT_THREAD usage in network code). `std::thread` is correct for one-shot OS threads that don't interact with fc. The mix is intentional, not rot. (F015 is a doc finding, not a code finding.)
-- **Two CMake branches per library — `BUILD_SHARED_LIBRARIES` ON vs OFF.** Looks like 2× maintenance, but the duplication is in source-list arrays; the `add_library(SHARED)` vs `add_library(STATIC)` is a real and load-bearing distinction for some downstream consumers. Removal (F035) is a judgment call on whether shared-lib builds are still supported.
-- **The 6,505-line `database.cpp` is a god file but is not "rotten."** It's huge because the chain state machine has lots of facets — block apply, undo session lifecycle, snapshot integration, hardfork application — and they share a lot of `_db.session()` / object-index access. Splitting (F001) is good debt reduction, but this isn't the same as a 6,500-line god file in a typical web service. Don't recommend a rewrite. Recommend extraction along functional seams.
+- **`libraries/utilities/words.cpp` (49,787 lines).** BIP39 wordlist as a
+  `const char* word_list[]` in `.rodata`. Size is intrinsic to the data — not a
+  god file.
+- **132 `has_hardfork(HARDFORK_*)` checks in `libraries/chain/`.** Required for
+  replay correctness — a node syncing from genesis must reproduce behavior at
+  every height. Treat as append-only; only the very oldest pre-launch gates
+  (D019) can be removed, and only carefully.
+- **`catch(...)` in `peer_connection.cpp` / `message_oriented_connection.cpp`
+  and the validator/p2p event loops.** These sit in fc::thread-driven loops
+  where an uncaught exception would tear down a connection thread; they log via
+  `dlog`/`wlog`/`elog` and set a flag. Correct pattern — do not "clean up."
+- **The ~5 `std::cerr` calls in `database.cpp`.** Deliberate stall-watchdog
+  output, written to cerr so the monitor can never block on node locks.
+  Converting them to fc logging would defeat the watchdog.
+- **Mixed `std::thread`/`fc::thread`.** Intentional: `fc::thread` integrates with
+  `fc::future` and the cooperative scheduler; `std::thread` is for one-shot OS
+  threads.
+- **Boost coroutine found separately in root CMake.** Known workaround for a
+  Boost CMake config quirk, not duplication.
 
 ## Open questions for the maintainer
 
-These are things I couldn't classify as definitely-debt vs. intentional without domain context.
-
-1. **`test_api_plugin` registration in production vizd (F009).** Is there a downstream tool that probes for this plugin's presence as a node-version sentinel? If yes, removing it is breaking. If no (likely), the fix is a one-liner.
-2. **Snapshot peer-trust model (F045).** Is the snapshot checksum (`plugin.cpp:1165, 1172`) a content hash, or is it tied to chain state at the snapshot height? The difference matters for whether a malicious "trusted_snapshot_peer" can serve a forged-but-consistent snapshot.
-3. **`BUILD_SHARED_LIBRARIES` (F035).** Are there real-world consumers of the shared-lib build, or is it dead-but-unproven? If the latter, F035 becomes a quick-win deletion of half of every library's CMakeLists.
-4. **Mongo plugin status (F033).** Is mongo_db plugin still a supported deployment target, or is it kept around for one specific operator? If the latter, capture that in a comment and CI; if the former, it's actively bit-rotting without coverage.
-5. **Submodule branches vs commits (F032).** Is the team intentionally tracking `update`/`lib-boost-1.71` branches so that `submodule update --remote` follows them, or is the branch entry vestigial and the SHA pin is what's authoritative? Different fixes apply.
-6. **`programs/util/` operator value.** Per the project notes, `sign_digest`, `test_block_log`, `test_shared_mem` are deferred for operator audit. Useful for F27 (regression test starter). Are operators actively using them today, or has tooling moved on?
-7. **`config_stock_exchange.ini`.** Why does this exist as a top-level config template in `share/vizd/config/`? Either it documents a real deployment shape (capture in a README) or it's vestigial.
+1. **D001 CI cost.** `consensus_sim` builds at `-O1 -g -fsanitize=address,undefined`.
+   Is the CI runner budget OK with an ASAN build per PR, or should it run on a
+   schedule/label instead of every PR?
+2. **D014 submodules.** Is tracking moving forks intentional (so `--remote`
+   follows them), or is the recorded SHA authoritative? Different fixes apply.
+3. **D015 mongo_db.** Is the `examples-plugins/mongo_db` plugin a supported
+   deployment target or a reference example? Determines whether it needs CI.
+4. **D005 wallet header.** Is the cli_wallet compile-time fan-out from
+   `wallet.hpp` a felt pain, or tolerable? Drives priority of the header split.
+5. **`config_stock_exchange.ini`.** Does this document a real deployment shape
+   worth keeping, or is it vestigial? (Feeds D016.)

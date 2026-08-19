@@ -151,9 +151,9 @@ real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 | 防护 | 紧急期间的行为 |
 |------|--------------|
 | `resync_from_lib()` | **完全跳过** — 紧急期间弹出 LIB 附近的区块会崩溃 |
-| `stale_sync_check_task()` | 如果主节点头部推进 → 重置计时器，跳过恢复；如果从节点头部卡住 → 允许恢复 |
+| `check_wedge_watchdog()` | **没有紧急模式的特殊分支。** 仅当头部冻结且远低于*经过佐证的*网络顶端（已建立连接对等节点中第二高的头部）时才会启动，任何头部推进都会重置计时器。除非设置 `auto-resync-on-wedge = true`，否则只记录日志；启用后确认的卡死会使节点退出 |
 | `handle_block()`（DLT，同步模式，间隔 0–2） | 视为正常（非同步）以防止生产循环中断 |
-| 快照停滞同步检测 | 与停滞同步检查相同的逻辑 |
+| 快照停滞同步检测（`enable-stalled-sync-detection`，默认关闭） | **主/从的特殊处理实际位于此处。** 超时时读取 `emergency_consensus_active`；若本节点是紧急主节点（持有紧急密钥且委员会在排程中），单独出块属于正常情况，因此跳过恢复。卡住的从节点则允许恢复 |
 
 `resync_from_lib()` 防护最为关键：紧急期间，LIB 接近 HEAD。将区块弹回 LIB 并重置 fork DB 会导致来自真实网络的节点区块链接到重新播种的 LIB，触发 fork 切换，弹出到已提交的 LIB 以下，要么崩溃要么损坏状态。
 
@@ -196,7 +196,7 @@ real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 | 6 | `maybe_produce_block`（主节点） | 绕过同步、过时、参与；跳过少数派 fork |
 | 7 | `maybe_produce_block`（从节点） | 必须先同步；21 区块隔离检查 |
 | 8 | `resync_from_lib` | 紧急期间**完全跳过** |
-| 9 | `stale_sync_check_task` | 主节点头部推进时跳过；从节点卡住时允许 |
+| 9 | `check_wedge_watchdog` | 没有紧急模式分支；防止误触发的是顶端佐证和头部推进重置 |
 | 10 | `handle_block` | DLT 紧急中几乎追上的区块视为正常 |
 | 11 | `database::open` | 启动计划修复 |
 | 12 | `validator_guard` | 紧急期间不抑制密钥恢复 |

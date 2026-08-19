@@ -163,4 +163,39 @@
 
 ---
 
+## `set_reward_sharing_operation`（ID 64）
+
+**授权：** `owner` 的 `active`
+
+**HF13 验证者收益分成。** 验证者选择将其区块奖励的一部分转发给其**利益相关者**——即为其投票的账户——按时间加权的投票权重比例分配。`sharing_rate` 为该比例，以基点表示；分成池累积后在每个纪元结束时通过 `stakeholder_reward` 虚拟操作分配。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `owner` | `account_name_type` | 设置分成比例的验证者 |
+| `sharing_rate` | `uint16_t` | 转发给利益相关者的区块奖励比例，以基点表示（0 = 无，10000 = 100%） |
+
+```json
+[64, {
+  "owner": "alice",
+  "sharing_rate": 2500
+}]
+```
+
+- `sharing_rate` 上限为 10000（100%）。
+- 分配按**时间加权**的投票权重进行，因此新添加的投票在成熟前获得较小的份额。
+
+---
+
+## `stakeholder_reward_operation`（ID 65）— 虚拟
+
+在每个分配纪元，当 `sharing_rate` 非零的验证者向利益相关者支付其应得的分成区块奖励时发出。虚拟操作（从不签名）；出现在 `account_history` 中。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `validator` | `account_name_type` | 分享奖励的验证者 |
+| `stakeholder` | `account_name_type` | 接收份额的投票者 |
+| `shares` | `asset`（SHARES） | 记入利益相关者的金额 |
+
+---
+
 参见：[数据类型](../data-types.md)、[操作概述](./overview.md)、[链属性](../../governance/chain-properties.md)。

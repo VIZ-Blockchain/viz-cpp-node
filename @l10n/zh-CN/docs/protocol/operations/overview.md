@@ -52,6 +52,32 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 58 | `use_invite_balance_operation` | active | [邀请](./invites.md) |
 | 60 | `fixed_award_operation` | regular | [奖励](./awards.md) |
 | 61 | `target_account_sale_operation` | master | [账户市场](./account-market.md) |
+| 64 | `set_reward_sharing_operation` | active | [验证者](./validators.md) |
+| 66 | `pm_oracle_register_operation` | active | [预测市场](./prediction-markets.md) |
+| 67 | `pm_oracle_update_operation` | active | [预测市场](./prediction-markets.md) |
+| 68 | `pm_create_market_operation` | active | [预测市场](./prediction-markets.md) |
+| 69 | `pm_oracle_accept_market_operation` | active | [预测市场](./prediction-markets.md) |
+| 70 | `pm_place_bet_operation` | active | [预测市场](./prediction-markets.md) |
+| 71 | `pm_commit_bet_operation` | active | [预测市场](./prediction-markets.md) |
+| 72 | `pm_reveal_bet_operation` | active | [预测市场](./prediction-markets.md) |
+| 73 | `pm_cancel_bet_operation` | active | [预测市场](./prediction-markets.md) |
+| 74 | `pm_add_liquidity_operation` | active | [预测市场](./prediction-markets.md) |
+| 75 | `pm_withdraw_liquidity_operation` | active | [预测市场](./prediction-markets.md) |
+| 76 | `pm_resolve_market_operation` | active | [预测市场](./prediction-markets.md) |
+| 77 | `pm_no_contest_operation` | active | [预测市场](./prediction-markets.md) |
+| 78 | `pm_dispute_create_operation` | active | [预测市场](./prediction-markets.md) |
+| 79 | `pm_dispute_vote_operation` | regular | [预测市场](./prediction-markets.md) |
+| 80 | `pm_dispute_resolve_operation` | active | [预测市场](./prediction-markets.md) |
+| 81 | `pm_transfer_position_operation` | active | [预测市场](./prediction-markets.md) |
+| 82 | `pm_lazy_deposit_operation` | active | [预测市场](./prediction-markets.md) |
+| 83 | `pm_lazy_withdraw_operation` | active | [预测市场](./prediction-markets.md) |
+| 91 | `pm_leverage_open_operation` | active | [预测市场](./prediction-markets.md) |
+| 92 | `pm_leverage_close_operation` | active | [预测市场](./prediction-markets.md) |
+| 93 | `pm_leverage_convert_operation` | active | [预测市场](./prediction-markets.md) |
+| 98 | `pm_dispute_oracle_respond_operation` | active | [预测市场](./prediction-markets.md) |
+| 99 | `pm_unban_operation` | active | [预测市场](./prediction-markets.md) |
+
+> ID 是链上单一 `operation` 变体中的固定索引（仅追加）。本表中的空缺为按 ID 交错的**虚拟**操作（见下文）—— 例如 62–63、65、84–90、94–97、100。
 
 ---
 
@@ -83,6 +109,19 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 59 | `expire_escrow_ratification_operation` | 托管截止日期错过 | [虚拟操作](../virtual-operations.md) |
 | 62 | `bid_operation` | 拍卖出价 | [虚拟操作](../virtual-operations.md) |
 | 63 | `outbid_operation` | 拍卖被超价 | [虚拟操作](../virtual-operations.md) |
+| 65 | `stakeholder_reward_operation` | 向利益相关者的收益分成结算 | [验证者](./validators.md) |
+| 84 | `pm_batch_settle_operation` | 批量纪元边界结算 | [预测市场](./prediction-markets.md) |
+| 85 | `pm_commit_forfeit_operation` | 提交-揭示托管被没收（未揭示） | [预测市场](./prediction-markets.md) |
+| 86 | `pm_auto_payout_operation` | 市场结算（按市场赔付标记） | [预测市场](./prediction-markets.md) |
+| 87 | `pm_dispute_finalize_operation` | 委员会投票计票完成 | [预测市场](./prediction-markets.md) |
+| 88 | `pm_dispute_auto_close_operation` | 争议防冻结自动关闭 | [预测市场](./prediction-markets.md) |
+| 89 | `pm_oracle_missed_penalty_operation` | 预言机错过裁定截止 | [预测市场](./prediction-markets.md) |
+| 90 | `pm_lazy_recall_operation` | 懒惰池渐进式召回步 | [预测市场](./prediction-markets.md) |
+| 94 | `pm_leverage_liquidate_operation` | 杠杆头寸被清算 | [预测市场](./prediction-markets.md) |
+| 95 | `pm_leverage_resolve_operation` | 杠杆头寸在裁定时结算 | [预测市场](./prediction-markets.md) |
+| 96 | `pm_market_accepted_operation` | 市场上线（预言机接受 / 自预言机 / 自动） | [预测市场](./prediction-markets.md) |
+| 97 | `pm_payout_operation` | 每下注者的同注分彩赔付 | [预测市场](./prediction-markets.md) |
+| 100 | `pm_ban_expired_operation` | 临时预言机/创建者封禁失效 | [预测市场](./prediction-markets.md) |
 
 ---
 

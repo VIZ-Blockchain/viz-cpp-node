@@ -351,4 +351,32 @@ All locked funds return to `from`.
 
 ---
 
+## Prediction Markets (HF14)
+
+Emitted by the PM consensus logic — **not** a wall-clock cron. Two sources:
+- A **signed operation's evaluator**, at the instant it applies — `pm_market_accepted` (on accept / self-oracle / auto-accept) and `pm_leverage_liquidate` (on an opposing- or cancel-bet that pushes a leveraged position under threshold).
+- The **deadline processor `process_pm_markets()`**, run each block: it settles markets that have reached an **expiration / deadline / dispute-grace / epoch boundary** (bounded at `pm_processing_cap_per_block`, oldest-deadline-first).
+
+See [Prediction Market Operations](./operations/prediction-markets.md). (IDs 91–93 are the *regular* ops `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`, and IDs 98–99 the *regular* ops `pm_dispute_oracle_respond`/`pm_unban` — see that page.)
+
+| ID | Operation | Trigger |
+|----|-----------|---------|
+| 84 | `pm_batch_settle_operation` | Epoch boundary reached: queued bets executed on the epoch-open snapshot |
+| 85 | `pm_commit_forfeit_operation` | `reveal_deadline` passed unrevealed: penalty → `forfeit_pool`, rest refunded |
+| 86 | `pm_auto_payout_operation` | Dispute grace elapsed (per market): parimutuel settlement + LP principal returned |
+| 87 | `pm_dispute_finalize_operation` | Committee `voting_end_time` reached: tally decides; oracle penalty; re-resolved/upheld |
+| 88 | `pm_dispute_auto_close_operation` | `auto_close_time` reached, oracle never responded: anti-freeze refund, insurance slashed → DAO |
+| 89 | `pm_oracle_missed_penalty_operation` | `result_expiration` passed unresolved: insurance slashed → DAO, all bets refunded |
+| 90 | `pm_lazy_recall_operation` | An idle lazy-pool allocation reached a recall step: one graduated step returned to the pool |
+| 94 | `pm_leverage_liquidate_operation` | Evaluator — mid-market leverage liquidation (opposing-bet `0` / cancel-bet `1` cascade) |
+| 95 | `pm_leverage_resolve_operation` | Settlement — leveraged position force-closed at `cancel_value`: `outcome_index`, `won`, `pool_received`/`bettor_received`, `leverage` |
+| 96 | `pm_market_accepted_operation` | Evaluator — market went live: oracle accepted, self-oracle, or auto-accept; frozen oracle terms + `self_oracle` |
+| 97 | `pm_payout_operation` | Settlement — per active bet: `amount` (stake), `side`/`outcome_index`, `payout` (**0 on a loss**); alongside the per-market `pm_auto_payout` |
+| 100 | `pm_ban_expired_operation` | A temporary oracle/creator ban lapsed at `banned_until`: the cron cleared it (`account`, `oracle`, `creator`). Early manual lifts use the signed `pm_unban` instead |
+| 101 | `pm_market_expired_operation` | `accept_deadline` passed on a pending market: the named oracle never accepted/rejected within `pm_oracle_accept_window_sec` — market voided (`status -1`), seed liquidity refunded (`refunded_liquidity`), creation fee **not** refunded (`oracle`, `creator`, `market_id`, `refunded_liquidity`) |
+
+All PM money movement is strictly zero-sum (no emission); settlement conserves `Σ out == Σ bets + LP principal + forfeit_pool`.
+
+---
+
 See also: [Operations Overview](./operations/overview.md), [Awards](./operations/awards.md), [Committee](./operations/committee.md).

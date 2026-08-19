@@ -158,6 +158,11 @@ Leave these unset on non-validator nodes.
 # Allow production even if chain is stale (development/testnet only)
 enable-stale-production = false
 
+# Disable minority-fork detection (single-operator testnet/fork ONLY).
+# Unlike enable-stale-production, this is never auto-cleared by healthy
+# participation. Never enable on a real public network.
+disable-minority-fork-detection = false
+
 # Minimum participation % required to produce blocks (0–99)
 required-participation = 33
 
@@ -203,4 +208,4 @@ All options listed by source file:
 | `plugins/chain/plugin.hpp` | `shared-file-size`, `min-free-shared-file-size`, `inc-shared-file-size`, `block-num-check-free-size`, `single-write-thread`, `enable-plugins-on-push-transaction`, `read-wait-micro`, `max-read-wait-retries`, `write-wait-micro`, `max-write-wait-retries`, `skip-virtual-ops`, `clear-votes-before-block`, `track-account-range`, `history-whitelist-ops`, `history-blacklist-ops`, `history-start-block` |
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
-| `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
+| `plugins/validator/validator.hpp` | `enable-stale-production`, `disable-minority-fork-detection`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
