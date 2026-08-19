@@ -518,30 +518,44 @@ void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& 
         my->max_connections = options.at("p2p-max-connections").as<uint32_t>();
     }
 
-    // Seed nodes (support both old and new config names)
-    if (options.count("seed-node")) {
-        for (const auto& addr : options.at("seed-node").as<vector<string>>()) {
+    // Seed nodes (support both old and new config names).
+    // fc::resolve() expects a bare host, so "seed.example.com:2001" has to be split first:
+    // passing the whole "host:port" string always failed to resolve and the seed was dropped
+    // without a word, leaving the node with "connecting to 0 seed nodes" and no peers.
+    auto add_seed = [&](const std::string& addr) {
+        try {
+            my->seeds.push_back(fc::ip::endpoint::from_string(addr));
+            return;
+        } catch (...) {}
+
+        auto colon = addr.rfind(':');
+        if (colon != std::string::npos) {
+            const std::string host = addr.substr(0, colon);
+            uint16_t port = 0;
             try {
-                my->seeds.push_back(fc::ip::endpoint::from_string(addr));
+                const unsigned long parsed = std::stoul(addr.substr(colon + 1));
+                if (parsed > 0 && parsed <= 65535) port = static_cast<uint16_t>(parsed);
             } catch (...) {
+                port = 0;
+            }
+            if (port != 0 && !host.empty()) {
                 try {
-                    auto eps = fc::resolve(addr, 0);
-                    if (!eps.empty()) my->seeds.push_back(eps.front());
+                    auto eps = fc::resolve(host, port);
+                    if (!eps.empty()) {
+                        my->seeds.push_back(eps.front());
+                        return;
+                    }
                 } catch (...) {}
             }
         }
+        wlog("Seed node ${a} is neither an IP endpoint nor a resolvable host:port — skipped", ("a", addr));
+    };
+
+    if (options.count("seed-node")) {
+        for (const auto& addr : options.at("seed-node").as<vector<string>>()) add_seed(addr);
     }
     if (options.count("p2p-seed-node")) {
-        for (const auto& addr : options.at("p2p-seed-node").as<vector<string>>()) {
-            try {
-                my->seeds.push_back(fc::ip::endpoint::from_string(addr));
-            } catch (...) {
-                try {
-                    auto eps = fc::resolve(addr, 0);
-                    if (!eps.empty()) my->seeds.push_back(eps.front());
-                } catch (...) {}
-            }
-        }
+        for (const auto& addr : options.at("p2p-seed-node").as<vector<string>>()) add_seed(addr);
     }
 
     // DLT config

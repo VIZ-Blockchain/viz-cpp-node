@@ -27,6 +27,7 @@
 #include <fc/compress/zlib.hpp>
 #include <fc/network/tcp_socket.hpp>
 #include <fc/network/ip.hpp>
+#include <fc/network/resolve.hpp>
 #include <fc/thread/thread.hpp>
 #include <fc/thread/mutex.hpp>
 #include <fc/thread/scoped_lock.hpp>
@@ -4393,6 +4394,30 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 // Snapshot trusted-seeds diagnostic test
 // ============================================================================
 
+namespace {
+    /// Accepts both "1.2.3.4:8092" and "peer.example.com:8092".
+    fc::ip::endpoint resolve_peer_endpoint(const std::string& host_port) {
+        try {
+            return fc::ip::endpoint::from_string(host_port);
+        } catch (...) {}
+
+        auto colon = host_port.rfind(':');
+        FC_ASSERT(colon != std::string::npos, "Bad peer endpoint '${e}', expected host:port", ("e", host_port));
+        const std::string host = host_port.substr(0, colon);
+        unsigned long parsed = 0;
+        try {
+            parsed = std::stoul(host_port.substr(colon + 1));
+        } catch (...) {
+            FC_THROW("Bad port in peer endpoint '${e}'", ("e", host_port));
+        }
+        FC_ASSERT(parsed > 0 && parsed <= 65535, "Bad port in peer endpoint '${e}'", ("e", host_port));
+        const uint16_t port = static_cast<uint16_t>(parsed);
+        auto eps = fc::resolve(host, port);
+        FC_ASSERT(!eps.empty(), "Cannot resolve peer host '${h}'", ("h", host));
+        return eps.front();
+    }
+}
+
 void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
     const size_t n_peers = trusted_snapshot_peers.size();
     std::cerr << "\n[test-trusted-seeds] Testing " << n_peers << " trusted peer(s)...\n";
@@ -4420,7 +4445,10 @@ void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
 
         try {
             fc::tcp_socket sock;
-            auto ep = fc::ip::endpoint::from_string(peer_str);
+            // The real sync path (asio_tcp_socket::connect_to_endpoint) resolves DNS, so a
+            // host:port peer works there — but this diagnostic used to parse the endpoint as a
+            // literal IP only and reported every hostname from the docs as ERROR.
+            auto ep = resolve_peer_endpoint(peer_str);
 
             // --- 1. Measure TCP connect time ---
             auto t_connect_start = fc::time_point::now();
