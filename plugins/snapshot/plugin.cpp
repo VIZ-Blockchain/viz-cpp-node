@@ -214,6 +214,13 @@ inline uint32_t import_dynamic_global_properties(
         } else {
             obj.emergency_consensus_start_block = 0;
         }
+        // #432 §6 batch-executor cursors. Losing them would only cost one idle re-walk of an
+        // already-executed epoch (executed rows are skipped by status), but carrying them keeps
+        // a restored node byte-identical to the one it was snapshotted from.
+        obj.pm_batch_settle_cursor = v.get_object().contains("pm_batch_settle_cursor")
+            ? v["pm_batch_settle_cursor"].as_uint64() : 0;
+        obj.pm_batch_settle_bet_cursor = v.get_object().contains("pm_batch_settle_bet_cursor")
+            ? v["pm_batch_settle_bet_cursor"].as_uint64() : 0;
     });
     return 1;
 }

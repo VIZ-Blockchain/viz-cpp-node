@@ -1379,9 +1379,13 @@ void database::process_pm_markets() {
                 ? (now.sec_since_epoch() - mp.pm_dispute_grace_sec)
                 : 0u);
         const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        // finalized_time == 0 == "still owes work" sorts first inside the status bucket, so this
+        // walks live markets only (a status-1 market is never finalized, but the guard keeps the
+        // loop honest if that ever changes).
         auto it = idx.lower_bound(boost::make_tuple(
-            (int8_t)1, time_point_sec(0), pm_market_id_type()));
-        while (it != idx.end() && it->status == 1 && it->result_expiration <= cutoff && done < cap) {
+            (int8_t)1, time_point_sec(0), time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 1 && it->finalized_time == time_point_sec()
+               && it->result_expiration <= cutoff && done < cap) {
             const auto& mkt = *it; ++it;
 
             // One-shot prologue: slash the oracle and raise the "hands off" flag BEFORE any money
@@ -1745,11 +1749,18 @@ void database::process_pm_markets() {
                 : 0u);
 
         const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        // Only markets that still owe a settlement (finalized_time == 0) — a settled one leaves this
+        // group the moment finalized_time is stamped below, instead of sitting at the head of the
+        // range and being re-read (for free, no `cap` charged) on every block until GC retention.
         auto it = idx.lower_bound(boost::make_tuple(
-            (int8_t)3, time_point_sec(0), pm_market_id_type()));
-        while (it != idx.end() && it->status == 3 && it->result_expiration <= cutoff && done < cap) {
+            (int8_t)3, time_point_sec(0), time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 3 && it->finalized_time == time_point_sec()
+               && it->result_expiration <= cutoff && done < cap) {
             const auto& mkt = *it; ++it;
 
+            // Still reachable here: payout_status 2 (dispute open) — that market owes work, just not
+            // settlement yet. Its dispute row is gated economically (pm_dispute_fee), so the skip set
+            // stays small, unlike the settled markets this walk no longer sees at all.
             if (mkt.payout_status != 1 && mkt.payout_status != 4) continue; // 4 = settlement in flight
 
             // #432 D: settlement is incremental. `payout_status = 4` ("settling") marks the market
@@ -1810,8 +1821,17 @@ void database::process_pm_markets() {
     // must NOT freeze funds already in the queue. Gating §6 on the flag stranded revealed-but-
     // unexecuted bets for as long as the market stayed active. Drain the queue regardless; batch-A
     // H2 additionally refunds any residual status 5/6 at terminal settle as a backstop.
-    if (mp.pm_batch_epoch_blocks > 0 &&
-        (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0)) {
+    // #432 §6: the executor also runs OFF the epoch boundary whenever a partial pass is in flight
+    // (bet cursor set). Waiting for the next boundary would leave already-revealed stakes queued —
+    // and the market's epoch frozen — for a whole epoch window just because the row budget ran out.
+    // The `row_budget > 0` guard is load-bearing, not an optimisation: §6 runs LAST and the budget
+    // is shared, so a settle-heavy block can arrive here with nothing left. Entering anyway would
+    // fall through to the persist block with stopped_mid_mkt == false and silently reset the parked
+    // row cursor to 0 — the next pass would then re-walk the epoch from its head, paying budget for
+    // rows it already executed.
+    if (mp.pm_batch_epoch_blocks > 0 && row_budget > 0 &&
+        (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0 ||
+         get_dynamic_global_properties().pm_batch_settle_bet_cursor != 0)) {
 
         const auto& midx = get_index<pm_market_index>().indices().get<by_status>();
         const auto& bidx = get_index<pm_bet_index>().indices().get<by_epoch>();
@@ -1821,11 +1841,18 @@ void database::process_pm_markets() {
         // starve newer ones. The walk itself stays O(active batch markets) per boundary
         // (one bet-index probe each); if that ever hurts, index queued bets by
         // (status, market) and drive the scan from that instead.
-        const uint64_t start_id = get_dynamic_global_properties().pm_batch_settle_cursor;
+        const uint64_t start_id   = get_dynamic_global_properties().pm_batch_settle_cursor;
+        // Row cursor inside the market the previous pass stopped in (0 = nothing in flight). It is
+        // consumed by the FIRST market this scan visits, which is start_id by construction.
+        uint64_t bet_cursor       = get_dynamic_global_properties().pm_batch_settle_bet_cursor;
+        // NOT a market id sentinel: market id 0 is a perfectly ordinary market (and the first one
+        // ever created), so "stopped" needs its own flag.
+        bool     stopped_mid_mkt  = false;
+        uint64_t stopped_in_mkt   = 0;   // market whose queue the budget cut short
         bool second_pass = false;
         auto mit = midx.lower_bound(boost::make_tuple((int8_t)1, pm_market_id_type(start_id)));
 
-        while (done < cap) {
+        while (done < cap && row_budget > 0) {
             if (mit == midx.end() || mit->status != 1) {
                 if (second_pass || start_id == 0) break;   // full circle
                 second_pass = true;
@@ -1844,8 +1871,11 @@ void database::process_pm_markets() {
             // Idle fast-path: nothing queued at this epoch — skip before the LMSR
             // q-vector snapshot, so an idle market costs one index probe, keeps its
             // epoch, and does not consume the cap.
+            // Resume point: only the market the previous pass stopped in carries a row cursor.
+            const uint64_t resume_from = (mkt.id._id == (int64_t)start_id) ? bet_cursor : 0;
+            bet_cursor = 0;                       // consumed — later markets always start at 0
             auto bit = bidx.lower_bound(boost::make_tuple(
-                mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type()));
+                mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type(resume_from)));
             if (bit == bidx.end() || bit->market != mkt.id ||
                 bit->epoch  != (uint32_t)mkt.current_epoch)
                 continue;
@@ -1863,10 +1893,15 @@ void database::process_pm_markets() {
             uint32_t settled = 0;
             bool     had_queued = false;
 
+            // #432 §6: charge the shared row budget for every row VISITED (not just executed) —
+            // that is the work the block actually does. A queue longer than the budget stops here
+            // and resumes next block from the parked cursor.
             while (bit != bidx.end() &&
                    bit->market == mkt.id &&
-                   bit->epoch  == (uint32_t)mkt.current_epoch) {
+                   bit->epoch  == (uint32_t)mkt.current_epoch &&
+                   row_budget > 0) {
                 const auto& bet = *bit; ++bit;
+                --row_budget;
                 if (bet.status != 5) continue;
                 had_queued = true;
 
@@ -1947,6 +1982,18 @@ void database::process_pm_markets() {
                 push_virtual_operation(pm_batch_settle_operation(
                     mkt.id._id, mkt.current_epoch, settled));
 
+            // Anything left in THIS epoch means the budget cut the pass short (the loop above is
+            // the only way out). Park both cursors and stop: the epoch must NOT advance while rows
+            // still carry it, or they would never be matched again.
+            const bool more = (bit != bidx.end() && bit->market == mkt.id &&
+                               bit->epoch == (uint32_t)mkt.current_epoch);
+            if (more) {
+                stopped_mid_mkt = true;
+                stopped_in_mkt  = (uint64_t)mkt.id._id;
+                bet_cursor      = (uint64_t)bit->id._id;  // reused as the parked row cursor
+                break;
+            }
+
             // Idle markets keep their epoch and don't consume the cap, so the scan can
             // reach markets with queued bets past the cap.
             if (had_queued) {
@@ -1957,13 +2004,20 @@ void database::process_pm_markets() {
 
         // Persist the resume point: the next unvisited active market when the cap cut
         // the scan short, 0 after a completed full circle.
-        uint64_t next_cursor = 0;
-        if (done >= cap && mit != midx.end() && mit->status == 1 &&
-            !(second_pass && mit->id._id >= start_id))
+        uint64_t next_cursor = 0, next_bet_cursor = 0;
+        if (stopped_mid_mkt) {
+            // Mid-market stop: come back to the SAME market, at the same row, next block.
+            next_cursor     = stopped_in_mkt;
+            next_bet_cursor = bet_cursor;
+        } else if ((done >= cap || row_budget == 0) && mit != midx.end() && mit->status == 1 &&
+                   !(second_pass && (uint64_t)mit->id._id >= start_id)) {
             next_cursor = mit->id._id;
-        if (next_cursor != start_id)
-            modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& d) {
-                d.pm_batch_settle_cursor = next_cursor;
+        }
+        const auto& dgp_now = get_dynamic_global_properties();
+        if (next_cursor != start_id || next_bet_cursor != dgp_now.pm_batch_settle_bet_cursor)
+            modify(dgp_now, [&](dynamic_global_property_object& d) {
+                d.pm_batch_settle_cursor     = next_cursor;
+                d.pm_batch_settle_bet_cursor = next_bet_cursor;
             });
     }
 

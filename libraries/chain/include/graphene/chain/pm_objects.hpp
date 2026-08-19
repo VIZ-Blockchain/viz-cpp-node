@@ -252,13 +252,25 @@ namespace graphene { namespace chain {
                     >,
                     composite_key_compare<std::less<int8_t>, std::less<time_point_sec>, std::less<pm_market_id_type>>
                 >,
+                // (status, finalized_time, result_expiration, id): the deadline sweeps — §2 missed
+                // resolution and §5 settle — only ever care about markets that still OWE work, and
+                // those are exactly the ones with finalized_time == 0 (it is stamped once, at
+                // finalization). Keying on it first parks every already-settled market BEHIND the
+                // live ones instead of in front of them: without it the §5 walk re-read the whole
+                // head of the status-3 range on EVERY block (48942 pure `continue` iterations on
+                // testnet 2026-08-19, growing with turnover until GC retention expires) because a
+                // skipped market costs no `cap`, so the loop never stopped early. Same trick as
+                // by_oracle_finalized. payout_status is deliberately NOT part of the key — the
+                // settle sweep flips it 1→4 mid-flight and must not move the row it is resuming.
                 ordered_unique<tag<by_result_expiration>,
                     composite_key<pm_market_object,
                         member<pm_market_object, int8_t, &pm_market_object::status>,
+                        member<pm_market_object, time_point_sec, &pm_market_object::finalized_time>,
                         member<pm_market_object, time_point_sec, &pm_market_object::result_expiration>,
                         member<pm_market_object, pm_market_id_type, &pm_market_object::id>
                     >,
-                    composite_key_compare<std::less<int8_t>, std::less<time_point_sec>, std::less<pm_market_id_type>>
+                    composite_key_compare<std::less<int8_t>, std::less<time_point_sec>,
+                                          std::less<time_point_sec>, std::less<pm_market_id_type>>
                 >,
                 ordered_non_unique<tag<by_payout_status>, member<pm_market_object, uint8_t, &pm_market_object::payout_status>>,
                 // GC sweep: terminal markets ordered by finalized_time (0 = still live, sorts first

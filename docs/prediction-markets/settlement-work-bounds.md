@@ -269,19 +269,52 @@ Covered by `void_refund_row_budget_spans_blocks`: 140 rows, budget at its floor 
 ever resolves; the void must span blocks, stay under the budget per block, end with `status = 3`,
 `resolved_outcome = -1`, every row refunded, and the bettors' balances up by exactly the stake.
 
-### 4.4 Known sibling, not yet metered: the batch executor
+### 4.4 The batch executor (cron §6)
 
-Cron §6 fills every row queued into a market's current epoch inside one block, and that costs one
-unit of the market-counting cap — the same shape as the settlement bug. It was left out of this
-change deliberately, not by oversight, and it is worth stating plainly: after fix A a queued row
-costs `pm_min_bet` (1 VIZ), exactly what a bet row costs, so the threat is the one already priced
-here, and on an LMSR market each row additionally pays for a curve quote, making it *dearer* per row
-than settlement.
+Cron §6 filled every row queued into a market's current epoch inside one block, at the price of one
+unit of the market-counting cap — the same shape as the settlement bug, and after fix A a queued row
+costs `pm_min_bet` (1 VIZ), exactly what a bet row costs. On an LMSR market each row additionally
+pays for a curve quote, making it *dearer* per row than settlement.
 
-Metering it needs no new state — the LMSR q-vector is persisted into `pm_outcome_object` row by row
-already, so a cursor plus the shared row budget is enough. The visible change is that the epoch
-counter would only advance once its queue is drained, so under a flood an epoch stays open longer
-(the bets themselves keep filling normally). Pending an owner decision.
+It now draws on the same shared `pm_settle_rows_per_block` budget, charged per row **visited** (not
+merely executed — a visit is the work the block does). Two consequences follow from the fact that
+leftover rows are matched *by epoch*:
+
+* the epoch counter advances only once the queue is drained; bumping it mid-drain would leave the
+  remaining rows unreachable with their stake already debited;
+* the executor therefore also runs **off** the epoch boundary while a pass is in flight
+  (`pm_batch_settle_bet_cursor != 0`), instead of making already-revealed stakes wait a whole epoch
+  window for the next boundary.
+
+The resume point is a second cursor in the dynamic global properties,
+`pm_batch_settle_bet_cursor`, consumed by the first market the round-robin scan visits (which is
+`pm_batch_settle_cursor` by construction). Losing it — e.g. an old snapshot without the field — is
+safe: the pass restarts at the head of the epoch and skips the rows it already executed by status,
+costing one idle walk and no money. Covered by `batch_queue_row_budget_spans_blocks`.
+
+One guard is load-bearing rather than cosmetic: §6 is entered only when `row_budget > 0`. It runs
+last and the budget is shared, so a settle-heavy block can reach it with nothing left; entering
+anyway would run zero iterations and then fall through to the persist step, which — seeing no
+mid-market stop — would write a zero row cursor over the parked one. The next pass would restart at
+the head of the epoch and spend budget re-visiting rows it had already executed.
+
+### 4.5 The deadline sweeps re-read settled markets (found 2026-08-19, fixed)
+
+`by_result_expiration` was keyed `(status, result_expiration, id)`. A settled market keeps
+`status == 3` and its `result_expiration` stays in the past, so it sat at the **head** of the range
+the §5 settle sweep walks — and skipping it costs no `cap`, so the loop never stopped early on it.
+Every block therefore re-read the whole settled backlog before reaching real work: measured on the
+testnet snapshot of block 82641602, **48 971 iterations of which 48 942 were pure `continue`**, with
+only 29 markets actually owing a settlement. The backlog is bounded by GC retention (5 d default),
+so it is not a leak — but it is proportional to turnover, and an attacker can inflate it directly by
+creating and resolving markets.
+
+The fix keys the index `(status, finalized_time, result_expiration, id)`. `finalized_time` is
+stamped exactly once, at finalization, so `finalized_time == 0` means "still owes work"; both sweeps
+(§2 missed resolution, §5 settle) `lower_bound` into that group, and a market leaves it the moment
+it is settled. `payout_status` is deliberately *not* in the key — the settle sweep flips it 1 → 4
+mid-flight and must not move the row it is resuming. Same trick as `by_oracle_finalized`. Index
+keys are not serialized, so this needs no snapshot migration.
 
 ## 5. What a row actually costs
 

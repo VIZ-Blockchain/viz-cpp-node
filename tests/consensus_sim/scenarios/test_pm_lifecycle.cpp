@@ -5445,6 +5445,167 @@ BOOST_AUTO_TEST_CASE(void_refund_row_budget_spans_blocks) {
     BOOST_CHECK(sidx.find(market_id) == sidx.end());
 }
 
+// #432 §6 — the batch executor drains a market's queued epoch under the SAME shared row budget as
+// settlement/GC/void. A queue longer than the budget must span blocks, and the epoch must NOT
+// advance until the queue is fully drained: leftover rows are matched BY epoch, so bumping it early
+// would strand them (their stake is already debited). The executor therefore also runs off the
+// epoch boundary while a partial pass is in flight.
+BOOST_AUTO_TEST_CASE(batch_queue_row_budget_spans_blocks) {
+    auto gp = make_genesis_params(0x6C09u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-batch-budget", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    constexpr uint32_t BUDGET   = 100;   // consensus floor of pm_settle_rows_per_block
+    constexpr int      ROWS     = 260;
+    constexpr int      ACCOUNTS = 4;
+    constexpr uint32_t EPOCH    = 400;   // wide enough to queue every row before the boundary fires
+    constexpr int      PER_TX   = 10;
+
+    // Own props publish (not publish_fast_pm_props): the epoch window must be wide enough to queue
+    // every row BEFORE the first boundary executes any of them.
+    {
+        chain_properties_pm props{};
+        props.pm_settle_rows_per_block = BUDGET;
+        props.pm_batch_epoch_blocks    = EPOCH;
+        props.pm_reveal_window_blocks  = 300;    // every commit must stay revealable while we queue
+        props.pm_commit_reveal_enabled = true;   // gate for allow_batch at market creation
+        props.pm_dispute_grace_sec     = 3600;   // M6 consensus floor
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        const auto& mp0 = node.db().get_validator_schedule_object().median_props;
+        for (int i = 0; i < 60 && mp0.pm_settle_rows_per_block != (int64_t)BUDGET; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp0.pm_settle_rows_per_block, (int64_t)BUDGET);
+        BOOST_REQUIRE(mp0.pm_commit_reveal_enabled);
+    }
+    register_self_oracle(node, gp, when);
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t bet  = mp.pm_min_bet.amount.value;
+
+    std::vector<std::string> who;
+    std::vector<fc::ecc::private_key> keys;
+    for (int a = 0; a < ACCOUNTS; ++a) {
+        std::string name = "queuer" + std::to_string(a);
+        auto k = derive_key(name);
+        create_and_fund(node, gp, when, name, k, share_type(unit * 4));
+        who.push_back(name); keys.push_back(k);
+    }
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    // Betting stays open well past the epoch boundary we have to wait for below.
+    cm.betting_expiration = node.head_block_time() + fc::seconds(7200);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(14400);
+    cm.allow_batch = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).allow_batch, true);
+
+    auto queued_rows = [&]() {                       // status 5 == revealed/queued, not yet executed
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        size_t n = 0;
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it)
+            if (it->status == 5) ++n;
+        return n;
+    };
+
+    // Only commit→reveal leaves a QUEUED row. pm_place_bet(mode=1) is merely the "this market
+    // allows batching" gate — it still executes against the curve immediately (status 0), so it
+    // builds no queue for §6 to drain.
+    auto commitment = [&](const account_name_type& acct, int64_t amount, const std::string& salt) {
+        fc::sha256::encoder enc;
+        int64_t mid = 0, min_tokens = 0; int8_t side = 0; int16_t oidx = -1;
+        enc.write((const char*)&mid, sizeof(mid));
+        enc.write((const char*)&acct.data, sizeof(acct.data));
+        enc.write((const char*)&side, sizeof(side));
+        enc.write((const char*)&oidx, sizeof(oidx));
+        enc.write((const char*)&amount, sizeof(amount));
+        enc.write((const char*)&min_tokens, sizeof(min_tokens));
+        enc.write(salt.data(), (uint32_t)salt.size());
+        return enc.result();
+    };
+
+    const uint16_t no_reveal = mp.pm_commit_no_reveal_penalty_percent;
+    uint32_t commit_seq = 0;                  // chain-global pm_commit_object id sequence
+    int placed = 0;
+    while (placed < ROWS) {
+        for (int a = 0; a < ACCOUNTS && placed < ROWS; ++a) {
+            std::vector<operation> cops; std::vector<uint32_t> ids; std::vector<std::string> salts;
+            for (int i = 0; i < PER_TX && placed < ROWS; ++i, ++placed) {
+                const std::string salt = "s" + std::to_string(placed);
+                pm_commit_bet_operation c;
+                c.account = who[a]; c.market_id = 0;
+                c.commitment = commitment(account_name_type(who[a]), bet, salt);
+                c.escrow_amount = asset(share_type(bet * 2), TOKEN_SYMBOL);
+                c.no_reveal_fee_percent = no_reveal;
+                cops.push_back(c); ids.push_back(commit_seq++); salts.push_back(salt);
+            }
+            node.push_pending_transaction(sign_ops(cops, keys[a], node));
+            produce(node, gp, when);
+
+            std::vector<operation> rops;
+            for (size_t i = 0; i < ids.size(); ++i) {
+                pm_reveal_bet_operation r;
+                r.account = who[a]; r.commit_id = ids[i]; r.side = 0; r.outcome_index = -1;
+                r.amount = asset(share_type(bet), TOKEN_SYMBOL); r.salt = salts[i]; r.min_tokens = 0;
+                rops.push_back(r);
+            }
+            node.push_pending_transaction(sign_ops(rops, keys[a], node));
+            produce(node, gp, when);
+        }
+    }
+    const size_t queued_at_start = queued_rows();
+    BOOST_REQUIRE_MESSAGE(queued_at_start > (size_t)BUDGET,
+        "only " << queued_at_start << " rows queued, need more than the budget " << BUDGET);
+
+    const uint32_t epoch_before = node.db().get<pm_market_object>(market_id).current_epoch;
+    int    blocks_that_executed = 0;
+    size_t prev                 = queued_at_start;
+    // Long enough to reach the next epoch boundary (EPOCH blocks away at worst) and drain after it.
+    for (int i = 0; i < (int)EPOCH * 2 && queued_rows() > 0; ++i) {
+        produce(node, gp, when);
+        const size_t now_rows = queued_rows();
+        if (now_rows < prev) {
+            ++blocks_that_executed;
+            BOOST_CHECK_MESSAGE(prev - now_rows <= (size_t)BUDGET,
+                "a single block executed " << (prev - now_rows) << " queued rows, budget is " << BUDGET);
+            // Mid-drain the epoch must stand still, otherwise the rows still carrying it are lost.
+            if (now_rows > 0)
+                BOOST_CHECK_MESSAGE(node.db().get<pm_market_object>(market_id).current_epoch == epoch_before,
+                    "epoch advanced while " << now_rows << " rows were still queued");
+        }
+        prev = now_rows;
+    }
+
+    BOOST_CHECK_EQUAL(queued_rows(), (size_t)0);
+    BOOST_CHECK_MESSAGE(blocks_that_executed >= 2,
+        "a queue of " << queued_at_start << " rows drained in " << blocks_that_executed
+                      << " block(s) — the row budget is not being enforced");
+    // Drained: epoch moves on exactly once, and the cursor is released.
+    BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(market_id).current_epoch, epoch_before + 1);
+    BOOST_CHECK_EQUAL(node.db().get_dynamic_global_properties().pm_batch_settle_bet_cursor, 0u);
+    // Every row ended up executed (0) or slippage-refunded (2) — none left behind.
+    {
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it)
+            BOOST_REQUIRE_MESSAGE(it->status == 0 || it->status == 2,
+                "bet " << it->id._id << " left in status " << (int)it->status << " after the drain");
+    }
+}
+
 // Death #1 — oracle rejects the market's terms.
 BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
     auto gp = make_genesis_params(0x6C02u, 1);

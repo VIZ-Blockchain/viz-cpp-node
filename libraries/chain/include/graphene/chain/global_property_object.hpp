@@ -185,6 +185,16 @@ namespace graphene {
              * starving newer ones.
              */
             uint64_t pm_batch_settle_cursor = 0;
+
+            /**
+             * #432 §6: row cursor INSIDE the market pm_batch_settle_cursor points at. A market's
+             * queued epoch can hold more rows than one block may execute, so the executor stops on
+             * the shared row budget and resumes at this bet id. 0 = start of the epoch (no partial
+             * pass in flight). While it is non-zero the market keeps its current_epoch — the epoch
+             * only advances once its queue is fully drained, otherwise the leftover rows (matched
+             * by epoch) would become unreachable.
+             */
+            uint64_t pm_batch_settle_bet_cursor = 0;
         };
 
         typedef multi_index_container <
@@ -237,5 +247,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (pm_active_markets_seeded)
                 (pm_oracle_gauges_seeded)
                 (pm_batch_settle_cursor)
+                (pm_batch_settle_bet_cursor)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)
