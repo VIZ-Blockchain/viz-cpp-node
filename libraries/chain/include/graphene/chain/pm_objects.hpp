@@ -529,6 +529,7 @@ namespace graphene { namespace chain {
             uint8_t           status = 0;   ///< 0 open,1 oracle-wrong,2 oracle-right,3 auto-closed
             shared_string     oracle_response;          ///< oracle's public rebuttal (empty until it responds)
             time_point_sec    oracle_response_time;     ///< when the rebuttal was posted (0 = none)
+            uint32_t          ballots = 0;              ///< live ballot rows (M3 cap without an O(n) recount)
         };
 
         struct by_voting_end;
@@ -953,7 +954,7 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_commit_object, graphene::chain::pm_
 
 FC_REFLECT((graphene::chain::pm_dispute_object),
     (id)(market)(disputer)(dispute_fee)(reason)(filed_time)(oracle_response_deadline)(dispute_mode)
-    (voting_end_time)(auto_close_time)(proposed_outcome)(status)(oracle_response)(oracle_response_time))
+    (voting_end_time)(auto_close_time)(proposed_outcome)(status)(oracle_response)(oracle_response_time)(ballots))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_dispute_object, graphene::chain::pm_dispute_index)
 
 FC_REFLECT((graphene::chain::pm_dispute_vote_object),

@@ -996,10 +996,39 @@ inline uint32_t import_pm_disputes(graphene::chain::database& db, const fc::vari
                 set_shared_string(obj.oracle_response, v["oracle_response"]);
             if (v.get_object().contains("oracle_response_time"))
                 obj.oracle_response_time = v["oracle_response_time"].as<fc::time_point_sec>();
+            // Ballot counter (replaces the O(n) recount in pm_dispute_vote). Contains-guarded like
+            // the pair above; snapshots exported before it carry no key and are repaired by the
+            // reconcile pass below, which runs once the ballots themselves are in.
+            if (v.get_object().contains("ballots"))
+                obj.ballots = static_cast<uint32_t>(v["ballots"].as_uint64());
         });
         ++count;
     }
     return count;
+}
+
+/// Make every dispute's ballot counter agree with the ballots actually present. Disputes are
+/// imported BEFORE their votes, so this cannot be folded into the loop above; it also repairs
+/// pre-field snapshots (counter absent → 0) and catches drift in ones that do carry the key.
+/// One pass over the vote index, which the import already paid for once.
+/// The one state where counter and rows legitimately differ is a snapshot taken mid-GC (ballots are
+/// dropped before the dispute row, both under the block budget): rebuilding to the smaller number is
+/// harmless, since the only reader is the ballot cap and that market can no longer take votes.
+inline uint32_t reconcile_pm_dispute_ballots(graphene::chain::database& db) {
+    const auto& vidx = db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+    const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+    std::map<pm_market_id_type, uint32_t> seen;
+    for (const auto& v : vidx) ++seen[v.market];
+    uint32_t repaired = 0;
+    for (const auto& d : didx) {
+        auto it = seen.find(d.market);
+        const uint32_t actual = (it == seen.end()) ? 0u : it->second;
+        if (d.ballots != actual) {
+            db.modify(d, [&](pm_dispute_object& obj) { obj.ballots = actual; });
+            ++repaired;
+        }
+    }
+    return repaired;
 }
 
 } // namespace detail
@@ -2059,6 +2088,11 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("pm_dispute_vote")) {
             auto n = detail::import_simple_objects<pm_dispute_vote_object, pm_dispute_vote_index>(db, state["pm_dispute_vote"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} pm_dispute_vote objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_dispute")) {
+            auto repaired = detail::reconcile_pm_dispute_ballots(db);
+            if (repaired)
+                ilog(CLOG_ORANGE "Rebuilt ballot counters on ${n} pm_dispute objects" CLOG_RESET, ("n", repaired));
         }
         if (state.contains("pm_lazy_pool")) {
             auto n = detail::import_simple_objects<pm_lazy_pool_object, pm_lazy_pool_index>(db, state["pm_lazy_pool"].get_array());

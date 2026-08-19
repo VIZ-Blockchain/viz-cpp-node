@@ -345,13 +345,21 @@ section order, so a block saturated by the void paths can leave nothing for the 
 That is deliberate — the backlogs are finite work that drains — but it means "how long until my
 dispute finalizes" is bounded by the *total* PM work in flight, not by §4 alone.
 
-One related cost is **not** fixed here, because it needs a layout change rather than a budget:
-`pm_dispute_vote` enforces the ballot cap by counting the existing ballots of the market on every
-*new* ballot (`pm_evaluator.cpp`, walk bounded at cap+1). That is O(n) per ballot, O(n²) to fill a
-market, and it is per-transaction work no budget covers — the same antipattern M4 removed from the
-commit path by keeping an `open_commits` counter on the market object. The equivalent fix is a
-ballot counter on `pm_dispute_object` (with a `contains`-guarded snapshot import, as M5 did for the
-oracle-response fields); it is queued as a separate decision because it changes the object layout.
+The related per-transaction cost is fixed alongside it. `pm_dispute_vote` used to enforce the ballot
+cap by counting the market's existing ballots on every *new* ballot (walk bounded at cap+1): bounded
+per transaction, but O(n) per ballot, O(n²) to fill a market, and work no cron budget covers — the
+same antipattern M4 removed from the commit path with `open_commits`. The count now lives on
+`pm_dispute_object.ballots`, incremented when a ballot row is created and left alone when a voter
+*revises* one (a revision overwrites the row, so the counter tracks rows, not votes). Ballots are
+never deleted individually — GC drops the whole cluster — so the counter only grows.
+
+Snapshots need one extra step here that `open_commits` did not. Disputes are imported *before* their
+ballots, so a `contains`-guarded read of the key cannot repair a pre-field snapshot on its own:
+`reconcile_pm_dispute_ballots()` runs after the ballot import and makes every counter agree with the
+rows actually present. That both seeds old snapshots (key absent → 0 → rebuilt) and catches drift in
+new ones, at the cost of one pass over an index the import just walked anyway. Covered by
+`dispute_ballot_counter_matches_rows`, which checks the counter against a live row count after every
+ballot and pins the revision path.
 
 ## 5. What a row actually costs
 

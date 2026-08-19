@@ -1112,14 +1112,13 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
         });
     } else {
         // M3: ballots are free — cap NEW rows per disputed market so a Sybil cannot build an
-        // unbounded ballot set (the finalize cron walks every ballot in one cap slot, and
-        // get_dispute_votes returns them all). The counting walk stops at cap+1, so enforcing
-        // the cap is itself bounded work.
-        uint32_t ballots = 0;
-        for (auto c = vidx.lower_bound(boost::make_tuple(mkt.id, account_name_type()));
-             c != vidx.end() && c->market == mkt.id && ballots <= MAX_PM_DISPUTE_VOTES_PER_MARKET; ++c)
-            ++ballots;
-        FC_ASSERT(ballots < MAX_PM_DISPUTE_VOTES_PER_MARKET, "Dispute ballot cap reached");
+        // unbounded ballot set (the finalize cron walks every ballot, and get_dispute_votes
+        // returns them all). The cap used to be enforced by recounting the market's ballots on
+        // every new one: bounded per transaction, but O(n) per ballot and O(n²) to fill a market,
+        // and per-tx work no cron budget covers — the same antipattern M4 removed from the commit
+        // path with open_commits. The count now lives on the dispute row. Ballots are never
+        // deleted individually (GC drops the whole cluster), so it only ever grows.
+        FC_ASSERT(dit->ballots < MAX_PM_DISPUTE_VOTES_PER_MARKET, "Dispute ballot cap reached");
         db.create<pm_dispute_vote_object>([&](pm_dispute_vote_object& v) {
             v.market       = mkt.id;
             v.voter        = o.voter;
@@ -1127,6 +1126,7 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
             v.vote_percent = o.vote_percent;
             v.time         = now;
         });
+        db.modify(*dit, [&](pm_dispute_object& d) { ++d.ballots; });
     }
 }
 

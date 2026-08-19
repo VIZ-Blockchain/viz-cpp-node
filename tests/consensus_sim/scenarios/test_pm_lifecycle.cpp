@@ -5751,6 +5751,107 @@ BOOST_AUTO_TEST_CASE(dispute_tally_row_budget_defers_next) {
         BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(pm_market_id_type(m)).payout_status, 3);
 }
 
+// The M3 ballot cap used to be enforced by recounting the market's ballots on every new one
+// (O(n) per ballot, O(n²) per market, per-transaction work no cron budget covers). The count now
+// lives on the dispute row, so it has to track the rows exactly — including the revision path,
+// where a voter overwrites an existing ballot and the counter must NOT move.
+BOOST_AUTO_TEST_CASE(dispute_ballot_counter_matches_rows) {
+    auto gp = make_genesis_params(0x6C0Bu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-ballot-counter", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    constexpr int VOTERS = 5;
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    {
+        chain_properties_pm props{};
+        props.pm_dispute_grace_sec           = 3600;
+        props.pm_oracle_dispute_response_sec = 5;
+        props.pm_dispute_vote_period_sec     = 120;
+        props.pm_dispute_auto_close_sec      = 3000;
+        props.pm_dispute_fee                 = asset(unit, TOKEN_SYMBOL);
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_dispute_vote_period_sec != 120u; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_vote_period_sec, 120u);
+    }
+    register_self_oracle(node, gp, when);
+
+    std::vector<std::string> voters;
+    std::vector<fc::ecc::private_key> vkeys;
+    for (int v = 0; v < VOTERS; ++v) {
+        std::string name = "elector" + std::to_string(v);
+        auto k = derive_key(name);
+        create_and_fund(node, gp, when, name, k, share_type(1000));
+        voters.push_back(name); vkeys.push_back(k);
+    }
+    auto bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "bob", bob_key, share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = 0; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+
+    auto counter = [&]() {
+        const auto& didx = node.db().get_index<pm_dispute_index>().indices().get<by_market>();
+        auto it = didx.find(pm_market_id_type(0));
+        BOOST_REQUIRE(it != didx.end());
+        return it->ballots;
+    };
+    auto rows = [&]() {
+        const auto& vidx = node.db().get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+        uint32_t n = 0;
+        for (auto it = vidx.lower_bound(boost::make_tuple(pm_market_id_type(0), account_name_type()));
+             it != vidx.end() && it->market == pm_market_id_type(0); ++it) ++n;
+        return n;
+    };
+    BOOST_REQUIRE_EQUAL(counter(), 0u);
+
+    for (int v = 0; v < VOTERS; ++v) {
+        pm_dispute_vote_operation dv;
+        dv.voter = voters[v]; dv.market_id = 0; dv.vote_outcome = -1; dv.vote_percent = 10000;
+        node.push_pending_transaction(sign_ops({dv}, vkeys[v], node));
+        produce(node, gp, when);
+        BOOST_CHECK_MESSAGE(counter() == rows(),
+            "after ballot " << (v + 1) << " the counter says " << counter()
+                            << " but " << rows() << " rows exist");
+    }
+    BOOST_CHECK_EQUAL(counter(), (uint32_t)VOTERS);
+
+    // A revision overwrites the existing row — no new row, so no increment.
+    pm_dispute_vote_operation revise;
+    revise.voter = voters[0]; revise.market_id = 0; revise.vote_outcome = 1; revise.vote_percent = 10000;
+    node.push_pending_transaction(sign_ops({revise}, vkeys[0], node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(rows(), (uint32_t)VOTERS);
+    BOOST_CHECK_MESSAGE(counter() == (uint32_t)VOTERS,
+        "revising a ballot moved the counter to " << counter() << " — it must count rows, not votes");
+}
+
 // Death #1 — oracle rejects the market's terms.
 BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
     auto gp = make_genesis_params(0x6C02u, 1);
