@@ -747,6 +747,17 @@ void pm_add_liquidity_evaluator::do_apply(const pm_add_liquidity_operation& o) {
     FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Cannot add liquidity after betting ends");
     FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
     FC_ASSERT(o.amount.amount > 0, "Amount must be positive");
+    // #432 fix A (owner decision q#661=A): every call mints a NEW pm_liquidity_object — deposits are
+    // not aggregated per provider — and settle_liquidity walks all of them, twice. With no floor
+    // that made liquidity the fourth way to mint settlement rows at 1 raw apiece, alongside the
+    // three bet paths. Floor it at pm_min_liquidity, the same minimum as opening a market, so the
+    // ticket for putting up liquidity does not depend on whether you create the market or top it up
+    // later. See docs/prediction-markets/settlement-work-bounds.md.
+    {
+        const auto& mp = median(db);
+        FC_ASSERT(o.amount.amount >= mp.pm_min_liquidity.amount,
+                  "Liquidity below the minimum (pm_min_liquidity); the floor applies to topping up a market too");
+    }
 
     const auto& provider = db.get_account(o.provider);
     FC_ASSERT(provider.balance >= o.amount, "Insufficient balance");

@@ -15,7 +15,7 @@ Your principal does not depend on who won. Withdrawal (`pm_withdraw_liquidity`) 
 
 ## What happens, step by step
 
-**You add liquidity.** `pm_add_liquidity` — VIZ goes into the market's curve and you receive a pool share proportional to your contribution. Your deposit does not shift the price (you add symmetrically).
+**You add liquidity.** `pm_add_liquidity` — VIZ goes into the market's curve and you receive a pool share proportional to your contribution. Your deposit does not shift the price (you add symmetrically). The minimum contribution is `pm_min_liquidity` (a governed parameter, 100 VIZ by default): **the same floor as creating a market**, and it applies to topping up an open market as well. The reason is technical — every call creates a SEPARATE liquidity row (contributions are not merged into one position) and settlement walks all of them, so cheap micro-deposits cannot be allowed. If you want to add less, add less often and in larger amounts.
 
 **While the market is open.** A fee is withheld from bets and distributed to LPs by share. Late bets pay the anti-sniping penalty, which also goes in favor of liquidity. Your income accrues as turnover grows.
 

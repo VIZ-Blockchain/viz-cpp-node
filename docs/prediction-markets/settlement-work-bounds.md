@@ -89,11 +89,12 @@ Enforcement points (`libraries/chain/pm_evaluator.cpp`):
    or above `pm_min_bet`. A position below the floor is not trapped: it can still be transferred
    whole, which moves the row instead of splitting it.
 
-Known gap, deliberately left to fix D: `pm_add_liquidity` also mints one row per call
-(`pm_liquidity_object`, no aggregation per provider) and asserts only `amount > 0`, so LP rows are
-a fourth row source with no floor. They are settled by `settle_liquidity`, which walks them twice.
-D budgets that walk like every other; whether the floor should also apply to liquidity is a
-product decision (it would set a minimum ticket for providing liquidity), so it is not bundled in.
+4. `pm_add_liquidity` → `pm_min_liquidity`. Liquidity is the fourth row source and was the one that
+   got away initially: every call mints its own `pm_liquidity_object` (contributions are not merged
+   per provider) and the evaluator asserted only `amount > 0`, so rows could be minted at 1 raw
+   apiece while the bet paths were floored. The floor is the same one that already gates creating a
+   market, so the minimum ticket for putting up liquidity does not depend on whether you open the
+   market or top it up later — a product decision, taken deliberately rather than by default.
 
 ## 4. Fix D — incremental settlement (design)
 

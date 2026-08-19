@@ -6805,4 +6805,82 @@ BOOST_AUTO_TEST_CASE(min_bet_floor_blocks_row_spam) {
                        "position still allowed");
 }
 
+// #432 fix A, fourth row source (owner decision q#661=A) — pm_add_liquidity mints a NEW
+// pm_liquidity_object on every call (deposits are not aggregated per provider) and settle_liquidity
+// walks all of them, twice. It used to assert only "amount > 0", so liquidity was a way to mint
+// settlement rows at 1 raw apiece, bypassing the bet floors entirely. The floor is pm_min_liquidity
+// — the same minimum as opening a market, so the ticket does not depend on whether you create the
+// market or top it up later.
+BOOST_AUTO_TEST_CASE(min_liquidity_floor_applies_to_topups) {
+    auto gp = make_genesis_params(0x4321u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-min-liq", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping min-liquidity floor.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t floor = mp.pm_min_liquidity.amount.value;
+    BOOST_REQUIRE_GT(floor, 1); // a floor of 1 raw would make the probes below vacuous
+
+    auto lp_key = derive_key("lp2");
+    create_and_fund(node, gp, when, "lp2", lp_key, share_type(floor * 8));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(floor * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(1200);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    auto lp_rows = [&]() {
+        const auto& idx = node.db().get_index<pm_liquidity_index>().indices().get<by_market>();
+        int n = 0;
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it) ++n;
+        return n;
+    };
+    const int seeded = lp_rows(); // the creator's own liquidity row
+    BOOST_REQUIRE_GE(seeded, 1);
+
+    // Dust top-up: one raw below the floor → rejected, no row minted.
+    pm_add_liquidity_operation dust;
+    dust.provider = "lp2"; dust.market_id = 0;
+    dust.amount = asset(share_type(floor - 1), TOKEN_SYMBOL);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({dust}, lp_key, node)),
+                      std::runtime_error);
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(lp_rows(), seeded);
+
+    // A single raw — the cheapest possible row before the fix — is rejected too.
+    pm_add_liquidity_operation one_raw = dust;
+    one_raw.amount = asset(share_type(1), TOKEN_SYMBOL);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({one_raw}, lp_key, node)),
+                      std::runtime_error);
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(lp_rows(), seeded);
+
+    // Control: exactly at the floor is accepted — proves the rejections above are the floor
+    // talking and not some unrelated refusal (wrong market state, funding, authority).
+    pm_add_liquidity_operation atfloor = dust;
+    atfloor.amount = asset(share_type(floor), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({atfloor}, lp_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(lp_rows(), seeded + 1);
+
+    BOOST_TEST_MESSAGE("min-liquidity floor: dust and 1-raw top-ups rejected, at-floor top-up "
+                       "accepted");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
