@@ -122,6 +122,22 @@ Rules that make it safe:
   PM-held, so a snapshot taken mid-settlement balances exactly; finalize asserts it reaches zero.
 * **Progress.** A market with N rows finishes in about N / budget blocks; the floor of 100 on the
   budget makes starvation impossible.
+* **The rows themselves cannot move.** Every operation that creates, splits or removes a bet row —
+  `pm_place_bet`, `pm_commit_bet`, `pm_reveal_bet`, `pm_cancel_bet`, `pm_transfer_position` —
+  asserts `mkt.status == 1`, and a settling market is at status 3. So the set walked in phase 2 is
+  exactly the set paid in phase 4, with no gate to add.
+
+One cross-section interaction does **not** hold automatically and the implementation has to close
+it: cron §1 (forfeit of commitments never revealed) adds the penalty to `forfeit_pool` of
+*whatever* market the commitment belongs to, without looking at its status. Today that is harmless
+— §1 runs earlier in the same block than §5, so settlement reads a final `forfeit_pool` — but a
+settlement spanning blocks can have `forfeit_pool` grow *after* phase 3 has already folded it into
+`winners_pool`, and those tokens would then belong to no one (orphaned until the GC burn, i.e. the
+drift-400 failure mode again). Timing makes it unlikely in practice — a reveal deadline sits at
+betting close, long before `result_expiration + grace` — but "unlikely in practice" is precisely
+the reasoning that produced the earlier drifts. Phase 5 must therefore route any `forfeit_pool`
+that appeared mid-flight instead of assuming it is zero, and the finalize-time escrow assert has to
+account for it.
 
 ### 4.1 Shipped: bounded garbage collection
 
