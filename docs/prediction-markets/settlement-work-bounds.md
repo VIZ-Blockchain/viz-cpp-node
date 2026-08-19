@@ -394,6 +394,70 @@ the shared counter the test fails on exactly that assertion.
 The general rule this leaves behind: **a new section appended to this cron is dead on arrival unless
 it either sits ahead of section 7 or carries its own budget.**
 
+### 4.8 The lazy-pool withdraw queue (per-tx, found 2026-08-19, open)
+
+`service_lazy_withdraw_queue()` drains the pool's FIFO withdraw queue **in full** on every call —
+it loops until `free_balance` runs out — and it is called from six places, four of them inside
+evaluators (deposit, withdraw, leverage close, leverage convert) plus the two capital-return paths
+in the cron. There is no floor per queue row: `pm_lazy_withdraw` creates a **new** request object on
+every partial withdrawal while `owed > 0` (one raw is enough), and rows of the same account are
+never merged. The asymmetry is that the queue is filled one transaction per row and drained by one
+unrelated transaction later — at the testnet's 150 k VIZ of free balance a single call could pay out
+up to 150 million rows.
+
+Nothing is stuck today (the queue is empty), and the fix is a fork rather than a one-liner: budgeting
+the drain requires a cron section to finish what a transaction leaves behind, or the queue stalls
+whenever capital stops returning; a floor per row denies small positions a partial exit. Tracked as
+goal #439, question q#678.
+
+### 4.9 The liquidation cascade runs per transaction (found 2026-08-20, open)
+
+Everything above bounds work **per block**. `cascade_liquidate()` breaks that frame because it is
+reached from evaluators — `pm_place_bet` (both binary branches), `pm_cancel_bet` and
+`pm_withdraw_liquidity` — so its cost is paid per *transaction*, and a block holds as many
+transactions as it has room for.
+
+The scan itself is unavoidable in shape: for each round it walks the market's status-0 leverage
+positions and evaluates `cancel_value()` against each one's threshold, stopping at the first victim.
+When nothing is liquidatable — the normal case, and the one the comment describes as a "cheap index
+probe" — it still visits **every open position on that market** before concluding there is no work.
+`pm_min_bet` (1 VIZ) is all it takes to trigger one such sweep, and nothing caps how many bets a
+block may carry.
+
+How large the swept set can grow is fixed by pool economics rather than by any explicit cap. Every
+open position locks at least `pm_min_liquidity` (100 VIZ) of the leverage fund (the #536 floor), the
+fund is `pm_leverage_fund_percent` of the pool's free balance, and `free_balance` itself shrinks as
+loans go out, so the fixed point is roughly `N ≤ free / 1100` at today's 10 %. A pool holding ~11 M
+VIZ therefore supports ~10 000 open positions, and constraint 3 caps only the size of an individual
+position, not how many of them share one market. At the measured ~1.7 µs per visited row that is
+~17 ms of work bought by a single 1 VIZ bet, repeated for every bet in the block.
+
+Two honest qualifications. First, the outer loop re-scans from the head of the range after each
+liquidation (`O(K·N)` for K liquidations), but K is self-damping: liquidating a position sells its
+tokens back into the curve, which moves the price *toward* the remaining same-side positions and
+makes them safer, so mass cascades are not the expected shape. The per-bet `O(N)` scan is the part
+that does not depend on anything going wrong. Second, none of this is reachable on the testnet right
+now: `pm_leverage_max_per_position_bp` (20 bp) against the current fund makes the per-position cap
+(~30 VIZ) smaller than the 100 VIZ loan floor, so no position can be opened at all — the known #536
+conflict, left as-is by the owner (q#568). Resolving that conflict in favour of smaller loans would
+widen this scan proportionally; the two decisions are coupled.
+
+### 4.10 Checked and rejected: the open-position sweep (cron §2c)
+
+The section that force-closes positions once betting is over walks **all** status-0 positions every
+block through `by_lev_funding_due` and charges `done` only for the closes, so at first reading it
+looks like §4.5 all over again: a full scan whose skipped rows cost no budget.
+
+It is not the same defect, and the difference is worth stating because it is the line between the two
+families. In §4.5 the head of the range filled with markets that would **never** need work again, so
+the idle scan grew with turnover without bound. Here every scanned row is a live obligation — an open
+loan the chain must eventually close — and the row leaves the range permanently the moment it does
+(status 0 → 1). The working set is therefore the same economically capped `N` as in §4.9, not a
+backlog of corpses. Making it cheaper would mean storing a force-close deadline on the position and
+keying an index on it: a layout change and a snapshot migration for a constant-factor win on a set
+that is already bounded. Not worth it; recorded so the next audit does not re-open it. Goal #441
+closed on this reasoning.
+
 ## 5. What a row actually costs
 
 Measured with `tests/consensus_sim/bench/settle_bench.cpp` (`make pm_settle_bench`), which drives
