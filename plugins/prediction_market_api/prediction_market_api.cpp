@@ -716,7 +716,13 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 const auto now = db.head_block_time();
                 const auto& eidx = db.get_index<pm_market_index>().indices().get<by_betting_expiration>();
                 auto itr = eidx.lower_bound(boost::make_tuple(status, now, pm_market_id_type()));
-                while (from > 0 && itr != eidx.end() && itr->status == status) { ++itr; --from; }
+                // `from` counts ROWS THE CALLER SAW, not raw index positions: the fill loop below
+                // hides under-insured markets, so a skip loop that charged for them too would leave
+                // the caller stuck — see the note above the risk-floor filter in the by_status branch.
+                while (from > 0 && itr != eidx.end() && itr->status == status) {
+                    if (show_risky || !below_risk_floor(db, *itr)) --from;
+                    ++itr;
+                }
                 while (result.size() < limit && itr != eidx.end() && itr->status == status) {
                     if (show_risky || !below_risk_floor(db, *itr))
                         result.push_back(market_card(db, *itr));
@@ -727,7 +733,16 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 auto range = idx.equal_range(status);
                 if (order == "newest") {
                     auto itr = range.second;                    // one past the last equal-status market
-                    while (from > 0 && itr != range.first) { --itr; --from; } // skip newest `from`
+                    // Skip `from` markets THE CALLER WOULD HAVE SEEN. Charging the offset for rows the
+                    // fill loop hides (under-insured oracles) makes paging stall: the caller advances
+                    // from += limit, lands back inside the hidden run, and the fill loop walks out of it
+                    // to the very same visible markets — the page repeats forever instead of advancing.
+                    // Every other listing here already counts `from` after its filters
+                    // (list_markets_by_category / _by_event); this one used to be the odd one out.
+                    while (from > 0 && itr != range.first) {
+                        --itr;
+                        if (show_risky || !below_risk_floor(db, *itr)) --from;
+                    }
                     while (result.size() < limit && itr != range.first) {
                         --itr;
                         if (show_risky || !below_risk_floor(db, *itr))
@@ -735,7 +750,10 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     }
                 } else {
                     auto itr = range.first;
-                    while (from > 0 && itr != range.second) { ++itr; --from; }
+                    while (from > 0 && itr != range.second) {
+                        if (show_risky || !below_risk_floor(db, *itr)) --from;
+                        ++itr;
+                    }
                     while (result.size() < limit && itr != range.second) {
                         if (show_risky || !below_risk_floor(db, *itr))
                             result.push_back(market_card(db, *itr));
