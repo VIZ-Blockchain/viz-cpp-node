@@ -104,11 +104,18 @@ budget (`pm_settle_rows_per_block`, shared across all settling markets, oldest m
 
 | phase | work per row | budgeted |
 |---|---|---|
-| 1 force-close | close leveraged positions still open at settlement | yes |
+| 1 force-close | close leveraged positions still open at settlement | no — see below |
 | 2 aggregate | refund queued rows (status 5/6), sum `losers_sum` and winner weight | yes |
 | 3 claims | pay outcome-contingent early-exit claims from the bounded bucket | yes |
 | 4 payout | pay winners / flip losers, one virtual op per row | yes |
-| 5 finalize | fees, LP settlement, dust, `payout_status = 3`, `finalized_time` | yes |
+| 5 finalize | fees, LP settlement, dust, `payout_status = 3`, `finalized_time` | no — see below |
+
+Only the bet walk is metered, because only a bet row is cheap. Phases 1 and 5 iterate leveraged
+positions and liquidity rows, and each of *those* costs `pm_min_liquidity` (100 VIZ) to create —
+a hundred times the price of a bet row. Their work is bounded economically, by what an attacker
+would have to stake to create the rows, so metering them would add cursors and resume state for a
+threat that fix A already prices out. If that ever changes (a cheaper way to mint an LP or leverage
+row), those phases need the same treatment and the same `escrow` discipline.
 
 #### Where the resume state lives
 
@@ -202,6 +209,38 @@ Verified against a deliberately unbounded control — with the budget bypassed t
 
 Settlement is served before collection in the block, so a heavy settlement backlog can defer GC.
 That is harmless: it only stretches retention, and settlement is finite.
+
+### 4.2 Shipped: incremental settlement
+
+`settle_market()` became `settle_market_step(db, mkt, budget)`, driven by the `pm_settlement_object`
+described above and spending the same global row budget as collection. Three things the
+implementation had to get right, none of them visible from the design sketch:
+
+* **"Am I the last row?" cannot be answered by looking ahead.** Today's code hands the rounding
+  remainder to the last participant, which it recognises by peeking at the rest of the market. Under
+  resume that peek is both wrong (the rows already paid are still in the range, just terminal) and
+  quadratic. Phase 2 therefore counts the rows it aggregates into `rows_total` and phase 4 counts
+  what it has paid into `rows_done`; the last row is `rows_done == rows_total`, in O(1) and stable
+  across a pause.
+* **The void branch has to release what it burns.** When a voided market has no participants left to
+  absorb the leftover pots, the leftover is burned — and burning it without subtracting it from
+  `escrow` trips the finalize assert. Conservation accounting has to cover the destruction path, not
+  only the payment paths.
+* **Per-block work must not repeat one-shot side effects.** The workload gauge
+  `markets_in_dispute_window` was decremented at the call site, which now runs on every block of the
+  flight; it moved into the branch that runs once, when the market first enters settlement
+  (`payout_status != 4`). Same class of bug as the `forfeit_pool` burn in collection.
+
+Covered by `settle_row_budget_spans_blocks` (consensus_sim): a 140-row market settles with the
+budget at its floor of 100, so it must take more than one block, must never terminate more than 100
+rows in a block, must show `payout_status = 4` in flight, and must end with every row paid, the
+settlement object gone and the bettors' balances moved by exactly the sum the rows recorded.
+Verified against a deliberately unbounded control — with the budget bypassed the same test reports
+"a single block paid 140 rows" and "settled in 1 block", i.e. the pre-fix behaviour.
+
+Still unbounded, and next in line: `refund_all_bets()`, the walk behind the two void paths in cron
+§2 (missed resolution) and §3 (dispute auto-close). It also builds an unbounded in-memory vector of
+participants, so it is the same hole with a second edge.
 
 ## 5. What a row actually costs
 

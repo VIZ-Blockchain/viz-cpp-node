@@ -5169,6 +5169,151 @@ BOOST_AUTO_TEST_CASE(gc_row_budget_spans_blocks) {
                       << " block(s) — the row budget is not being enforced");
 }
 
+// #432 fix D part 2 — settlement is bounded by pm_settle_rows_per_block. Before the fix,
+// settle_market() paid out a market's ENTIRE bet set inside the single block where the dispute
+// grace expired: the per-block cap counts markets, so a market carrying a million rows cost one
+// unit of it. Here the market carries more rows than the (floor-valued) budget, so the payout MUST
+// span several blocks, MUST never terminate more than the budget's worth of rows in one block, and
+// MUST still end with every row paid, the market finalized and the money conserved. The in-code
+// FC_ASSERT(escrow == 0) rides along: a resume path that pays twice or drops a row trips it.
+BOOST_AUTO_TEST_CASE(settle_row_budget_spans_blocks) {
+    auto gp = make_genesis_params(0x6C07u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-settle-budget", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    constexpr uint32_t BUDGET   = 100;  // consensus floor of pm_settle_rows_per_block
+    constexpr int      ROWS     = 140;  // > BUDGET on purpose: one block cannot finish the job
+    constexpr int      ACCOUNTS = 4;
+
+    chain_properties_pm props{};
+    props.pm_settle_rows_per_block = BUDGET;
+    publish_fast_pm_props(node, gp, when, props);
+    BOOST_REQUIRE_EQUAL(node.db().get_validator_schedule_object().median_props.pm_settle_rows_per_block, BUDGET);
+    register_self_oracle(node, gp, when);
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t bet  = mp.pm_min_bet.amount.value;
+
+    std::vector<std::string> who;
+    std::vector<fc::ecc::private_key> keys;
+    for (int a = 0; a < ACCOUNTS; ++a) {
+        std::string name = "bettor" + std::to_string(a);
+        auto k = derive_key(name);
+        create_and_fund(node, gp, when, name, k, share_type(unit * 4));
+        who.push_back(name); keys.push_back(k);
+    }
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(120);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(180);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    // Both sides get rows, so phase 4 exercises the winner branch AND the loser branch.
+    int placed = 0; uint32_t nonce = 0;
+    while (placed < ROWS) {
+        for (int t = 0; t < ACCOUNTS && placed < ROWS; ++t) {
+            const int a = nonce % ACCOUNTS;
+            std::vector<operation> ops;
+            for (int i = 0; i < 10 && placed < ROWS; ++i, ++placed) {
+                pm_place_bet_operation pb;
+                pb.account = who[a]; pb.market_id = 0;
+                pb.side = (int8_t)(placed % 2); pb.outcome_index = -1;
+                pb.amount = asset(share_type(bet), TOKEN_SYMBOL); pb.mode = 0;
+                ops.push_back(pb);
+            }
+            node.push_pending_transaction(sign_ops(ops, keys[a], node, ++nonce));
+        }
+        produce(node, gp, when);
+    }
+
+    auto pending_rows = [&]() {   // rows the settlement still has to pay
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        size_t n = 0;
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it)
+            if (it->status == 0) ++n;
+        return n;
+    };
+    BOOST_REQUIRE_GT(pending_rows(), (size_t)BUDGET);   // otherwise the test proves nothing
+
+    // Bettor accounts take no block rewards, so their balances move only through the settlement.
+    auto bettor_balances = [&]() {
+        int64_t sum = 0;
+        for (const auto& n : who) sum += node.db().get_account(n).balance.amount.value;
+        return sum;
+    };
+
+    while (node.head_block_time() < cm.betting_expiration) produce(node, gp, when);
+    produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    const int64_t bettors_before = bettor_balances();
+
+    int    blocks_that_paid = 0;
+    bool   saw_settling     = false;
+    size_t prev             = pending_rows();
+    const int settle_blocks = cron_grace_blocks(node);   // dispute grace + slack
+    for (int i = 0; i < settle_blocks && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i) {
+        produce(node, gp, when);
+        if (node.db().get<pm_market_object>(market_id).payout_status == 4) saw_settling = true;
+        const size_t now_rows = pending_rows();
+        if (now_rows < prev) {
+            ++blocks_that_paid;
+            BOOST_CHECK_MESSAGE(prev - now_rows <= (size_t)BUDGET,
+                "a single block paid " << (prev - now_rows) << " rows, budget is " << BUDGET);
+        }
+        prev = now_rows;
+    }
+
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+    BOOST_CHECK_MESSAGE(blocks_that_paid >= 2,
+        "market of " << ROWS << " rows settled in " << blocks_that_paid
+                     << " block(s) — the row budget is not being enforced");
+    // The market wears payout_status 4 while in flight: that is the gate keeping cron §5 from
+    // re-entering and pm_dispute_create from touching a market that is already paying out.
+    BOOST_CHECK_MESSAGE(saw_settling, "market never showed payout_status 4 (settling) mid-flight");
+
+    // Every row terminal, and the money that moved is exactly the money the rows recorded.
+    BOOST_CHECK_EQUAL(pending_rows(), (size_t)0);
+    int64_t recorded = 0, staked = 0;
+    size_t  rows = 0;
+    {
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it) {
+            BOOST_REQUIRE_MESSAGE(it->status == 2 || it->status == 3,
+                "bet " << it->id._id << " left in status " << (int)it->status);
+            recorded += it->resolved_amount.value;
+            staked   += it->amount.value;
+            ++rows;
+        }
+    }
+    BOOST_CHECK_EQUAL(rows, (size_t)ROWS);
+    BOOST_CHECK_EQUAL(bettor_balances() - bettors_before, recorded);
+    // No minting: the winners cannot be paid more than the whole pot the market held.
+    BOOST_CHECK_LE(recorded, staked);
+
+    // The carrier object is released once the settlement finalizes.
+    const auto& sidx = node.db().get_index<pm_settlement_index>().indices().get<by_settlement_market>();
+    BOOST_CHECK(sidx.find(market_id) == sidx.end());
+}
+
 // Death #1 — oracle rejects the market's terms.
 BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
     auto gp = make_genesis_params(0x6C02u, 1);

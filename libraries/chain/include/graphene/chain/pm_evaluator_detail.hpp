@@ -36,7 +36,9 @@ void purge_deferred_claims(database& db, pm_market_id_type market);
 share_type recall_pool_liquidity(database& db, const pm_market_object& mkt, share_type amount);
 void settle_liquidity(database& db, const pm_market_object& mkt, share_type bonus,
                       share_type uncovered = share_type(0));
-void settle_market(database& db, const pm_market_object& mkt);
+// #432 D: incremental settlement — advances the market through the settlement phases, spending at
+// most `budget` row-units (decremented in place), and returns true only once it is finalized.
+bool settle_market_step(database& db, const pm_market_object& mkt, uint32_t& budget);
 // #432 D: incremental collection — drops at most `budget` objects (decremented in place) and
 // returns true only when the market's whole cluster, market object included, is gone.
 bool gc_market_step(database& db, const pm_market_object& mkt, uint32_t& budget);

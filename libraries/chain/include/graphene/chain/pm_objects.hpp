@@ -728,6 +728,8 @@ namespace graphene { namespace chain {
             share_type         distributed;   ///< phase 4: profit paid (normal) / oracle-penalty share paid (void)
             share_type         lp_bonus;      ///< phase 4: time-penalty taken (normal) / forfeit share paid (void)
             share_type         paid_claims;   ///< phase 3: drawn from the bounded early-exit bucket
+            int64_t            rows_total = 0; ///< phase 2: active rows counted, so phase 4 knows which is last
+            int64_t            rows_done  = 0; ///< phase 4: active rows paid so far
 
             /// Conservation accumulator: += stake when a row is released, -= amount when someone is
             /// paid. The PM supply invariant counts it as PM-held, so a snapshot taken mid-settlement
@@ -960,7 +962,7 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_deferred_claim_object, graphene::ch
 
 FC_REFLECT((graphene::chain::pm_settlement_object),
     (id)(market)(phase)(cursor)(stake_total)(weight_total)(winners_pool)(uncovered)
-    (distributed)(lp_bonus)(paid_claims)(escrow))
+    (distributed)(lp_bonus)(paid_claims)(rows_total)(rows_done)(escrow))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_settlement_object, graphene::chain::pm_settlement_index)
 
 FC_REFLECT((graphene::chain::pm_lazy_deposit_object),
