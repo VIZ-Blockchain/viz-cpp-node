@@ -674,11 +674,14 @@ namespace graphene { namespace protocol {
             // (0.001 VIZ) apiece. Raises the cost of row-spam by three orders of magnitude; it does NOT
             // bound the row count on its own (that is fix D, the incremental settle below).
             asset    pm_min_bet                   = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
-            // #432 fix D: per-block row budget of the incremental settlement sweep — the maximum number
-            // of bet / claim / liquidity rows ONE market's settlement may touch in a single block. The
-            // market keeps a cursor and resumes in the next block until finished, so a market with an
-            // arbitrary number of rows can never make block application unbounded.
-            uint32_t pm_settle_rows_per_block     = 2000;    ///< rows/block per settling market
+            // #432 fix D: GLOBAL per-block budget of row-level PM cron work — the maximum number of
+            // bet / claim / liquidity / cluster rows that ALL markets settled or collected in one block
+            // may touch between them (pm_processing_cap_per_block counts markets, which says nothing
+            // about the work each carries). Markets are served oldest-first and a market that exhausts
+            // the budget resumes in the next block, so no number of rows can make block application
+            // unbounded. Floor 100 guarantees forward progress; see
+            // docs/prediction-markets/settlement-work-bounds.md for the measurement behind the default.
+            uint32_t pm_settle_rows_per_block     = 2000;    ///< global rows/block for settle + GC
             // Lazy pool (allocation-only; leverage out of scope for HF14)
             bool     pm_lazy_pool_enabled         = true;    ///< kill-switch (median-voted)
             uint16_t pm_lazy_alloc_percent        = 2000;    ///< bp of free_balance allocated per market

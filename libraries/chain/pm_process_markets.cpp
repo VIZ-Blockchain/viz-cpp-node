@@ -776,7 +776,16 @@ namespace pm_detail {
     // days after closure. Deletion is driven purely by chain time, so every node prunes exactly
     // the same markets at the same block → shared-memory state and snapshots stay identical
     // network-wide. Nothing else holds an id-reference to a settled market, so no dangling refs.
-    void gc_market(database& db, const pm_market_object& mkt) {
+    // #432 fix D: collection is INCREMENTAL. The caller passes the block's remaining row budget
+    // (`pm_settle_rows_per_block`, median-voted, shared by every settling/collected market in the
+    // block); this drops at most that many objects and returns true only once the cluster is gone.
+    // Running out of budget just leaves the market for the next block: each range is re-entered at
+    // its lower_bound and removed rows are gone, so the sweep resumes where it stopped with no
+    // persisted cursor. A half-collected market is inert — it is terminal (status 3 /
+    // payout_status 3, finalized_time set) so no operation can reach it, and the rows being dropped
+    // hold no money (bets are status 2/3, LP 3, leverage terminal), so the supply invariant is flat
+    // across the pause.
+    bool gc_market_step(database& db, const pm_market_object& mkt, uint32_t& budget) {
         const pm_market_id_type mid = mkt.id;
         // Conservation backstop (drift-400, 2026-08-16): forfeit_pool holds real tokens (routed
         // leverage-exit dust / commit forfeits). Every terminal path routes it to zero before
@@ -784,19 +793,31 @@ namespace pm_detail {
         // reach GC with a non-zero pool. At GC there are no bettors/LPs left to return to, so burn it
         // from supply — otherwise db.remove(mkt) silently orphans those tokens and the re-armed PM
         // supply invariant drifts on the next snapshot import (exactly the -400 seen on testnet).
-        if (mkt.forfeit_pool.value > 0)
+        // Zeroed in the same step as the burn: collection can now span blocks, and a burn that left
+        // the field standing would fire again on every re-entry — burning the same tokens repeatedly
+        // and driving current_supply below the accounted sum.
+        if (mkt.forfeit_pool.value > 0) {
             db.burn_asset(asset(share_type(-mkt.forfeit_pool.value), TOKEN_SYMBOL));
-        // Composite (market, …)-keyed indexes: drop the whole market range.
+            db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+        }
+        bool drained = true;
+        // Composite (market, …)-keyed indexes: drop the whole market range, budget permitting.
         auto drop_range = [&](const auto& idx) {
+            if (!drained) return; // budget already spent — the rest waits for the next block
             for (auto it = idx.lower_bound(boost::make_tuple(mid));
                  it != idx.end() && it->market == mid; ) {
-                const auto& obj = *it; ++it; db.remove(obj);
+                if (budget == 0) { drained = false; return; }
+                const auto& obj = *it; ++it; db.remove(obj); --budget;
             }
         };
         // Single-key (unique per market) by_market indexes: at most one row.
         auto drop_unique = [&](const auto& idx) {
+            if (!drained) return;
             auto it = idx.find(mid);
-            if (it != idx.end()) db.remove(*it);
+            if (it != idx.end()) {
+                if (budget == 0) { drained = false; return; }
+                db.remove(*it); --budget;
+            }
         };
         drop_range(db.get_index<pm_outcome_index>().indices().get<by_market_outcome>());
         drop_range(db.get_index<pm_bet_index>().indices().get<by_market>());
@@ -812,7 +833,10 @@ namespace pm_detail {
         drop_range(db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>());
         drop_unique(db.get_index<pm_dispute_index>().indices().get<by_market>());
         drop_unique(db.get_index<pm_lazy_allocation_index>().indices().get<by_market>());
-        db.remove(mkt);
+        if (!drained) return false;                     // resume next block; market object stays
+        if (budget == 0) return false;                  // the market row itself costs one unit
+        db.remove(mkt); --budget;
+        return true;
     }
 
     void refund_all_bets(database& db, const pm_market_object& mkt,
@@ -1056,6 +1080,13 @@ void database::process_pm_markets() {
     const auto& mp  = get_validator_schedule_object().median_props;
     uint32_t cap  = (mp.pm_processing_cap_per_block > 0) ? (uint32_t)mp.pm_processing_cap_per_block : 20u;
     uint32_t done = 0;
+    // #432 fix D: `cap` counts MARKETS, which says nothing about the work a market carries — a
+    // single settlement or collection touches every bet row of its market. `row_budget` is the
+    // second, orthogonal limiter: a GLOBAL per-block allowance of row-level work shared by every
+    // market processed in this block (median-voted, floor 100 so progress is always guaranteed).
+    // Spending it in market order — the sweeps walk oldest-first — keeps the split deterministic
+    // across nodes. A market that exhausts it resumes in the next block.
+    uint32_t row_budget = (mp.pm_settle_rows_per_block > 0) ? (uint32_t)mp.pm_settle_rows_per_block : 2000u;
 
     // ── 1. Commit forfeits ────────────────────────────────────────────────────
     // Commitments that were never revealed within the reveal window.
@@ -1511,7 +1542,11 @@ void database::process_pm_markets() {
         auto it = idx.lower_bound(boost::make_tuple(time_point_sec(1), pm_market_id_type()));
         while (it != idx.end() && it->finalized_time <= cutoff && done < cap) {
             const auto& mkt = *it; ++it;
-            gc_market(*this, mkt);
+            // Bounded (#432 D): a market too large to collect in one block keeps its place at the
+            // head of the sweep (finalized_time never changes) and continues next block. GC is
+            // served AFTER settlement in the block, so a heavy settlement backlog can defer
+            // collection — harmless, it only stretches retention, and settlement is finite.
+            if (!gc_market_step(*this, mkt, row_budget)) break;
             ++done;
         }
     }

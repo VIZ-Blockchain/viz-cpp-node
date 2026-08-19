@@ -44,11 +44,15 @@ namespace {
         n.produce_block(v, key_for(gp, v), when);
     }
 
+    // `nonce` shifts the expiration by a second. Identical operation batches signed by the same key
+    // in the same block hash to the same trx_id and the second is rejected as a duplicate — the
+    // chain has no per-transaction nonce, so the expiration is the only free field.
     signed_transaction sign_ops(const std::vector<operation>& ops,
-                                const fc::ecc::private_key& key, const simulated_node& node) {
+                                const fc::ecc::private_key& key, const simulated_node& node,
+                                uint32_t nonce = 0) {
         signed_transaction tx;
         tx.set_reference_block(node.head_block_id());
-        tx.set_expiration(node.head_block_time() + fc::seconds(60));
+        tx.set_expiration(node.head_block_time() + fc::seconds(60 + (nonce % 1800)));
         for (const auto& op : ops) tx.operations.emplace_back(op);
         tx.sign(key, node.chain_id());
         return tx;
@@ -5047,6 +5051,122 @@ BOOST_AUTO_TEST_CASE(gc_resolved_market_after_retention) {
 
     assert_gc_after_retention(node, gp, when, market_id);
     BOOST_TEST_MESSAGE("resolved market GC'd after retention");
+}
+
+// #432 fix D — collection is bounded by pm_settle_rows_per_block. Before the fix, gc_market()
+// dropped a market's ENTIRE object cluster inside the one block where retention expired: the
+// per-block cap counts markets, so a market carrying a million bet rows cost exactly one unit of
+// it. Here the cluster is deliberately larger than the (floor-valued) row budget, so collection
+// MUST span several blocks and MUST never remove more than the budget in any single block, while
+// still ending with the whole cluster gone.
+BOOST_AUTO_TEST_CASE(gc_row_budget_spans_blocks) {
+    auto gp = make_genesis_params(0x6C06u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-gc-budget", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    constexpr uint32_t BUDGET   = 100;  // consensus floor of pm_settle_rows_per_block
+    constexpr int      ROWS     = 140;  // > BUDGET on purpose: one block cannot finish the job
+    constexpr int      ACCOUNTS = 4;
+
+    chain_properties_pm props{};
+    props.pm_settle_rows_per_block = BUDGET;
+    publish_fast_pm_props(node, gp, when, props);
+    BOOST_REQUIRE_EQUAL(node.db().get_validator_schedule_object().median_props.pm_settle_rows_per_block, BUDGET);
+    register_self_oracle(node, gp, when);
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t bet  = mp.pm_min_bet.amount.value;
+
+    std::vector<std::string> who;
+    std::vector<fc::ecc::private_key> keys;
+    for (int a = 0; a < ACCOUNTS; ++a) {
+        std::string name = "bettor" + std::to_string(a);
+        auto k = derive_key(name);
+        create_and_fund(node, gp, when, name, k, share_type(unit * 4));
+        who.push_back(name); keys.push_back(k);
+    }
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(120);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(180);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    int placed = 0; uint32_t nonce = 0;
+    while (placed < ROWS) {
+        for (int t = 0; t < ACCOUNTS && placed < ROWS; ++t) {
+            const int a = nonce % ACCOUNTS;
+            std::vector<operation> ops;
+            for (int i = 0; i < 10 && placed < ROWS; ++i, ++placed) {
+                pm_place_bet_operation pb;
+                pb.account = who[a]; pb.market_id = 0;
+                pb.side = (int8_t)(placed % 2); pb.outcome_index = -1;
+                pb.amount = asset(share_type(bet), TOKEN_SYMBOL); pb.mode = 0;
+                ops.push_back(pb);
+            }
+            node.push_pending_transaction(sign_ops(ops, keys[a], node, ++nonce));
+        }
+        produce(node, gp, when);
+    }
+
+    // Cluster size as seen from state: the rows GC has to reclaim (the market object itself is
+    // counted separately, by its presence).
+    auto cluster_rows = [&]() {
+        const auto& db = node.db();
+        size_t n = 0;
+        auto count_range = [&](const auto& idx) {
+            for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+                 it != idx.end() && it->market == market_id; ++it) ++n;
+        };
+        count_range(db.get_index<pm_bet_index>().indices().get<by_market>());
+        count_range(db.get_index<pm_outcome_index>().indices().get<by_market_outcome>());
+        count_range(db.get_index<pm_liquidity_index>().indices().get<by_market>());
+        count_range(db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>());
+        return n;
+    };
+    BOOST_REQUIRE_GT(cluster_rows(), (size_t)BUDGET); // otherwise the test proves nothing
+
+    while (node.head_block_time() < cm.betting_expiration) produce(node, gp, when);
+    produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+
+    // Retention elapses → collection starts. Step block by block and watch the cluster drain.
+    int    blocks_that_removed = 0;
+    size_t prev = cluster_rows();
+    for (int i = 0; i < 600 && node.db().find<pm_market_object>(market_id) != nullptr; ++i) {
+        produce(node, gp, when);
+        const size_t now_rows = cluster_rows();
+        if (now_rows < prev) {
+            ++blocks_that_removed;
+            BOOST_CHECK_MESSAGE(prev - now_rows <= (size_t)BUDGET,
+                "a single block removed " << (prev - now_rows) << " rows, budget is " << BUDGET);
+        }
+        prev = now_rows;
+    }
+
+    BOOST_CHECK(node.db().find<pm_market_object>(market_id) == nullptr);  // finished eventually
+    BOOST_CHECK(market_cluster_absent(node.db(), market_id));             // and completely
+    BOOST_CHECK_MESSAGE(blocks_that_removed >= 2,
+        "cluster of " << ROWS << "+ rows was collected in " << blocks_that_removed
+                      << " block(s) — the row budget is not being enforced");
 }
 
 // Death #1 — oracle rejects the market's terms.

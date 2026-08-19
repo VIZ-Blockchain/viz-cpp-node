@@ -1,7 +1,8 @@
 # Bounding settlement work per block (#432)
 
-Status: fix **A** implemented, fix **D** in progress. This note records the problem, the
-options weighed, and why the chain takes both.
+Status: fix **A** implemented (default confirmed at 1.000 VIZ), fix **D** landing in stages —
+garbage collection is bounded, the settlement phase machine is next. This note records the
+problem, the options weighed, and why the chain takes both.
 
 Sibling internal specs: [early-exit-deferred-claim](./early-exit-deferred-claim.md),
 [specification](./specification.md) §5 (crons).
@@ -88,6 +89,12 @@ Enforcement points (`libraries/chain/pm_evaluator.cpp`):
    or above `pm_min_bet`. A position below the floor is not trapped: it can still be transferred
    whole, which moves the row instead of splitting it.
 
+Known gap, deliberately left to fix D: `pm_add_liquidity` also mints one row per call
+(`pm_liquidity_object`, no aggregation per provider) and asserts only `amount > 0`, so LP rows are
+a fourth row source with no floor. They are settled by `settle_liquidity`, which walks them twice.
+D budgets that walk like every other; whether the floor should also apply to liquidity is a
+product decision (it would set a minimum ticket for providing liquidity), so it is not bundled in.
+
 ## 4. Fix D — incremental settlement (design)
 
 The market carries its own settlement cursor and the cron spends a **global** per-block row
@@ -116,7 +123,31 @@ Rules that make it safe:
 * **Progress.** A market with N rows finishes in about N / budget blocks; the floor of 100 on the
   budget makes starvation impossible.
 
-`gc_market()` gets the same treatment — it deletes a bounded number of rows per block.
+### 4.1 Shipped: bounded garbage collection
+
+Collection went first — it is the same unbounded walk with none of the settlement arithmetic, so it
+validates the budget plumbing on its own. `gc_market()` became `gc_market_step(db, mkt, budget)`:
+it drops at most `budget` objects, decrements it in place, and returns true only when the whole
+cluster (market object included) is gone. A market too large for one block keeps its place at the
+head of the sweep — `finalized_time` never changes — and continues next block.
+
+No cursor is needed, unlike settlement: every range is re-entered at its `lower_bound` and the rows
+already removed are *gone*, so the sweep resumes exactly where it stopped. Two details make the
+pause safe:
+
+* the `forfeit_pool` burn is now zeroed in the same step, otherwise re-entry would burn the same
+  tokens again on every block and push `current_supply` below the accounted sum;
+* a half-collected market is inert — terminal (`status 3` / `payout_status 3`), so no operation can
+  reach it, and the rows being dropped hold no money (bets `2/3`, LP `3`, leverage terminal), so the
+  supply invariant is flat across the pause.
+
+Covered by `gc_row_budget_spans_blocks` (consensus_sim): a 143-row cluster with the budget at its
+floor of 100 must take more than one block and must never lose more than 100 rows in any block.
+Verified against a deliberately unbounded control — with the budget bypassed the same test reports
+"a single block removed 143 rows" and "collected in 1 block", i.e. the pre-fix behaviour.
+
+Settlement is served before collection in the block, so a heavy settlement backlog can defer GC.
+That is harmless: it only stretches retention, and settlement is finite.
 
 ## 5. What a row actually costs
 

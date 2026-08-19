@@ -37,7 +37,9 @@ share_type recall_pool_liquidity(database& db, const pm_market_object& mkt, shar
 void settle_liquidity(database& db, const pm_market_object& mkt, share_type bonus,
                       share_type uncovered = share_type(0));
 void settle_market(database& db, const pm_market_object& mkt);
-void gc_market(database& db, const pm_market_object& mkt);
+// #432 D: incremental collection — drops at most `budget` objects (decremented in place) and
+// returns true only when the market's whole cluster, market object included, is gone.
+bool gc_market_step(database& db, const pm_market_object& mkt, uint32_t& budget);
 void refund_all_bets(database& db, const pm_market_object& mkt);
 void return_liquidity(database& db, const pm_market_object& mkt);
 void maybe_allocate_lazy(database& db, const pm_market_object& mkt);
