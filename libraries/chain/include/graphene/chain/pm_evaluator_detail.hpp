@@ -42,7 +42,9 @@ bool settle_market_step(database& db, const pm_market_object& mkt, uint32_t& bud
 // #432 D: incremental collection — drops at most `budget` objects (decremented in place) and
 // returns true only when the market's whole cluster, market object included, is gone.
 bool gc_market_step(database& db, const pm_market_object& mkt, uint32_t& budget);
-void refund_all_bets(database& db, const pm_market_object& mkt);
+// #432 D3: incremental void refund (cron §2 missed resolution, §3 dispute auto-close) — measures
+// then refunds at most `budget` rows per block, true only once the market is fully refunded.
+bool refund_market_step(database& db, const pm_market_object& mkt, uint32_t& budget);
 void return_liquidity(database& db, const pm_market_object& mkt);
 void maybe_allocate_lazy(database& db, const pm_market_object& mkt);
 bool verify_commit(const pm_commit_object& commit, int8_t side, int16_t outcome_index,

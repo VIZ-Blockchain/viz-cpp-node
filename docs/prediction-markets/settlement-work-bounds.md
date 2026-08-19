@@ -1,7 +1,7 @@
 # Bounding settlement work per block (#432)
 
-Status: fix **A** implemented (default confirmed at 1.000 VIZ), fix **D** landing in stages —
-garbage collection is bounded, the settlement phase machine is next. This note records the
+Status: fix **A** implemented (default confirmed at 1.000 VIZ) and fix **D** complete — garbage
+collection, settlement and the void refunds all run on a metered row budget. This note records the
 problem, the options weighed, and why the chain takes both.
 
 Sibling internal specs: [early-exit-deferred-claim](./early-exit-deferred-claim.md),
@@ -238,9 +238,36 @@ settlement object gone and the bettors' balances moved by exactly the sum the ro
 Verified against a deliberately unbounded control — with the budget bypassed the same test reports
 "a single block paid 140 rows" and "settled in 1 block", i.e. the pre-fix behaviour.
 
-Still unbounded, and next in line: `refund_all_bets()`, the walk behind the two void paths in cron
-§2 (missed resolution) and §3 (dispute auto-close). It also builds an unbounded in-memory vector of
-participants, so it is the same hole with a second edge.
+### 4.3 Shipped: incremental void refunds
+
+The two void paths — cron §2 (missed resolution) and §3 (dispute auto-close) — had the same hole
+with a second edge: `refund_all_bets()` walked every row of the market in one block *and* built an
+in-memory vector holding every participant, because the forfeit pool is shared pro-rata and the
+denominator was only known at the end of the walk.
+
+`refund_market_step(db, mkt, budget)` replaces both. It runs two metered passes over the same
+predicate (`status` 0/5/6): pass one only measures (stake total, row count), pass two refunds the
+stake and pays each row its slice of the forfeit pool. Because pass one changes nothing, pass two
+re-walks *exactly* the set pass one counted — which is how "who is being refunded by this void" stays
+answerable across a pause without tagging rows or holding a vector.
+
+The market wears `payout_status = 4` from the first block of the flight, and that flag is now a
+gate, not just a display value:
+
+* `pm_resolve_market`, `pm_no_contest` and `pm_transfer_position` refuse it, so a late oracle call
+  cannot overtake a refund that is halfway through the market;
+* cron §4 (dispute voting finalize) steps over disputes whose market is already being voided by §3;
+* cron §6 (batch epoch settle) skips it, so queued rows cannot move between the two passes.
+
+One ordering bug fell out of writing this, and it predates the change: the old path drained
+`forfeit_pool` *before* `return_liquidity()`, which force-closes leveraged positions and routes
+their curve residual straight back **into** `forfeit_pool`. Those tokens then rode on the market row
+until GC dropped it — stranded in `current_supply` with no owner, exactly the leak the void routing
+exists to prevent. Liquidity is now returned first and the leftover accounted for after.
+
+Covered by `void_refund_row_budget_spans_blocks`: 140 rows, budget at its floor of 100, no oracle
+ever resolves; the void must span blocks, stay under the budget per block, end with `status = 3`,
+`resolved_outcome = -1`, every row refunded, and the bettors' balances up by exactly the stake.
 
 ## 5. What a row actually costs
 

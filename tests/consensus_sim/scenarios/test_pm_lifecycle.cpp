@@ -5314,6 +5314,137 @@ BOOST_AUTO_TEST_CASE(settle_row_budget_spans_blocks) {
     BOOST_CHECK(sidx.find(market_id) == sidx.end());
 }
 
+// #432 fix D part 3 — the void paths are bounded too. Cron §2 (missed resolution) used to refund
+// every row of the market in the block where the oracle's deadline lapsed, and to build a vector of
+// every participant while doing it. Same market shape as the settlement test, except no oracle ever
+// resolves: the refund must span blocks, stay under the budget, and give every bettor exactly their
+// stake back.
+BOOST_AUTO_TEST_CASE(void_refund_row_budget_spans_blocks) {
+    auto gp = make_genesis_params(0x6C08u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-void-budget", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    constexpr uint32_t BUDGET   = 100;
+    constexpr int      ROWS     = 140;
+    constexpr int      ACCOUNTS = 4;
+
+    chain_properties_pm props{};
+    props.pm_settle_rows_per_block = BUDGET;
+    publish_fast_pm_props(node, gp, when, props);
+    register_self_oracle(node, gp, when);
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t bet  = mp.pm_min_bet.amount.value;
+
+    std::vector<std::string> who;
+    std::vector<fc::ecc::private_key> keys;
+    for (int a = 0; a < ACCOUNTS; ++a) {
+        std::string name = "bettor" + std::to_string(a);
+        auto k = derive_key(name);
+        create_and_fund(node, gp, when, name, k, share_type(unit * 4));
+        who.push_back(name); keys.push_back(k);
+    }
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(120);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(180);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    int placed = 0; uint32_t nonce = 0;
+    while (placed < ROWS) {
+        for (int t = 0; t < ACCOUNTS && placed < ROWS; ++t) {
+            const int a = nonce % ACCOUNTS;
+            std::vector<operation> ops;
+            for (int i = 0; i < 10 && placed < ROWS; ++i, ++placed) {
+                pm_place_bet_operation pb;
+                pb.account = who[a]; pb.market_id = 0;
+                pb.side = (int8_t)(placed % 2); pb.outcome_index = -1;
+                pb.amount = asset(share_type(bet), TOKEN_SYMBOL); pb.mode = 0;
+                ops.push_back(pb);
+            }
+            node.push_pending_transaction(sign_ops(ops, keys[a], node, ++nonce));
+        }
+        produce(node, gp, when);
+    }
+
+    auto pending_rows = [&]() {
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        size_t n = 0;
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it)
+            if (it->status == 0) ++n;
+        return n;
+    };
+    auto bettor_balances = [&]() {
+        int64_t sum = 0;
+        for (const auto& n : who) sum += node.db().get_account(n).balance.amount.value;
+        return sum;
+    };
+    BOOST_REQUIRE_GT(pending_rows(), (size_t)BUDGET);
+
+    int64_t staked = 0;
+    {
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it) staked += it->amount.value;
+    }
+
+    while (node.head_block_time() < cm.result_expiration) produce(node, gp, when);
+    const int64_t bettors_before = bettor_balances();
+
+    // No pm_resolve_market ever arrives: cron §2 voids the market once the oracle's grace lapses.
+    int    blocks_that_paid = 0;
+    bool   saw_settling     = false;
+    size_t prev             = pending_rows();
+    const int void_blocks   = cron_grace_blocks(node);
+    for (int i = 0; i < void_blocks && node.db().get<pm_market_object>(market_id).status != 3; ++i) {
+        produce(node, gp, when);
+        if (node.db().get<pm_market_object>(market_id).payout_status == 4) saw_settling = true;
+        const size_t now_rows = pending_rows();
+        if (now_rows < prev) {
+            ++blocks_that_paid;
+            BOOST_CHECK_MESSAGE(prev - now_rows <= (size_t)BUDGET,
+                "a single block refunded " << (prev - now_rows) << " rows, budget is " << BUDGET);
+        }
+        prev = now_rows;
+    }
+
+    const auto& mkt = node.db().get<pm_market_object>(market_id);
+    BOOST_REQUIRE_EQUAL(mkt.status, 3);
+    BOOST_CHECK_EQUAL(mkt.payout_status, 3);
+    BOOST_CHECK_EQUAL(mkt.resolved_outcome, -1);
+    BOOST_CHECK_MESSAGE(blocks_that_paid >= 2,
+        "market of " << ROWS << " rows was voided in " << blocks_that_paid
+                     << " block(s) — the row budget is not being enforced");
+    BOOST_CHECK_MESSAGE(saw_settling, "market never showed payout_status 4 while being refunded");
+
+    // A void gives the stake back untouched — no fees, no curve, no rounding.
+    BOOST_CHECK_EQUAL(pending_rows(), (size_t)0);
+    BOOST_CHECK_EQUAL(bettor_balances() - bettors_before, staked);
+    {
+        const auto& idx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = idx.lower_bound(boost::make_tuple(market_id));
+             it != idx.end() && it->market == market_id; ++it)
+            BOOST_REQUIRE_MESSAGE(it->status == 2,
+                "bet " << it->id._id << " left in status " << (int)it->status << " after a void");
+    }
+    const auto& sidx = node.db().get_index<pm_settlement_index>().indices().get<by_settlement_market>();
+    BOOST_CHECK(sidx.find(market_id) == sidx.end());
+}
+
 // Death #1 — oracle rejects the market's terms.
 BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
     auto gp = make_genesis_params(0x6C02u, 1);

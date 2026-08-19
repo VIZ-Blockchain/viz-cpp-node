@@ -981,7 +981,7 @@ namespace pm_detail {
         drop_range(db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>());
         drop_range(db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>());
         // Backstop: every terminal path that can hold deferred claims already clears them —
-        // settle_market consumes them, refund_all_bets purges them on void/no-contest/missed-
+        // settle_market consumes them, refund_market_step purges them on void/no-contest/missed-
         // resolution, and accept-expired markets are pending (never had bets). This drop is a
         // defensive net so no overlooked or future finalize path can leave a claim row dangling
         // in shared memory / drift the snapshot. Money-neutral: the range is normally empty here.
@@ -995,52 +995,137 @@ namespace pm_detail {
         return true;
     }
 
-    void refund_all_bets(database& db, const pm_market_object& mkt,
-                         std::vector<std::pair<account_name_type, int64_t>>* out_participants = nullptr,
-                         int64_t* out_total = nullptr) {
+    // #432 fix D part 3 — the void paths (cron §2 missed resolution, §3 dispute auto-close) used to
+    // refund every bet row of a market inside the single block where the deadline passed, and to
+    // build an in-memory vector of every participant on top of that walk. Both are now metered by
+    // the block's row budget, on the same pm_settlement_object phase machine as settlement.
+    //
+    // Two passes, because the forfeit pool is shared pro-rata and the denominator has to be known
+    // before the first payment. Pass one only MEASURES, which is what makes "who is being refunded
+    // by this void" answerable across a pause without tagging the rows: pass two re-walks the very
+    // same predicate (status 0/5/6) and finds exactly the set pass one counted.
+    //
+    // Returns true when the market has been fully refunded; the caller then finalizes it. Until
+    // then the market wears payout_status 4, which the oracle-facing evaluators refuse to touch.
+    bool refund_market_step(database& db, const pm_market_object& mkt, uint32_t& budget) {
+        const auto& sidx = db.get_index<pm_settlement_index>().indices().get<by_settlement_market>();
+        auto sit = sidx.find(mkt.id);
+        if (sit == sidx.end()) {
+            // The forfeit pool moves into the settlement escrow in one step, so the supply
+            // invariant keeps counting it (pm_forfeit → pm_settling) while it is paid out over
+            // several blocks. winners_pool holds the pot as a CONSTANT: shares must be computed
+            // against the original size, not against what is left after earlier blocks paid out.
+            db.create<pm_settlement_object>([&](pm_settlement_object& s) {
+                s.market       = mkt.id;
+                s.phase        = 11;
+                s.cursor       = 0;
+                s.escrow       = mkt.forfeit_pool.value;
+                s.winners_pool = mkt.forfeit_pool.value;
+            });
+            if (mkt.forfeit_pool.value > 0)
+                db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+            sit = sidx.find(mkt.id);
+        }
+        const pm_settlement_object& st = *sit;
         const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
-        auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
-        while (it != bidx.end() && it->market == mkt.id) {
-            // H2: statuses 5/6 (queued / revealed-pending batch bets) hold escrowed stake, but the
-            // §6 executor only runs on status-1 markets — a terminal market would orphan them and
-            // burn the stake. They never touched the curve, so a nominal refund is correct.
-            if (it->status == 0 || it->status == 5 || it->status == 6) {
-                if (out_participants) out_participants->emplace_back(it->account, it->amount.value);
-                if (out_total) *out_total += it->amount.value;
-                db.adjust_balance(db.get_account(it->account), asset(it->amount, TOKEN_SYMBOL));
-                db.pm_adjust_frozen(it->account, 1, -it->amount); // UNLOCK: stake refunded (missed-resolution/auto-close)
-                db.modify(*it, [](pm_bet_object& b) { b.status = 2; });
-            }
-            ++it;
-        }
-    }
+        auto spend = [&]() -> bool {
+            if (budget == 0) return false;
+            --budget;
+            return true;
+        };
+        // H2: statuses 5/6 (queued / revealed-pending batch bets) hold escrowed stake, but the §6
+        // executor only runs on status-1 markets — a terminal market would orphan them and burn the
+        // stake. They never touched the curve, so a nominal refund is correct.
+        auto refundable = [](const pm_bet_object& b) {
+            return b.status == 0 || b.status == 5 || b.status == 6;
+        };
 
-    // H4: same routing as #5 (settle win<0). The §2 missed-resolution and §3 dispute-auto-close
-    // crons used to leave forfeit_pool in the market object — GC then dropped the row and those
-    // real tokens stayed in current_supply with no owner, breaking the re-armed PM supply
-    // invariant on the next snapshot import. Bettors present → return pro-rata by refunded stake;
-    // none → burn from supply.
-    void route_forfeit_on_void(database& db, const pm_market_object& mkt,
-                               const std::vector<std::pair<account_name_type, int64_t>>& participants,
-                               int64_t total_bets) {
-        const int64_t fpool = mkt.forfeit_pool.value; // ≥ 0 by construction
-        if (fpool <= 0) return;
-        if (total_bets > 0) {
-            int64_t paid = 0;
-            for (size_t i = 0; i < participants.size(); ++i) {
-                int64_t share = (i + 1 == participants.size())
-                    ? fpool - paid
-                    : (int64_t)(fc::uint128_t((uint64_t)fpool)
-                        * fc::uint128_t((uint64_t)participants[i].second) / fc::uint128_t((uint64_t)total_bets)).lo;
-                if (share > 0) {
-                    db.adjust_balance(db.get_account(participants[i].first), asset(share_type(share), TOKEN_SYMBOL));
-                    paid += share;
-                }
+        // ── Pass one: measure the stake and the row count ────────────────────────────────────────
+        if (st.phase == 11) {
+            int64_t add_stake = 0, add_rows = 0, resume_at = 0;
+            bool    exhausted = false;
+            auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type(st.cursor)));
+            for (; it != bidx.end() && it->market == mkt.id; ++it) {
+                if (!spend()) { exhausted = true; resume_at = it->id._id; break; }
+                if (!refundable(*it)) continue;
+                ++add_rows;
+                add_stake += it->amount.value;
             }
-        } else {
-            db.burn_asset(asset(share_type(-fpool), TOKEN_SYMBOL)); // no bettors → remove from supply
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.stake_total += add_stake;
+                s.rows_total  += add_rows;
+                if (exhausted) s.cursor = resume_at;
+                else          { s.phase = 12; s.cursor = 0; }
+            });
+            if (exhausted) return false;
         }
-        db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+
+        // ── Pass two: refund the stake and hand out the forfeit pool ─────────────────────────────
+        if (st.phase == 12) {
+            const int64_t fpool = st.winners_pool.value;   // constant across blocks
+            const int64_t total = st.stake_total.value;
+            int64_t add_paid = 0, add_rows = 0, resume_at = 0;
+            bool    exhausted = false;
+            auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type(st.cursor)));
+            for (; it != bidx.end() && it->market == mkt.id; ) {
+                if (!spend()) { exhausted = true; resume_at = it->id._id; break; }
+                const auto& bet = *it; ++it;
+                if (!refundable(bet)) continue;
+                // Stake back. Escrow is untouched by this: the row stops being counted as held and
+                // the same amount lands in an account balance, so both sides of the invariant move
+                // together.
+                db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: stake refunded on void
+                // H4 routing, now incremental: pro-rata by stake, last refunded row absorbs the
+                // rounding remainder. "Last" is the row counter, not a peek at the rest of the
+                // market — under resume the rows already paid are still in the range.
+                if (fpool > 0 && total > 0) {
+                    const bool last = (st.rows_done + add_rows + 1 == st.rows_total);
+                    int64_t share = last
+                        ? fpool - (st.distributed.value + add_paid)
+                        : (int64_t)(fc::uint128_t((uint64_t)fpool)
+                            * fc::uint128_t((uint64_t)bet.amount.value)
+                            / fc::uint128_t((uint64_t)total)).lo;
+                    if (share < 0) share = 0;   // by construction unreachable; never mint on void
+                    if (share > 0) {
+                        db.adjust_balance(db.get_account(bet.account), asset(share_type(share), TOKEN_SYMBOL));
+                        add_paid += share;
+                    }
+                }
+                db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
+                ++add_rows;
+            }
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.rows_done   += add_rows;
+                s.distributed += add_paid;
+                s.escrow      -= add_paid;
+                if (exhausted) s.cursor = resume_at;
+                else          { s.phase = 13; s.cursor = 0; }
+            });
+            if (exhausted) return false;
+        }
+
+        // ── Finalize ─────────────────────────────────────────────────────────────────────────────
+        // Liquidity rows and leveraged positions are NOT metered: each costs pm_min_liquidity
+        // (100 VIZ) to create, a hundred times a bet row, so their count is bounded economically.
+        // This runs BEFORE the leftover is accounted for, because force-closing a leveraged
+        // position routes its curve residual INTO forfeit_pool: draining the pool first would let
+        // those tokens ride on the market row until GC dropped it, stranding them in current_supply
+        // with no owner — exactly the H4 break the void routing exists to prevent. (The old
+        // one-block path had this ordering the other way round.)
+        return_liquidity(db, mkt);
+        // Leftover exists when nobody was refunded (a market with no live bets), when cron §1
+        // credited a commit forfeit after the refund started, or from the residual just routed
+        // above. None of it has an owner left, so it is burned — the same choice the old
+        // route_forfeit_on_void made for the no-participants case.
+        const int64_t leftover = st.escrow.value + mkt.forfeit_pool.value;
+        FC_ASSERT(leftover >= 0, "PM void refund paid out more than it held: ${l}", ("l", leftover));
+        if (mkt.forfeit_pool.value > 0)
+            db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+        if (leftover > 0)
+            db.burn_asset(asset(share_type(-leftover), TOKEN_SYMBOL));
+        db.remove(st);
+        return true;
     }
 
     void return_liquidity(database& db, const pm_market_object& mkt) {
@@ -1299,27 +1384,31 @@ void database::process_pm_markets() {
         while (it != idx.end() && it->status == 1 && it->result_expiration <= cutoff && done < cap) {
             const auto& mkt = *it; ++it;
 
-            share_type slashed(0);
-            const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
-            auto oit = oidx.find(mkt.oracle);
-            if (oit != oidx.end() && oit->insurance.value > 0) {
-                slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
-                if (slashed.value > 0) {
-                    modify(*oit, [&](pm_oracle_object& o) {
-                        o.insurance -= slashed;
-                        o.missed_count++;
-                        o.total_insurance_slashed += slashed;
-                    });
-                    adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
-                                   asset(slashed, TOKEN_SYMBOL));
+            // One-shot prologue: slash the oracle and raise the "hands off" flag BEFORE any money
+            // moves, so a refund that spans several blocks cannot be overtaken by a late
+            // pm_resolve_market / pm_no_contest / pm_transfer_position on the same market.
+            if (mkt.payout_status != 4) {
+                share_type slashed(0);
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end() && oit->insurance.value > 0) {
+                    slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
+                    if (slashed.value > 0) {
+                        modify(*oit, [&](pm_oracle_object& o) {
+                            o.insurance -= slashed;
+                            o.missed_count++;
+                            o.total_insurance_slashed += slashed;
+                        });
+                        adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
+                                       asset(slashed, TOKEN_SYMBOL));
+                    }
                 }
+                modify(mkt, [](pm_market_object& m) { m.payout_status = 4; }); // refund in flight
+                push_virtual_operation(pm_oracle_missed_penalty_operation(
+                    mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
             }
 
-            std::vector<std::pair<account_name_type, int64_t>> participants; // H4
-            int64_t total_bets = 0;
-            refund_all_bets(*this, mkt, &participants, &total_bets);
-            route_forfeit_on_void(*this, mkt, participants, total_bets); // H4: forfeit must not be GC'd with the market
-            return_liquidity(*this, mkt);
+            if (!refund_market_step(*this, mkt, row_budget)) break; // budget spent; resumes next block
 
             pm_oracle_dec_active(*this, mkt);   // leaves active set (1 → 3, missed-resolution void)
             modify(mkt, [&](pm_market_object& m) {
@@ -1328,9 +1417,6 @@ void database::process_pm_markets() {
                 m.resolved_outcome = -1;
                 m.finalized_time   = now;
             });
-
-            push_virtual_operation(pm_oracle_missed_penalty_operation(
-                mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
             ++done;
         }
     }
@@ -1422,34 +1508,37 @@ void database::process_pm_markets() {
             const auto& disp = *it; ++it;
             const auto& mkt  = get<pm_market_object>(disp.market);
 
-            share_type slashed(0);
-            const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
-            auto oit = oidx.find(mkt.oracle);
-            if (oit != oidx.end() && oit->insurance.value > 0) {
-                slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
-                if (slashed.value > 0) {
-                    modify(*oit, [&](pm_oracle_object& o) {
-                        o.insurance -= slashed;
-                        o.dispute_responses_missed++;
-                        o.disputes_auto_closed++;
-                        o.total_insurance_slashed += slashed;
-                    });
-                    adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
-                                   asset(slashed, TOKEN_SYMBOL));
+            // One-shot prologue (see §2): slash, return the disputer's escrow and raise the
+            // "hands off" flag before the metered refund starts. payout_status 4 also keeps §4
+            // (voting finalize) off a dispute this path has already claimed.
+            if (mkt.payout_status != 4) {
+                share_type slashed(0);
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end() && oit->insurance.value > 0) {
+                    slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
+                    if (slashed.value > 0) {
+                        modify(*oit, [&](pm_oracle_object& o) {
+                            o.insurance -= slashed;
+                            o.dispute_responses_missed++;
+                            o.disputes_auto_closed++;
+                            o.total_insurance_slashed += slashed;
+                        });
+                        adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
+                                       asset(slashed, TOKEN_SYMBOL));
+                    }
                 }
+                // Anti-freeze: the dispute stalled through no fault of the disputer → return the
+                // escrowed dispute fee (spec §4 pm_dispute_auto_close — "disputer fee return").
+                if (disp.dispute_fee.value > 0)
+                    adjust_balance(get_account(disp.disputer),
+                                   asset(disp.dispute_fee, TOKEN_SYMBOL));
+                modify(mkt, [](pm_market_object& m) { m.payout_status = 4; }); // refund in flight
+                push_virtual_operation(pm_dispute_auto_close_operation(
+                    mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
             }
 
-            std::vector<std::pair<account_name_type, int64_t>> participants; // H4
-            int64_t total_bets = 0;
-            refund_all_bets(*this, mkt, &participants, &total_bets);
-            route_forfeit_on_void(*this, mkt, participants, total_bets); // H4: forfeit must not be GC'd with the market
-            return_liquidity(*this, mkt);
-
-            // Anti-freeze: the dispute stalled through no fault of the disputer → return the
-            // escrowed dispute fee (spec §4 pm_dispute_auto_close — "disputer fee return").
-            if (disp.dispute_fee.value > 0)
-                adjust_balance(get_account(disp.disputer),
-                               asset(disp.dispute_fee, TOKEN_SYMBOL));
+            if (!refund_market_step(*this, mkt, row_budget)) break; // budget spent; resumes next block
 
             modify(mkt, [&](pm_market_object& m) {
                 m.status           = 3;
@@ -1459,9 +1548,6 @@ void database::process_pm_markets() {
             });
             pm_oracle_dispute_left_open(*this, mkt.oracle, disp); // drop from open-dispute gauge
             modify(disp, [](pm_dispute_object& d) { d.status = 3; }); // auto-closed
-
-            push_virtual_operation(pm_dispute_auto_close_operation(
-                mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
             ++done;
         }
     }
@@ -1498,6 +1584,11 @@ void database::process_pm_markets() {
         auto it = idx.lower_bound(boost::make_tuple(
             (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
         while (it != idx.end() && it->status == 0 && it->voting_end_time <= now && done < cap) {
+            // #432 fix D part 3: §3 claims a dispute by raising payout_status 4 on its market and
+            // may then take several blocks to refund it. Its dispute row stays status 0 for that
+            // whole flight, so voting finalize has to step over markets already being voided —
+            // otherwise both paths would settle the same market.
+            if (get<pm_market_object>(it->market).payout_status == 4) { ++it; continue; }
             const auto& disp = *it; ++it;
             const auto& mkt  = get<pm_market_object>(disp.market);
 
@@ -1744,6 +1835,11 @@ void database::process_pm_markets() {
             if (second_pass && mit->id._id >= start_id) break; // full circle
             const auto& mkt = *mit; ++mit;
             if (!mkt.allow_batch) continue;
+            // #432 D3: a market being voided over several blocks keeps status 1 until the refund
+            // finishes. Executing its queue mid-flight would move rows between the measuring pass
+            // and the paying pass, so the batch executor steps over it — §2's refund already pays
+            // queued rows (status 5/6) back nominally.
+            if (mkt.payout_status == 4) continue;
 
             // Idle fast-path: nothing queued at this epoch — skip before the LMSR
             // q-vector snapshot, so an idle market costs one index probe, keeps its

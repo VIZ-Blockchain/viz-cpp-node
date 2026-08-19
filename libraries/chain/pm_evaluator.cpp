@@ -924,6 +924,7 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.oracle == o.oracle, "Not the market oracle");
     FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(mkt.payout_status != 4, "Market is being refunded"); // #432 D3: void in flight
     FC_ASSERT(o.winning_outcome >= 0 && o.winning_outcome < (int16_t)mkt.outcome_count,
               "Invalid winning_outcome");
     FC_ASSERT(o.decision_url.size() <= MAX_PM_DECISION_URL_LEN, "decision_url too long");
@@ -995,6 +996,7 @@ void pm_no_contest_evaluator::do_apply(const pm_no_contest_operation& o) {
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.oracle == o.oracle, "Not the market oracle");
     FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(mkt.payout_status != 4, "Market is being refunded"); // #432 D3: void in flight
     FC_ASSERT(o.reason.size() <= MAX_PM_DISPUTE_REASON_LEN, "Reason too long");
 
     // Declaring no-contest does NOT settle immediately: it records an unresolved (-1) outcome and
@@ -1231,6 +1233,7 @@ void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operati
 
     const auto& mkt = db.get<pm_market_object, by_id>(bet.market);
     FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(mkt.payout_status != 4, "Market is being refunded"); // #432 D3: void in flight
 
     if (transfer_weight == bet.weight) {
         const share_type moved = bet.amount;
@@ -1764,7 +1767,7 @@ void pm_unban_evaluator::do_apply(const pm_unban_operation& o) {
 // ─── Cron: process_pm_markets (called once per block) ───────────────────────
 //
 // Processes PM state-machine transitions bounded by pm_processing_cap_per_block.
-// Uses the anonymous-namespace helpers (settle_market, refund_all_bets,
+// Uses the anonymous-namespace helpers (settle_market_step, refund_market_step,
 // return_liquidity) that are visible within this translation unit.
 
 // PM frozen-funds telemetry helper (display-only). kind: 0=liquidity, 1=bets, 2=leverage.
