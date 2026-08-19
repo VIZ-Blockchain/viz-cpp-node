@@ -413,6 +413,21 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
     FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
     FC_ASSERT(o.amount.amount > 0, "Amount must be positive");
 
+    // #432 fix A — anti-dust floor on BOTH pm_place_bet paths. Each call creates a brand-new
+    // pm_bet_object, and settlement has to touch every row of the market; the only floor that
+    // existed was pm_min_batch_bet on the COMMIT path, so instant bets (and queued batch bets,
+    // which run through this same evaluator) could be placed at 1 raw = 0.001 VIZ and multiply
+    // rows almost for free. Charging pm_min_bet / pm_min_batch_bet per row lifts the price of
+    // row-spam by ~3 orders of magnitude. It bounds the COST of rows, not their NUMBER — the
+    // number is bounded by the incremental settlement sweep (fix D). See
+    // docs/prediction-markets/settlement-work-bounds.md.
+    if (o.mode == 0)
+        FC_ASSERT(o.amount.amount >= mp.pm_min_bet.amount,
+                  "Bet below the minimum instant bet (pm_min_bet)");
+    else
+        FC_ASSERT(o.amount.amount >= mp.pm_min_batch_bet.amount,
+                  "Bet below the minimum batch bet (pm_min_batch_bet)");
+
     const auto& acct = db.get_account(o.account);
     FC_ASSERT(acct.balance >= o.amount, "Insufficient balance");
 
@@ -1216,6 +1231,20 @@ void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operati
             fc::uint128_t((uint64_t)bet.amount.value) *
             fc::uint128_t((uint64_t)transfer_weight.value) /
             fc::uint128_t((uint64_t)bet.weight.value)).lo);
+
+        // #432 fix A — a PARTIAL transfer splits one row into two and costs no stake at all, so it
+        // is the cheapest row-multiplication path in the whole PM (bandwidth only): without a floor
+        // one 1 VIZ bet becomes a thousand 0.001 VIZ rows that settlement still has to pay out, and
+        // the pm_place_bet floor above would be trivially bypassed. Require BOTH resulting rows to
+        // stay at or above pm_min_bet. A position smaller than the floor is not trapped — it can
+        // still be handed over WHOLE (transfer_weight == bet.weight takes the branch above).
+        {
+            const auto& mp = median(db);
+            FC_ASSERT(transferred_amount >= mp.pm_min_bet.amount,
+                      "Transferred part is below the minimum bet (pm_min_bet)");
+            FC_ASSERT(bet.amount - transferred_amount >= mp.pm_min_bet.amount,
+                      "Remaining part is below the minimum bet (pm_min_bet); transfer the whole position instead");
+        }
 
         db.modify(bet, [&](pm_bet_object& b) {
             b.weight -= transfer_weight;

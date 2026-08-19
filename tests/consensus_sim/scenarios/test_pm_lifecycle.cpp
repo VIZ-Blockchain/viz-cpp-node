@@ -6554,4 +6554,135 @@ BOOST_AUTO_TEST_CASE(oracle_profile_update_and_insurance_gate) {
                        "withdrawal gate, wrong-signer rejection");
 }
 
+// #432 fix A — the anti-dust floor on every path that can MINT a bet row: instant bets, queued
+// batch bets and (crucially) a partial pm_transfer_position, which splits one row into two at no
+// stake cost and would otherwise bypass the bet-side floor entirely. Each rejection is paired
+// with an acceptance control at the exact boundary, so "nothing landed" can never be mistaken for
+// "the floor works" (the trap the live dust probe fell into twice).
+BOOST_AUTO_TEST_CASE(min_bet_floor_blocks_row_spam) {
+    auto gp = make_genesis_params(0x4320u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-min-bet", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping min-bet floor.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit  = mp.pm_min_liquidity.amount.value;
+    const int64_t floor = mp.pm_min_bet.amount.value;
+    BOOST_REQUIRE_GT(floor, 1); // a floor of 1 raw would make every probe below vacuous
+
+    auto alice_key = derive_key("alice");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    auto bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "bob", bob_key, share_type(unit));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(1200);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+    BOOST_REQUIRE(node.db().find<pm_market_object>(market_id) != nullptr);
+
+    auto row_count = [&]() {
+        const auto& bidx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        int n = 0;
+        for (auto it = bidx.lower_bound(boost::make_tuple(market_id, pm_bet_id_type()));
+             it != bidx.end() && it->market == market_id; ++it) ++n;
+        return n;
+    };
+
+    pm_place_bet_operation dust;
+    dust.account = "alice"; dust.market_id = 0; dust.side = 0; dust.outcome_index = -1;
+    dust.amount = asset(share_type(floor - 1), TOKEN_SYMBOL); dust.mode = 0;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({dust}, alice_key, node)),
+                      std::runtime_error);
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(row_count(), 0); // dust really did not land
+
+    // Control: exactly at the floor is accepted — proves the rejection above is the floor
+    // talking and not some unrelated refusal.
+    pm_place_bet_operation atfloor = dust;
+    atfloor.amount = asset(share_type(floor), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({atfloor}, alice_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(row_count(), 1);
+
+    // A fat position to split, and a counter-bet so the curve stays sane.
+    pm_place_bet_operation fat = dust;
+    fat.amount = asset(share_type(floor * 10), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({fat}, alice_key, node));
+    pm_place_bet_operation other;
+    other.account = "bob"; other.market_id = 0; other.side = 1; other.outcome_index = -1;
+    other.amount = asset(share_type(floor * 10), TOKEN_SYMBOL); other.mode = 0;
+    node.push_pending_transaction(sign_ops({other}, bob_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(row_count(), 3);
+
+    // Locate alice's fat row (the floor*10 one).
+    pm_bet_id_type fat_id; share_type fat_weight(0);
+    {
+        const auto& bidx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = bidx.lower_bound(boost::make_tuple(market_id, pm_bet_id_type()));
+             it != bidx.end() && it->market == market_id; ++it)
+            if (it->account == account_name_type("alice") && it->amount.value >= floor * 10) {
+                fat_id = it->id; fat_weight = it->weight;
+            }
+        BOOST_REQUIRE(fat_weight.value > 0);
+    }
+
+    // Split off a sliver: transferred part lands below the floor → rejected.
+    pm_transfer_position_operation sliver;
+    sliver.from = "alice"; sliver.to = "bob"; sliver.bet_id = fat_id._id; sliver.amount = 1;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({sliver}, alice_key, node)),
+                      std::runtime_error);
+
+    // Split off almost everything: the REMAINDER lands below the floor → also rejected.
+    pm_transfer_position_operation almost = sliver;
+    almost.amount = (int64_t)fat_weight.value - 1;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({almost}, alice_key, node)),
+                      std::runtime_error);
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(row_count(), 3); // neither rejected split minted a row
+
+    // Control: an even split keeps both sides above the floor → accepted, one new row.
+    pm_transfer_position_operation half = sliver;
+    half.amount = (int64_t)(fat_weight.value / 2);
+    node.push_pending_transaction(sign_ops({half}, alice_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(row_count(), 4);
+
+    // A position sitting AT the floor is not trapped: it can still be handed over whole
+    // (amount == 0 → transfer everything), which moves the row instead of splitting it.
+    pm_bet_id_type small_id;
+    {
+        const auto& bidx = node.db().get_index<pm_bet_index>().indices().get<by_market>();
+        for (auto it = bidx.lower_bound(boost::make_tuple(market_id, pm_bet_id_type()));
+             it != bidx.end() && it->market == market_id; ++it)
+            if (it->account == account_name_type("alice") && it->amount.value == floor) small_id = it->id;
+    }
+    pm_transfer_position_operation whole;
+    whole.from = "alice"; whole.to = "bob"; whole.bet_id = small_id._id; whole.amount = 0;
+    node.push_pending_transaction(sign_ops({whole}, alice_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(row_count(), 4); // moved, not minted
+    BOOST_CHECK(node.db().get<pm_bet_object>(small_id).account == account_name_type("bob"));
+
+    BOOST_TEST_MESSAGE("min-bet floor: dust bet rejected / at-floor accepted, sliver + remainder "
+                       "splits rejected, even split accepted, whole transfer of a floor-sized "
+                       "position still allowed");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

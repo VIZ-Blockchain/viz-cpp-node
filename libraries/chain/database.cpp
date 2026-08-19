@@ -3762,6 +3762,11 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_pm::pm_min_batch_bet);
                 calc_median(&chain_properties_pm::pm_commit_reveal_enabled);
                 calc_median(&chain_properties_pm::pm_processing_cap_per_block);
+                // #432 A/D: both must be median-voted like every sibling — a PM param that is
+                // declared and validated but never enters this loop stays frozen at the code
+                // default and is silently un-votable (the pm_closed_market_retention_sec bug).
+                calc_median(&chain_properties_pm::pm_min_bet);
+                calc_median(&chain_properties_pm::pm_settle_rows_per_block);
                 calc_median(&chain_properties_pm::pm_lazy_pool_enabled);
                 calc_median(&chain_properties_pm::pm_lazy_alloc_percent);
                 calc_median(&chain_properties_pm::pm_lazy_max_total_alloc_percent);

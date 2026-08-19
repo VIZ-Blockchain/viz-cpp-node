@@ -668,6 +668,17 @@ namespace graphene { namespace protocol {
             bool     pm_commit_reveal_enabled     = true;    ///< kill-switch (median-voted)
             // Cron / fairness
             uint32_t pm_processing_cap_per_block  = 200;     ///< bounded per-block virtual-op work
+            // #432 fix A: anti-dust floor for the INSTANT bet path, mirroring pm_min_batch_bet on the
+            // batch/commit path. Every pm_place_bet creates a new pm_bet_object, and settlement has to
+            // touch each of those rows — with no floor a single account could mint rows at 1 raw
+            // (0.001 VIZ) apiece. Raises the cost of row-spam by three orders of magnitude; it does NOT
+            // bound the row count on its own (that is fix D, the incremental settle below).
+            asset    pm_min_bet                   = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
+            // #432 fix D: per-block row budget of the incremental settlement sweep — the maximum number
+            // of bet / claim / liquidity rows ONE market's settlement may touch in a single block. The
+            // market keeps a cursor and resumes in the next block until finished, so a market with an
+            // arbitrary number of rows can never make block application unbounded.
+            uint32_t pm_settle_rows_per_block     = 2000;    ///< rows/block per settling market
             // Lazy pool (allocation-only; leverage out of scope for HF14)
             bool     pm_lazy_pool_enabled         = true;    ///< kill-switch (median-voted)
             uint16_t pm_lazy_alloc_percent        = 2000;    ///< bp of free_balance allocated per market
@@ -749,6 +760,10 @@ namespace graphene { namespace protocol {
                 // commit-spam nearly free (each forfeit costs only the 20% penalty on the escrow,
                 // and that escrow feeds the §1 cron backlog capped by MAX_PM_OPEN_COMMITS_PER_MARKET).
                 FC_ASSERT(pm_min_batch_bet.amount >= 100, "pm_min_batch_bet must be >= 0.1 VIZ");
+                // #432 A: same reasoning for the instant path — voting the floor toward zero brings
+                // back free row-spam, and every row is work the settlement sweep has to pay for.
+                check_token(pm_min_bet, "pm_min_bet");
+                FC_ASSERT(pm_min_bet.amount >= 100, "pm_min_bet must be >= 0.1 VIZ");
                 FC_ASSERT(pm_batch_epoch_blocks > 0, "pm_batch_epoch_blocks must be positive");
                 FC_ASSERT(pm_reveal_window_blocks > 0, "pm_reveal_window_blocks must be positive");
                 // A commit's reveal deadline can fall up to (batch_epoch + reveal_window) blocks
@@ -764,6 +779,11 @@ namespace graphene { namespace protocol {
                     "pm_closed_market_retention_sec must exceed the worst-case commit reveal deadline "
                     "((pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL)");
                 FC_ASSERT(pm_processing_cap_per_block > 0, "pm_processing_cap_per_block must be positive");
+                // #432 D: the settle budget must guarantee PROGRESS (a market with N rows finishes in
+                // ~N/budget blocks) and still bound the work of a single block. Zero would wedge every
+                // settlement forever; an unbounded value re-opens exactly the hole this fix closes.
+                FC_ASSERT(pm_settle_rows_per_block >= 100 && pm_settle_rows_per_block <= 100000,
+                    "pm_settle_rows_per_block must be in [100, 100000]");
                 FC_ASSERT(pm_lazy_alloc_percent <= 10000, "pm_lazy_alloc_percent out of range");
                 FC_ASSERT(pm_lazy_max_total_alloc_percent <= 10000, "pm_lazy_max_total_alloc_percent out of range");
                 FC_ASSERT(pm_lazy_recall_step_percent <= 10000, "pm_lazy_recall_step_percent out of range");
@@ -1392,7 +1412,8 @@ FC_REFLECT_DERIVED(
     (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)
     (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_leverage_funding_rate_ppm_per_day)
     (pm_conversion_profit_cost_percent)
-    (pm_closed_market_retention_sec)(pm_early_exit_reward_cap_percent))
+    (pm_closed_market_retention_sec)(pm_early_exit_reward_cap_percent)
+    (pm_min_bet)(pm_settle_rows_per_block))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 

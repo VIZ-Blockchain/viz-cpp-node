@@ -106,6 +106,23 @@ BOOST_AUTO_TEST_CASE(cron_and_pool_bounds) {
     expect_ok  ([](chain_properties_pm& p) { p.pm_early_exit_reward_cap_percent = 10000; });
 }
 
+// #432 A/D: the anti-dust floor of the instant bet path and the per-block row budget of the
+// incremental settlement sweep. Both are median-voted, so validate() is their only gate: voting
+// pm_min_bet toward zero brings back free row-spam, and a zero/unbounded row budget either wedges
+// every settlement or re-opens the unbounded-block hole the sweep exists to close.
+BOOST_AUTO_TEST_CASE(settle_work_bounds) {
+    expect_fail([](chain_properties_pm& p) { p.pm_min_bet.amount = 0; });
+    expect_fail([](chain_properties_pm& p) { p.pm_min_bet.symbol = SHARES_SYMBOL; });
+    expect_fail([](chain_properties_pm& p) { p.pm_min_bet.amount = 99; });   // just below 0.1 VIZ
+    expect_ok  ([](chain_properties_pm& p) { p.pm_min_bet.amount = 100; });  // exactly 0.1 VIZ
+
+    expect_fail([](chain_properties_pm& p) { p.pm_settle_rows_per_block = 0; });
+    expect_fail([](chain_properties_pm& p) { p.pm_settle_rows_per_block = 99; });
+    expect_ok  ([](chain_properties_pm& p) { p.pm_settle_rows_per_block = 100; });
+    expect_ok  ([](chain_properties_pm& p) { p.pm_settle_rows_per_block = 100000; });
+    expect_fail([](chain_properties_pm& p) { p.pm_settle_rows_per_block = 100001; });
+}
+
 BOOST_AUTO_TEST_CASE(leverage_bounds) {
     expect_fail([](chain_properties_pm& p) { p.pm_leverage_fund_percent = 101; });
     expect_fail([](chain_properties_pm& p) { p.pm_leverage_max_per_position_bp = 10001; });
