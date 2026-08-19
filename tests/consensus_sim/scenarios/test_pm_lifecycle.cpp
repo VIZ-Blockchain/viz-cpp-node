@@ -5606,6 +5606,151 @@ BOOST_AUTO_TEST_CASE(batch_queue_row_budget_spans_blocks) {
     }
 }
 
+// #432 follow-up — cron §4 (dispute voting finalize) charges ONE cap slot per dispute but tallies
+// EVERY ballot of the disputed market, so a full sweep could visit cap × MAX_PM_DISPUTE_VOTES_PER_MARKET
+// rows in one block. A tally cannot be split across blocks (the verdict needs all ballots at once),
+// so the budget is enforced between disputes. Two ballot-heavy disputes whose voting closes in the
+// same block must therefore finalize in DIFFERENT blocks.
+BOOST_AUTO_TEST_CASE(dispute_tally_row_budget_defers_next) {
+    auto gp = make_genesis_params(0x6C0Au, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-dispute-budget", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    constexpr uint32_t BUDGET = 100;   // consensus floor of pm_settle_rows_per_block
+    constexpr int      VOTERS = 120;   // > BUDGET: one tally alone exhausts the block's allowance
+    constexpr int      PER_BLOCK = 60; // ballots pushed into a single block
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    {
+        chain_properties_pm props{};
+        props.pm_settle_rows_per_block       = BUDGET;
+        props.pm_dispute_grace_sec           = 3600;  // M6 consensus floor
+        props.pm_oracle_dispute_response_sec = 5;
+        props.pm_dispute_vote_period_sec     = 60;    // room to cast 2 × VOTERS ballots
+        props.pm_dispute_auto_close_sec      = 3000;  // > voting_end, so §3 never claims these
+        props.pm_dispute_fee                 = asset(unit, TOKEN_SYMBOL);
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_settle_rows_per_block != (int64_t)BUDGET; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_settle_rows_per_block, (int64_t)BUDGET);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_vote_period_sec, 60u);
+    }
+    register_self_oracle(node, gp, when);
+
+    // The electorate is built first: 120 account creations take 120 blocks, which would run the
+    // markets' own timers out from under the test.
+    std::vector<std::string> voters;
+    std::vector<fc::ecc::private_key> vkeys;
+    for (int v = 0; v < VOTERS; ++v) {
+        std::string name = "voter" + std::to_string(v);
+        auto k = derive_key(name);
+        create_and_fund(node, gp, when, name, k, share_type(1000));
+        voters.push_back(name); vkeys.push_back(k);
+    }
+    auto bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "bob", bob_key, share_type(unit * 4));
+
+    // Two identical markets, resolved and disputed in the same block so both ballots close together.
+    for (int m = 0; m < 2; ++m) {
+        pm_create_market_operation cm;
+        cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+        cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+        cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+        cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+        cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+        cm.allow_early_resolution = true;
+        cm.dispute_mode = 0;                // committee vote
+        cm.dispute_penalty_percent = 0;     // outcome only; keeps the slash arithmetic out of the way
+        node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+        produce(node, gp, when);
+    }
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);   // betting closes
+
+    {
+        std::vector<operation> ops;
+        for (int m = 0; m < 2; ++m) {
+            pm_resolve_market_operation rm;
+            rm.oracle = gp.initiator_name; rm.market_id = m; rm.winning_outcome = 0;
+            ops.push_back(rm);
+        }
+        node.push_pending_transaction(sign_ops(ops, gp.initiator_key, node));
+        produce(node, gp, when);
+    }
+    {
+        std::vector<operation> ops;
+        for (int m = 0; m < 2; ++m) {
+            pm_dispute_create_operation dc;
+            dc.disputer = "bob"; dc.market_id = m; dc.proposed_outcome = 1; dc.reason = "B won";
+            ops.push_back(dc);
+        }
+        node.push_pending_transaction(sign_ops(ops, bob_key, node));
+        produce(node, gp, when);
+    }
+    for (int m = 0; m < 2; ++m)
+        BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(pm_market_id_type(m)).payout_status, 2);
+
+    // Every voter files a ballot on both markets. Weight is irrelevant here — a zero-stake ballot
+    // is still a row the tally has to walk (two account lookups), which is exactly the cost at issue.
+    for (int m = 0; m < 2; ++m) {
+        for (int base = 0; base < VOTERS; base += PER_BLOCK) {
+            for (int v = base; v < base + PER_BLOCK && v < VOTERS; ++v) {
+                pm_dispute_vote_operation dv;
+                dv.voter = voters[v]; dv.market_id = m; dv.vote_outcome = -1; dv.vote_percent = 10000;
+                node.push_pending_transaction(sign_ops({dv}, vkeys[v], node));
+            }
+            produce(node, gp, when);
+        }
+    }
+    auto ballots_of = [&](const pm_market_id_type& mid) {
+        const auto& vidx = node.db().get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+        size_t n = 0;
+        for (auto it = vidx.lower_bound(boost::make_tuple(mid, account_name_type()));
+             it != vidx.end() && it->market == mid; ++it) ++n;
+        return n;
+    };
+    for (int m = 0; m < 2; ++m)
+        BOOST_REQUIRE_MESSAGE(ballots_of(pm_market_id_type(m)) > (size_t)BUDGET,
+            "market " << m << " carries only " << ballots_of(pm_market_id_type(m))
+                      << " ballots, need more than the budget " << BUDGET);
+
+    // Voting closes; §4 finalizes. Record the block each dispute leaves status 0 in.
+    auto dispute_status = [&](int m) {
+        const auto& didx = node.db().get_index<pm_dispute_index>().indices().get<by_market>();
+        auto it = didx.find(pm_market_id_type(m));
+        return it == didx.end() ? -1 : (int)it->status;   // -1 = GC'd, never within this window
+    };
+    int finalized_in[2] = {-1, -1};
+    for (int b = 0; b < 400 && (finalized_in[0] < 0 || finalized_in[1] < 0); ++b) {
+        produce(node, gp, when);
+        for (int m = 0; m < 2; ++m)
+            if (finalized_in[m] < 0 && dispute_status(m) > 0) finalized_in[m] = b;
+    }
+
+    BOOST_TEST_MESSAGE("dispute finalize blocks: #0 at " << finalized_in[0]
+                       << ", #1 at " << finalized_in[1] << " (budget " << BUDGET
+                       << ", " << VOTERS << " ballots each)");
+    BOOST_REQUIRE_MESSAGE(finalized_in[0] >= 0 && finalized_in[1] >= 0,
+        "a dispute never finalized — the budget must defer work, not drop it");
+    BOOST_CHECK_MESSAGE(finalized_in[0] != finalized_in[1],
+        "both tallies (" << VOTERS << " ballots each) ran in block " << finalized_in[0]
+                         << " — the row budget is not being enforced in cron §4");
+    // Deferred, not lost: both markets still reach settlement.
+    for (int b = 0; b < cron_grace_blocks(node) &&
+                    (node.db().get<pm_market_object>(pm_market_id_type(0)).payout_status != 3 ||
+                     node.db().get<pm_market_object>(pm_market_id_type(1)).payout_status != 3); ++b)
+        produce(node, gp, when);
+    for (int m = 0; m < 2; ++m)
+        BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(pm_market_id_type(m)).payout_status, 3);
+}
+
 // Death #1 — oracle rejects the market's terms.
 BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
     auto gp = make_genesis_params(0x6C02u, 1);

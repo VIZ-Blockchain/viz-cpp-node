@@ -1587,7 +1587,17 @@ void database::process_pm_markets() {
         const auto& idx = get_index<pm_dispute_index>().indices().get<by_voting_end>();
         auto it = idx.lower_bound(boost::make_tuple(
             (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
-        while (it != idx.end() && it->status == 0 && it->voting_end_time <= now && done < cap) {
+        // #432 follow-up: the tally below walks EVERY ballot of the disputed market (M3 caps them at
+        // MAX_PM_DISPUTE_VOTES_PER_MARKET) while charging a single `cap` slot, so a full sweep could
+        // visit cap × ballot-cap rows in one block — orders of magnitude past the row budget every
+        // other sweep now respects. A tally cannot be resumed the way settlement is (the verdict
+        // needs all ballots at once, and parking the partial per-outcome sums would mean carrying a
+        // vector on the dispute row), so the budget is enforced BETWEEN disputes: one only starts
+        // while budget is left, and is then charged for the ballots it walked. Worst case per block
+        // is row_budget + one market's ballot cap. Deferring a finalize is economically inert —
+        // pm_dispute_vote refuses ballots past voting_end_time, so the electorate is already final.
+        while (it != idx.end() && it->status == 0 && it->voting_end_time <= now
+               && done < cap && row_budget > 0) {
             // #432 fix D part 3: §3 claims a dispute by raising payout_status 4 on its market and
             // may then take several blocks to refund it. Its dispute row stays status 0 for that
             // whole flight, so voting finalize has to step over markets already being voided —
@@ -1609,7 +1619,9 @@ void database::process_pm_markets() {
                 const auto& vidx =
                     get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
                 auto vit = vidx.lower_bound(boost::make_tuple(disp.market, account_name_type()));
+                uint32_t ballots = 0;
                 for (; vit != vidx.end() && vit->market == disp.market; ++vit) {
+                    ++ballots;
                     int64_t w = get_account(vit->voter).effective_vesting_shares().amount.value
                               + lazy_vote_weight(vit->voter); // + lazy-pool stake as vesting-shares
                     max_rshares += w;
@@ -1624,6 +1636,9 @@ void database::process_pm_markets() {
                         oracle_defense += share_type(w * a / CHAIN_100_PERCENT);
                     }
                 }
+                // Charge every ballot visited (two account-index lookups apiece). The walk itself is
+                // never cut short — the clamp only closes the loop above for the next dispute.
+                row_budget = (ballots >= row_budget) ? 0 : row_budget - ballots;
             }
 
             // Step 2 — participation threshold; Step 3 — oracle defense vs change votes.

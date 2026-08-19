@@ -316,6 +316,43 @@ it is settled. `payout_status` is deliberately *not* in the key — the settle s
 mid-flight and must not move the row it is resuming. Same trick as `by_oracle_finalized`. Index
 keys are not serialized, so this needs no snapshot migration.
 
+### 4.6 The dispute tally (cron §4, found 2026-08-19, fixed)
+
+The same shape once more, in the one sweep the earlier passes never looked at. Cron §4 finalizes
+disputes whose voting window closed; for each it walks **every ballot** of the disputed market to
+build the stake-weighted tally, and charges the market a single unit of the market-counting `cap`.
+A ballot is not a cheap row either — each one costs an account lookup plus a lazy-pool deposit
+lookup, the same order as the settlement row measured in §5 below.
+
+M3 already caps ballots at `MAX_PM_DISPUTE_VOTES_PER_MARKET` (10 000) per market, and the comment
+there reasoned that this made the finalize walk safe. It does not: the cap bounds *one* market,
+while §4 may finalize `cap` of them in a block, so the ceiling was `cap × 10 000` = 2 000 000 rows —
+three orders of magnitude above the budget every other sweep now respects. Filling it is slow (a
+ballot needs a distinct account per market, and 200 disputes cost 200 × `pm_dispute_fee` in escrow)
+but the ballots are durable state: the cost is spread over hours of chain time and the work is
+replayed in the single block where the voting windows expire.
+
+Unlike settlement, a tally **cannot** be resumed: the verdict needs every ballot at once, and
+parking the partial per-outcome sums would mean carrying a vector on the dispute row. So the budget
+is enforced *between* disputes — a dispute starts only while budget is left, and is then charged for
+the ballots it walked. Worst case per block becomes `row_budget` + one market's ballot cap instead
+of `cap` × ballot cap. Deferring a finalize by a block is economically inert: `pm_dispute_vote`
+refuses ballots past `voting_end_time`, so the electorate is already final when §4 gets there.
+Covered by `dispute_tally_row_budget_defers_next`.
+
+The ordering property this shares with §5 and §6 is worth stating once: the budget is spent in
+section order, so a block saturated by the void paths can leave nothing for the sweeps behind them.
+That is deliberate — the backlogs are finite work that drains — but it means "how long until my
+dispute finalizes" is bounded by the *total* PM work in flight, not by §4 alone.
+
+One related cost is **not** fixed here, because it needs a layout change rather than a budget:
+`pm_dispute_vote` enforces the ballot cap by counting the existing ballots of the market on every
+*new* ballot (`pm_evaluator.cpp`, walk bounded at cap+1). That is O(n) per ballot, O(n²) to fill a
+market, and it is per-transaction work no budget covers — the same antipattern M4 removed from the
+commit path by keeping an `open_commits` counter on the market object. The equivalent fix is a
+ballot counter on `pm_dispute_object` (with a `contains`-guarded snapshot import, as M5 did for the
+oracle-response fields); it is queued as a separate decision because it changes the object layout.
+
 ## 5. What a row actually costs
 
 Measured with `tests/consensus_sim/bench/settle_bench.cpp` (`make pm_settle_bench`), which drives
