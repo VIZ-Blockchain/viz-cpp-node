@@ -36,7 +36,8 @@ echo   minutes and a few GB of disk. After that the node keeps up with the chain
 echo   on its own.
 echo.
 echo   Your local API will be at  http://127.0.0.1:8090
-echo   Point Forecaster or VIZ Wallet at that address to use your own node.
+echo   Run open-forecaster.bat or open-wallet.bat to use that address from
+echo   the bundled clients (the public web versions cannot reach it).
 echo.
 echo   Close this window (or press Ctrl+C) to stop the node.
 echo.

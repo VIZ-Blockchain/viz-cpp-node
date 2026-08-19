@@ -195,6 +195,68 @@ jobs:
           ls -lh $GITHUB_WORKSPACE/build/programs/vizd/vizd.exe
           ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
       # -------------------------------------------------------
+      # 11b. Assemble the desktop bundle
+      #      The binaries alone are not usable by a non-developer: they need a
+      #      config, a launcher, and a client to talk to. The web clients are
+      #      shipped as a local copy on purpose — browsers block https:// pages
+      #      from reaching 127.0.0.1 (Local Network Access), so the hosted
+      #      clients cannot see a node running on the user's own machine.
+      # -------------------------------------------------------
+      - name: Fetch Forecaster client
+        uses: actions/checkout@v6
+        with:
+          repository: VIZ-Blockchain/Forecaster-client
+          ref: main
+          path: client-src/forecaster
+
+      - name: Assemble Windows bundle
+        run: |
+          set -euo pipefail
+          cd $GITHUB_WORKSPACE
+          PKG="package/viz-node-windows"
+          rm -rf package
+          mkdir -p "$PKG/data" "$PKG/client/forecaster" "$PKG/client/wallet"
+
+          cp build/programs/vizd/vizd.exe            "$PKG/"
+          cp build/programs/cli_wallet/cli_wallet.exe "$PKG/"
+          cp contrib/windows/start-viz.bat           "$PKG/"
+          cp contrib/windows/open-forecaster.bat     "$PKG/"
+          cp contrib/windows/open-wallet.bat         "$PKG/"
+          cp contrib/windows/README.md               "$PKG/"
+          cp contrib/windows/config.ini              "$PKG/data/"
+
+          # Forecaster needs no build step — the repo contents are what the
+          # browser loads. Copy all of it, then drop the VCS/CI bits.
+          cp -r client-src/forecaster/. "$PKG/client/forecaster/"
+          rm -rf "$PKG/client/forecaster/.git" \
+                 "$PKG/client/forecaster/.github" \
+                 "$PKG/client/forecaster/.gitignore"
+
+          # The wallet's deployable form is a single self-contained index.html
+          # produced by its own CI (minify.php), published at wallet.viz.world.
+          wget -q -O "$PKG/client/wallet/index.html" https://wallet.viz.world/
+
+          # Fail loudly rather than shipping a bundle with holes in it.
+          for f in vizd.exe cli_wallet.exe start-viz.bat open-forecaster.bat \
+                   open-wallet.bat README.md data/config.ini \
+                   client/forecaster/index.html client/forecaster/app.js \
+                   client/forecaster/i18n.js client/forecaster/viz.min.js \
+                   client/wallet/index.html; do
+            test -s "$PKG/$f" || { echo "bundle is missing $f"; exit 1; }
+          done
+          du -sh "$PKG"
+          find "$PKG" -maxdepth 2 -mindepth 1 | sort
+
+      - name: Zip Windows bundle
+        shell: pwsh
+        run: |
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          Compress-Archive -Path package/viz-node-windows `
+                           -DestinationPath "viz-node-windows-$sha.zip"
+          Get-Item "viz-node-windows-$sha.zip" | Select-Object Name, Length
+          "bundle=viz-node-windows-$sha.zip" >> $env:GITHUB_OUTPUT
+        id: bundle
+      # -------------------------------------------------------
       # 12. Derive release metadata
       #     Tag: win-<short-sha>  e.g. win-a1b2c3d
       #     The "win-" prefix distinguishes these from any future
@@ -225,6 +287,7 @@ jobs:
           name: ${{ steps.meta.outputs.name }}
           generate_release_notes: true
           files: |
+            ${{ steps.bundle.outputs.bundle }}
             build/programs/vizd/vizd.exe
             build/programs/cli_wallet/cli_wallet.exe
         env:
