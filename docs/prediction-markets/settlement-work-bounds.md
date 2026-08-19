@@ -361,6 +361,39 @@ new ones, at the cost of one pass over an index the import just walked anyway. C
 `dispute_ballot_counter_matches_rows`, which checks the counter against a live row count after every
 ballot and pins the revision path.
 
+### 4.7 Section order is priority order (cron §8, found 2026-08-19, fixed)
+
+Every section of `process_pm_markets()` charges the same counter, `done`, against the same
+`pm_processing_cap_per_block`. That makes section order a priority order, which is intended for the
+sweeps that do real work — but it also means a section that reliably exhausts the budget turns
+everything behind it into dead code.
+
+Section 7, the lazy-pool recall step, is exactly such a section. It walks the status-0 allocation
+index from the head every block and charges `done` for **every row it visits**, including the ones it
+only inspects and leaves untouched (`idle, steps remain, but this step isn't due yet`). Charging for
+inspection is deliberate — that is what keeps the section bounded — but the working set is large and
+long-lived: on the testnet at block 82646702 there were **34 548** status-0 allocations against a cap
+of **200**. The loop therefore always runs until `done == cap`.
+
+Behind it sat section 8, the ban-expiry sweep. It never executed. Temporary oracle and creator bans
+kept a stale `banned_until` forever and `pm_ban_expired` was never emitted. The damage is bounded:
+enforcement compares `banned_until` against `now` rather than testing the field for emptiness, so no
+account stayed blocked past its term — what broke is the stored state and the history event, and any
+client that reads "banned" as "field is non-zero". No ban existed on the testnet while this was true,
+so nothing was observably stuck; the defect is that the section could not run at all.
+
+The fix gives the sweep its own counter (`ban_done`) rather than moving it or enlarging the shared
+cap. That is safe because the sweep is self-clearing: a visit sets `banned_until` to 0, which drops
+the row out of the swept range permanently. Per-block work is therefore the number of bans that just
+expired, and the private cap bounds even a synchronised burst of them.
+
+`ban_expiry_survives_saturated_cron_budget` reproduces the starvation in miniature — cap 2, three
+live allocations to saturate it, one short creator ban that must still lapse. With the sweep back on
+the shared counter the test fails on exactly that assertion.
+
+The general rule this leaves behind: **a new section appended to this cron is dead on arrival unless
+it either sits ahead of section 7 or carries its own budget.**
+
 ## 5. What a row actually costs
 
 Measured with `tests/consensus_sim/bench/settle_bench.cpp` (`make pm_settle_bench`), which drives

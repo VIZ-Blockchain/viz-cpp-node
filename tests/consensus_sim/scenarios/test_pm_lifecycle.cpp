@@ -7566,4 +7566,150 @@ BOOST_AUTO_TEST_CASE(min_liquidity_floor_applies_to_topups) {
                        "accepted");
 }
 
+// #69 — Section order is priority order. `done` is ONE budget shared by every cron section, and
+// sec 7 (lazy recall) charges it for rows it merely inspects — on a live chain that working set is
+// tens of thousands of allocations against a cap of 200, so sec 7 exhausts the budget every block
+// and the ban sweep behind it never runs: expired bans keep a stale banned_until and pm_ban_expired
+// is never emitted. Here the same starvation is reproduced in miniature (cap 2, three status-0
+// allocations) and the ban must still lapse, because sec 8 now counts against its own budget.
+BOOST_AUTO_TEST_CASE(ban_expiry_survives_saturated_cron_budget) {
+    auto gp = make_genesis_params(0x69BAu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-banstarve", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping ban-starvation scenario.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
+    const uint32_t CAP = 2;
+    {
+        chain_properties_pm props;
+        props.pm_dispute_grace_sec        = 3600;
+        props.pm_dispute_fee              = asset(unit, TOKEN_SYMBOL);
+        props.pm_processing_cap_per_block = (uint16_t)CAP;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_processing_cap_per_block != CAP; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL((uint32_t)mp.pm_processing_cap_per_block, CAP);
+        BOOST_REQUIRE(mp.pm_lazy_pool_enabled);
+    }
+
+    // ── the saturator: fund the lazy pool, then open the self-oracle markets it backs. Each activation
+    // creates a pm_lazy_allocation row that stays status 0 for the market's life, and sec 7 charges
+    // `done` for every one of them it looks at, due or not.
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(unit * 40), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 3; ++i) {
+        pm_create_market_operation lm;
+        lm.creator = gp.initiator_name; lm.oracle = gp.initiator_name; // self-oracle → active at once
+        lm.market_type = 0; lm.outcomes = {"A", "B"}; lm.url = "filler";
+        lm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+        lm.liquidity_fee_percent = mp.pm_lazy_min_liquidity_fee_percent; // clears the pool's fee gate
+        lm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+        lm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+        lm.dispute_mode = 0;
+        node.push_pending_transaction(sign_ops({lm}, gp.initiator_key, node));
+        produce(node, gp, when);
+    }
+
+    auto open_allocs = [&]() {
+        const auto& aidx = node.db().get_index<pm_lazy_allocation_index>().indices();
+        uint32_t n = 0;
+        for (auto it = aidx.begin(); it != aidx.end(); ++it) if (it->status == 0) ++n;
+        return n;
+    };
+    const uint32_t allocs = open_allocs();
+    BOOST_TEST_MESSAGE("open lazy allocations saturating the cron budget: " << allocs
+                       << " (cap " << CAP << ")");
+    BOOST_REQUIRE_GE(allocs, CAP);   // without this the scenario would not starve anything
+
+    // ── the victim: a short creator ban that must lapse while the budget above is exhausted.
+    auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
+    const int64_t reg_fee = mp.pm_oracle_registration_fee.amount.value;
+    create_and_fund(node, gp, when, "orac", orac_key,
+                    share_type(mp.pm_min_oracle_insurance.amount.value + reg_fee + unit * 2));
+    create_and_fund(node, gp, when, "judge", judge_key, share_type(unit * 2));
+    create_and_fund(node, gp, when, "maker", maker_key, share_type(creation_fee * 4 + unit * 20));
+    pm_oracle_register_operation oreg;
+    oreg.owner = "orac"; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, orac_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    const int64_t mid = 3;   // ids 0..2 are the filler markets
+    pm_create_market_operation cm;
+    cm.creator = "maker"; cm.oracle = "orac";
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 1; cm.dispute_resolver = "judge";
+    node.push_pending_transaction(sign_ops({cm}, maker_key, node));
+    produce(node, gp, when);
+
+    pm_oracle_accept_market_operation acc;
+    acc.oracle = "orac"; acc.market_id = mid; acc.accept = true;
+    node.push_pending_transaction(sign_ops({acc}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = mid; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = "orac"; rm.market_id = mid; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = mid; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+
+    const fc::time_point_sec ban_until = node.head_block_time() + fc::seconds(9);
+    pm_dispute_resolve_operation dr;
+    dr.resolver = "judge"; dr.market_id = mid; dr.correct_outcome = 1;
+    dr.penalty_amount = asset(unit, TOKEN_SYMBOL);
+    dr.ban_creator = true; dr.ban_creator_until = ban_until;
+    node.push_pending_transaction(sign_ops({dr}, judge_key, node));
+    produce(node, gp, when);
+
+    const auto& cbidx = node.db().get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+    BOOST_REQUIRE(cbidx.find(account_name_type("maker"))->banned_until == ban_until);
+
+    // The allocations are still there eating the shared budget when the ban comes due.
+    BOOST_REQUIRE_GE(open_allocs(), CAP);
+
+    for (int i = 0; i < 20 &&
+                    cbidx.find(account_name_type("maker"))->banned_until != fc::time_point_sec(0); ++i)
+        produce(node, gp, when);
+    // Pre-fix this is where it failed: banned_until still == ban_until, because sec 7 had spent
+    // every unit of `done` before the sweep was reached.
+    BOOST_CHECK(cbidx.find(account_name_type("maker"))->banned_until == fc::time_point_sec(0));
+    BOOST_TEST_MESSAGE("ban lapsed even though the shared cron budget was exhausted upstream");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

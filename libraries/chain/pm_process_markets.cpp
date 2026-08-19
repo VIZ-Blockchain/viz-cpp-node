@@ -2106,35 +2106,52 @@ void database::process_pm_markets() {
                 }
                 // else: idle, steps remain, but this step isn't due yet → leave untouched.
             }
-            ++done;
+            ++done;   // charged for every row VISITED, due or not — that is what bounds this scan
         }
     }
+    // NOTE for whoever appends the next section: `done` is exhausted here on any real chain (the
+    // status-0 allocation set is orders of magnitude larger than the cap), so a section placed
+    // below this point and gated on `done < cap` will never execute. Give it its own counter, or
+    // put it ahead of section 7. See docs/prediction-markets/settlement-work-bounds.md section 4.7.
 
     // ── 8. Ban expiry sweep ───────────────────────────────────────────────────
     // Temporary oracle/creator bans lapse at banned_until. We clear the expired ones (banned_until
     // → 0) and emit pm_ban_expired so history/indexers see the lift; cleared bans fall into the
     // 0-bucket and are never re-swept, permanent bans (maximum()) sort past `now` and are skipped.
     // lower_bound at epoch+1 skips the huge never-banned/cleared 0-cluster.
+    //
+    // This sweep gets its OWN counter, and that is load-bearing rather than tidiness. `done` is a
+    // single budget shared by every section above, so section order is priority order — and sec 7
+    // walks the whole status-0 lazy-allocation set, charging `done` for rows it merely inspects.
+    // That set is tens of thousands of rows on a live chain (34548 on the testnet at block
+    // 82646702) against a cap of 200, so sec 7 exhausts the budget EVERY block and anything behind
+    // it on the shared counter never executes: expired bans were never cleared and pm_ban_expired
+    // was never emitted. Enforcement compares banned_until against `now`, so nobody stayed blocked,
+    // but the row and its history event stayed wrong forever. A private counter is safe here
+    // because this sweep is self-clearing — a visit sets banned_until to 0, which moves the row out
+    // of the swept range permanently, so per-block work is the number of bans that just expired,
+    // and the cap bounds even a synchronized burst of them.
+    uint32_t ban_done = 0;
     {
         const auto& oidx = get_index<pm_oracle_index>().indices().get<by_status>();
         auto it = oidx.lower_bound(time_point_sec(1));
-        while (it != oidx.end() && it->banned_until <= now && done < cap) {
+        while (it != oidx.end() && it->banned_until <= now && ban_done < cap) {
             const auto& ora = *it; ++it;
             const account_name_type owner = ora.owner;
             modify(ora, [](pm_oracle_object& o) { o.banned_until = time_point_sec(0); o.banned_by = account_name_type(); });
             push_virtual_operation(pm_ban_expired_operation(owner, true, false));
-            ++done;
+            ++ban_done;
         }
     }
     {
         const auto& cbidx = get_index<pm_creator_ban_index>().indices().get<by_ban_expiry>();
         auto it = cbidx.lower_bound(boost::make_tuple(time_point_sec(1), pm_creator_ban_id_type()));
-        while (it != cbidx.end() && it->banned_until <= now && done < cap) {
+        while (it != cbidx.end() && it->banned_until <= now && ban_done < cap) {
             const auto& cb = *it; ++it;
             const account_name_type who = cb.creator;
             modify(cb, [](pm_creator_ban_object& b) { b.banned_until = time_point_sec(0); b.banned_by = account_name_type(); });
             push_virtual_operation(pm_ban_expired_operation(who, false, true));
-            ++done;
+            ++ban_done;
         }
     }
 }
