@@ -88,6 +88,7 @@
 
 - `vote_percent` > 0 → поддержка; `vote_percent` < 0 → возражение; `vote_percent` = 0 → снять голос.
 - Запрос одобряется, когда взвешенный нетто-процент голосов ≥ свойству цепочки `committee_request_approve_min_percent`.
+- (HF14) Запрос держит не более `MAX_COMMITTEE_VOTES_PER_REQUEST` (100 000) бюллетеней, а подача голоса требует `effective_vesting_shares` не менее `MAX_COMMITTEE_VOTE_MIN_VESTING` (1000 VIZ).
 
 **Виртуальные операции, вызываемые жизненным циклом комитета:**
 

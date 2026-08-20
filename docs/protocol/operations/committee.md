@@ -88,6 +88,7 @@ Votes on a funding request. Voting power is proportional to the voter's SHARES s
 
 - `vote_percent` > 0 → support; `vote_percent` < 0 → oppose; `vote_percent` = 0 → remove vote.
 - A request is approved when weighted net vote percent ≥ `committee_request_approve_min_percent` chain property.
+- (HF14) A request holds at most `MAX_COMMITTEE_VOTES_PER_REQUEST` (100 000) ballots, and casting a vote requires `effective_vesting_shares` of at least `MAX_COMMITTEE_VOTE_MIN_VESTING` (1000 VIZ).
 
 **Virtual operations triggered by committee lifecycle:**
 
