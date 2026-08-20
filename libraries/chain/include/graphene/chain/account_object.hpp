@@ -291,6 +291,7 @@ struct by_next_vesting_withdrawal;
 struct by_account_on_sale;
 struct by_account_on_auction;
 struct by_account_on_sale_start_time;
+struct by_auction_start;
 struct by_subaccount_on_sale;
 
 /**
@@ -307,6 +308,12 @@ typedef multi_index_container<
                         member<account_object, bool, &account_object::account_on_auction> >,
                 ordered_non_unique<tag<by_account_on_sale_start_time>,
                         member<account_object, time_point_sec, &account_object::account_on_sale_start_time> >,
+                ordered_non_unique<tag<by_auction_start>,
+                        composite_key < account_object,
+                        member<account_object, bool, &account_object::account_on_auction>,
+                        member<account_object, time_point_sec, &account_object::account_on_sale_start_time>
+                >,
+                composite_key_compare <std::less<bool>, std::less<time_point_sec>> >,
                 ordered_non_unique<tag<by_subaccount_on_sale>,
                         member<account_object, bool, &account_object::subaccount_on_sale> >,
                 ordered_unique<tag<by_name>,
@@ -338,7 +345,9 @@ typedef multi_index_container<
                 >,
                 composite_key_compare <
                 std::less<account_name_type>, std::less<time_point_sec>, std::less<master_authority_history_id_type>>
->
+>,
+                ordered_non_unique<tag<by_last_valid>,
+                        member<master_authority_history_object, time_point_sec, &master_authority_history_object::last_valid_time>>
 >,
 allocator<master_authority_history_object>
 >

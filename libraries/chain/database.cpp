@@ -4690,15 +4690,16 @@ namespace graphene { namespace chain {
             const auto &idx = get_index<award_shares_expire_index>().indices().get<by_expiration>();
             auto itr = idx.begin();
 
-            while(itr != idx.end()) {
+            // H4 (2026-08-20): stop at the first not-yet-expired entry. The by_expiration index is
+            // ordered by expires, so everything past it is also in the future — walking the whole
+            // index every block was an unbounded idle scan as award shares accumulated.
+            while(itr != idx.end() && itr->expires <= head_block_time()) {
                 const auto &current = *itr;
                 ++itr;
-                if(current.expires <= head_block_time()){
-                    modify(props, [&](dynamic_global_property_object &p) {
-                        p.total_reward_shares -= current.rshares.value;
-                    });
-                    remove(current);
-                }
+                modify(props, [&](dynamic_global_property_object &p) {
+                    p.total_reward_shares -= current.rshares.value;
+                });
+                remove(current);
             }
         }
 
@@ -4713,8 +4714,11 @@ namespace graphene { namespace chain {
                 rec_req = rec_req_idx.begin();
             }
 
-            // Clear invalid historical authorities
-            const auto &hist_idx = get_index<master_authority_history_index>().indices(); //by id
+            // Clear invalid historical authorities.
+            // M2 (2026-08-20): walk by_last_valid instead of by_id. Walking by_id could stall the
+            // sweep on a fresh head entry while stale tail entries stayed behind (a backlog that
+            // never gets reclaimed); last_valid_time is the natural expiry order.
+            const auto &hist_idx = get_index<master_authority_history_index>().indices().get<by_last_valid>();
             auto hist = hist_idx.begin();
 
             while (hist != hist_idx.end() && time_point_sec(
@@ -4761,12 +4765,16 @@ namespace graphene { namespace chain {
         }
 
         void database::account_on_auction_expiration() {
-            const auto &idx = get_index<account_index>().indices().get<by_account_on_auction>();
-            auto itr = idx.lower_bound(true);
-            while(itr != idx.end()) {
+            // H5 (2026-08-20): walk by_auction_start (account_on_auction, start_time) so we only
+            // touch accounts whose auction has actually expired, instead of scanning every
+            // on-auction account every block with an in-loop expiry test.
+            const auto &idx = get_index<account_index>().indices().get<by_auction_start>();
+            auto itr = idx.lower_bound(boost::make_tuple(true, fc::time_point_sec::min()));
+            while(itr != idx.end() && itr->account_on_auction &&
+                  itr->account_on_sale_start_time <= head_block_time()) {
                 const auto &current = *itr;
                 ++itr;
-                if(current.account_on_sale_start_time <= head_block_time()){//expiration
+                {//expiration
                     modify(current, [&](account_object &account){
                         if(account.target_buyer == ""){//no target buyer
                             if(account.current_bidder == ""){//no bidder - empty auction data

@@ -104,6 +104,7 @@ namespace graphene {
 
         struct by_request_id;
         struct by_voter;
+        struct by_voter_request;
         typedef multi_index_container <
             committee_vote_object,
             indexed_by<
@@ -115,6 +116,14 @@ namespace graphene {
                 >,
                 ordered_non_unique<tag<by_request_id>,
                     member<committee_vote_object, uint32_t, &committee_vote_object::request_id>
+                >,
+                ordered_unique<tag<by_voter_request>,
+                    composite_key<
+                        committee_vote_object,
+                        member<committee_vote_object, account_name_type, &committee_vote_object::voter>,
+                        member<committee_vote_object, uint32_t, &committee_vote_object::request_id>
+                    >,
+                    composite_key_compare <std::less<account_name_type>, std::less<uint32_t>>
                 >
             >,
             allocator <committee_vote_object>

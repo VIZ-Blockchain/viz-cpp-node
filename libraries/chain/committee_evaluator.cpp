@@ -96,23 +96,18 @@ namespace graphene { namespace chain {
         FC_ASSERT(itr != idx.end(), "Committee request id not found.");
 
         if(itr->status == 0){
-            bool find=false;
-            const auto &vote_idx = _db.get_index<committee_vote_index>().indices().get<by_request_id>();
-            auto vote_itr = vote_idx.lower_bound(itr->request_id);
-            while (vote_itr != vote_idx.end() &&
-                   vote_itr->request_id == itr->request_id) {
-                const auto &cur_vote = *vote_itr;
-                ++vote_itr;
-                if(cur_vote.voter==o.voter){
-                    find = true;
-                    FC_ASSERT(cur_vote.vote_percent != o.vote_percent, "Committee vote percent equal last vote.");
-                    _db.modify(cur_vote, [&](committee_vote_object &c) {
-                        c.vote_percent = o.vote_percent;
-                        c.last_update = _db.head_block_time();
-                    });
-                }
-            }
-            if(!find){
+            // H2 (2026-08-20): a repeat vote used to linear-scan every ballot of the request to
+            // find the voter's previous one — O(n) per vote and O(n²) to fill a request. Look the
+            // ballot up directly on the (voter, request_id) unique index instead.
+            const auto &vote_idx = _db.get_index<committee_vote_index>().indices().get<by_voter_request>();
+            auto vote_itr = vote_idx.find(boost::make_tuple(o.voter, itr->request_id));
+            if (vote_itr != vote_idx.end()) {
+                FC_ASSERT(vote_itr->vote_percent != o.vote_percent, "Committee vote percent equal last vote.");
+                _db.modify(*vote_itr, [&](committee_vote_object &c) {
+                    c.vote_percent = o.vote_percent;
+                    c.last_update = _db.head_block_time();
+                });
+            } else {
                 _db.create<committee_vote_object>([&](committee_vote_object& c) {
                     c.request_id = itr->request_id;
                     c.voter = o.voter;
