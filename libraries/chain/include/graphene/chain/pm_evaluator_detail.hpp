@@ -24,7 +24,7 @@ void pm_oracle_gauge_adj(database& db, const account_name_type& oracle,
 void pm_oracle_dispute_left_open(database& db, const account_name_type& oracle,
                                  const pm_dispute_object& d);
 int pm_rt_bucket(uint64_t rt);
-void service_lazy_withdraw_queue(database& db);
+uint32_t service_lazy_withdraw_queue(database& db, uint32_t row_limit);
 void route_pool_lp_return(database& db, int64_t principal, int64_t yield);
 void mark_alloc_settled(database& db, pm_market_id_type market);
 void accrue_leverage_funding(database& db, const pm_leverage_position_object& pos,

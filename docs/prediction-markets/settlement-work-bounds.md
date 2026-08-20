@@ -394,10 +394,10 @@ the shared counter the test fails on exactly that assertion.
 The general rule this leaves behind: **a new section appended to this cron is dead on arrival unless
 it either sits ahead of section 7 or carries its own budget.**
 
-### 4.8 The lazy-pool withdraw queue (per-tx, found 2026-08-19, open)
+### 4.8 The lazy-pool withdraw queue (per-tx, found 2026-08-19, fixed 2026-08-20)
 
-`service_lazy_withdraw_queue()` drains the pool's FIFO withdraw queue **in full** on every call —
-it loops until `free_balance` runs out — and it is called from six places, four of them inside
+`service_lazy_withdraw_queue()` used to drain the pool's FIFO withdraw queue **in full** on every
+call — it looped until `free_balance` ran out — and it is called from six places, four of them inside
 evaluators (deposit, withdraw, leverage close, leverage convert) plus the two capital-return paths
 in the cron. There is no floor per queue row: `pm_lazy_withdraw` creates a **new** request object on
 every partial withdrawal while `owed > 0` (one raw is enough), and rows of the same account are
@@ -405,10 +405,19 @@ never merged. The asymmetry is that the queue is filled one transaction per row 
 unrelated transaction later — at the testnet's 150 k VIZ of free balance a single call could pay out
 up to 150 million rows.
 
-Nothing is stuck today (the queue is empty), and the fix is a fork rather than a one-liner: budgeting
-the drain requires a cron section to finish what a transaction leaves behind, or the queue stalls
-whenever capital stops returning; a floor per row denies small positions a partial exit. Tracked as
-goal #439, question q#678.
+Fix (owner q#678=A): the drain is now budgeted. `service_lazy_withdraw_queue(db, row_limit)` returns
+how many rows it processed; the per-transaction call-sites pass `1` (pay just the FIFO head — the
+bulk is picked up by the cron), and the new cron section 9 drains the rest up to the shared per-block
+`pm_settle_rows_per_block` row budget whenever `pending_withdrawals > 0`. That section is the
+liveness backstop: the queue keeps progressing at up to `row_budget` rows per block even when no
+capital returns to `free_balance`, so it cannot stall. The rows the cron pays still charge the shared
+budget honestly (the return value is subtracted from `row_budget`).
+
+`lazy_withdraw_queue_row_budget_spans_blocks` reproduces the old behaviour in miniature — 250 one-raw
+rows against a 100-row budget — and asserts the queue spans several blocks, ≤ `row_budget` per block,
+FIFO order, `free_balance ≥ 0` and `pending_withdrawals → 0`. With the pre-fix unbounded drain the
+control drains all 250 in the first block and fails the per-block bound. No layout change → the
+testnet does not need a redeploy.
 
 ### 4.9 The liquidation cascade runs per transaction (found 2026-08-20, open)
 
@@ -447,6 +456,10 @@ now: `pm_leverage_max_per_position_bp` (20 bp) against the current fund makes th
 (~30 VIZ) smaller than the 100 VIZ loan floor, so no position can be opened at all — the known #536
 conflict, left as-is by the owner (q#568). Resolving that conflict in favour of smaller loans would
 widen this scan proportionally; the two decisions are coupled.
+
+**Decision (owner q#679=D, 2026-08-20): not fixing.** The lever is a niche product, the exposed set is
+economically capped (fund / pool bound above), and an attacker already pays the collateral and
+funding for every position the cascade has to scan. Goal #440 closed.
 
 ### 4.10 Checked and rejected: the open-position sweep (cron §2c)
 

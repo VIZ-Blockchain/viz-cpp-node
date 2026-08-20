@@ -7240,6 +7240,137 @@ BOOST_AUTO_TEST_CASE(lazy_withdraw_fifo_queue) {
                        << " (dust), dave_delta=" << dave_delta << ", pending=0");
 }
 
+// #678 (owner q#678=A): the lazy-pool FIFO drain is budgeted per block by pm_settle_rows_per_block
+// (new cron section 9) instead of draining the whole queue in a single call. A queue of many 1-raw
+// partial-withdrawal rows built while free_balance is 0 must span several blocks: each block pays at
+// most the row budget (+1 head row paid by the capital-return tx itself), FIFO is preserved and
+// free_balance never goes negative. Honest control: the queue is 250 rows against a 100-row budget —
+// pre-fix (unbounded) behaviour drains all 250 in the very first block after the capital return,
+// which the per-block bound below rejects.
+BOOST_AUTO_TEST_CASE(lazy_withdraw_queue_row_budget_spans_blocks) {
+    auto gp = make_genesis_params(0xF1F1u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lazy-budget", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping lazy-withdraw budget scenario.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    // Pin the per-block row budget to its floor (100) and the leverage knobs so a loan can drain
+    // free_balance to 0 (making the queue accumulate).
+    {
+        chain_properties_pm props;
+        props.pm_settle_rows_per_block          = 100;
+        props.pm_leverage_enabled               = true;
+        props.pm_leverage_expiration_buffer_sec = 0;
+        props.pm_leverage_fund_percent          = 100;
+        props.pm_leverage_max_per_position_bp   = 10000;
+        props.pm_leverage_max_position_ratio_percent = 100;
+        props.pm_leverage_pool_profit_percent   = 10;
+        props.pm_lazy_alloc_percent             = 0;
+        props.pm_lazy_emergency_penalty_percent = 0;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_settle_rows_per_block != 100; ++i) produce(node, gp, when);
+        BOOST_REQUIRE(mp.pm_settle_rows_per_block == 100);
+    }
+
+    const pm_lazy_pool_id_type pool_id(0);
+    auto pool_free    = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).free_balance.value; };
+    auto pool_pending = [&]{ return node.db().get<pm_lazy_pool_object>(pool_id).pending_withdrawals.value; };
+    auto queue_count  = [&]{
+        return node.db().get_index<pm_lazy_withdraw_request_index>().indices().get<by_id>().size();
+    };
+
+    // alice (initiator) deposits the pool's whole capital.
+    const int64_t D = unit * 100;
+    pm_lazy_deposit_operation dep;
+    dep.account = gp.initiator_name; dep.amount = asset(share_type(D), TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({dep}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(pool_free(), D);
+
+    // Self-oracle market with deep reserves so the 10x-scaled leverage position stays solvent.
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 600), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto trader_key = derive_key("trader");
+    create_and_fund(node, gp, when, "trader", trader_key, share_type(unit * 210));
+
+    // The loan drains free_balance to exactly 0.
+    const int64_t L = unit * 100;
+    pm_leverage_open_operation lo;
+    lo.account = "trader"; lo.market_id = 0; lo.outcome_index = 0;
+    lo.collateral = asset(share_type(unit * 200), TOKEN_SYMBOL);
+    lo.loan       = asset(share_type(L), TOKEN_SYMBOL);
+    lo.min_tokens = 0; lo.max_slippage_percent = 0;
+    node.push_pending_transaction(sign_ops({lo}, trader_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(pool_free(), 0);
+
+    // Build a queue of R rows: alice burns one share at a time (partial emergency withdrawals);
+    // free_balance is 0, so each owed>0 row is queued, not paid. Total owed ≈ R raw (1 raw/row).
+    const int R = 250;
+    {
+        std::vector<operation> wops;
+        for (int i = 0; i < R; ++i) {
+            pm_lazy_withdraw_operation w;
+            w.account = gp.initiator_name; w.shares = 1; w.emergency = true;
+            wops.push_back(w);
+        }
+        node.push_pending_transaction(sign_ops(wops, gp.initiator_key, node));
+        produce(node, gp, when);
+    }
+    BOOST_REQUIRE_EQUAL(queue_count(), (size_t)R);
+    BOOST_REQUIRE_EQUAL(pool_free(), 0);
+    BOOST_REQUIRE_GT(pool_pending(), 0);
+
+    // Capital return: trader closes the leverage → loan+profit land in free_balance. The close's
+    // per-tx drain pays exactly the 1 head row; the rest is drained by cron §9 at ≤ row_budget/block.
+    pm_leverage_close_operation cl;
+    cl.account = "trader"; cl.position_id = 0; cl.min_return = 0;
+    node.push_pending_transaction(sign_ops({cl}, trader_key, node));
+    produce(node, gp, when);
+    const size_t after_close = queue_count();
+    BOOST_REQUIRE_LT(after_close, (size_t)R);                     // something was paid
+    BOOST_REQUIRE_LE((size_t)(R - after_close), 100u + 1u);        // ≤ budget + 1 head row (pre-fix: 250)
+
+    // Drain the rest over subsequent blocks, each paying ≤ the row budget, until the queue is empty.
+    size_t prev = after_close;
+    int blocks = 1;
+    while (queue_count() > 0 && blocks < 30) {
+        produce(node, gp, when);
+        ++blocks;
+        const size_t now = queue_count();
+        BOOST_REQUIRE_LE(prev - now, 100u);                       // ≤ row budget per block
+        prev = now;
+    }
+    BOOST_REQUIRE_EQUAL(queue_count(), 0);
+    BOOST_REQUIRE_EQUAL(pool_pending(), 0);
+    BOOST_REQUIRE_GE(pool_free(), 0);
+    BOOST_REQUIRE_GE(blocks, 2);                                  // spanned ≥2 blocks (pre-fix: 1)
+    BOOST_TEST_MESSAGE("lazy-withdraw queue budget: drained " << R << " rows in " << blocks
+                       << " blocks (budget " << mp.pm_settle_rows_per_block
+                       << ", free=" << pool_free() << ")");
+}
+
 // L3 gap (audit batch C, 2026-08-13): pm_oracle_update accounting and gates. Top-ups move VIZ
 // from the owner's balance into insurance and back on withdrawal; withdrawal is floor-gated AND
 // obligation-gated (blocked while the oracle still has an unsettled market — the #3 audit fix);

@@ -129,10 +129,18 @@ namespace pm_detail {
     // stop. Called at every point capital returns to free_balance (LP return, deposit, leverage
     // repay) so queued withdrawers have first claim on returning capital and free_balance never
     // goes negative — the ledger never hands out more than the pool holds liquid.
-    void service_lazy_withdraw_queue(database& db) {
+    //
+    // row_limit bounds how many requests ONE call may touch. The queue can be huge (one row per
+    // partial withdrawal, minted for as little as 1 raw) and a capital-return event used to drain
+    // it ALL in one call (#678); per-tx callers pass 1 (pay just the FIFO head — the bulk is
+    // picked up by cron section 9 on the shared per-block row budget), the cron passes the
+    // remaining row budget. Returns the number of rows actually processed so the caller can
+    // charge the shared budget honestly.
+    uint32_t service_lazy_withdraw_queue(database& db, uint32_t row_limit) {
         const auto* poolp = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
-        if (!poolp) return;
-        for (;;) {
+        if (!poolp || row_limit == 0) return 0;
+        uint32_t done = 0;
+        while (done < row_limit) {
             const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
             if (pool.free_balance.value <= 0) break;
             const auto& qidx = db.get_index<pm_lazy_withdraw_request_index>().indices().get<by_id>();
@@ -145,6 +153,7 @@ namespace pm_detail {
                 p.free_balance        -= share_type(pay);
                 p.pending_withdrawals -= share_type(pay);
             });
+            ++done;                                          // this request was paid (full or partial)
             if (req.amount.value == pay) {
                 db.remove(req);                              // fully settled
             } else {
@@ -152,6 +161,7 @@ namespace pm_detail {
                 break;                                       // free_balance exhausted
             }
         }
+        return done;
     }
 
     // Return a lazy-pool LP position's capital to the pool: principal to free_balance,
@@ -173,7 +183,7 @@ namespace pm_detail {
                                         / fc::uint128_t((uint64_t)p.total_shares.value);
             }
         });
-        service_lazy_withdraw_queue(db);   // returning capital first pays queued withdrawers
+        service_lazy_withdraw_queue(db, 1);   // pay just the FIFO head; bulk drain is cron §9
     }
 
     // Close the market's lazy allocation (recall-tracking object) once its LP position
@@ -276,7 +286,7 @@ namespace pm_detail {
                                         * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
             }
         });
-        service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
+        service_lazy_withdraw_queue(db, 1);   // pay just the FIFO head; bulk drain is cron §9
         if (bettor_received > 0) {
             if (voiding) {
                 // Terminal void/no-contest: refund the residual immediately (no outcome to defer to).
@@ -2153,6 +2163,21 @@ void database::process_pm_markets() {
             push_virtual_operation(pm_ban_expired_operation(who, false, true));
             ++ban_done;
         }
+    }
+
+    // ── 9. Lazy withdraw queue drain ───────────────────────────────────────────
+    // Bounded FIFO drain of pending lazy-pool withdrawals. The queue can be huge (one row per
+    // partial withdrawal, minted for as little as 1 raw) and a capital-return event used to drain
+    // it ALL in one call (#678). Per-tx callers now pay only the FIFO head (row limit 1); this
+    // section is the liveness backstop that pays the rest up to the shared per-block row budget,
+    // so the queue keeps progressing even when no capital returns to free_balance. It consumes
+    // row_budget (not the `done` market cap): the queue is row work, and it is bounded by
+    // pending_withdrawals — not a self-growing scan like §7, so a later section cannot starve an
+    // earlier section's counter.
+    {
+        const auto* pool = find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (pool && pool->pending_withdrawals.value > 0 && row_budget > 0)
+            row_budget -= service_lazy_withdraw_queue(*this, row_budget);
     }
 }
 

@@ -34,7 +34,7 @@ A withdrawal (`pm_lazy_withdraw`, partial by shares or full) burns your shares i
 - **Enough free_balance** → the payout is instant, as before.
 - **Not enough** (capital sits in open leverage) → a `pm_lazy_withdraw_request` is registered in the **FIFO queue**, and the pool's `pending_withdrawals` field grows.
 
-Requests are settled **in arrival order** on every event that returns free balance: leverage close/liquidation, conversion, a new deposit. The hard invariant is **free_balance ≥ 0**: the pool physically cannot pay out more than is free. That is a lesson from the early design, when an emergency withdrawal could drag the balance negative (the pool handed out capital that had not yet returned).
+Requests are settled **in arrival order** on every event that returns free balance: leverage close/liquidation, conversion, a new deposit. Even when no capital returns, the queue still makes progress every block — the node's per-block cron pays up to `pm_settle_rows_per_block` queued requests, so a waiting withdrawal always inches forward. The hard invariant is **free_balance ≥ 0**: the pool physically cannot pay out more than is free. That is a lesson from the early design, when an emergency withdrawal could drag the balance negative (the pool handed out capital that had not yet returned).
 
 To read the queue: `get_lazy_withdraw_requests(account)`; the pool state — `get_lazy_pool`; your position — `get_lazy_deposit`.
 

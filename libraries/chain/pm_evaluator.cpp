@@ -1354,7 +1354,7 @@ void pm_lazy_deposit_evaluator::do_apply(const pm_lazy_deposit_operation& o) {
             d.unlock_time     = now + fc::seconds(mp.pm_lazy_lock_sec);
         });
     }
-    service_lazy_withdraw_queue(db);   // fresh capital first pays anyone already queued to withdraw
+    service_lazy_withdraw_queue(db, 1);   // fresh capital first pays anyone already queued to withdraw
 }
 
 // ─── 18. pm_lazy_withdraw ────────────────────────────────────────────────────
@@ -1441,7 +1441,7 @@ void pm_lazy_withdraw_evaluator::do_apply(const pm_lazy_withdraw_operation& o) {
             r.created = now;
         });
     }
-    service_lazy_withdraw_queue(db);
+    service_lazy_withdraw_queue(db, 1);
 }
 
 // ─── 19. pm_leverage_open (margin position via lazy-pool loan) ───────────────
@@ -1610,7 +1610,7 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
             p.reward_per_share += fc::uint128_t((uint64_t)pool_yield)
                                 * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
     });
-    service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
+    service_lazy_withdraw_queue(db, 1);   // returning leverage capital first pays queued withdrawers
     if (bettor_received > 0 && mkt.deferred_claim_count < MAX_PM_DEFERRED_CLAIMS_PER_MARKET) {
         // #349: skip once the per-market cap is hit — the residual stays in the curve and pays 0 at
         // settlement (like bucket-exhaustion), keeping settle_market's claim loop bounded.
@@ -1666,7 +1666,7 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
             p.reward_per_share += fc::uint128_t((uint64_t)pool_profit_total)
                                 * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
     });
-    service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
+    service_lazy_withdraw_queue(db, 1);   // returning leverage capital first pays queued withdrawers
 
     // Position becomes a normal parimutuel bet, 100% bettor-owned (reserves unchanged).
     db.create<pm_bet_object>([&](pm_bet_object& b) {
