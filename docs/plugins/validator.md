@@ -24,6 +24,7 @@ chain::plugin, p2p::p2p_plugin, snapshot::snapshot_plugin
 | `private-key` | — | WIF private key(s) for signing; may be repeated |
 | `emergency-private-key` | — | WIF key for emergency consensus; auto-adds `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` to the validator set |
 | `enable-stale-production` | `false` | Bypass participation and sync checks (testnet / network recovery only) |
+| `disable-minority-fork-detection` | `false` | Skip minority-fork detection entirely (single-operator testnet/fork only). Never auto-cleared by healthy participation — see [Minority Fork Detection](#minority-fork-detection) |
 | `required-participation` | `3300` | Minimum validator participation in **basis points** (3300 = 33%) |
 | `fork-collision-timeout-blocks` | `21` | Consecutive fork-collision deferrals before forcing production (one full validator round) |
 
@@ -116,7 +117,8 @@ When a competing block exists at `head_block_num + 1`:
 Before each production attempt (after HF12 safety checks), the plugin walks the last 21 blocks in `fork_db`. If all 21 were produced by the node's own configured validators, the node is isolated on a minority fork.
 
 - **Default action:** Call `p2p().resync_from_lib()` — pop blocks to LIB, reset fork DB, re-initiate P2P sync, reconnect seed nodes. Returns `minority_fork`.
-- **With `enable-stale-production=true`:** Log a warning, continue producing.
+- **With `enable-stale-production=true`:** Log a warning, continue producing. **Note:** at ≥33% participation this override is auto-cleared every block, so on a single-operator fork it does *not* stop the detector — use `disable-minority-fork-detection` instead.
+- **With `disable-minority-fork-detection=true`:** Both the standard and DLT detection paths are skipped entirely, and the flag is never auto-cleared. For single-operator testnet/forks where "21 blocks all ours" is the healthy steady state. **Never enable on a real public network** — it removes the isolation guard.
 - **Skipped when:** Emergency consensus is active (committee blocks would always match our configured set). A DLT-specific slave isolation check replaces it in emergency mode.
 
 ---
@@ -217,7 +219,7 @@ Included in P2P FORWARD stagnation logs when the node is stuck with no peer ahea
 | `no_private_key` | Config missing `private-key` for the signing key that's registered on-chain |
 | `low_participation` | Network participation < 33%; check peer connectivity or set `enable-stale-production=true` |
 | `fork_collision` | Competing block at next height; wait for vote-weight resolution or 21-deferral timeout |
-| `minority_fork` | Isolated; plugin auto-resyncs to LIB |
+| `minority_fork` | Isolated; plugin auto-resyncs to LIB. On a single-operator fork this loops — set `disable-minority-fork-detection=true` |
 | Watchdog fires repeatedly | Sync or catchup flag stuck; watchdog auto-clears if head is advancing |
 | `SLOT-HIJACK` logs | Emergency master blanked our key; restore via `validator_update_operation` |
 

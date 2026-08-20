@@ -151,9 +151,9 @@ Several P2P safeguards are emergency-aware:
 | Guard | Behavior during emergency |
 |-------|--------------------------|
 | `resync_from_lib()` | **Skipped entirely** — popping blocks near LIB during emergency would crash |
-| `stale_sync_check_task()` | If master's head is advancing → reset timer, skip recovery; if follower head is stuck → allow recovery |
+| `check_wedge_watchdog()` | **No emergency carve-out.** It arms only when the head is frozen far below a *corroborated* network tip (second-highest head across established peers), and any head advance resets it. Log-only unless `auto-resync-on-wedge = true`, in which case a confirmed wedge exits the node |
 | `handle_block()` (DLT, sync mode, gap 0–2) | Treated as normal (not sync) to prevent production loop disruption |
-| Snapshot stalled sync detection | Same logic as stale sync check |
+| Snapshot stalled sync detection (`enable-stalled-sync-detection`, off by default) | **This is where the master/follower carve-out actually lives.** On timeout it reads `emergency_consensus_active`; if we are the emergency master (holds the emergency key and the committee is in the schedule) solo production is normal, so recovery is skipped. A stuck follower is allowed to recover |
 
 The `resync_from_lib()` guard is the most critical: during emergency, LIB is close to HEAD. Popping blocks back to LIB and resetting the fork DB would cause peer blocks from the real network to link to the re-seeded LIB, trigger a fork switch, pop below the committed LIB, and either crash or corrupt state.
 
@@ -196,7 +196,7 @@ Snapshots created during an active emergency preserve the state correctly; snaps
 | 6 | `maybe_produce_block` (master) | Bypass sync, stale, participation; skip minority fork |
 | 7 | `maybe_produce_block` (follower) | Must sync first; 21-block isolation check |
 | 8 | `resync_from_lib` | **Skip entirely** during emergency |
-| 9 | `stale_sync_check_task` | Skip if master's head advancing; allow if follower stuck |
+| 9 | `check_wedge_watchdog` | No emergency-specific branch; corroboration + head-advance resets are what keep it from arming |
 | 10 | `handle_block` | Near-caught-up blocks treated as normal in DLT emergency |
 | 11 | `database::open` | Startup schedule repair |
 | 12 | `validator_guard` | Do not suppress key restoration during emergency |

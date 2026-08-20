@@ -163,4 +163,39 @@ Delegates all validator voting to a proxy account. All existing direct votes are
 
 ---
 
+## `set_reward_sharing_operation` (ID 64)
+
+**Auth:** `active` of `owner`
+
+**HF13 validator reward sharing.** A validator opts to forward a fraction of its block reward to its **stakeholders** — the accounts that voted for it — proportionally to time-weighted vote weight. `sharing_rate` is that fraction in basis points; the shared pool accumulates and is distributed at each epoch end via the `stakeholder_reward` virtual op.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `owner` | `account_name_type` | Validator setting its sharing rate |
+| `sharing_rate` | `uint16_t` | Fraction of block reward forwarded to stakeholders, in basis points (0 = none, 10000 = 100%) |
+
+```json
+[64, {
+  "owner": "alice",
+  "sharing_rate": 2500
+}]
+```
+
+- `sharing_rate` is capped at 10000 (100%).
+- Distribution is by **time-weighted** vote weight, so recently-added votes earn a smaller share until they mature.
+
+---
+
+## `stakeholder_reward_operation` (ID 65) — virtual
+
+Emitted at each distribution epoch when a validator with a non-zero `sharing_rate` pays out a stakeholder's share of the shared block reward. Virtual (never signed); appears in `account_history`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `validator` | `account_name_type` | The validator that shared the reward |
+| `stakeholder` | `account_name_type` | The voter receiving a share |
+| `shares` | `asset` (SHARES) | Amount credited to the stakeholder |
+
+---
+
 See also: [Data Types](../data-types.md), [Operations Overview](./overview.md), [Chain Properties](../../governance/chain-properties.md).
