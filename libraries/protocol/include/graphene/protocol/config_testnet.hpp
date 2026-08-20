@@ -136,6 +136,10 @@
 #define COMMITTEE_MAX_REQUIRED_AMOUNT         int64_t(CHAIN_INIT_SUPPLY/100)
 #define COMMITTEE_REQUEST_PER_TIME            (60)
 #define COMMITTEE_REQUEST_PROCESSING          (CHAIN_BLOCKS_PER_HOUR/60) //every 1 minutes
+// q#687 (2026-08-20): DAO request vote cap + vesting floor — IDENTICAL to config.hpp (consensus-
+// mechanical; see the note there). Only the HF14 activation TIME differs between mainnet/testnet.
+#define MAX_COMMITTEE_VOTES_PER_REQUEST        100000
+#define MAX_COMMITTEE_VOTE_MIN_VESTING         int64_t(1000 * 1000) // 1000.000 VIZ effective vesting
 
 #define CONSENSUS_FLAG_ENERGY_ADDITIONAL_COST 0
 #define CONSENSUS_VOTE_ACCOUNTING_MIN_RSHARES uint32_t(5000000) // default 0.5 SHARES equivalent

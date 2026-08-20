@@ -88,7 +88,7 @@ namespace graphene { namespace chain {
     }
 
     void committee_vote_request_evaluator::do_apply(const committee_vote_request_operation& o) {
-        _db.get_account(o.voter);
+        const auto &voter = _db.get_account(o.voter);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!voter.valid, "Account flagged as invalid");
         const auto &idx = _db.get_index<committee_request_index>().indices().get<by_request_id>();
@@ -96,6 +96,16 @@ namespace graphene { namespace chain {
         FC_ASSERT(itr != idx.end(), "Committee request id not found.");
 
         if(itr->status == 0){
+            // q#687 (2026-08-20): mirror the PM-dispute Sybil gate — DAO votes are free and the
+            // tally weighs effective vesting, so require a vesting floor (in the same unit) before
+            // anyone casts/revises a ballot. Gated on HF14 so pre-fork sub-floor voters are unaffected.
+            if (_db.has_hardfork(CHAIN_HARDFORK_14)) {
+                const auto vprice = _db.get_dynamic_global_properties().get_vesting_share_price();
+                const asset min_shares =
+                    asset(share_type(MAX_COMMITTEE_VOTE_MIN_VESTING), TOKEN_SYMBOL) * vprice;
+                FC_ASSERT(voter.effective_vesting_shares() >= min_shares,
+                          "Insufficient vesting for committee vote (min 1000.000 VIZ)");
+            }
             // H2 (2026-08-20): a repeat vote used to linear-scan every ballot of the request to
             // find the voter's previous one — O(n) per vote and O(n²) to fill a request. Look the
             // ballot up directly on the (voter, request_id) unique index instead.
@@ -108,6 +118,10 @@ namespace graphene { namespace chain {
                     c.last_update = _db.head_block_time();
                 });
             } else {
+                if (_db.has_hardfork(CHAIN_HARDFORK_14)) {
+                    FC_ASSERT(itr->votes_count < MAX_COMMITTEE_VOTES_PER_REQUEST,
+                              "Committee request vote cap reached");
+                }
                 _db.create<committee_vote_object>([&](committee_vote_object& c) {
                     c.request_id = itr->request_id;
                     c.voter = o.voter;

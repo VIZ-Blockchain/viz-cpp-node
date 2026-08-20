@@ -135,6 +135,12 @@
 #define COMMITTEE_MAX_REQUIRED_AMOUNT         int64_t(CHAIN_INIT_SUPPLY/100)
 #define COMMITTEE_REQUEST_PER_TIME            (60*60*24)
 #define COMMITTEE_REQUEST_PROCESSING          (CHAIN_BLOCKS_PER_HOUR/6) //every 10 minutes
+// q#687 (2026-08-20, owner: "аналогичный кап + кап по стэйку" как у PM-диспута, в HF14): DAO request
+// votes are free and the finalize cron walks every ballot of a request (account + lazy-pool lookup
+// each) while get_committee_request_votes returns them all unpaginated. Cap NEW ballot rows per
+// request, and require a vesting floor per voter so the cap can't be Sybil-filled with dust stake.
+#define MAX_COMMITTEE_VOTES_PER_REQUEST        100000
+#define MAX_COMMITTEE_VOTE_MIN_VESTING         int64_t(1000 * 1000) // 1000.000 VIZ effective vesting
 
 #define CONSENSUS_FLAG_ENERGY_ADDITIONAL_COST 0
 #define CONSENSUS_VOTE_ACCOUNTING_MIN_RSHARES uint32_t(5000000) // default 0.5 SHARES equivalent
