@@ -477,6 +477,44 @@ keying an index on it: a layout change and a snapshot migration for a constant-f
 that is already bounded. Not worth it; recorded so the next audit does not re-open it. Goal #441
 closed on this reasoning.
 
+### 4.11 The batch executor's idle fast-path (cron §6, found 2026-08-20, fixed)
+
+§4.4 shipped the batch executor charging the row budget for every row it *visits*, but the **outer**
+walk was still `O(active batch markets)` per boundary and not metered: an idle market (nothing queued
+at the current epoch) skipped out before the LMSR q-vector snapshot and paid nothing — no `done`, no
+row budget — so the per-boundary scan grew linearly with the *number of markets* regardless of how
+much queue actually existed. A spammer could create thousands of `allow_batch` markets and turn every
+epoch boundary into a full idle walk.
+
+Fix (P0): a `by_status_market` index on `pm_bet` — `(status, market, id)` — and the scan now drives
+straight from queued (`status=5`) rows. Only markets that actually hold a queue are visited at all;
+idle markets never enter the range. Resume semantics are unchanged: executed rows flip `5 → 0/2` and
+leave the index, so the next `lower_bound((5, market, bet))` lands naturally on the next un-executed
+row, and the two dynamic-properties cursors (`pm_batch_settle_cursor`, `pm_batch_settle_bet_cursor`)
+keep their meaning (market / parked-row). A defensive skip steps over status-5 rows that ever leak
+onto a non-active market — §2/H2 refund already pays those, and the pass must not move them between
+the measuring and paying passes. Goal #445 closed.
+
+### 4.12 Deferred-claim purge and the phase-1/5 loud signals (2026-08-20, fixed)
+
+Two smaller residuals from the same review, taken together with P0 (owner chose C):
+
+- **P1 — `purge_deferred_claims` built an in-memory vector** of every deferred claim before deleting
+  it, the same participant-vector pattern `refund_all_bets` used to carry (and that §4.3 removed).
+  Claims are already capped by `MAX_PM_DEFERRED_CLAIMS_PER_MARKET` (10 000), so this was never a
+  bound problem — but the vector is free to drop: it now removes in place, advancing the iterator
+  before `db.remove` invalidates it. Goal #446 closed.
+
+- **P2 — the un-metered settlement phases 1 and 5.** `settle_market_step` budgets only phases 2–4
+  (bet rows). Phase 1 (`force_close_positions`) and phase 5 (`settle_liquidity`) walk every open
+  position / LP row of the market whole; they are bounded only economically (each row ≥
+  `pm_min_liquidity` = 100 VIZ). Rather than metering them — cursors and resume for a threat the
+  100 VIZ floor already prices — the code now emits a **loud log-only signal** (mirroring the F1
+  `uncovered` signal) when one of those walks overshoots `pm_settle_rows_per_block` in a single step.
+  It is deterministic and has no consensus effect; it exists so a future change that lowers the
+  collateral floor (e.g. unwinding #536 toward small loans) makes the phase visibly expensive instead
+  of silently degrading block time. Goal #448 closed.
+
 ## 5. What a row actually costs
 
 Measured with `tests/consensus_sim/bench/settle_bench.cpp` (`make pm_settle_bench`), which drives

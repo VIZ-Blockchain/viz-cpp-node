@@ -369,6 +369,7 @@ namespace graphene { namespace chain {
         struct by_market_account;
         struct by_market_outcome_bet;
         struct by_epoch;
+        struct by_status_market;
         typedef multi_index_container<
             pm_bet_object,
             indexed_by<
@@ -410,6 +411,14 @@ namespace graphene { namespace chain {
                         member<pm_bet_object, pm_bet_id_type, &pm_bet_object::id>
                     >,
                     composite_key_compare<std::less<pm_market_id_type>, std::less<uint32_t>, std::less<pm_bet_id_type>>
+                >,
+                ordered_unique<tag<by_status_market>,
+                    composite_key<pm_bet_object,
+                        member<pm_bet_object, uint8_t, &pm_bet_object::status>,
+                        member<pm_bet_object, pm_market_id_type, &pm_bet_object::market>,
+                        member<pm_bet_object, pm_bet_id_type, &pm_bet_object::id>
+                    >,
+                    composite_key_compare<std::less<uint8_t>, std::less<pm_market_id_type>, std::less<pm_bet_id_type>>
                 >
             >,
             allocator<pm_bet_object>

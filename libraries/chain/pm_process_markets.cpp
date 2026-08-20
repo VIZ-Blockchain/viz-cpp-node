@@ -361,22 +361,38 @@ namespace pm_detail {
     // reason 2 = normal resolution (defer residuals as claims); reason 4 = terminal void/no-contest
     // (refund residuals immediately, no outcome to defer to). See liquidate_position.
     void force_close_positions(database& db, pm_market_id_type market, uint8_t reason) {
+        uint32_t closed = 0;
         for (;;) {
             const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
             auto it = idx.lower_bound(boost::make_tuple(market, (uint8_t)0, pm_leverage_position_id_type()));
             if (it == idx.end() || it->market != market || it->status != 0) break;
             liquidate_position(db, *it, reason);
+            ++closed;
         }
+        // P2 (DoS review 2026-08-20): settle phase 1 walks every open position of a market UNMETERED —
+        // it is currently bounded only economically (each position holds >= pm_min_liquidity). Emit a
+        // loud log-only signal when the walk overshoots the block's row budget, so a future change that
+        // lowers the collateral floor (e.g. unwinding #536 toward small loans) makes the phase visibly
+        // expensive instead of silently degrading block time. Deterministic, no consensus effect.
+        const uint32_t row_budget = db.get_validator_schedule_object().median_props.pm_settle_rows_per_block;
+        if (row_budget > 0 && closed > row_budget)
+            elog("PM settle phase-1 unbounded: force-closed ${n} positions on market ${m} in one step "
+                 "(pm_settle_rows_per_block=${b}) — the collateral floor no longer bounds this phase.",
+                 ("n", closed)("m", market._id)("b", row_budget));
     }
 
     // Delete every deferred early-exit claim of a market WITHOUT paying (terminal void/no-contest:
     // no winning outcome, so outcome-contingent claims are worthless). F1/#300.
     void purge_deferred_claims(database& db, pm_market_id_type market) {
         const auto& cidx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
-        std::vector<const pm_deferred_claim_object*> consumed;
+        // Streaming remove (P1 / DoS review 2026-08-20): the old code built an in-memory vector of
+        // every claim first, the same participant-vector pattern refund_all_bets used to. Claims are
+        // already bounded by MAX_PM_DEFERRED_CLAIMS_PER_MARKET (10k), but the vector is free to drop —
+        // remove in place, advancing the iterator before db.remove invalidates it.
         for (auto it = cidx.lower_bound(boost::make_tuple(market, pm_deferred_claim_id_type()));
-             it != cidx.end() && it->market == market; ++it) consumed.push_back(&*it);
-        for (const auto* c : consumed) db.remove(*c);
+             it != cidx.end() && it->market == market; ) {
+            const auto& obj = *it; ++it; db.remove(obj);
+        }
     }
 
     // Graduated recall: withdraw `amount` of the lazy pool's LP position from an idle
@@ -462,6 +478,15 @@ namespace pm_detail {
             int64_t sec = (int64_t)now.sec_since_epoch() - (int64_t)it->deposit_time.sec_since_epoch();
             lps.push_back(pm::lp_in{ it->amount.value, sec });
         }
+        // P2 (DoS review 2026-08-20): settle phase 5 walks every active LP row of a market UNMETERED —
+        // bounded only economically (each row >= pm_min_liquidity = 100 VIZ). Log-only early signal for
+        // the day the liquidity floor stops protecting this phase (mirrors the F1 `uncovered` signal).
+        const uint32_t row_budget = db.get_validator_schedule_object().median_props.pm_settle_rows_per_block;
+        if (row_budget > 0 && active.size() > (size_t)row_budget)
+            elog("PM settle phase-5 unbounded: ${n} active LP rows on market ${m} exceed "
+                 "pm_settle_rows_per_block (${b}) — the 100 VIZ liquidity floor no longer bounds this phase.",
+                 ("n", active.size())("m", mkt.id._id)("b", row_budget));
+
         if (active.empty()) {
             // No LP principal to absorb the F1 shortfall → 100% of it is emitted. This is the worst
             // case and must be logged here, above the early return, since the diagnostic in the charge
@@ -1873,52 +1898,38 @@ void database::process_pm_markets() {
         (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0 ||
          get_dynamic_global_properties().pm_batch_settle_bet_cursor != 0)) {
 
-        const auto& midx = get_index<pm_market_index>().indices().get<by_status>();
-        const auto& bidx = get_index<pm_bet_index>().indices().get<by_epoch>();
+        const auto& qidx = get_index<pm_bet_index>().indices().get<by_status_market>();
 
-        // Round-robin: resume where the previous boundary scan stopped on the cap, wrap
-        // once. A fixed scan start would let ~cap always-busy low-id markets permanently
-        // starve newer ones. The walk itself stays O(active batch markets) per boundary
-        // (one bet-index probe each); if that ever hurts, index queued bets by
-        // (status, market) and drive the scan from that instead.
-        const uint64_t start_id   = get_dynamic_global_properties().pm_batch_settle_cursor;
-        // Row cursor inside the market the previous pass stopped in (0 = nothing in flight). It is
-        // consumed by the FIRST market this scan visits, which is start_id by construction.
-        uint64_t bet_cursor       = get_dynamic_global_properties().pm_batch_settle_bet_cursor;
-        // NOT a market id sentinel: market id 0 is a perfectly ordinary market (and the first one
-        // ever created), so "stopped" needs its own flag.
-        bool     stopped_mid_mkt  = false;
-        uint64_t stopped_in_mkt   = 0;   // market whose queue the budget cut short
-        bool second_pass = false;
-        auto mit = midx.lower_bound(boost::make_tuple((int8_t)1, pm_market_id_type(start_id)));
+        // #432 P0 (DoS review 2026-08-20): drive the scan from queued (status=5) bets instead of
+        // walking EVERY active market. The old walk was O(active batch markets) per boundary and NOT
+        // metered — an idle market paid a free index probe, so the per-boundary scan grew linearly
+        // with the number of markets regardless of how much queue actually existed. With
+        // by_status_market only markets that actually hold queued bets are visited at all.
+        const uint64_t start_mkt = get_dynamic_global_properties().pm_batch_settle_cursor;
+        const uint64_t start_bet = get_dynamic_global_properties().pm_batch_settle_bet_cursor;
+        // NOT a market/bet id sentinel: id 0 is an ordinary id (and the first one ever created),
+        // so "stopped mid-market" needs its own flag rather than relying on a zero cursor.
+        bool     stopped_mid_mkt = false;
+        uint64_t next_cursor     = 0;   // resume (market), 0 = drained
+        uint64_t next_bet_cursor = 0;   // resume (bet), 0 = drained
 
-        while (done < cap && row_budget > 0) {
-            if (mit == midx.end() || mit->status != 1) {
-                if (second_pass || start_id == 0) break;   // full circle
-                second_pass = true;
-                mit = midx.lower_bound((int8_t)1);         // wrap to the lowest active id
+        auto qit = qidx.lower_bound(boost::make_tuple(
+            (uint8_t)5, pm_market_id_type(start_mkt), pm_bet_id_type(start_bet)));
+
+        while (qit != qidx.end() && qit->status == 5 && done < cap && row_budget > 0) {
+            const pm_market_id_type mid = qit->market;
+            const pm_market_object* mkt_ptr = find<pm_market_object>(mid);
+
+            // Defensive (unreachable by construction): queued bets only ever exist on active,
+            // allow_batch, non-voiding markets. If status-5 rows ever leak onto a terminal market,
+            // step over the whole market's queue untouched — §2/H2 refund pays those rows, and
+            // executing them here would move rows between the measuring and paying passes.
+            if (!mkt_ptr || mkt_ptr->status != 1 || !mkt_ptr->allow_batch ||
+                mkt_ptr->payout_status == 4) {
+                while (qit != qidx.end() && qit->status == 5 && qit->market == mid) ++qit;
                 continue;
             }
-            if (second_pass && mit->id._id >= start_id) break; // full circle
-            const auto& mkt = *mit; ++mit;
-            if (!mkt.allow_batch) continue;
-            // #432 D3: a market being voided over several blocks keeps status 1 until the refund
-            // finishes. Executing its queue mid-flight would move rows between the measuring pass
-            // and the paying pass, so the batch executor steps over it — §2's refund already pays
-            // queued rows (status 5/6) back nominally.
-            if (mkt.payout_status == 4) continue;
-
-            // Idle fast-path: nothing queued at this epoch — skip before the LMSR
-            // q-vector snapshot, so an idle market costs one index probe, keeps its
-            // epoch, and does not consume the cap.
-            // Resume point: only the market the previous pass stopped in carries a row cursor.
-            const uint64_t resume_from = (mkt.id._id == (int64_t)start_id) ? bet_cursor : 0;
-            bet_cursor = 0;                       // consumed — later markets always start at 0
-            auto bit = bidx.lower_bound(boost::make_tuple(
-                mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type(resume_from)));
-            if (bit == bidx.end() || bit->market != mkt.id ||
-                bit->epoch  != (uint32_t)mkt.current_epoch)
-                continue;
+            const auto& mkt = *mkt_ptr;
 
             // Snapshot LMSR q-vector
             std::vector<int64_t> q_vec;
@@ -1931,19 +1942,11 @@ void database::process_pm_markets() {
             }
 
             uint32_t settled = 0;
-            bool     had_queued = false;
 
-            // #432 §6: charge the shared row budget for every row VISITED (not just executed) —
-            // that is the work the block actually does. A queue longer than the budget stops here
-            // and resumes next block from the parked cursor.
-            while (bit != bidx.end() &&
-                   bit->market == mkt.id &&
-                   bit->epoch  == (uint32_t)mkt.current_epoch &&
-                   row_budget > 0) {
-                const auto& bet = *bit; ++bit;
+            // Execute every queued row of THIS market, charging the shared row budget for each.
+            while (qit != qidx.end() && qit->status == 5 && qit->market == mid && row_budget > 0) {
+                const auto& bet = *qit; ++qit;   // advance before the status flip reindexes the row
                 --row_budget;
-                if (bet.status != 5) continue;
-                had_queued = true;
 
                 share_type tokens(0);
 
@@ -2018,43 +2021,36 @@ void database::process_pm_markets() {
                 }
             }
 
+            // Anything still queued for this market means the budget cut the pass short. Park both
+            // cursors and stop: the epoch must NOT advance while rows still carry it, or they would
+            // never be matched again.
+            const bool more = (qit != qidx.end() && qit->status == 5 && qit->market == mid);
+            if (more) {
+                stopped_mid_mkt = true;
+                next_cursor     = (uint64_t)mid._id;
+                next_bet_cursor = (uint64_t)qit->id._id;
+                break;
+            }
+
             if (settled > 0)
                 push_virtual_operation(pm_batch_settle_operation(
                     mkt.id._id, mkt.current_epoch, settled));
 
-            // Anything left in THIS epoch means the budget cut the pass short (the loop above is
-            // the only way out). Park both cursors and stop: the epoch must NOT advance while rows
-            // still carry it, or they would never be matched again.
-            const bool more = (bit != bidx.end() && bit->market == mkt.id &&
-                               bit->epoch == (uint32_t)mkt.current_epoch);
-            if (more) {
-                stopped_mid_mkt = true;
-                stopped_in_mkt  = (uint64_t)mkt.id._id;
-                bet_cursor      = (uint64_t)bit->id._id;  // reused as the parked row cursor
-                break;
-            }
-
-            // Idle markets keep their epoch and don't consume the cap, so the scan can
-            // reach markets with queued bets past the cap.
-            if (had_queued) {
-                modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
-                ++done;
-            }
+            // Queue drained → advance the epoch and charge the cap (this market did real work).
+            modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
+            ++done;
         }
 
-        // Persist the resume point: the next unvisited active market when the cap cut
-        // the scan short, 0 after a completed full circle.
-        uint64_t next_cursor = 0, next_bet_cursor = 0;
-        if (stopped_mid_mkt) {
-            // Mid-market stop: come back to the SAME market, at the same row, next block.
-            next_cursor     = stopped_in_mkt;
-            next_bet_cursor = bet_cursor;
-        } else if ((done >= cap || row_budget == 0) && mit != midx.end() && mit->status == 1 &&
-                   !(second_pass && (uint64_t)mit->id._id >= start_id)) {
-            next_cursor = mit->id._id;
+        // If the scan stopped BETWEEN markets (cap or budget spent right after a drained market),
+        // park the next market that holds queued bets as the resume point. `next_bet_cursor` stays 0
+        // so the pass resumes from the head of that market's queue on the next boundary — matching
+        // the old by_status walk, which parked only a market cursor.
+        if (!stopped_mid_mkt && (done >= cap || row_budget == 0) &&
+            qit != qidx.end() && qit->status == 5) {
+            next_cursor = (uint64_t)qit->market._id;
         }
         const auto& dgp_now = get_dynamic_global_properties();
-        if (next_cursor != start_id || next_bet_cursor != dgp_now.pm_batch_settle_bet_cursor)
+        if (next_cursor != start_mkt || next_bet_cursor != dgp_now.pm_batch_settle_bet_cursor)
             modify(dgp_now, [&](dynamic_global_property_object& d) {
                 d.pm_batch_settle_cursor     = next_cursor;
                 d.pm_batch_settle_bet_cursor = next_bet_cursor;
