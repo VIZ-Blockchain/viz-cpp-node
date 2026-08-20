@@ -1097,6 +1097,16 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
               "vote_outcome out of range");
     FC_ASSERT(o.vote_percent >= -10000 && o.vote_percent <= 10000, "vote_percent out of range");
 
+    // q#686 (2026-08-20): ballots are free and the row cap counts ACCOUNTS, while the tally is
+    // decided by STAKE (effective vesting). A vesting floor keeps the cap from being Sybil-filled
+    // by dust-stake accounts that would otherwise lock out real holders. Expressed in the same unit
+    // the tally weighs (effective_vesting_shares), so the gate matches what actually counts.
+    const auto vprice = db.get_dynamic_global_properties().get_vesting_share_price();
+    const asset min_shares =
+        asset(share_type(MAX_PM_DISPUTE_VOTE_MIN_VESTING), TOKEN_SYMBOL) * vprice;
+    FC_ASSERT(db.get_account(o.voter).effective_vesting_shares() >= min_shares,
+              "Insufficient vesting for dispute vote (min 1000.000 VIZ)");
+
     // A committee dispute is a PUBLIC hearing (no commit-reveal — by design, see pm spec
     // §dispute-transparency): the running tally is visible so the DAO resolves it as truthfully
     // as possible. Consequently a voter may REVISE their ballot at any time while voting is open,

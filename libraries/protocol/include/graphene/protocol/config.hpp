@@ -232,8 +232,14 @@
 // M3 (audit 2026-08-13): dispute ballots are free, so without a cap a Sybil can build an unbounded
 // ballot set — the dispute-finalize cron walks EVERY ballot (account + lazy-pool lookup each) in one
 // cap slot, and get_dispute_votes returns them all unpaginated. Cap NEW ballot rows per disputed
-// market; revising an existing ballot is always allowed.
-#define MAX_PM_DISPUTE_VOTES_PER_MARKET       10000
+// market; revising an existing ballot is always allowed. Raised 10k→100k (q#686) and paired with the
+// per-ballot vesting floor below so the cap cannot be Sybil-filled with dust-stake accounts.
+#define MAX_PM_DISPUTE_VOTES_PER_MARKET       100000
+// q#686 (2026-08-20): minimum effective-vesting a voter must hold to cast or revise a dispute
+// ballot, converted to shares at the current vesting price. The row cap above bounds the tally/read
+// WORK; this floor makes each row expensive (the tally is decided by STAKE, so capping by rows alone
+// let a Sybil fill the cap cheaply and lock out real holders). 1000.000 VIZ == the dispute fee.
+#define MAX_PM_DISPUTE_VOTE_MIN_VESTING       int64_t(1000 * 1000)
 // M4 (audit 2026-08-13): cap on live (unrevealed) batch commits per market. Commit escrow costs
 // only the 20% no-reveal penalty (80% refunded), so without a cap a spammer can queue an unbounded
 // backlog that the §1 forfeit cron must drain through the shared pm_processing_cap_per_block,
