@@ -4,6 +4,13 @@ Status: fix **A** implemented (default confirmed at 1.000 VIZ) and fix **D** com
 collection, settlement and the void refunds all run on a metered row budget. This note records the
 problem, the options weighed, and why the chain takes both.
 
+Together with the follow-ups in §4.1–§4.12, these bounds close a single attack vector: **spam that
+grows the per-block work of the prediction-market cron unboundedly.** Every sweep of the cron now
+runs on the metered row budget (`pm_settle_rows_per_block`), or is bounded by an economic floor (a
+row costs at least `pm_min_liquidity` = 100 VIZ), or is sized by a hard per-market cap — and the one
+walk still bounded only economically emits a loud log signal instead of degrading silently. §7
+summarises the closed surface.
+
 Sibling internal specs: [early-exit-deferred-claim](./early-exit-deferred-claim.md),
 [specification](./specification.md) §5 (crons).
 
@@ -551,3 +558,29 @@ is what it should be set from:
 
 Raising `pm_min_bet` shortens the queue instead, at the price of excluding small bettors — prefer
 tuning the budget first.
+
+## 7. Attack vector closed
+
+The vector was **spam → unbounded per-block work**: a block's action pool is finite, and the
+prediction-market cron is the one place where a single cheap operation could grow the work a block
+must do without any per-block bound. Every path that could grow that work is now bounded:
+
+* **Row creation is priced.** `pm_place_bet` requires `pm_min_bet` (1 VIZ), top-ups require
+  `pm_min_liquidity` (100 VIZ), and a partial `pm_transfer_position` no longer splits a row for free.
+* **Every cron sweep is metered.** Settlement (phases 2–4), garbage collection, void refunds, the
+  batch executor (§6), the dispute tally (§4), ban expiry (§8) and the lazy-withdraw queue (§9)
+  all charge the shared `pm_settle_rows_per_block` budget.
+* **The sweeps are indexed, not scanned.** The deadline sweep (§4.5) and the batch executor's idle
+  path (§4.11) drive from status-typed indexes, so an idle or already-settled market costs nothing.
+* **The remaining un-metered walks are priced or signalled.** Settlement phases 1 and 5
+  (`force_close_positions`, `settle_liquidity`) walk whole markets, but every row they touch costs
+  at least `pm_min_liquidity` (100 VIZ); they emit a loud log signal if one step ever overshoots the
+  budget (§4.12). The liquidation cascade (§4.9) runs per transaction, sized by the leverage fund
+  rather than a cap, and is unreachable today because of the #536 floor conflict.
+* **Hard caps close the rest.** `MAX_PM_DEFERRED_CLAIMS_PER_MARKET`,
+  `MAX_PM_DISPUTE_VOTES_PER_MARKET`, `MAX_PM_OPEN_COMMITS_PER_MARKET` (10 000 each) bound the
+  participant vectors that survive a market's lifetime.
+
+The result: a spammer can still pay real money to make the chain do real work, but the work per
+block is bounded by the row budget, and the cost per row is priced at or above the collateral
+floor. There is no longer any path where a cheap operation buys unbounded work inside one block.

@@ -972,3 +972,13 @@ API：`get_account_leverage_positions`、`get_market_leverage_positions`、`get_
 `metadata` 字符串构建，从不参与共识。
 
 这些对象的完整字段定义见[预测市场操作](../protocol/operations/prediction-markets)。
+
+## 18. 区块工作量边界与抗垃圾攻击
+
+预测市场 cron 和每次按区块的清扫都受到限制，确保没有任何廉价操作可以无上限地放大区块的工作量
+（抗垃圾 / 防区块过载）。核心预算是中位数投票的 `pm_settle_rows_per_block`（默认 2 000，下限
+100），由结算、垃圾回收、作废退款、批量执行器、争议计票、封禁到期和惰性提款队列共同扣减。行的
+创建由 `pm_min_bet`（1 VIZ）和 `pm_min_liquidity`（100 VIZ）定价，因此即便仍未计量的遍历（结算
+第 1、5 阶段、按交易的清算级联）也受经济约束。每个市场的硬上限约束着存续的参与者向量（索赔 /
+争议投票 / 未平仓承诺，各 10 000）。完整论证、权衡过的方案和实测的单行成本见
+[settlement-work-bounds](./settlement-work-bounds.md)。

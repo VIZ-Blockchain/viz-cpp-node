@@ -1061,3 +1061,15 @@ string and never participates in consensus.
 
 See [Prediction Market operations](../protocol/operations/prediction-markets) for the full field
 definitions of these objects.
+
+## 18. Block-Work Bounds and Spam Resistance
+
+The prediction-market cron and every per-block sweep are bounded so that no cheap operation can
+grow a block's work without limit (spam / block-overload resistance). The binding budget is the
+median-voted `pm_settle_rows_per_block` (default 2 000, floor 100), charged by settlement, garbage
+collection, void refunds, the batch executor, the dispute tally, ban expiry and the lazy-withdraw
+queue. Row creation is priced by `pm_min_bet` (1 VIZ) and `pm_min_liquidity` (100 VIZ), so even the
+walks that remain un-metered (settlement phases 1 and 5, the per-transaction liquidation cascade)
+are bounded economically. Hard per-market caps bound the surviving participant vectors (claims /
+dispute votes / open commits, 10 000 each). The full rationale, the options weighed and the
+measured cost per row are in [settlement-work-bounds](./settlement-work-bounds.md).
