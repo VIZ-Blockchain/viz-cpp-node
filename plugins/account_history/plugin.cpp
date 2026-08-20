@@ -621,6 +621,13 @@ if( options.count(name) ) { \
         void operator()(const pm_early_exit_claim_paid_operation& op) {
             impacted.insert(op.account);
         }
+
+        // #442/#681=D: LP income paid at settlement -> the LP's own history. Guarded because
+        // lazy-pool allocations have an empty provider and do not emit this vop (their income is
+        // market-level only) — defensive against future emission, harmless either way.
+        void operator()(const pm_lp_payout_operation& op) {
+            if (op.account.size()) impacted.insert(op.account);
+        }
         //void operator()( const operation& op ){}
     };
 

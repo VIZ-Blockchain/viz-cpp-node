@@ -152,7 +152,9 @@ namespace graphene { namespace protocol {
                 // P1 oracle-metrics: dispute filed -> oracle+disputer history (virtual)
                 pm_dispute_opened_operation,
                 // F1/#300 early-exit deferred claim paid at settlement (virtual)
-                pm_early_exit_claim_paid_operation
+                pm_early_exit_claim_paid_operation,
+                // #442/#681=D: LP income paid at settlement -> LP's own history (virtual)
+                pm_lp_payout_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,

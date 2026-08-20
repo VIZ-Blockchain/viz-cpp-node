@@ -7843,4 +7843,105 @@ BOOST_AUTO_TEST_CASE(ban_expiry_survives_saturated_cron_budget) {
     BOOST_TEST_MESSAGE("ban lapsed even though the shared cron budget was exhausted upstream");
 }
 
+// #442/#681=D: settle_liquidity records the market's total LP income in liquidity_fee_earned (0 until
+// settlement; 0 on void/early-exit) and emits one pm_lp_payout vop per DIRECT LP carrying the principal
+// returned, the income earned, and any F1 uncovered charge. Lazy-pool allocations are market-level only.
+BOOST_AUTO_TEST_CASE(lp_payout_vop_and_fee_counter) {
+    auto gp = make_genesis_params(0x7B22u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-lppayout", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping LP payout vop.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    {
+        chain_properties_pm props;
+        props.pm_dispute_grace_sec = 3600;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 3600; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 3600u);
+    }
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    // Creator seeds direct liquidity (provider = creator), 10% liquidity fee → the LP bonus.
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 2), TOKEN_SYMBOL);
+    cm.liquidity_fee_percent = 1000; // 10% (bp) of the losers' pool → LP bonus
+    cm.betting_expiration = node.head_block_time() + fc::seconds(150);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(180);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    // Alice wins, bob loses: losers_sum = unit → liq_fee = 10% of unit.
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    // Past betting close (150 s), then resolve to A. allow_early_resolution only permits early
+    // resolve once betting is closed — produce well past betting_expiration.
+    for (int i = 0; i < 80 && node.head_block_time() < cm.betting_expiration; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    // The counter is 0 before settlement.
+    BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(market_id).liquidity_fee_earned.value, 0);
+
+    // Capture only the settlement LP payouts.
+    std::vector<pm_lp_payout_operation> payouts;
+    node.db().enable_plugins_on_push_transaction(true);
+    auto conn = node.db().post_apply_operation.connect([&](const operation_notification& note) {
+        if (note.op.which() == operation::tag<pm_lp_payout_operation>::value)
+            payouts.push_back(note.op.get<pm_lp_payout_operation>());
+    });
+
+    for (int i = 0; i < cron_grace_blocks(node) && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+
+    // LP income = the liquidity fee (single winner → no rounding dust, no late-bet penalty).
+    const int64_t liq_fee = (int64_t)unit * (int64_t)node.db().get<pm_market_object>(market_id).liquidity_fee_percent / 10000;
+    BOOST_REQUIRE_GT(liq_fee, 0);
+    BOOST_TEST_MESSAGE("LP payout: liq_fee=" << liq_fee << " counter="
+        << node.db().get<pm_market_object>(market_id).liquidity_fee_earned.value);
+    BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(market_id).liquidity_fee_earned.value, liq_fee);
+
+    bool saw_creator = false;
+    for (const auto& p : payouts) {
+        if (p.account == account_name_type(gp.initiator_name)) {
+            saw_creator = true;
+            BOOST_CHECK_EQUAL(p.market_id, 0);
+            BOOST_CHECK_EQUAL(p.principal.amount.value, unit * 2); // full principal back (no F1 charge)
+            BOOST_CHECK_EQUAL(p.income.amount.value, liq_fee);     // the only LP takes the whole bonus
+            BOOST_CHECK_EQUAL(p.charge.amount.value, 0);           // no F1 uncovered shortfall
+        }
+    }
+    BOOST_CHECK(saw_creator);
+    conn.disconnect();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

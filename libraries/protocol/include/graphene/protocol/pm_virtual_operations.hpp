@@ -241,6 +241,28 @@ namespace graphene { namespace protocol {
             asset                 paid;              ///< amount the bounded bucket funded (≤ claimed)
         };
 
+        /// Settlement-time LP return (goal #442 / q#681=D). Each direct market LP's principal is
+        /// returned unconditionally and they earn `income` — the market's liquidity fee + the
+        /// late-bet time-penalty pool + undistributed winners dust, split across LPs by amount·time
+        /// (pm::distribute_lp). `charge` is the F1/#300 uncovered shortfall withheld from that LP's
+        /// principal (0 normally). Emitted once per active LP row inside settle_liquidity so LP
+        /// income is finally visible in account_history — adjust_balance alone leaves no trace and
+        /// today the income is not reconstructable. Lazy-pool allocations (empty provider) return to
+        /// the pool's free_balance instead and do NOT emit this vop; their share of the market's
+        /// income is covered by the market-level `liquidity_fee_earned` counter.
+        struct pm_lp_payout_operation : public virtual_operation {
+            pm_lp_payout_operation() {}
+            pm_lp_payout_operation(const account_name_type& a, pm_vop_object_id_type m,
+                                   const asset& pr, const asset& inc, const asset& chr)
+                : account(a), market_id(m), principal(pr), income(inc), charge(chr) {}
+
+            account_name_type     account;
+            pm_vop_object_id_type market_id = 0;
+            asset                 principal;  ///< committed principal returned (net of `charge`)
+            asset                 income;     ///< LP bonus earned: liq_fee + time-penalty + dust
+            asset                 charge;     ///< F1 uncovered shortfall charged against principal
+        };
+
 } } // graphene::protocol
 
 FC_REFLECT((graphene::protocol::pm_batch_settle_operation), (market_id)(epoch)(settled_bets))
@@ -265,3 +287,5 @@ FC_REFLECT((graphene::protocol::pm_ban_expired_operation),
     (account)(oracle)(creator))
 FC_REFLECT((graphene::protocol::pm_early_exit_claim_paid_operation),
     (account)(market_id)(kind)(outcome_index)(claimed)(paid))
+FC_REFLECT((graphene::protocol::pm_lp_payout_operation),
+    (account)(market_id)(principal)(income)(charge))

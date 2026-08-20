@@ -515,6 +515,13 @@ namespace pm_detail {
             }
         }
 
+        // #442/#681=D: record the market's total LP income (liquidity fee + time-penalty pool +
+        // undistributed dust), written post-hoc at settlement for client observability. The old spec
+        // formula "liq_fee − liquidity_fee_earned" never matched the code — the field was never
+        // assigned; early-exit LP withdrawals earn no commission and void markets earn none either
+        // (bonus == 0 here). Round-trips through the snapshot as a plain reflected field.
+        db.modify(mkt, [&](pm_market_object& m) { m.liquidity_fee_earned = bonus; });
+
         for (size_t i = 0; i < active.size(); ++i) {
             const pm_liquidity_object& lp = *active[i];
             share_type share(shares[i]);
@@ -525,6 +532,14 @@ namespace pm_detail {
                 if (ret.value > 0)
                     db.adjust_balance(db.get_account(lp.provider), asset(ret, TOKEN_SYMBOL));
                 db.pm_adjust_frozen(lp.provider, 0, -lp.amount); // UNLOCK: full committed principal releases
+                // #442/#681=D: per-LP income visible in account_history (adjust_balance alone leaves
+                // no trace). Lazy-pool allocations (empty provider) return to the pool's free_balance
+                // and stay market-level only — covered by the liquidity_fee_earned counter above.
+                db.push_virtual_operation(pm_lp_payout_operation(
+                    lp.provider, mkt.id._id,
+                    asset(share_type(principal_ret), TOKEN_SYMBOL),
+                    asset(share, TOKEN_SYMBOL),
+                    asset(share_type(charge[i]), TOKEN_SYMBOL)));
             } else {
                 route_pool_lp_return(db, principal_ret, share.value); // lazy pool LP
             }

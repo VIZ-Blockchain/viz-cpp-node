@@ -388,7 +388,7 @@ winners_pool = losers_sum − oracle_fee − creator_fee − liquidity_fee
 ### Поля учёта комиссий
 
 - `oracle_fee_earned` — не используется на резолюции; комиссия считается из losers_sum
-- `liquidity_fee_earned` — накопленные комиссии LP, уже выплаченные рано вышедшим LP; на резолюции: `LP fee pool = max(0, floor(losers_sum × liquidity_fee_percent / 10000) − liquidity_fee_earned) + penalty_pool`
+- `liquidity_fee_earned` — фактически выплаченная LP-комиссия рынка (счётчик, пишется в `settle_liquidity` пост-фактум; до сеттла и на void-рынках равен 0). Ранний выход LP комиссии не приносит: `pm_withdraw_liquidity` требует `status == 0`, а `earned_fee` присваивается вместе с `status = 3` при сеттле, так что вывод этот доход увидеть не может. При сеттле бонус LP = `floor(losers_sum × liquidity_fee_percent / 10000) + penalty_pool + нераспределённая пыль` (§7), делится между активными LP пропорционально amount·time.
 - Per-bet `oracle_fee` и `liquidity_fee` записываются для аудита; не аккумулируются на рынке
 
 ### Округление
