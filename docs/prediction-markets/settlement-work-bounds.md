@@ -43,7 +43,8 @@ Nothing bounded the number of rows a market can carry:
   cheaper than betting, and it bypasses any bet-side floor;
 * the same class of cap already existed everywhere else — `MAX_PM_DEFERRED_CLAIMS_PER_MARKET`,
   `MAX_PM_DISPUTE_VOTES_PER_MARKET`, `MAX_PM_OPEN_COMMITS_PER_MARKET`, all 10 000. Bet rows were
-  the one member of the class left open.
+  the one member of the class left open. (`MAX_PM_DISPUTE_VOTES_PER_MARKET` was later raised to
+  100 000 with a vesting floor, see §4.6.)
 
 This does not need an attacker. A merely **popular** market walks into it: on the testnet, a toy
 bot betting from three accounts every ten minutes had already accumulated 734 rows on one market
@@ -331,9 +332,10 @@ build the stake-weighted tally, and charges the market a single unit of the mark
 A ballot is not a cheap row either — each one costs an account lookup plus a lazy-pool deposit
 lookup, the same order as the settlement row measured in §5 below.
 
-M3 already caps ballots at `MAX_PM_DISPUTE_VOTES_PER_MARKET` (10 000) per market, and the comment
-there reasoned that this made the finalize walk safe. It does not: the cap bounds *one* market,
-while §4 may finalize `cap` of them in a block, so the ceiling was `cap × 10 000` = 2 000 000 rows —
+M3 already caps ballots at `MAX_PM_DISPUTE_VOTES_PER_MARKET` per market — 10 000 as originally
+added, raised to 100 000 in 2026-08 with a vesting floor (see below) — and the comment there
+reasoned that this made the finalize walk safe. It does not: the cap bounds *one* market, while §4
+may finalize `cap` of them in a block, so the ceiling was `cap × 10 000` = 2 000 000 rows —
 three orders of magnitude above the budget every other sweep now respects. Filling it is slow (a
 ballot needs a distinct account per market, and 200 disputes cost 200 × `pm_dispute_fee` in escrow)
 but the ballots are durable state: the cost is spread over hours of chain time and the work is
@@ -346,6 +348,20 @@ the ballots it walked. Worst case per block becomes `row_budget` + one market's 
 of `cap` × ballot cap. Deferring a finalize by a block is economically inert: `pm_dispute_vote`
 refuses ballots past `voting_end_time`, so the electorate is already final when §4 gets there.
 Covered by `dispute_tally_row_budget_defers_next`.
+
+The row cap bounded *how many* ballots a market could hold, but a ballot was still free to cast, so
+a Sybil attacker could fill the cap with dust accounts and lock legitimate voters out. In 2026-08
+the cap was raised to 100 000 and a vesting floor `MAX_PM_DISPUTE_VOTE_MIN_VESTING` = 1000.000 VIZ
+was added to `pm_dispute_vote`: casting a ballot now requires `effective_vesting_shares` of at least
+1000 VIZ at vote time, pricing a ballot the same way `pm_min_bet` prices a bet row. The floor is not
+bypassable by delegation — revoking a delegation holds the delegator's `delegated_vesting_shares`
+for 5 days (`CHAIN_ENERGY_REGENERATION_SECONDS` via `vesting_delegation_expiration_object`), so one
+1000 VIZ pile can vote for at most one account per 5 days. Filling the 100 000 cap therefore
+requires ~100 000 × 1000 VIZ = 100 000 000 VIZ ≈ 91% of the supply (~110M VIZ), so the
+`row_budget` + ballot-cap worst case above is a theoretical ceiling, not a reachable one. The tally
+weight is read at finalize time from the voter's *current* effective vesting, so a ballot whose
+stake moved away after voting tallies ~0 — deliberate: it keeps total vote weight bounded by the
+actual supply and prevents weight-multiplication through delegation recycling.
 
 The ordering property this shares with §5 and §6 is worth stating once: the budget is spent in
 section order, so a block saturated by the void paths can leave nothing for the sweeps behind them.
@@ -577,9 +593,10 @@ must do without any per-block bound. Every path that could grow that work is now
   at least `pm_min_liquidity` (100 VIZ); they emit a loud log signal if one step ever overshoots the
   budget (§4.12). The liquidation cascade (§4.9) runs per transaction, sized by the leverage fund
   rather than a cap, and is unreachable today because of the #536 floor conflict.
-* **Hard caps close the rest.** `MAX_PM_DEFERRED_CLAIMS_PER_MARKET`,
-  `MAX_PM_DISPUTE_VOTES_PER_MARKET`, `MAX_PM_OPEN_COMMITS_PER_MARKET` (10 000 each) bound the
-  participant vectors that survive a market's lifetime.
+* **Hard caps close the rest.** `MAX_PM_DEFERRED_CLAIMS_PER_MARKET` (10 000),
+  `MAX_PM_DISPUTE_VOTES_PER_MARKET` (100 000, gated by a 1000 VIZ vesting floor),
+  `MAX_PM_OPEN_COMMITS_PER_MARKET` (10 000) bound the participant vectors that survive a market's
+  lifetime.
 
 The result: a spammer can still pay real money to make the chain do real work, but the work per
 block is bounded by the row budget, and the cost per row is priced at or above the collateral
