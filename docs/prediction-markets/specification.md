@@ -371,7 +371,7 @@ One-time fee per market. Set by oracle on profile. Paid by creator to oracle at 
 ### Fee Tracking Fields
 
 - `oracle_fee_earned` — not used at resolution; fee computed from losers_sum
-- `liquidity_fee_earned` — cumulative LP fees already paid to early-withdrawn LPs; at resolution: `LP fee pool = max(0, floor(losers_sum × liquidity_fee_percent / 10000) − liquidity_fee_earned) + penalty_pool`
+- `liquidity_fee_earned` — total LP commission actually paid out at settlement (a post-hoc counter written in `settle_liquidity`; 0 before that and on void markets). Early-exit LP withdrawals earn no commission: `pm_withdraw_liquidity` requires `status == 0`, while `earned_fee` is assigned together with `status = 3` at settlement, so the withdrawal path can never observe it. At settlement the LP bonus is `floor(losers_sum × liquidity_fee_percent / 10000) + penalty_pool + undistributed dust` (§7), split across active LPs by amount·time.
 - Per-bet `oracle_fee` and `liquidity_fee` recorded for audit; not accumulated on market
 
 ### Rounding

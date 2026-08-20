@@ -375,7 +375,7 @@ winners_pool = losers_sum − oracle_fee − creator_fee − liquidity_fee
 ### 费用追踪字段
 
 - `oracle_fee_earned` —— 裁定时不使用；费用从 losers_sum 计算
-- `liquidity_fee_earned` —— 已付给早退 LP 的累计 LP 费；裁定时：`LP fee pool = max(0, floor(losers_sum × liquidity_fee_percent / 10000) − liquidity_fee_earned) + penalty_pool`
+- `liquidity_fee_earned` —— 结算时实际支付给 LP 的总佣金（事后计数器，在 `settle_liquidity` 中写入；结算前及 void 市场为 0）。提前退出的 LP 不赚取佣金：`pm_withdraw_liquidity` 要求 `status == 0`，而 `earned_fee` 在结算时与 `status = 3` 一起赋值，因此提现路径永远观察不到它。结算时 LP 奖金 = `floor(losers_sum × liquidity_fee_percent / 10000) + penalty_pool + 未分配尘埃`（§7），按 amount·time 在活跃 LP 间分配。
 - 每笔下注的 `oracle_fee` 与 `liquidity_fee` 记录用于审计；不在市场上累加
 
 ### 取整
