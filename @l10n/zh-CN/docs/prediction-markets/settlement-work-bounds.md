@@ -37,8 +37,8 @@ while (it != idx.end() && ... && done < cap) {   // §5 auto-payouts
 * 一次**部分**的 `pm_transfer_position` 把一行拆成两行，完全不需要任何押注成本——比下注还便宜，
   而且绕过了任何下注侧的下限；
 * 同一类上限在其他地方早已存在——`MAX_PM_DEFERRED_CLAIMS_PER_MARKET`、
-  `MAX_PM_DISPUTE_VOTES_PER_MARKET`、`MAX_PM_OPEN_COMMITS_PER_MARKET`，全是 10 000。下注行是这一类
-  里唯一被留下的敞口。（`MAX_PM_DISPUTE_VOTES_PER_MARKET` 后来提高到 100 000 并加了质押门槛，见 §4.6。）
+  `pm_dispute_votes_per_market`、`MAX_PM_OPEN_COMMITS_PER_MARKET`，全是 10 000。下注行是这一类
+  里唯一被留下的敞口。（`pm_dispute_votes_per_market` 后来提高到 100 000 并加了质押门槛，见 §4.6。）
 
 这不需要攻击者。一个仅仅**热门**的市场就会撞进去：在测试网上，一个玩具机器人每十分钟从三个账户
 下注，已经在一个市场上累积了 734 行（另外两个是 571 和 552）。一个有数千参与者的 mainnet 市场要大
@@ -277,7 +277,7 @@ resume 点是动态全局属性里的第二个游标 `pm_batch_settle_bet_cursor
 选票也不是便宜的行——每张都要一次账户查找加一次 lazy-pool 存款查找，与 §5 里测得的结算行同一
 量级。
 
-M3 已经把每个市场的选票限制在 `MAX_PM_DISPUTE_VOTES_PER_MARKET`——最初加入时为 10 000，2026-08
+M3 已经把每个市场的选票限制在 `pm_dispute_votes_per_market`——最初加入时为 10 000，2026-08
 提高到 100 000 并加了质押门槛（见下文）——那里的注释推理说这让最终化遍历安全。并非如此：这个上限
 约束*一个*市场，而 §4 可以在一个区块内最终化 `cap` 个这样的市场，所以天花板是 `cap × 10 000` =
 2 000 000 行——比现在任何其他扫描尊重的预算高三个数量级。填满
@@ -292,7 +292,7 @@ M3 已经把每个市场的选票限制在 `MAX_PM_DISPUTE_VOTES_PER_MARKET`—�
 
 行上限约束了市场能持有的选票*数量*，但一张选票仍然是免费投出的，所以 Sybil 攻击者可以用灰尘账户
 填满上限并锁死合法投票者。2026-08 上限提高到 100 000，并在 `pm_dispute_vote` 中加入质押门槛
-`MAX_PM_DISPUTE_VOTE_MIN_VESTING` = 1000.000 VIZ：投选票现在要求投票时 `effective_vesting_shares`
+中位数投票的 `pm_dispute_vote_min_vesting` = 1000.000 VIZ：投选票现在要求投票时 `effective_vesting_shares`
 至少 1000 VIZ，和 `pm_min_bet` 给下注行定价一样给选票定价。该门槛无法通过委托绕过——撤销委托会把
 委托者的 `delegated_vesting_shares` 扣住 5 天（经 `vesting_delegation_expiration_object` 的
 `CHAIN_ENERGY_REGENERATION_SECONDS`），所以同一份 1000 VIZ 每 5 天至多投一个账户。填满 100 000 上限
@@ -488,7 +488,7 @@ markets)` 且不计量：一个空闲市场（当前时代无排队）在 LMSR q
   若单步超出预算则发出响亮的日志信号（§4.12）。清算级联（§4.9）按交易运行，其规模由杠杆基金决定
   而非上限，且因 #536 门槛冲突目前不可达。
 * **硬上限封堵其余部分。** `MAX_PM_DEFERRED_CLAIMS_PER_MARKET`（10 000）、
-  `MAX_PM_DISPUTE_VOTES_PER_MARKET`（100 000，受 1000 VIZ 质押门槛约束）、
+  `pm_dispute_votes_per_market`（100 000，受 1000 VIZ 质押门槛约束）、
   `MAX_PM_OPEN_COMMITS_PER_MARKET`（10 000）限制了跨市场生命周期存续的参与者向量。
 
 结论：攻击者仍然可以支付真金白银让链做真实的工作，但每个区块的工作量受行预算约束，每行的成本不低于
