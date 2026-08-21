@@ -112,7 +112,7 @@
 
 ### Голосование комитета (HF14)
 
-Антиспам-ограничения на бюллетени заявок DAO-комитета, действуют с HF14.
+Антиспам-ограничения на бюллетени заявок DAO-комитета, действуют с HF14. Эти два поля живут в **PM-структуре** (`chain_properties_pm`, версия 5), а не в базовой `chain_properties_hf9` — чтобы не трогать уже действующий wire-формат hf9 и не ломать позиционную раскладку голосов валидаторов до HF14.
 
 | Параметр | Тип | По умолчанию | Описание |
 |---------|-----|------------|---------|
@@ -130,9 +130,9 @@
 | `chain_properties_init` | 0 | Генезис | account_creation_fee, maximum_block_size, параметры делегирования, курация, пропускная способность, стоимость флага, минимальные rshares, порог комитета |
 | `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
 | `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, validator_miss_penalty_percent, validator_miss_penalty_duration |
-| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals, committee_votes_per_request, committee_vote_min_vesting |
+| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals |
 | `chain_properties_hf13` | 4 | HF13 | distribution_epoch_length |
-| `chain_properties_pm` | 5 | HF14 | ~30 параметров прогнозных рынков + kill-switch `pm_commit_reveal_enabled`, `pm_lazy_pool_enabled` |
+| `chain_properties_pm` | 5 | HF14 | ~30 параметров прогнозных рынков + kill-switch `pm_commit_reveal_enabled`, `pm_lazy_pool_enabled` + голосовые капсы `committee_votes_per_request`, `committee_vote_min_vesting`, `pm_dispute_votes_per_market`, `pm_dispute_vote_min_vesting` |
 
 Для всех новых публикаций параметров валидатора используйте индекс версии **5** (`chain_properties_pm`). Индекс 4 — `chain_properties_hf13` (`distribution_epoch_length`).
 

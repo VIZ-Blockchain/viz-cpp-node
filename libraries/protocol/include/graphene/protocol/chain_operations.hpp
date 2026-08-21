@@ -550,19 +550,6 @@ namespace graphene { namespace protocol {
              */
             uint16_t withdraw_intervals = CHAIN_VESTING_WITHDRAW_INTERVALS;
 
-            /**
-             *  Consensus - Cap on the number of ballots a single committee request accumulates
-             *  before further votes are rejected (bounds the per-request tally work; HF14-gated).
-             */
-            uint32_t committee_votes_per_request = 100000;
-
-            /**
-             *  Consensus - Minimum effective vesting (in VIZ, converted to SHARES at vote time)
-             *  a voter must hold to cast/revise a committee ballot — Sybil floor. HF14-gated.
-             */
-            asset committee_vote_min_vesting = asset(1000000, TOKEN_SYMBOL);
-
-
             void validate() const {
                 chain_properties_hf6::validate();
                 FC_ASSERT(create_invite_min_balance.amount > 0);
@@ -578,9 +565,6 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(validator_declaration_fee.amount > 0);
                 FC_ASSERT(validator_declaration_fee.symbol == TOKEN_SYMBOL);
                 FC_ASSERT(withdraw_intervals > 0);
-                FC_ASSERT(committee_votes_per_request > 0);
-                FC_ASSERT(committee_vote_min_vesting.amount > 0);
-                FC_ASSERT(committee_vote_min_vesting.symbol == TOKEN_SYMBOL);
             }
 
             chain_properties_hf9& operator=(const chain_properties_init& src) {
@@ -743,6 +727,13 @@ namespace graphene { namespace protocol {
             // effective-vesting floor for a dispute ballot, mirroring committee_vote_min_vesting.
             uint32_t pm_dispute_votes_per_market            = 100000;
             asset    pm_dispute_vote_min_vesting            = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
+            // Committee anti-spam / Sybil floors (median-voted, HF14-gated). Committee voting predates
+            // HF14, so these caps live in the PM struct rather than extending the already-live hf9 wire
+            // format — adding fields to chain_properties_hf9 would re-serialize existing validator
+            // versioned_chain_properties votes with a new positional layout and break pre-HF14 voters.
+            // Enforcement is gated on HF14 in committee_evaluator.
+            uint32_t committee_votes_per_request            = 100000;
+            asset    committee_vote_min_vesting             = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
 
             void validate() const {
                 chain_properties_hf13::validate();
@@ -826,6 +817,8 @@ namespace graphene { namespace protocol {
                 check_token(pm_leverage_min_market_liquidity, "pm_leverage_min_market_liquidity");
                 check_token(pm_dispute_vote_min_vesting, "pm_dispute_vote_min_vesting");
                 FC_ASSERT(pm_dispute_votes_per_market > 0, "pm_dispute_votes_per_market must be positive");
+                check_token(committee_vote_min_vesting, "committee_vote_min_vesting");
+                FC_ASSERT(committee_votes_per_request > 0, "committee_votes_per_request must be positive");
             }
 
             chain_properties_pm& operator=(const chain_properties_init& src) { chain_properties_init::operator=(src); return *this; }
@@ -1416,8 +1409,7 @@ FC_REFLECT_DERIVED(
     (data_operations_cost_additional_bandwidth)(validator_miss_penalty_percent)(validator_miss_penalty_duration))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf9),((graphene::protocol::chain_properties_hf6)),
-    (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(validator_declaration_fee)(withdraw_intervals)
-    (committee_votes_per_request)(committee_vote_min_vesting))
+    (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(validator_declaration_fee)(withdraw_intervals))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf13),((graphene::protocol::chain_properties_hf9)),
     (distribution_epoch_length))
@@ -1441,6 +1433,7 @@ FC_REFLECT_DERIVED(
     (pm_conversion_profit_cost_percent)
     (pm_closed_market_retention_sec)(pm_early_exit_reward_cap_percent)
     (pm_min_bet)(pm_settle_rows_per_block)
+    (committee_votes_per_request)(committee_vote_min_vesting)
     (pm_dispute_votes_per_market)(pm_dispute_vote_min_vesting))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))

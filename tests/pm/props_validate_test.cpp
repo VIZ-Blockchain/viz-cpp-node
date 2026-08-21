@@ -83,10 +83,11 @@ BOOST_AUTO_TEST_CASE(dispute_params_bounds) {
 }
 
 // q#689 (2026-08-21): the four vote caps moved from #define constants to median-voted chain
-// properties. validate() is their only consensus gate. Committee caps live on the base hf9
-// struct (inherited by pm), the dispute caps on pm.
+// properties. validate() is their only consensus gate. All four live on the PM struct (HF14) —
+// the committee caps were moved off the base hf9 struct so pre-HF14 validator votes keep their
+// original positional wire layout.
 BOOST_AUTO_TEST_CASE(vote_caps_bounds) {
-    // Committee (base hf9): per-request ballot cap + per-voter vesting floor.
+    // Committee (PM struct, HF14-gated enforcement): per-request ballot cap + per-voter vesting floor.
     expect_fail([](chain_properties_pm& p) { p.committee_votes_per_request = 0; });
     expect_fail([](chain_properties_pm& p) { p.committee_vote_min_vesting.amount = 0; });
     expect_fail([](chain_properties_pm& p) { p.committee_vote_min_vesting.symbol = SHARES_SYMBOL; });

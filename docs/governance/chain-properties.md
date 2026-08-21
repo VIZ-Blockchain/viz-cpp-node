@@ -112,7 +112,7 @@ All fees go to the committee fund (DAO treasury).
 
 ### Committee Voting (HF14)
 
-Anti-spam bounds on DAO committee-request ballots, enforced from HF14.
+Anti-spam bounds on DAO committee-request ballots, enforced from HF14. These two fields live in the **PM struct** (`chain_properties_pm`, version 5) — not the base `chain_properties_hf9` — so the already-live hf9 wire format is left untouched and pre-HF14 validator votes keep their original positional layout.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -130,9 +130,9 @@ Properties were introduced in hardfork stages:
 | `chain_properties_init` | 0 | Genesis | account_creation_fee, maximum_block_size, delegation params, curation, bandwidth, flag cost, vote min rshares, committee threshold |
 | `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
 | `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, validator_miss_penalty_percent, validator_miss_penalty_duration |
-| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals, committee_votes_per_request, committee_vote_min_vesting |
+| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals |
 | `chain_properties_hf13` | 4 | HF13 | distribution_epoch_length |
-| `chain_properties_pm` | 5 | HF14 | ~30 prediction-market parameters + kill-switches `pm_commit_reveal_enabled`, `pm_lazy_pool_enabled` |
+| `chain_properties_pm` | 5 | HF14 | ~30 prediction-market parameters + kill-switches `pm_commit_reveal_enabled`, `pm_lazy_pool_enabled` + vote caps `committee_votes_per_request`, `committee_vote_min_vesting`, `pm_dispute_votes_per_market`, `pm_dispute_vote_min_vesting` |
 
 Use version index **5** (`chain_properties_pm`) for all new validator property submissions. (Index 4 is `chain_properties_hf13`, which added `distribution_epoch_length`.)
 
