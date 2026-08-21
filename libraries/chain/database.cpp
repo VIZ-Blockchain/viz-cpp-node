@@ -3730,6 +3730,8 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_hf9::subaccount_on_sale_fee);
                 calc_median(&chain_properties_hf9::validator_declaration_fee);
                 calc_median(&chain_properties_hf9::withdraw_intervals);
+                calc_median(&chain_properties_hf9::committee_votes_per_request);
+                calc_median(&chain_properties_hf9::committee_vote_min_vesting);
             }
             if(has_hardfork(CHAIN_HARDFORK_13)){
                 calc_median(&chain_properties_hf13::distribution_epoch_length);
@@ -3767,6 +3769,8 @@ namespace graphene { namespace chain {
                 // default and is silently un-votable (the pm_closed_market_retention_sec bug).
                 calc_median(&chain_properties_pm::pm_min_bet);
                 calc_median(&chain_properties_pm::pm_settle_rows_per_block);
+                calc_median(&chain_properties_pm::pm_dispute_votes_per_market);
+                calc_median(&chain_properties_pm::pm_dispute_vote_min_vesting);
                 calc_median(&chain_properties_pm::pm_lazy_pool_enabled);
                 calc_median(&chain_properties_pm::pm_lazy_alloc_percent);
                 calc_median(&chain_properties_pm::pm_lazy_max_total_alloc_percent);

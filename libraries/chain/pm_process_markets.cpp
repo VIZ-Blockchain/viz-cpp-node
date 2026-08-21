@@ -1638,7 +1638,7 @@ void database::process_pm_markets() {
         auto it = idx.lower_bound(boost::make_tuple(
             (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
         // #432 follow-up: the tally below walks EVERY ballot of the disputed market (M3 caps them at
-        // MAX_PM_DISPUTE_VOTES_PER_MARKET) while charging a single `cap` slot, so a full sweep could
+        // pm_dispute_votes_per_market) while charging a single `cap` slot, so a full sweep could
         // visit cap × ballot-cap rows in one block — orders of magnitude past the row budget every
         // other sweep now respects. A tally cannot be resumed the way settlement is (the verdict
         // needs all ballots at once, and parking the partial per-outcome sums would mean carrying a

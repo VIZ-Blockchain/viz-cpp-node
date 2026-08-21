@@ -550,6 +550,18 @@ namespace graphene { namespace protocol {
              */
             uint16_t withdraw_intervals = CHAIN_VESTING_WITHDRAW_INTERVALS;
 
+            /**
+             *  Consensus - Cap on the number of ballots a single committee request accumulates
+             *  before further votes are rejected (bounds the per-request tally work; HF14-gated).
+             */
+            uint32_t committee_votes_per_request = 100000;
+
+            /**
+             *  Consensus - Minimum effective vesting (in VIZ, converted to SHARES at vote time)
+             *  a voter must hold to cast/revise a committee ballot — Sybil floor. HF14-gated.
+             */
+            asset committee_vote_min_vesting = asset(1000000, TOKEN_SYMBOL);
+
 
             void validate() const {
                 chain_properties_hf6::validate();
@@ -566,6 +578,9 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(validator_declaration_fee.amount > 0);
                 FC_ASSERT(validator_declaration_fee.symbol == TOKEN_SYMBOL);
                 FC_ASSERT(withdraw_intervals > 0);
+                FC_ASSERT(committee_votes_per_request > 0);
+                FC_ASSERT(committee_vote_min_vesting.amount > 0);
+                FC_ASSERT(committee_vote_min_vesting.symbol == TOKEN_SYMBOL);
             }
 
             chain_properties_hf9& operator=(const chain_properties_init& src) {
@@ -722,6 +737,12 @@ namespace graphene { namespace protocol {
             // the winners' pool. This is the bp cap of that slice (3300 = 33% of losers_sum).
             // Median-voted (validator param). See early-exit-deferred-claim.md.
             uint16_t pm_early_exit_reward_cap_percent       = 3300;   ///< bp of losers_sum for early-exit claims
+            // Dispute anti-spam / Sybil floors (median-voted). pm_dispute_votes_per_market caps the
+            // number of ballot rows a single market can accumulate — it bounds the §4 tally pass per
+            // market (see settlement-work-bounds.md §4.6). pm_dispute_vote_min_vesting is the
+            // effective-vesting floor for a dispute ballot, mirroring committee_vote_min_vesting.
+            uint32_t pm_dispute_votes_per_market            = 100000;
+            asset    pm_dispute_vote_min_vesting            = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
 
             void validate() const {
                 chain_properties_hf13::validate();
@@ -803,6 +824,8 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_conversion_profit_cost_percent <= 100, "pm_conversion_profit_cost_percent out of range");
                 FC_ASSERT(pm_early_exit_reward_cap_percent <= 10000, "pm_early_exit_reward_cap_percent out of range");
                 check_token(pm_leverage_min_market_liquidity, "pm_leverage_min_market_liquidity");
+                check_token(pm_dispute_vote_min_vesting, "pm_dispute_vote_min_vesting");
+                FC_ASSERT(pm_dispute_votes_per_market > 0, "pm_dispute_votes_per_market must be positive");
             }
 
             chain_properties_pm& operator=(const chain_properties_init& src) { chain_properties_init::operator=(src); return *this; }
@@ -1393,7 +1416,8 @@ FC_REFLECT_DERIVED(
     (data_operations_cost_additional_bandwidth)(validator_miss_penalty_percent)(validator_miss_penalty_duration))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf9),((graphene::protocol::chain_properties_hf6)),
-    (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(validator_declaration_fee)(withdraw_intervals))
+    (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(validator_declaration_fee)(withdraw_intervals)
+    (committee_votes_per_request)(committee_vote_min_vesting))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf13),((graphene::protocol::chain_properties_hf9)),
     (distribution_epoch_length))
@@ -1416,7 +1440,8 @@ FC_REFLECT_DERIVED(
     (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_leverage_funding_rate_ppm_per_day)
     (pm_conversion_profit_cost_percent)
     (pm_closed_market_retention_sec)(pm_early_exit_reward_cap_percent)
-    (pm_min_bet)(pm_settle_rows_per_block))
+    (pm_min_bet)(pm_settle_rows_per_block)
+    (pm_dispute_votes_per_market)(pm_dispute_vote_min_vesting))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 

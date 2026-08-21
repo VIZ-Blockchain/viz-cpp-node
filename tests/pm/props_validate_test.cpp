@@ -82,6 +82,20 @@ BOOST_AUTO_TEST_CASE(dispute_params_bounds) {
     expect_fail([](chain_properties_pm& p) { p.pm_dispute_reward_multiplier = 1000001; });
 }
 
+// q#689 (2026-08-21): the four vote caps moved from #define constants to median-voted chain
+// properties. validate() is their only consensus gate. Committee caps live on the base hf9
+// struct (inherited by pm), the dispute caps on pm.
+BOOST_AUTO_TEST_CASE(vote_caps_bounds) {
+    // Committee (base hf9): per-request ballot cap + per-voter vesting floor.
+    expect_fail([](chain_properties_pm& p) { p.committee_votes_per_request = 0; });
+    expect_fail([](chain_properties_pm& p) { p.committee_vote_min_vesting.amount = 0; });
+    expect_fail([](chain_properties_pm& p) { p.committee_vote_min_vesting.symbol = SHARES_SYMBOL; });
+    // PM dispute: per-market ballot cap + per-voter vesting floor.
+    expect_fail([](chain_properties_pm& p) { p.pm_dispute_votes_per_market = 0; });
+    expect_fail([](chain_properties_pm& p) { p.pm_dispute_vote_min_vesting.amount = 0; });
+    expect_fail([](chain_properties_pm& p) { p.pm_dispute_vote_min_vesting.symbol = SHARES_SYMBOL; });
+}
+
 BOOST_AUTO_TEST_CASE(batch_commit_reveal_bounds) {
     expect_fail([](chain_properties_pm& p) { p.pm_commit_no_reveal_penalty_percent = 10001; });
     // M4: batch-bet spam floor — votable down to 1 satoshi before the audit fix.

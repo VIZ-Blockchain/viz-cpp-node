@@ -5607,7 +5607,7 @@ BOOST_AUTO_TEST_CASE(batch_queue_row_budget_spans_blocks) {
 }
 
 // #432 follow-up — cron §4 (dispute voting finalize) charges ONE cap slot per dispute but tallies
-// EVERY ballot of the disputed market, so a full sweep could visit cap × MAX_PM_DISPUTE_VOTES_PER_MARKET
+// EVERY ballot of the disputed market, so a full sweep could visit cap × pm_dispute_votes_per_market
 // rows in one block. A tally cannot be split across blocks (the verdict needs all ballots at once),
 // so the budget is enforced between disputes. Two ballot-heavy disputes whose voting closes in the
 // same block must therefore finalize in DIFFERENT blocks.

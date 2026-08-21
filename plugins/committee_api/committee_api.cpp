@@ -106,7 +106,7 @@ namespace graphene { namespace plugins { namespace committee_api {
         CHECK_ARG_MIN_SIZE(1, 1)
         auto request_id = args.args->at(0).as<uint32_t>();
         // q#687 note: the per-vote get_account() walk below is bounded — committee_vote_request_evaluator
-        // caps ballots at MAX_COMMITTEE_VOTES_PER_REQUEST (HF14), so this API is O(≤100k) per call.
+        // caps ballots at committee_votes_per_request (HF14), so this API is O(≤100k) per call.
         // No pagination: the projection must tally every ballot.
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {

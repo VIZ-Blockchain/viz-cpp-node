@@ -89,6 +89,7 @@ namespace graphene { namespace chain {
 
     void committee_vote_request_evaluator::do_apply(const committee_vote_request_operation& o) {
         const auto &voter = _db.get_account(o.voter);
+        const auto &median_props = _db.get_validator_schedule_object().median_props;
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!voter.valid, "Account flagged as invalid");
         const auto &idx = _db.get_index<committee_request_index>().indices().get<by_request_id>();
@@ -101,8 +102,7 @@ namespace graphene { namespace chain {
             // anyone casts/revises a ballot. Gated on HF14 so pre-fork sub-floor voters are unaffected.
             if (_db.has_hardfork(CHAIN_HARDFORK_14)) {
                 const auto vprice = _db.get_dynamic_global_properties().get_vesting_share_price();
-                const asset min_shares =
-                    asset(share_type(MAX_COMMITTEE_VOTE_MIN_VESTING), TOKEN_SYMBOL) * vprice;
+                const asset min_shares = median_props.committee_vote_min_vesting * vprice;
                 FC_ASSERT(voter.effective_vesting_shares() >= min_shares,
                           "Insufficient vesting for committee vote (min 1000.000 VIZ)");
             }
@@ -119,7 +119,7 @@ namespace graphene { namespace chain {
                 });
             } else {
                 if (_db.has_hardfork(CHAIN_HARDFORK_14)) {
-                    FC_ASSERT(itr->votes_count < MAX_COMMITTEE_VOTES_PER_REQUEST,
+                    FC_ASSERT(itr->votes_count < median_props.committee_votes_per_request,
                               "Committee request vote cap reached");
                 }
                 _db.create<committee_vote_object>([&](committee_vote_object& c) {

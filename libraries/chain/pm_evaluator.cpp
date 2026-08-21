@@ -1084,6 +1084,7 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
     auto& db = _db;
     FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
     const auto now = db.head_block_time();
+    const auto& mp = median(db);
 
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.dispute_mode == 0, "Vote only for committee-mode disputes");
@@ -1102,8 +1103,7 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
     // by dust-stake accounts that would otherwise lock out real holders. Expressed in the same unit
     // the tally weighs (effective_vesting_shares), so the gate matches what actually counts.
     const auto vprice = db.get_dynamic_global_properties().get_vesting_share_price();
-    const asset min_shares =
-        asset(share_type(MAX_PM_DISPUTE_VOTE_MIN_VESTING), TOKEN_SYMBOL) * vprice;
+    const asset min_shares = mp.pm_dispute_vote_min_vesting * vprice;
     FC_ASSERT(db.get_account(o.voter).effective_vesting_shares() >= min_shares,
               "Insufficient vesting for dispute vote (min 1000.000 VIZ)");
 
@@ -1128,7 +1128,7 @@ void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
         // and per-tx work no cron budget covers — the same antipattern M4 removed from the commit
         // path with open_commits. The count now lives on the dispute row. Ballots are never
         // deleted individually (GC drops the whole cluster), so it only ever grows.
-        FC_ASSERT(dit->ballots < MAX_PM_DISPUTE_VOTES_PER_MARKET, "Dispute ballot cap reached");
+        FC_ASSERT(dit->ballots < mp.pm_dispute_votes_per_market, "Dispute ballot cap reached");
         db.create<pm_dispute_vote_object>([&](pm_dispute_vote_object& v) {
             v.market       = mkt.id;
             v.voter        = o.voter;

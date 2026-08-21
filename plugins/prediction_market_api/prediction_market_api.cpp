@@ -1166,7 +1166,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     }
 
     // D6 note: the per-vote get_account() walk below is bounded — pm_dispute_vote_evaluator caps
-    // ballots at MAX_PM_DISPUTE_VOTES_PER_MARKET (M3, now 100k per q#686), so this API is O(≤100k)
+    // ballots at pm_dispute_votes_per_market (M3, now 100k per q#686), so this API is O(≤100k)
     // per call. No pagination: the projection fields must tally every ballot.
     DEFINE_API(prediction_market_api, get_dispute_votes) {
         CHECK_ARG_SIZE(1)
