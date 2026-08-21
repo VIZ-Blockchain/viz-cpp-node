@@ -187,12 +187,31 @@ jobs:
           cd $GITHUB_WORKSPACE/build
           mingw32-make -j$(nproc) cli_wallet
       # -------------------------------------------------------
+      # 10b. Build the tray launcher (Go, static, GUI subsystem)
+      # -------------------------------------------------------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: contrib/windows/vizd-tray/go.sum
+
+      - name: Build vizd-tray
+        shell: pwsh
+        run: |
+          cd $env:GITHUB_WORKSPACE/contrib/windows/vizd-tray
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -trimpath -ldflags "-s -w -H windowsgui" -o $env:GITHUB_WORKSPACE/build/vizd-tray.exe .
+      # -------------------------------------------------------
       # 11. Verify binaries
       # -------------------------------------------------------
       - name: Verify binaries
         run: |
           ls -lh $GITHUB_WORKSPACE/build/programs/vizd/vizd.exe
           ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
+          ls -lh $GITHUB_WORKSPACE/build/vizd-tray.exe
       # -------------------------------------------------------
       # 12. Derive release metadata
       #     Tag: win-<short-sha>  e.g. win-a1b2c3d
@@ -226,5 +245,6 @@ jobs:
           files: |
             build/programs/vizd/vizd.exe
             build/programs/cli_wallet/cli_wallet.exe
+            build/vizd-tray.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

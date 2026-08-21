@@ -31,6 +31,21 @@
 
 #include <graphene/utilities/git_revision.hpp>
 
+#ifdef _WIN32
+#include <windows.h>
+
+/// Tray-launcher support: the launcher owns the console window lifecycle.
+/// Surviving CTRL_CLOSE_EVENT lets the launcher hide the window when it is
+/// closed instead of the process being terminated. All other events
+/// (CTRL_C_EVENT in particular) fall through so the appbase SIGINT handler
+/// performs a clean shutdown.
+static BOOL WINAPI vizd_tray_console_ctrl_handler(DWORD ctrl_type) {
+    if (ctrl_type == CTRL_CLOSE_EVENT)
+        return TRUE;
+    return FALSE;
+}
+#endif
+
 using graphene::protocol::version;
 
 
@@ -120,6 +135,12 @@ int main( int argc, char** argv ) {
         } catch (const fc::exception&) {
             wlog("Error parsing logging config");
         }
+
+#ifdef _WIN32
+        // Let the tray launcher manage the console window: closing it (X)
+        // must hide vizd, not stop it. See vizd_tray_console_ctrl_handler.
+        SetConsoleCtrlHandler(vizd_tray_console_ctrl_handler, TRUE);
+#endif
 
         appbase::app().startup();
         appbase::app().exec();
