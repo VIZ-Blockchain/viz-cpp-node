@@ -28,4 +28,4 @@ ships `vizd-tray.exe` next to `vizd.exe`.
 ## Layout
 
 - `main.go` — tray, console management, vizd lifecycle, autostart.
-- `icon.ico` — placeholder tray icon (replace with a proper VIZ icon).
+- `icon.ico` — VIZ logo tray icon (multi-resolution: 16-256 px).
