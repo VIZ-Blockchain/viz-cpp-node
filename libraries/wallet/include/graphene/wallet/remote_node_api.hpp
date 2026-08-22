@@ -103,6 +103,50 @@ struct remote_validator_api {
     uint64_t get_validator_count();
 };
 
+/**
+ * Dummy signature class for the HF14 prediction_market_api plugin (Onix). Each method mirrors the
+ * node's msg_pack read API by name; fc::api serialises the positional args into the JSON-RPC array
+ * the plugin unpacks. Not used to execute calls — only to format them.
+ */
+struct remote_prediction_market_api {
+    // Every read method returns fc::variant rather than the node's typed object. The chainbase state
+    // objects (pm_market_object, pm_bet_object, …) and the API DTOs that embed them are intentionally
+    // NOT default-constructible (deleted default ctor / shared_string members need a segment manager),
+    // so fc::api's client-side deserializer (`T tmp; var.as<T>()`) cannot instantiate them. The node
+    // already emits fully-formed JSON; the wallet just forwards it as a variant (cli_wallet prints it).
+    fc::variant  get_market( int64_t );
+    fc::variant  list_markets( int8_t, uint32_t, uint32_t );
+    fc::variant  list_markets_by_oracle( account_name_type, uint32_t, uint32_t );
+    fc::variant  list_markets_by_oracle_status( account_name_type, int8_t, uint32_t, uint32_t );
+    fc::variant  list_markets_by_creator( account_name_type, uint32_t, uint32_t );
+    fc::variant  get_market_outcomes( int64_t );
+    fc::variant  get_market_weight_sums( int64_t );
+    fc::variant  get_market_bets( int64_t, uint32_t, uint32_t );
+    fc::variant  get_account_positions( account_name_type, uint32_t, uint32_t );
+    fc::variant  get_market_liquidity( int64_t, uint32_t, uint32_t );
+    fc::variant  get_account_leverage_positions( account_name_type, uint32_t, uint32_t );
+    fc::variant  get_market_leverage_positions( int64_t, uint32_t, uint32_t );
+    fc::variant  get_creator_ban( account_name_type );
+    fc::variant  get_oracle( account_name_type );
+    fc::variant  list_oracles( uint32_t, uint32_t );
+    fc::variant  get_dispute( int64_t );
+    fc::variant  get_dispute_votes( int64_t );
+    fc::variant  get_lazy_pool();
+    fc::variant  get_lazy_deposit( account_name_type );
+    fc::variant  get_pm_chain_properties();
+    fc::variant  get_market_meta( int64_t );
+    fc::variant  list_markets_by_category( string, uint32_t, uint32_t );
+    fc::variant  list_markets_by_event( string, uint32_t, uint32_t );
+    fc::variant  get_market_kline( int64_t, uint32_t, uint32_t );
+    fc::variant  get_leverage_quote( int64_t, int16_t, int64_t );
+    fc::variant  get_leverage_close_preview( int64_t );
+    fc::variant  get_leverage_convert_preview( int64_t );
+    fc::variant  get_market_categories();
+    fc::variant  get_market_full( int64_t, account_name_type );
+    fc::variant  get_lazy_allocations( uint32_t, uint32_t );
+    fc::variant  get_market_lazy_allocation( int64_t );
+};
+
 } }
 
 /**
@@ -175,4 +219,41 @@ FC_API( graphene::wallet::remote_validator_api,
         (get_validator_count)
         (get_validator_by_account)
         (lookup_validator_accounts)
+)
+
+/**
+ * Declaration of remote API formatter to prediction_market_api plugin on remote node
+ */
+FC_API( graphene::wallet::remote_prediction_market_api,
+        (get_market)
+        (list_markets)
+        (list_markets_by_oracle)
+        (list_markets_by_oracle_status)
+        (list_markets_by_creator)
+        (get_market_outcomes)
+        (get_market_weight_sums)
+        (get_market_bets)
+        (get_account_positions)
+        (get_market_liquidity)
+        (get_account_leverage_positions)
+        (get_market_leverage_positions)
+        (get_creator_ban)
+        (get_oracle)
+        (list_oracles)
+        (get_dispute)
+        (get_dispute_votes)
+        (get_lazy_pool)
+        (get_lazy_deposit)
+        (get_pm_chain_properties)
+        (get_market_meta)
+        (list_markets_by_category)
+        (list_markets_by_event)
+        (get_market_kline)
+        (get_leverage_quote)
+        (get_leverage_close_preview)
+        (get_leverage_convert_preview)
+        (get_market_categories)
+        (get_market_full)
+        (get_lazy_allocations)
+        (get_market_lazy_allocation)
 )

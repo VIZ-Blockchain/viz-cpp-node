@@ -2,7 +2,7 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-#define CHAIN_VERSION                         (version(3, 0, 0))
+#define CHAIN_VERSION                         (version(4, 0, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZTEST"
@@ -136,7 +136,6 @@
 #define COMMITTEE_MAX_REQUIRED_AMOUNT         int64_t(CHAIN_INIT_SUPPLY/100)
 #define COMMITTEE_REQUEST_PER_TIME            (60)
 #define COMMITTEE_REQUEST_PROCESSING          (CHAIN_BLOCKS_PER_HOUR/60) //every 1 minutes
-
 #define CONSENSUS_FLAG_ENERGY_ADDITIONAL_COST 0
 #define CONSENSUS_VOTE_ACCOUNTING_MIN_RSHARES uint32_t(5000000) // default 0.5 SHARES equivalent
 #define CONSENSUS_COMMITTEE_REQUEST_APPROVE_MIN_PERCENT 1000 // default: 10.00%
@@ -194,7 +193,16 @@
 #define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)
 
 /// Chainbase schema version — must match CHAIN_SCHEMA_VERSION in config.hpp.
-#define CHAIN_SCHEMA_VERSION                  uint32_t(13)
+#define CHAIN_SCHEMA_VERSION                  uint32_t(14)
+
+// HF14 prediction-market byte-length caps — IDENTICAL to config.hpp (consensus-mechanical,
+// see the note there). Only the HF14 activation TIME differs between mainnet/testnet.
+#define MAX_PM_DECISION_URL_LEN               256
+#define MAX_PM_PROFILE_URL_LEN                256
+#define MAX_PM_DISPUTE_REASON_LEN             1024
+#define MAX_PM_MARKET_TITLE_LEN               256
+#define MAX_PM_OUTCOME_LABEL_LEN              64
+#define MAX_PM_OUTCOMES_PER_MARKET            128
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

@@ -110,6 +110,15 @@
 |------|------|-------|------|
 | `withdraw_intervals` | uint16 | 28 | SHARES 解除质押的每日分期数 |
 
+### 委员会投票 (HF14)
+
+对 DAO 委员会请求选票的反垃圾限制，自 HF14 起生效。这两个字段位于 **PM 结构**（`chain_properties_pm`，版本 5）而非基础 `chain_properties_hf9` —— 以免改动已生效的 hf9 wire 格式，破坏 HF14 之前验证者投票的原有位置布局。
+
+| 属性 | 类型 | 默认值 | 描述 |
+|------|------|-------|------|
+| `committee_votes_per_request` | uint32 | 100 000 | 单个委员会请求在拒绝新投票前可累积的最大选票数 |
+| `committee_vote_min_vesting` | asset (VIZ) | 1000.000 VIZ | 投票时所需的最低有效质押（换算为 SHARES），用于投出或修改委员会选票 |
+
 ---
 
 ## 属性版本
@@ -123,7 +132,7 @@
 | `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth、validator_miss_penalty_percent、validator_miss_penalty_duration |
 | `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance、committee_create_request_fee、create_paid_subscription_fee、account_on_sale_fee、subaccount_on_sale_fee、validator_declaration_fee、withdraw_intervals |
 | `chain_properties_hf13` | 4 | HF13 | distribution_epoch_length |
-| `chain_properties_pm` | 5 | HF14 | ~30 个预测市场参数 + 终止开关 `pm_commit_reveal_enabled`、`pm_lazy_pool_enabled` |
+| `chain_properties_pm` | 5 | HF14 | ~30 个预测市场参数 + 终止开关 `pm_commit_reveal_enabled`、`pm_lazy_pool_enabled` + 投票上限 `committee_votes_per_request`、`committee_vote_min_vesting`、`pm_dispute_votes_per_market`、`pm_dispute_vote_min_vesting` |
 
 所有新的验证者属性提交请使用版本索引 **5**（`chain_properties_pm`）。索引 4 为 `chain_properties_hf13`（`distribution_epoch_length`）。
 
@@ -137,7 +146,7 @@
 - **风险 / 覆盖率** *（市场下注量的百分比，100 = 1.0×）：* `pm_listing_min_coverage_percent`（250 = 2.5×）——预言机保险覆盖低于其下注量此比例的市场，会从默认 `list_markets` 目录中隐藏（经 `show_risky` 显示）；`pm_betting_min_coverage_percent`（150 = 1.5×）——建议性阈值，发布供客户端在下注前要求显式风险确认（不在链上强制；须 `≤ pm_listing_min_coverage_percent`）。
 - **市场：** `pm_min_liquidity`、`pm_market_creation_fee`、`pm_max_outcomes`、`pm_max_market_duration`。*（无聚合费率上限；creator/liquidity 费率无上限、自我约束；静态 `总和 ≤ 100%` 偿付不变式。）*
 - **批次 / 承诺-揭示：** `pm_batch_epoch_blocks`、`pm_reveal_window_blocks`、`pm_min_batch_bet`、`pm_commit_no_reveal_penalty_percent`、`pm_commit_reveal_enabled`。
-- **争议：** `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`、`pm_no_contest_penalty_percent`、`pm_dispute_reward_multiplier`（bp 乘数，10000 = 1×）。
+- **争议：** `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`、`pm_no_contest_penalty_percent`、`pm_dispute_reward_multiplier`（bp 乘数，10000 = 1×）、`pm_dispute_votes_per_market`（默认 100 000）、`pm_dispute_vote_min_vesting`（默认 1000.000 VIZ）。
 - **时间惩罚：** `pm_default_time_penalty_percent`、`pm_max_time_penalty`。
 - **懒惰池：** `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent`、`pm_lazy_min_liquidity_fee_percent`（默认 200 = 2%——池拒绝为 `liquidity_fee_percent` 低于此奖励下限的市场共同提供流动性）。
 - **杠杆（可选）：** `pm_leverage_enabled`、`pm_leverage_fund_percent`、`pm_leverage_max_per_position_bp`、`pm_leverage_max_position_ratio_percent`、`pm_leverage_min_market_liquidity`、`pm_leverage_safety_margin_percent`、`pm_leverage_max_slippage_percent`、`pm_leverage_m_factor_percent`、`pm_leverage_pool_profit_percent`、`pm_leverage_expiration_buffer_sec`、`pm_conversion_profit_cost_percent`。

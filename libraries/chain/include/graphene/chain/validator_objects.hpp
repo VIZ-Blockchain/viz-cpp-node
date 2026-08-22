@@ -17,7 +17,7 @@ namespace graphene { namespace chain {
     using graphene::protocol::asset;
     using graphene::protocol::asset_symbol_type;
 
-    using chain_properties = graphene::protocol::chain_properties_hf13;
+    using chain_properties = graphene::protocol::chain_properties_pm;
 
     /**
      *  All validators with at least 1% net positive approval and

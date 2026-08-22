@@ -531,6 +531,103 @@ if( options.count(name) ) { \
             impacted.insert(op.validator);
             impacted.insert(op.stakeholder);
         }
+
+        // --- Prediction markets (HF14, Onix) ---
+        // Signed ops: the generic handler already records the signer through the
+        // required authorities, so these overloads add the *other* material
+        // parties (counterparties) that must also see the event in their history.
+        void operator()(const pm_oracle_register_operation& op) {
+            impacted.insert(op.owner);
+            if (op.auto_accept_creator.size())  impacted.insert(op.auto_accept_creator);
+            if (op.auto_accept_resolver.size()) impacted.insert(op.auto_accept_resolver);
+        }
+
+        void operator()(const pm_create_market_operation& op) {
+            impacted.insert(op.creator);
+            impacted.insert(op.oracle);
+            if (op.dispute_resolver.size()) impacted.insert(op.dispute_resolver);
+        }
+
+        void operator()(const pm_transfer_position_operation& op) {
+            impacted.insert(op.from);
+            impacted.insert(op.to);
+        }
+
+        void operator()(const pm_unban_operation& op) {
+            impacted.insert(op.resolver);
+            impacted.insert(op.target);
+        }
+
+        // Virtual ops carry no signing authority — without an explicit overload
+        // the generic handler adds nobody and the event is invisible in the
+        // affected account's history. Market-only vops that carry no account
+        // field (pm_batch_settle / pm_lazy_recall) are left to the generic
+        // handler by design.
+        void operator()(const pm_commit_forfeit_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        // Dispute lifecycle -> oracle's own history (P1 oracle-metrics). The oracle now
+        // carries through the vop, so opening/finalize/auto-close of a dispute against its
+        // resolution are visible in its timeline (not only the disputer's / market's).
+        void operator()(const pm_dispute_opened_operation& op) {
+            impacted.insert(op.oracle);
+            impacted.insert(op.disputer);
+        }
+
+        void operator()(const pm_dispute_finalize_operation& op) {
+            impacted.insert(op.oracle);
+        }
+
+        void operator()(const pm_dispute_auto_close_operation& op) {
+            impacted.insert(op.oracle);
+        }
+
+        void operator()(const pm_auto_payout_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        void operator()(const pm_payout_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        void operator()(const pm_oracle_missed_penalty_operation& op) {
+            impacted.insert(op.oracle);
+        }
+
+        void operator()(const pm_leverage_liquidate_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        void operator()(const pm_leverage_resolve_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        void operator()(const pm_market_accepted_operation& op) {
+            impacted.insert(op.oracle);
+            impacted.insert(op.creator);
+        }
+
+        void operator()(const pm_market_expired_operation& op) {
+            impacted.insert(op.oracle);
+            impacted.insert(op.creator);
+        }
+
+        void operator()(const pm_ban_expired_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        // F1/#300: early-exit deferred claim paid at settlement -> early-exiter's own history.
+        void operator()(const pm_early_exit_claim_paid_operation& op) {
+            impacted.insert(op.account);
+        }
+
+        // #442/#681=D: LP income paid at settlement -> the LP's own history. Guarded because
+        // lazy-pool allocations have an empty provider and do not emit this vop (their income is
+        // market-level only) — defensive against future emission, harmless either way.
+        void operator()(const pm_lp_payout_operation& op) {
+            if (op.account.size()) impacted.insert(op.account);
+        }
         //void operator()( const operation& op ){}
     };
 

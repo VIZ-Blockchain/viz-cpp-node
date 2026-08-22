@@ -140,6 +140,14 @@ public:
     account_name_type subaccount_seller;
     asset subaccount_offer_price = asset(0, TOKEN_SYMBOL);
     bool subaccount_on_sale = false;
+
+    // Display-only running aggregates: how much of this account's own funds is currently
+    // frozen in prediction markets. Maintained incrementally at every PM lock/unlock/move
+    // point and seeded once from existing objects on upgrade (no full replay). NEVER gate
+    // consensus on these — they are read-only telemetry for clients (get_accounts).
+    asset pm_liquidity_committed = asset(0, TOKEN_SYMBOL);///< own LP/creator liquidity in live markets
+    asset pm_bets_staked = asset(0, TOKEN_SYMBOL);        ///< own stake locked in open/queued bets
+    asset pm_leverage_collateral = asset(0, TOKEN_SYMBOL);///< own collateral in active leverage positions
 };
 
 class account_authority_object
@@ -283,6 +291,7 @@ struct by_next_vesting_withdrawal;
 struct by_account_on_sale;
 struct by_account_on_auction;
 struct by_account_on_sale_start_time;
+struct by_auction_start;
 struct by_subaccount_on_sale;
 
 /**
@@ -299,6 +308,12 @@ typedef multi_index_container<
                         member<account_object, bool, &account_object::account_on_auction> >,
                 ordered_non_unique<tag<by_account_on_sale_start_time>,
                         member<account_object, time_point_sec, &account_object::account_on_sale_start_time> >,
+                ordered_non_unique<tag<by_auction_start>,
+                        composite_key < account_object,
+                        member<account_object, bool, &account_object::account_on_auction>,
+                        member<account_object, time_point_sec, &account_object::account_on_sale_start_time>
+                >,
+                composite_key_compare <std::less<bool>, std::less<time_point_sec>> >,
                 ordered_non_unique<tag<by_subaccount_on_sale>,
                         member<account_object, bool, &account_object::subaccount_on_sale> >,
                 ordered_unique<tag<by_name>,
@@ -330,7 +345,9 @@ typedef multi_index_container<
                 >,
                 composite_key_compare <
                 std::less<account_name_type>, std::less<time_point_sec>, std::less<master_authority_history_id_type>>
->
+>,
+                ordered_non_unique<tag<by_last_valid>,
+                        member<master_authority_history_object, time_point_sec, &master_authority_history_object::last_valid_time>>
 >,
 allocator<master_authority_history_object>
 >
@@ -528,6 +545,7 @@ FC_REFLECT((graphene::chain::account_object),
                 (reserved_balance)
                 (target_buyer)(account_on_auction)(current_bid)(current_bidder)(current_bidder_key)(last_bid)
                 (subaccount_seller)(subaccount_offer_price)(subaccount_on_sale)
+                (pm_liquidity_committed)(pm_bets_staked)(pm_leverage_collateral)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::account_object, graphene::chain::account_index)
 

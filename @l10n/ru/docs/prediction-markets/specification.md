@@ -85,7 +85,7 @@ description: Формальная техническая спецификаци�
 | Комиссии и штрафы (bp) | `pm_max_oracle_fee_percent`, `pm_oracle_penalty_percent`, `pm_no_contest_penalty_percent`, `pm_default_time_penalty_percent`, `pm_max_time_penalty` |
 | Окно акцепта | `pm_oracle_accept_window_sec` (по умолчанию 3600 = 1 ч; пендинг-рынки, не принятые/отклонённые в этот срок, аннулируются кроном — сид возвращён, комиссия за создание удержана) |
 | Риск / покрытие (% от объёма) | `pm_listing_min_coverage_percent` (250 = 2.5×; рынки с покрытием ниже этого скрыты из каталога по умолчанию, показываются через `show_risky`), `pm_betting_min_coverage_percent` (150 = 1.5×; рекомендательный клиентский порог подтверждения риска, `≤` листингового, on-chain не навязывается) |
-| Споры | `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_oracle_dispute_response_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent` (bp), `pm_dispute_reward_multiplier` (bp) |
+| Споры | `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_oracle_dispute_response_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent` (bp), `pm_dispute_reward_multiplier` (bp), `pm_dispute_votes_per_market`, `pm_dispute_vote_min_vesting` |
 | Lazy-пул | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent`, `pm_lazy_min_liquidity_fee_percent` (по умолчанию 200 = 2%; пул пропускает рынки, чей `liquidity_fee_percent` ниже этого порога вознаграждения) |
 | Плечо | `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent` |
 | Batch / commit-reveal | `pm_commit_reveal_enabled`, `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_commit_no_reveal_penalty_percent` (bp), `pm_min_batch_bet` |
@@ -1011,3 +1011,15 @@ graduated-recall живут на `pm_lazy_allocation_object`; fault-штампы
 
 Полные определения полей этих объектов см. в
 [Операциях прогнозных рынков](../protocol/operations/prediction-markets).
+
+## 18. Лимиты работы на блок и защита от спама
+
+Крон прогнозных рынков и каждый per-block свип ограничены так, чтобы ни одна дешёвая операция не
+могла неограниченно наращивать работу блока (защита от спама / перегрузки блока). Базовый бюджет —
+медианный `pm_settle_rows_per_block` (по умолчанию 2 000, пол 100), который списывают сеттлмент,
+сборка мусора, void-рефанды, батч-исполнитель, тэлли диспута, истечение банов и очередь ленивых
+выводов. Создание строки оценено порогами `pm_min_bet` (1 VIZ) и `pm_min_liquidity` (100 VIZ),
+поэтому даже обходы, оставшиеся не-метерёнными (фазы сеттлмента 1 и 5, каскад ликвидаций per-tx),
+ограничены экономически. Жёсткие per-market капы ограничивают переживающие вектора участников
+(клеймы / голоса диспута / открытые коммиты, по 10 000). Полное обоснование, взвешенные варианты и
+измеренная цена строки — в [settlement-work-bounds](./settlement-work-bounds.md).

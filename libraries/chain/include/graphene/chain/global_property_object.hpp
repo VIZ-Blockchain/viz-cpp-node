@@ -143,6 +143,58 @@ namespace graphene {
              * Zero if never activated. Used to compute duration and for exit condition.
              */
             uint32_t emergency_consensus_start_block = 0;
+
+            /**
+             * One-time flag: the PM per-account frozen-funds counters
+             * (account.pm_liquidity_committed / pm_bets_staked / pm_leverage_collateral)
+             * have been seeded from existing objects. Set on the first block processed
+             * after the upgrade so counters are correct without a full replay.
+             */
+            bool pm_frozen_counters_seeded = false;
+            /**
+             * One-time CORRECTIVE re-seed of the frozen counters. The initial seed left the
+             * counters over-stated on the live testnet (they carried legacy/inflated state — see
+             * task #266: pm_liquidity_committed read ~3.76× a physically-impossible value). Because
+             * the counters are display-only (never gate consensus) they can be safely recomputed:
+             * on the first block after this upgrade, pm_seed_frozen_counters() zeroes every account's
+             * three counters and re-sums them from the live objects. Idempotent.
+             */
+            bool pm_frozen_counters_reseeded_v1 = false;
+            /**
+             * One-time seed of the per-oracle live active-market counter
+             * (pm_oracle_object.active_markets) from existing markets. Set on the first block after
+             * this upgrade so get_oracle exposes the count without a full replay. Display-only;
+             * never gates consensus. pm_seed_oracle_active_markets() zeroes then re-sums — idempotent.
+             */
+            bool pm_active_markets_seeded = false;
+
+            /**
+             * One-time seed of the per-oracle workload gauges (markets_in_dispute_window,
+             * disputes_awaiting_response, disputes_awaiting_decision) from existing markets/disputes.
+             * Set on the first block after this upgrade so get_oracle exposes them without a full
+             * replay. Display-only; never gates consensus. pm_seed_oracle_gauges() zeroes then
+             * re-derives — idempotent.
+             */
+            bool pm_oracle_gauges_seeded = false;
+
+            /**
+             * Batch-epoch-settle round-robin cursor: the market id where the next
+             * epoch-boundary scan resumes after stopping on the per-block processing cap.
+             * 0 after a completed full pass. Consensus state (all nodes advance it
+             * identically); prevents ~cap always-busy low-id markets from permanently
+             * starving newer ones.
+             */
+            uint64_t pm_batch_settle_cursor = 0;
+
+            /**
+             * #432 §6: row cursor INSIDE the market pm_batch_settle_cursor points at. A market's
+             * queued epoch can hold more rows than one block may execute, so the executor stops on
+             * the shared row budget and resumes at this bet id. 0 = start of the epoch (no partial
+             * pass in flight). While it is non-zero the market keeps its current_epoch — the epoch
+             * only advances once its queue is fully drained, otherwise the leftover rows (matched
+             * by epoch) would become unreachable.
+             */
+            uint64_t pm_batch_settle_bet_cursor = 0;
         };
 
         typedef multi_index_container <
@@ -190,5 +242,11 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (inflation_ratio)
                 (emergency_consensus_active)
                 (emergency_consensus_start_block)
+                (pm_frozen_counters_seeded)
+                (pm_frozen_counters_reseeded_v1)
+                (pm_active_markets_seeded)
+                (pm_oracle_gauges_seeded)
+                (pm_batch_settle_cursor)
+                (pm_batch_settle_bet_cursor)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

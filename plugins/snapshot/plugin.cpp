@@ -17,6 +17,8 @@
 #include <graphene/chain/committee_objects.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
+#include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/pm_meta_object.hpp>
 #include <graphene/chain/hardfork.hpp>
 
 #include <fc/io/raw.hpp>
@@ -25,6 +27,7 @@
 #include <fc/compress/zlib.hpp>
 #include <fc/network/tcp_socket.hpp>
 #include <fc/network/ip.hpp>
+#include <fc/network/resolve.hpp>
 #include <fc/thread/thread.hpp>
 #include <fc/thread/mutex.hpp>
 #include <fc/thread/scoped_lock.hpp>
@@ -211,6 +214,13 @@ inline uint32_t import_dynamic_global_properties(
         } else {
             obj.emergency_consensus_start_block = 0;
         }
+        // #432 §6 batch-executor cursors. Losing them would only cost one idle re-walk of an
+        // already-executed epoch (executed rows are skipped by status), but carrying them keeps
+        // a restored node byte-identical to the one it was snapshotted from.
+        obj.pm_batch_settle_cursor = v.get_object().contains("pm_batch_settle_cursor")
+            ? v["pm_batch_settle_cursor"].as_uint64() : 0;
+        obj.pm_batch_settle_bet_cursor = v.get_object().contains("pm_batch_settle_bet_cursor")
+            ? v["pm_batch_settle_bet_cursor"].as_uint64() : 0;
     });
     return 1;
 }
@@ -777,6 +787,250 @@ inline uint32_t import_account_recovery_requests(
     return count;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// HF14 PM import helpers (shared_string members need set_shared_string)
+// ────────────────────────────────────────────────────────────────────────────
+
+inline uint32_t import_pm_oracles(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_oracle_index>();
+        mutable_idx.set_next_id(pm_oracle_id_type(id_val));
+        db.create<pm_oracle_object>([&](pm_oracle_object& obj) {
+            obj.owner              = v["owner"].as<account_name_type>();
+            obj.insurance          = v["insurance"].as<share_type>();
+            obj.fee_percent        = static_cast<uint16_t>(v["fee_percent"].as_uint64());
+            obj.fixed_fee          = v["fixed_fee"].as<share_type>();
+            set_shared_string(obj.rules_url, v["rules_url"]);
+            obj.active_since       = v["active_since"].as<fc::time_point_sec>();
+            obj.last_active_time   = v["last_active_time"].as<fc::time_point_sec>();
+            obj.banned_until       = v["banned_until"].as<fc::time_point_sec>();
+            obj.markets_accepted   = static_cast<uint32_t>(v["markets_accepted"].as_uint64());
+            obj.markets_resolved   = static_cast<uint32_t>(v["markets_resolved"].as_uint64());
+            obj.no_contest_count   = static_cast<uint32_t>(v["no_contest_count"].as_uint64());
+            obj.missed_count       = static_cast<uint32_t>(v["missed_count"].as_uint64());
+            obj.disputes_received  = static_cast<uint32_t>(v["disputes_received"].as_uint64());
+            obj.disputes_lost      = static_cast<uint32_t>(v["disputes_lost"].as_uint64());
+            obj.disputes_won       = static_cast<uint32_t>(v["disputes_won"].as_uint64());
+            obj.disputes_auto_closed = static_cast<uint32_t>(v["disputes_auto_closed"].as_uint64());
+            obj.dispute_responses_missed = static_cast<uint32_t>(v["dispute_responses_missed"].as_uint64());
+            obj.total_volume_resolved = v["total_volume_resolved"].as<share_type>();
+            obj.total_insurance_slashed = v["total_insurance_slashed"].as<share_type>();
+            obj.avg_resolution_time = static_cast<uint32_t>(v["avg_resolution_time"].as_uint64());
+            obj.penalty_stamps     = static_cast<uint32_t>(v["penalty_stamps"].as_uint64());
+            obj.bans_received      = static_cast<uint32_t>(v["bans_received"].as_uint64());
+            if (v.get_object().contains("last_penalty_stamp_time"))
+                obj.last_penalty_stamp_time = v["last_penalty_stamp_time"].as<fc::time_point_sec>();
+            if (v.get_object().contains("auto_accept_creator"))
+                obj.auto_accept_creator  = v["auto_accept_creator"].as<account_name_type>();
+            if (v.get_object().contains("auto_accept_resolver"))
+                obj.auto_accept_resolver = v["auto_accept_resolver"].as<account_name_type>();
+            if (v.get_object().contains("auto_accept"))
+                obj.auto_accept          = v["auto_accept"].as<bool>();
+            // Oracle-metrics fields (P1-P5, display-only): forward-compatible import so a snapshot
+            // taken after the upgrade keeps the gauges/histogram; old snapshots (fields absent)
+            // stay zeroed and pm_seed_oracle_gauges() re-derives the gauges on the next block.
+            if (v.get_object().contains("markets_in_dispute_window"))
+                obj.markets_in_dispute_window  = static_cast<uint32_t>(v["markets_in_dispute_window"].as_uint64());
+            if (v.get_object().contains("disputes_awaiting_response"))
+                obj.disputes_awaiting_response = static_cast<uint32_t>(v["disputes_awaiting_response"].as_uint64());
+            if (v.get_object().contains("disputes_awaiting_decision"))
+                obj.disputes_awaiting_decision = static_cast<uint32_t>(v["disputes_awaiting_decision"].as_uint64());
+            if (v.get_object().contains("resolved_late_count"))
+                obj.resolved_late_count  = static_cast<uint32_t>(v["resolved_late_count"].as_uint64());
+            if (v.get_object().contains("resolution_time_hist"))
+                obj.resolution_time_hist = v["resolution_time_hist"].as<fc::array<share_type, 8>>();
+        });
+        ++count;
+    }
+    return count;
+}
+
+inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_market_index>();
+        mutable_idx.set_next_id(pm_market_id_type(id_val));
+        db.create<pm_market_object>([&](pm_market_object& obj) {
+            obj.creator            = v["creator"].as<account_name_type>();
+            obj.oracle             = v["oracle"].as<account_name_type>();
+            obj.market_type        = static_cast<uint8_t>(v["market_type"].as_uint64());
+            obj.outcome_count      = static_cast<uint8_t>(v["outcome_count"].as_uint64());
+            set_shared_string(obj.url, v["url"]);
+            obj.status             = static_cast<int8_t>(v["status"].as_int64());
+            obj.payout_status      = static_cast<uint8_t>(v["payout_status"].as_uint64());
+            obj.created_time       = v["created_time"].as<fc::time_point_sec>();
+            obj.betting_expiration = v["betting_expiration"].as<fc::time_point_sec>();
+            obj.result_expiration  = v["result_expiration"].as<fc::time_point_sec>();
+            if (v.get_object().contains("finalized_time"))
+                obj.finalized_time = v["finalized_time"].as<fc::time_point_sec>();
+            // H1: without this, pending markets (status 0) import with accept_deadline=epoch and the
+            // pending-acceptance cron voids them on the very next block — consensus divergence between
+            // a snapshot-imported node and a replaying node. contains-guarded for pre-field snapshots.
+            if (v.get_object().contains("accept_deadline"))
+                obj.accept_deadline = v["accept_deadline"].as<fc::time_point_sec>();
+            if (v.get_object().contains("decision_url"))
+                set_shared_string(obj.decision_url, v["decision_url"]);
+            if (v.get_object().contains("decision_reason"))
+                set_shared_string(obj.decision_reason, v["decision_reason"]);
+            obj.resolved_outcome   = static_cast<int16_t>(v["resolved_outcome"].as_int64());
+            obj.reserve_a          = v["reserve_a"].as<share_type>();
+            obj.reserve_b          = v["reserve_b"].as<share_type>();
+            obj.k                  = v["k"].as<fc::uint128_t>();
+            obj.a_bets_sum         = v["a_bets_sum"].as<share_type>();
+            obj.b_bets_sum         = v["b_bets_sum"].as<share_type>();
+            obj.lmsr_b             = v["lmsr_b"].as<share_type>();
+            obj.lmsr_subsidy       = v["lmsr_subsidy"].as<share_type>();
+            obj.bets_sum           = v["bets_sum"].as<share_type>();
+            obj.liquidity_sum      = v["liquidity_sum"].as<share_type>();
+            obj.oracle_fee_percent    = static_cast<uint16_t>(v["oracle_fee_percent"].as_uint64());
+            obj.creator_fee_percent   = static_cast<uint16_t>(v["creator_fee_percent"].as_uint64());
+            obj.liquidity_fee_percent = static_cast<uint16_t>(v["liquidity_fee_percent"].as_uint64());
+            obj.oracle_fixed_fee   = v["oracle_fixed_fee"].as<share_type>();
+            obj.liquidity_fee_earned = v["liquidity_fee_earned"].as<share_type>();
+            obj.forfeit_pool       = v["forfeit_pool"].as<share_type>();
+            obj.time_penalty_type  = static_cast<uint8_t>(v["time_penalty_type"].as_uint64());
+            obj.time_penalty_value = static_cast<uint32_t>(v["time_penalty_value"].as_uint64());
+            obj.penalty_curve_type = static_cast<uint8_t>(v["penalty_curve_type"].as_uint64());
+            obj.allow_early_resolution = v["allow_early_resolution"].as_bool();
+            obj.allow_cancellation = v["allow_cancellation"].as_bool();
+            obj.allow_batch        = v["allow_batch"].as_bool();
+            obj.allow_instant_bet  = v["allow_instant_bet"].as_bool();
+            obj.endogeneity_tier   = static_cast<uint8_t>(v["endogeneity_tier"].as_uint64());
+            obj.current_epoch      = static_cast<uint32_t>(v["current_epoch"].as_uint64());
+            obj.dispute_mode       = static_cast<uint8_t>(v["dispute_mode"].as_uint64());
+            obj.dispute_resolver   = v["dispute_resolver"].as<account_name_type>();
+            if (v.get_object().contains("dispute_penalty_percent"))
+                obj.dispute_penalty_percent = static_cast<int16_t>(v["dispute_penalty_percent"].as_int64());
+            // #349: restore the per-market deferred-claim counter (contains-guarded — older snapshots
+            // predate it and correctly default to 0). Without this the cap would reset on reimport.
+            if (v.get_object().contains("deferred_claim_count"))
+                obj.deferred_claim_count = static_cast<uint32_t>(v["deferred_claim_count"].as_uint64());
+            // M4: live unrevealed-commit backlog counter (contains-guarded — pre-M4 snapshots
+            // default to 0; reveal/forfeit decrements are clamped, so drift can only relax the cap).
+            if (v.get_object().contains("open_commits"))
+                obj.open_commits = static_cast<uint32_t>(v["open_commits"].as_uint64());
+            // NB: `metadata` is no longer a consensus field (moved off-chain to the
+            // prediction_market_api plugin); older snapshots that still carry it are ignored.
+        });
+        ++count;
+    }
+    return count;
+}
+
+// NON-consensus PM metadata (10 shared_string fields → needs a dedicated handler, not the generic
+// fc::from_variant path). Only called when the section is present AND the index is registered.
+inline uint32_t import_pm_market_meta(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_market_meta_index>();
+        mutable_idx.set_next_id(pm_market_meta_id_type(id_val));
+        db.create<pm_market_meta_object>([&](pm_market_meta_object& obj) {
+            obj.market = v["market"].as<pm_market_id_type>();
+            set_shared_string(obj.category,             v["category"]);
+            set_shared_string(obj.subcategory,          v["subcategory"]);
+            set_shared_string(obj.tags,                 v["tags"]);
+            set_shared_string(obj.banned_jurisdictions, v["banned_jurisdictions"]);
+            set_shared_string(obj.title,                v["title"]);
+            set_shared_string(obj.image,                v["image"]);
+            set_shared_string(obj.condition_id,         v["condition_id"]);
+            set_shared_string(obj.description,          v["description"]);
+            set_shared_string(obj.event,                v["event"]);
+            set_shared_string(obj.event_title,          v["event_title"]);
+            if (v.get_object().contains("child"))
+                obj.child = v["child"].as_bool();
+            obj.expiry = v["expiry"].as<fc::time_point_sec>();
+        });
+        ++count;
+    }
+    return count;
+}
+
+inline uint32_t import_pm_outcomes(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_outcome_index>();
+        mutable_idx.set_next_id(pm_outcome_id_type(id_val));
+        db.create<pm_outcome_object>([&](pm_outcome_object& obj) {
+            obj.market        = v["market"].as<pm_market_id_type>();
+            obj.outcome_index = static_cast<uint8_t>(v["outcome_index"].as_uint64());
+            set_shared_string(obj.label, v["label"]);
+            obj.q             = v["q"].as<share_type>();
+            obj.bets_sum      = v["bets_sum"].as<share_type>();
+            obj.weight_sum    = v["weight_sum"].as<share_type>();
+            obj.bets_count    = static_cast<uint32_t>(v["bets_count"].as_uint64());
+        });
+        ++count;
+    }
+    return count;
+}
+
+inline uint32_t import_pm_disputes(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_dispute_index>();
+        mutable_idx.set_next_id(pm_dispute_id_type(id_val));
+        db.create<pm_dispute_object>([&](pm_dispute_object& obj) {
+            obj.market                   = v["market"].as<pm_market_id_type>();
+            obj.disputer                 = v["disputer"].as<account_name_type>();
+            obj.dispute_fee              = v["dispute_fee"].as<share_type>();
+            set_shared_string(obj.reason, v["reason"]);
+            obj.filed_time               = v["filed_time"].as<fc::time_point_sec>();
+            obj.oracle_response_deadline = v["oracle_response_deadline"].as<fc::time_point_sec>();
+            obj.dispute_mode             = static_cast<uint8_t>(v["dispute_mode"].as_uint64());
+            obj.voting_end_time          = v["voting_end_time"].as<fc::time_point_sec>();
+            obj.auto_close_time          = v["auto_close_time"].as<fc::time_point_sec>();
+            obj.proposed_outcome         = static_cast<int16_t>(v["proposed_outcome"].as_int64());
+            obj.status                   = static_cast<uint8_t>(v["status"].as_uint64());
+            // M5 (audit 2026-08-13): the oracle's rebuttal pair was dropped on import, so an
+            // imported dispute that had already been answered regressed to the awaiting_response
+            // stage — gauge seeding and pm_oracle_dispute_left_open then decremented the wrong
+            // bucket on close (permanent display drift). Contains-guarded: snapshots exported
+            // before this fix carry no such keys.
+            if (v.get_object().contains("oracle_response"))
+                set_shared_string(obj.oracle_response, v["oracle_response"]);
+            if (v.get_object().contains("oracle_response_time"))
+                obj.oracle_response_time = v["oracle_response_time"].as<fc::time_point_sec>();
+            // Ballot counter (replaces the O(n) recount in pm_dispute_vote). Contains-guarded like
+            // the pair above; snapshots exported before it carry no key and are repaired by the
+            // reconcile pass below, which runs once the ballots themselves are in.
+            if (v.get_object().contains("ballots"))
+                obj.ballots = static_cast<uint32_t>(v["ballots"].as_uint64());
+        });
+        ++count;
+    }
+    return count;
+}
+
+/// Make every dispute's ballot counter agree with the ballots actually present. Disputes are
+/// imported BEFORE their votes, so this cannot be folded into the loop above; it also repairs
+/// pre-field snapshots (counter absent → 0) and catches drift in ones that do carry the key.
+/// One pass over the vote index, which the import already paid for once.
+/// The one state where counter and rows legitimately differ is a snapshot taken mid-GC (ballots are
+/// dropped before the dispute row, both under the block budget): rebuilding to the smaller number is
+/// harmless, since the only reader is the ballot cap and that market can no longer take votes.
+inline uint32_t reconcile_pm_dispute_ballots(graphene::chain::database& db) {
+    const auto& vidx = db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+    const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+    std::map<pm_market_id_type, uint32_t> seen;
+    for (const auto& v : vidx) ++seen[v.market];
+    uint32_t repaired = 0;
+    for (const auto& d : didx) {
+        auto it = seen.find(d.market);
+        const uint32_t actual = (it == seen.end()) ? 0u : it->second;
+        if (d.ballots != actual) {
+            db.modify(d, [&](pm_dispute_object& obj) { obj.ballots = actual; });
+            ++repaired;
+        }
+    }
+    return repaired;
+}
+
 } // namespace detail
 
 // ============================================================================
@@ -812,6 +1066,18 @@ public:
     bool needs_fresh_snapshot = false;
 
     // Snapshot P2P sync config
+    // --snapshot-include-pm-meta: serialize the (non-consensus) PM metadata index into the
+    // snapshot so titles/images/tags survive DLT block-log rotation and snapshot hand-off. Default
+    // ON. When OFF (or when importing an older snapshot that lacks the section) the node falls back
+    // to rebuilding meta from pm_create_market ops (live seed + DLT backfill).
+    bool include_pm_meta = true;
+    // --snapshot-pm-legacy-residual: the PM token-supply invariant is satoshi-exact on a fresh
+    // chain (delta == 0), so the default is 0 = strict. A testnet that carries frozen PRE-FIX
+    // leverage-exit dust in its snapshot can set this to that known constant (e.g. -9079) to
+    // tolerate exactly that legacy value while still catching any NEW divergence. MUST stay 0 on
+    // mainnet / after a clean state rebuild. (B1: PR #124 review — was a hardcoded -9079 that
+    // made every healthy/fresh chain fail import.)
+    int64_t pm_supply_legacy_residual = 0;
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
     bool disable_snapshot_anti_spam = false;  // Skip all anti-spam checks (for trusted networks)
@@ -1137,6 +1403,39 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(master_authority_history_index, master_authority_history_object, "master_authority_history")
     EXPORT_INDEX(account_recovery_request_index, account_recovery_request_object, "account_recovery_request")
     EXPORT_INDEX(change_recovery_account_request_index, change_recovery_account_request_object, "change_recovery_account_request")
+
+    // HF14 Prediction Market objects (empty before HF14 activates)
+    EXPORT_INDEX(pm_oracle_index,         pm_oracle_object,         "pm_oracle")
+    EXPORT_INDEX(pm_market_index,         pm_market_object,         "pm_market")
+    EXPORT_INDEX(pm_outcome_index,        pm_outcome_object,        "pm_outcome")
+    EXPORT_INDEX(pm_bet_index,            pm_bet_object,            "pm_bet")
+    EXPORT_INDEX(pm_liquidity_index,      pm_liquidity_object,      "pm_liquidity")
+    EXPORT_INDEX(pm_commit_index,         pm_commit_object,         "pm_commit")
+    EXPORT_INDEX(pm_dispute_index,        pm_dispute_object,        "pm_dispute")
+    EXPORT_INDEX(pm_dispute_vote_index,   pm_dispute_vote_object,   "pm_dispute_vote")
+    EXPORT_INDEX(pm_lazy_pool_index,      pm_lazy_pool_object,      "pm_lazy_pool")
+    EXPORT_INDEX(pm_lazy_deposit_index,   pm_lazy_deposit_object,   "pm_lazy_deposit")
+    EXPORT_INDEX(pm_lazy_allocation_index,pm_lazy_allocation_object,"pm_lazy_allocation")
+    EXPORT_INDEX(pm_leverage_position_index,pm_leverage_position_object,"pm_leverage_position")
+    // B2 (PR #124): pending lazy-pool withdrawals. Was omitted → on reload the request objects
+    // vanished while pm_lazy_pool.pending_withdrawals still carried their total, breaking the FIFO
+    // payout queue (consensus divergence + funds stuck owed but unpayable). Serialize like its peers.
+    EXPORT_INDEX(pm_lazy_withdraw_request_index,pm_lazy_withdraw_request_object,"pm_lazy_withdraw_request")
+    // Early-exit deferred claims (F1/#300): outcome-contingent, forward-only (no seed) → MUST be
+    // in the snapshot or they vanish on reload and the winners'/bucket accounting diverges.
+    EXPORT_INDEX(pm_deferred_claim_index, pm_deferred_claim_object, "pm_deferred_claim")
+    // In-flight settlement state (#432 D). A settlement now spans blocks, so a snapshot can be
+    // taken mid-flight: without this the market would come back at payout_status 4 with no
+    // cursor or accumulators — wedged forever, and its escrow would vanish from the invariant.
+    EXPORT_INDEX(pm_settlement_index,     pm_settlement_object,     "pm_settlement")
+    EXPORT_INDEX(pm_creator_ban_index,    pm_creator_ban_object,    "pm_creator_ban")
+
+    // NON-consensus PM metadata (titles/images/tags/event). Serialized only when the operator opts
+    // in AND the prediction_market_api plugin is loaded (so the index actually exists). Absent from
+    // the snapshot => importers fall back to rebuilding meta from pm_create_market ops.
+    if (include_pm_meta && db.has_index<pm_market_meta_index>()) {
+        EXPORT_INDEX(pm_market_meta_index, pm_market_meta_object, "pm_market_meta")
+    }
 
     #undef EXPORT_INDEX
 
@@ -1553,6 +1852,46 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& cra_idx = db.get_index<change_recovery_account_request_index>().indices();
             while (!cra_idx.empty()) { db.remove(*cra_idx.begin()); }
 
+            // HF14 PM objects
+            const auto& pm_ora_idx  = db.get_index<pm_oracle_index>().indices();
+            while (!pm_ora_idx.empty())  { db.remove(*pm_ora_idx.begin()); }
+            const auto& pm_mkt_idx  = db.get_index<pm_market_index>().indices();
+            while (!pm_mkt_idx.empty())  { db.remove(*pm_mkt_idx.begin()); }
+            const auto& pm_out_idx  = db.get_index<pm_outcome_index>().indices();
+            while (!pm_out_idx.empty())  { db.remove(*pm_out_idx.begin()); }
+            const auto& pm_bet_idx  = db.get_index<pm_bet_index>().indices();
+            while (!pm_bet_idx.empty())  { db.remove(*pm_bet_idx.begin()); }
+            const auto& pm_liq_idx  = db.get_index<pm_liquidity_index>().indices();
+            while (!pm_liq_idx.empty())  { db.remove(*pm_liq_idx.begin()); }
+            const auto& pm_com_idx  = db.get_index<pm_commit_index>().indices();
+            while (!pm_com_idx.empty())  { db.remove(*pm_com_idx.begin()); }
+            const auto& pm_dsp_idx  = db.get_index<pm_dispute_index>().indices();
+            while (!pm_dsp_idx.empty())  { db.remove(*pm_dsp_idx.begin()); }
+            const auto& pm_dvt_idx  = db.get_index<pm_dispute_vote_index>().indices();
+            while (!pm_dvt_idx.empty())  { db.remove(*pm_dvt_idx.begin()); }
+            const auto& pm_lpl_idx  = db.get_index<pm_lazy_pool_index>().indices();
+            while (!pm_lpl_idx.empty())  { db.remove(*pm_lpl_idx.begin()); }
+            const auto& pm_ldp_idx  = db.get_index<pm_lazy_deposit_index>().indices();
+            while (!pm_ldp_idx.empty())  { db.remove(*pm_ldp_idx.begin()); }
+            const auto& pm_lac_idx  = db.get_index<pm_lazy_allocation_index>().indices();
+            while (!pm_lac_idx.empty())  { db.remove(*pm_lac_idx.begin()); }
+            const auto& pm_lev_idx  = db.get_index<pm_leverage_position_index>().indices();
+            while (!pm_lev_idx.empty())  { db.remove(*pm_lev_idx.begin()); }
+            const auto& pm_cbn_idx  = db.get_index<pm_creator_ban_index>().indices();
+            while (!pm_cbn_idx.empty())  { db.remove(*pm_cbn_idx.begin()); }
+            // M1: exported/imported but previously missed here — leftover rows from a prior
+            // snapshot conflict on by_id and abort the hot-reload import.
+            const auto& pm_lwr_idx  = db.get_index<pm_lazy_withdraw_request_index>().indices();
+            while (!pm_lwr_idx.empty())  { db.remove(*pm_lwr_idx.begin()); }
+            const auto& pm_dcl_idx  = db.get_index<pm_deferred_claim_index>().indices();
+            while (!pm_dcl_idx.empty())  { db.remove(*pm_dcl_idx.begin()); }
+            const auto& pm_stl_idx  = db.get_index<pm_settlement_index>().indices();
+            while (!pm_stl_idx.empty())  { db.remove(*pm_stl_idx.begin()); }
+            if (db.has_index<pm_market_meta_index>()) { // non-consensus; absent without prediction_market_api
+                const auto& pm_mtm_idx = db.get_index<pm_market_meta_index>().indices();
+                while (!pm_mtm_idx.empty()) { db.remove(*pm_mtm_idx.begin()); }
+            }
+
             ilog(CLOG_ORANGE "Existing objects cleared" CLOG_RESET);
         }
 
@@ -1715,6 +2054,84 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("change_recovery_account_request")) {
             auto n = detail::import_simple_objects<change_recovery_account_request_object, change_recovery_account_request_index>(db, state["change_recovery_account_request"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} change recovery account requests" CLOG_RESET, ("n", n));
+        }
+
+        // HF14 Prediction Market objects (absent from pre-HF14 snapshots)
+        if (state.contains("pm_oracle")) {
+            auto n = detail::import_pm_oracles(db, state["pm_oracle"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_oracle objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_market")) {
+            auto n = detail::import_pm_markets(db, state["pm_market"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_market objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_outcome")) {
+            auto n = detail::import_pm_outcomes(db, state["pm_outcome"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_outcome objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_bet")) {
+            auto n = detail::import_simple_objects<pm_bet_object, pm_bet_index>(db, state["pm_bet"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_bet objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_liquidity")) {
+            auto n = detail::import_simple_objects<pm_liquidity_object, pm_liquidity_index>(db, state["pm_liquidity"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_liquidity objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_commit")) {
+            auto n = detail::import_simple_objects<pm_commit_object, pm_commit_index>(db, state["pm_commit"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_commit objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_dispute")) {
+            auto n = detail::import_pm_disputes(db, state["pm_dispute"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_dispute objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_dispute_vote")) {
+            auto n = detail::import_simple_objects<pm_dispute_vote_object, pm_dispute_vote_index>(db, state["pm_dispute_vote"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_dispute_vote objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_dispute")) {
+            auto repaired = detail::reconcile_pm_dispute_ballots(db);
+            if (repaired)
+                ilog(CLOG_ORANGE "Rebuilt ballot counters on ${n} pm_dispute objects" CLOG_RESET, ("n", repaired));
+        }
+        if (state.contains("pm_lazy_pool")) {
+            auto n = detail::import_simple_objects<pm_lazy_pool_object, pm_lazy_pool_index>(db, state["pm_lazy_pool"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_pool objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_deposit")) {
+            auto n = detail::import_simple_objects<pm_lazy_deposit_object, pm_lazy_deposit_index>(db, state["pm_lazy_deposit"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_deposit objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_allocation")) {
+            auto n = detail::import_simple_objects<pm_lazy_allocation_object, pm_lazy_allocation_index>(db, state["pm_lazy_allocation"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_allocation objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_leverage_position")) {
+            auto n = detail::import_simple_objects<pm_leverage_position_object, pm_leverage_position_index>(db, state["pm_leverage_position"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_leverage_position objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_withdraw_request")) { // B2 (PR #124): restore pending withdrawals so the FIFO queue matches pm_lazy_pool.pending_withdrawals
+            auto n = detail::import_simple_objects<pm_lazy_withdraw_request_object, pm_lazy_withdraw_request_index>(db, state["pm_lazy_withdraw_request"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_withdraw_request objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_deferred_claim")) { // F1/#300: outcome-contingent early-exit claims (forward-only, no seed)
+            auto n = detail::import_simple_objects<pm_deferred_claim_object, pm_deferred_claim_index>(db, state["pm_deferred_claim"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_deferred_claim objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_settlement")) { // #432 D: resume a settlement that was in flight when the snapshot was taken
+            auto n = detail::import_simple_objects<pm_settlement_object, pm_settlement_index>(db, state["pm_settlement"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_settlement objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_creator_ban")) {
+            auto n = detail::import_simple_objects<pm_creator_ban_object, pm_creator_ban_index>(db, state["pm_creator_ban"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_creator_ban objects" CLOG_RESET, ("n", n));
+        }
+        // NON-consensus PM metadata: present only in snapshots taken with snapshot-include-pm-meta.
+        // Guard on has_index so nodes without the prediction_market_api plugin skip it cleanly; when
+        // absent the node rebuilds meta from pm_create_market ops (live seed + DLT backfill).
+        if (state.contains("pm_market_meta") && db.has_index<pm_market_meta_index>()) {
+            auto n = detail::import_pm_market_meta(db, state["pm_market_meta"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_market_meta objects" CLOG_RESET, ("n", n));
         }
 
         // Self-healing: detect validators with penalty_percent > 0 but no
@@ -1941,15 +2358,44 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             // missing from the export that held a liquid balance drops the sum below
             // the independently-tracked current_supply.
             //
-            // Accounting verified satoshi-exact (delta=0) against six real mainnet
-            // snapshots spanning blocks 81334800–81620400 before arming — including
-            // the height-varying validator pending-reward term, which nets correctly
-            // every time. The per-component subtotals are logged unconditionally so a
-            // future mismatch can be attributed to a specific pool. current_supply
-            // already includes validator pending_stakeholder_reward (credited at
-            // inflation, moved into total_vesting_fund at create_vesting), so it is
-            // summed here. Delegation objects and reward-tracking share_type counters
-            // (curation/posting rewards, rshares) are NOT token pools and are excluded.
+            // The BASE (chain-core) pools below were verified satoshi-exact (delta=0)
+            // against six real mainnet snapshots spanning blocks 81334800–81620400 on
+            // master (PR #126) — including the height-varying validator pending-reward
+            // term. current_supply already includes validator pending_stakeholder_reward
+            // (credited at inflation, moved into total_vesting_fund at create_vesting),
+            // so it is summed here. Delegation objects and reward-tracking share_type
+            // counters (curation/posting rewards, rshares) are NOT token pools.
+            //
+            // ── Prediction-Markets (PM) branch extension ─────────────────────────
+            // PM is zero-sum: it never mints. A bet / liquidity / lazy-deposit /
+            // commit-escrow / dispute-fee / oracle-insurance / leverage-collateral
+            // moves TOKEN OUT of account.balance INTO a PM object field, so
+            // current_supply still counts it but acc_balance no longer does. Those
+            // PM-held pools must therefore be added, or the equality is off by exactly
+            // the PM float. Minimal NON-OVERLAPPING holdings (duplicates excluded):
+            //   bets      Σ pm_bet.amount                (market/outcome bets_sum & CPMM
+            //                                             reserves are aggregates of these)
+            //   user LPs  Σ pm_liquidity.amount WHERE provider != ""   (empty provider =
+            //                                             lazy pool, already in allocated_balance)
+            //   lazy pool free_balance + allocated_balance   (pm_lazy_deposit.principal is a
+            //                                             per-depositor CLAIM on this = duplicate)
+            //   commits   Σ pm_commit.escrow_amount
+            //   disputes  Σ pm_dispute.dispute_fee
+            //   forfeit   Σ pm_market.forfeit_pool
+            //   insurance Σ pm_oracle.insurance
+            //   leverage  Σ (collateral + loan)   (loan is debited from free_balance at
+            //                                       open, so it is held in the position, not the pool)
+            //
+            // TODO(pm): this PM accounting is NOT YET satoshi-validated against real PM
+            // snapshots (unlike the base pools). The status filters and double-count
+            // exclusions below are a best-effort static read of pm_evaluator.cpp and
+            // MUST be reconciled to delta==0 on real PM snapshots (all market lifecycle
+            // states: active / committed / revealed / disputed / settled / leveraged)
+            // before the TOKEN check is re-armed as a fatal FC_ASSERT. Until then this
+            // check is LOG-ONLY on the pm branch — it does NOT increment
+            // invariant_failures. The (4) SHARES check and the #125 count/referential/
+            // singleton checks stay fatal (PM holds no VESTS; those pools are unchanged).
+            // Tracking issue: https://github.com/VIZ-Blockchain/viz-cpp-node/issues/127
             {
                 const auto& dgp = db.get_dynamic_global_properties();
                 int64_t acc_balance = 0, acc_reserved = 0;
@@ -1976,25 +2422,126 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 const int64_t vesting_fund   = dgp.total_vesting_fund.amount.value;
                 const int64_t reward_fund    = dgp.total_reward_fund.amount.value;
                 const int64_t committee_fund = dgp.committee_fund.amount.value;
-                const int64_t summed_token = acc_balance + acc_reserved
+                const int64_t base_token = acc_balance + acc_reserved
                     + escrow_balance + escrow_fee + invite_balance
                     + validator_pending + vesting_fund + reward_fund + committee_fund;
+
+                // ── PM pools (see TODO(pm) above — LOG-ONLY, unvalidated) ──
+                // Status codes are documented in pm_objects.hpp; held-state filters are
+                // marked UNVERIFIED and are the crux of the reconciliation task.
+                int64_t pm_bets = 0;
+                {
+                    const auto& idx = db.get_index<pm_bet_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0 || itr->status == 5 || itr->status == 6) // UNVERIFIED: active/queued/revealed-pending held
+                            pm_bets += itr->amount.value;
+                }
+                int64_t pm_user_lp = 0;
+                {
+                    const auto& idx = db.get_index<pm_liquidity_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0 && itr->provider.size() > 0)          // exclude empty-provider lazy LP (dup of allocated_balance)
+                            pm_user_lp += itr->amount.value;
+                }
+                int64_t pm_lazy = 0;
+                {
+                    const auto& idx = db.get_index<pm_lazy_pool_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_lazy += itr->free_balance.value + itr->allocated_balance.value;
+                }
+                int64_t pm_commit = 0;
+                {
+                    const auto& idx = db.get_index<pm_commit_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0)                                       // UNVERIFIED: escrow held only while committed
+                            pm_commit += itr->escrow_amount.value;
+                }
+                int64_t pm_dispute = 0;
+                {
+                    const auto& idx = db.get_index<pm_dispute_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0)                                       // UNVERIFIED: fee held only while dispute open
+                            pm_dispute += itr->dispute_fee.value;
+                }
+                int64_t pm_forfeit = 0;
+                {
+                    const auto& idx = db.get_index<pm_market_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_forfeit += itr->forfeit_pool.value;                      // zeroed post-settlement
+                }
+                int64_t pm_insurance = 0;
+                {
+                    const auto& idx = db.get_index<pm_oracle_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_insurance += itr->insurance.value;
+                }
+                int64_t pm_leverage = 0;
+                {
+                    const auto& idx = db.get_index<pm_leverage_position_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0)                                       // UNVERIFIED: collateral+loan held only while active
+                            pm_leverage += itr->collateral.value + itr->loan.value;
+                }
+                // #432 D: a settlement spans blocks, so a snapshot can catch one mid-flight. Rows
+                // already released no longer count above, and payouts already made are in account
+                // balances — `escrow` is the difference and keeps the two sides equal at any block
+                // boundary. SIGNED: phase 3 pays early-exit claims out of a pot whose rows are still
+                // standing, so it is legitimately negative until phase 4 releases them.
+                int64_t pm_settling = 0;
+                {
+                    const auto& idx = db.get_index<pm_settlement_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_settling += itr->escrow.value;
+                }
+                const int64_t pm_token = pm_bets + pm_user_lp + pm_lazy + pm_commit
+                    + pm_dispute + pm_forfeit + pm_insurance + pm_leverage + pm_settling;
+
+                const int64_t summed_token = base_token + pm_token;
                 const int64_t expected_supply = dgp.current_supply.amount.value;
+                const int64_t pm_delta = summed_token - expected_supply;
+                // ── issue #127: PM token supply invariant is now ENFORCED (satoshi-exact) after the
+                // leverage-exit residual fix (route total_bet-cv → forfeit_pool). On a fresh chain the
+                // PM accounting reconciles to 0.
+                //
+                // Anchor the check to a configurable legacy residual (default 0 = strict, satoshi-exact).
+                // A testnet snapshot may carry frozen PRE-FIX leverage-exit dust that code cannot
+                // retro-heal; the operator sets --snapshot-pm-legacy-residual to that known constant to
+                // import that specific state while STILL catching any new divergence. Default 0 keeps
+                // mainnet/fresh chains strict. (B1: PR #124 — was hardcoded -9079, fatal on healthy
+                // chains. See journal 2026-07-15, q#199.)
+                const int64_t PM_SUPPLY_LEGACY_RESIDUAL = pm_supply_legacy_residual;
                 ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
-                     "current_supply=${cs} vs summed=${sm}, delta=${d}. Components: "
-                     "acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
+                     "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
+                     "Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
                      "invite_balance=${ib} validator_pending=${vp} vesting_fund=${vf} "
-                     "reward_fund=${rf} committee_fund=${cf}" CLOG_RESET,
-                     ("cs", expected_supply)("sm", summed_token)("d", summed_token - expected_supply)
+                     "reward_fund=${rf} committee_fund=${cf}. "
+                     "PM: bets=${pb} user_lp=${pl} lazy=${plz} commit=${pc} dispute=${pd} "
+                     "forfeit=${pf} insurance=${pi} leverage=${plv} settling=${pst}" CLOG_RESET,
+                     ("cs", expected_supply)("sm", summed_token)("bt", base_token)("pm", pm_token)
+                     ("d", summed_token - expected_supply)
                      ("ab", acc_balance)("ar", acc_reserved)("eb", escrow_balance)("ef", escrow_fee)
                      ("ib", invite_balance)("vp", validator_pending)("vf", vesting_fund)
-                     ("rf", reward_fund)("cf", committee_fund));
-                if (summed_token != expected_supply) {
-                    elog(CLOG_RED "Snapshot completeness: TOKEN supply conservation violated — "
-                         "summed pools (${sm}) != dgp.current_supply (${cs}), delta=${d}; the "
-                         "snapshot is missing accounts that held a liquid balance" CLOG_RESET,
-                         ("sm", summed_token)("cs", expected_supply)("d", summed_token - expected_supply));
+                     ("rf", reward_fund)("cf", committee_fund)
+                     ("pb", pm_bets)("pl", pm_user_lp)("plz", pm_lazy)("pc", pm_commit)
+                     ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage)
+                     ("pst", pm_settling));
+                if (pm_delta != PM_SUPPLY_LEGACY_RESIDUAL) {
+                    // ENFORCED (issue #127): after the leverage-exit residual fix the PM accounting
+                    // is satoshi-exact, so any drift away from the expected residual is a genuine
+                    // token divergence → fail import and re-sync from a trusted peer.
                     ++invariant_failures;
+                    elog(CLOG_RED "Snapshot TOKEN supply invariant DIVERGED — summed (${sm}) != "
+                         "current_supply (${cs}), delta=${d}, expected=${exp}, drift_from_anchor=${dr} "
+                         "(base_delta=${bd}). PM accounting no longer reconciles; refusing corrupt state." CLOG_RESET,
+                         ("sm", summed_token)("cs", expected_supply)("d", pm_delta)
+                         ("exp", PM_SUPPLY_LEGACY_RESIDUAL)("dr", pm_delta - PM_SUPPLY_LEGACY_RESIDUAL)
+                         ("bd", base_token - expected_supply));
+                } else if (pm_delta != 0) {
+                    // Matched the TEMP testnet anchor (frozen pre-fix legacy dust): tolerated, not a
+                    // failure — but loudly remind that the anchor must be 0 for mainnet/fresh chains.
+                    wlog(CLOG_ORANGE "Snapshot TOKEN invariant at legacy anchor: delta=${d} == "
+                         "PM_SUPPLY_LEGACY_RESIDUAL (frozen pre-fix testnet dust). REMOVE the anchor "
+                         "(set 0) before mainnet." CLOG_RESET, ("d", pm_delta));
                 }
             }
 
@@ -3910,6 +4457,30 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 // Snapshot trusted-seeds diagnostic test
 // ============================================================================
 
+namespace {
+    /// Accepts both "1.2.3.4:8092" and "peer.example.com:8092".
+    fc::ip::endpoint resolve_peer_endpoint(const std::string& host_port) {
+        try {
+            return fc::ip::endpoint::from_string(host_port);
+        } catch (...) {}
+
+        auto colon = host_port.rfind(':');
+        FC_ASSERT(colon != std::string::npos, "Bad peer endpoint '${e}', expected host:port", ("e", host_port));
+        const std::string host = host_port.substr(0, colon);
+        unsigned long parsed = 0;
+        try {
+            parsed = std::stoul(host_port.substr(colon + 1));
+        } catch (...) {
+            FC_THROW("Bad port in peer endpoint '${e}'", ("e", host_port));
+        }
+        FC_ASSERT(parsed > 0 && parsed <= 65535, "Bad port in peer endpoint '${e}'", ("e", host_port));
+        const uint16_t port = static_cast<uint16_t>(parsed);
+        auto eps = fc::resolve(host, port);
+        FC_ASSERT(!eps.empty(), "Cannot resolve peer host '${h}'", ("h", host));
+        return eps.front();
+    }
+}
+
 void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
     const size_t n_peers = trusted_snapshot_peers.size();
     std::cerr << "\n[test-trusted-seeds] Testing " << n_peers << " trusted peer(s)...\n";
@@ -3937,7 +4508,10 @@ void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
 
         try {
             fc::tcp_socket sock;
-            auto ep = fc::ip::endpoint::from_string(peer_str);
+            // The real sync path (asio_tcp_socket::connect_to_endpoint) resolves DNS, so a
+            // host:port peer works there — but this diagnostic used to parse the endpoint as a
+            // literal IP only and reported every hostname from the docs as ERROR.
+            auto ep = resolve_peer_endpoint(peer_str);
 
             // --- 1. Measure TCP connect time ---
             auto t_connect_start = fc::time_point::now();
@@ -4121,6 +4695,15 @@ void snapshot_plugin::set_program_options(
             "Directory for auto-generated snapshot files (default: <data-dir>/snapshots)")
         ("snapshot-max-age-days", bpo::value<uint32_t>()->default_value(90),
             "Delete snapshots older than N days after creating a new one (0 = disabled)")
+        ("snapshot-include-pm-meta", bpo::value<bool>()->default_value(true),
+            "Serialize the (non-consensus) prediction-market metadata index (titles/images/tags/event) "
+            "into snapshots so it survives DLT block-log rotation and snapshot hand-off. Disable to keep "
+            "snapshots smaller; importers then rebuild meta from pm_create_market ops (live seed + DLT backfill).")
+        ("snapshot-pm-legacy-residual", bpo::value<int64_t>()->default_value(0),
+            "Tolerated PM token-supply invariant residual (raw) when importing a snapshot. Default 0 = "
+            "strict (satoshi-exact), required for mainnet/fresh chains. Set to a testnet snapshot's known "
+            "frozen pre-fix dust (e.g. -9079) only to import that specific legacy state; any OTHER drift "
+            "still fails import.")
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
             "Enable serving snapshots over TCP to other nodes")
         ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
@@ -4182,6 +4765,17 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
 
     my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
+
+    if (options.count("snapshot-include-pm-meta")) {
+        my->include_pm_meta = options.at("snapshot-include-pm-meta").as<bool>();
+        ilog("Snapshot PM metadata section: ${e}", ("e", my->include_pm_meta ? "ENABLED" : "disabled"));
+    }
+    if (options.count("snapshot-pm-legacy-residual")) {
+        my->pm_supply_legacy_residual = options.at("snapshot-pm-legacy-residual").as<int64_t>();
+        if (my->pm_supply_legacy_residual != 0)
+            wlog("Snapshot PM supply invariant anchored to legacy residual ${r} (non-strict); MUST be 0 on mainnet/fresh chains",
+                 ("r", my->pm_supply_legacy_residual));
+    }
     if (my->snapshot_auto_latest) {
         if (my->snapshot_path.empty()) {
             // Auto-discover latest snapshot in snapshot-dir

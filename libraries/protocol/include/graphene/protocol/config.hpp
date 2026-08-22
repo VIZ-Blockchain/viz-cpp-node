@@ -2,7 +2,7 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-#define CHAIN_VERSION                         (version(3, 2, 0))
+#define CHAIN_VERSION                         (version(4, 0, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"
@@ -135,7 +135,6 @@
 #define COMMITTEE_MAX_REQUIRED_AMOUNT         int64_t(CHAIN_INIT_SUPPLY/100)
 #define COMMITTEE_REQUEST_PER_TIME            (60*60*24)
 #define COMMITTEE_REQUEST_PROCESSING          (CHAIN_BLOCKS_PER_HOUR/6) //every 10 minutes
-
 #define CONSENSUS_FLAG_ENERGY_ADDITIONAL_COST 0
 #define CONSENSUS_VOTE_ACCOUNTING_MIN_RSHARES uint32_t(5000000) // default 0.5 SHARES equivalent
 #define CONSENSUS_COMMITTEE_REQUEST_APPROVE_MIN_PERCENT 1000 // default: 10.00%
@@ -208,7 +207,32 @@
 ///   0  — pre-HF13 (implicit, file absent)
 ///   13 — HF13: added sharing_rate, pending_stakeholder_reward to witness_object;
 ///               added vote_created_block to witness_vote_object
-#define CHAIN_SCHEMA_VERSION                  uint32_t(13)
+///   14 — HF14: prediction-market chainbase objects (pm_oracle, pm_market, pm_outcome,
+///               pm_bet, pm_liquidity, pm_commit, pm_dispute, pm_dispute_vote, pm_lazy_*)
+#define CHAIN_SCHEMA_VERSION                  uint32_t(14)
+
+// HF14 prediction-market byte-length caps for variable-length on-chain strings.
+// These are CONSENSUS-MECHANICAL, not anti-spam (spec §7.12): without a hard cap two
+// nodes could pick different chainbase string sizes -> divergent fc::raw::pack length
+// -> divergent object hash -> fork. They MUST be identical on mainnet and testnet —
+// only the HF activation TIME differs between builds, never these caps.
+#define MAX_PM_DECISION_URL_LEN               256
+#define MAX_PM_PROFILE_URL_LEN                256
+#define MAX_PM_DISPUTE_REASON_LEN             1024
+#define MAX_PM_MARKET_TITLE_LEN               256
+#define MAX_PM_OUTCOME_LABEL_LEN              64
+#define MAX_PM_OUTCOMES_PER_MARKET            128
+// #349: cap on live early-exit deferred claims (F1/#300) per market. Bounds settle_market's
+// claim-distribution loop against a griefer spamming cancels/leverage-closes to force unbounded
+// per-block work at settlement. Beyond the cap, an early-exit skips recording its contingent claim
+// (the tail stays in the curve, pays 0 like bucket-exhaustion) — the exit itself still succeeds.
+// Generous: far above any count the bounded reward bucket (≤ cap%·losers) could ever fund.
+#define MAX_PM_DEFERRED_CLAIMS_PER_MARKET     10000
+// M4 (audit 2026-08-13): cap on live (unrevealed) batch commits per market. Commit escrow costs
+// only the 20% no-reveal penalty (80% refunded), so without a cap a spammer can queue an unbounded
+// backlog that the §1 forfeit cron must drain through the shared pm_processing_cap_per_block,
+// starving settlements/voids. Enforced via pm_market_object.open_commits (O(1) at commit time).
+#define MAX_PM_OPEN_COMMITS_PER_MARKET        10000
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

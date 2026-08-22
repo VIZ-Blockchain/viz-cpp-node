@@ -33,6 +33,7 @@ target_link_libraries(
         graphene::committee_api
         graphene::invite_api
         graphene::paid_subscription_api
+        graphene::prediction_market_api
         graphene::custom_protocol_api
         graphene::snapshot
         graphene::validator_guard

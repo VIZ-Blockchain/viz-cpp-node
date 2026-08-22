@@ -1,14 +1,8 @@
 file(GLOB HEADERS "include/graphene/time/*.hpp")
 
-if(BUILD_SHARED_LIBRARIES)
-    add_library(graphene_time SHARED
+add_library(graphene_time ${VIZ_LIBRARY_TYPE}
             time.cpp
             )
-else()
-    add_library(graphene_time STATIC
-            time.cpp
-            )
-endif()
 
 target_link_libraries(graphene_time fc)
 target_include_directories(graphene_time

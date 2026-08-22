@@ -88,7 +88,8 @@ namespace graphene { namespace chain {
     }
 
     void committee_vote_request_evaluator::do_apply(const committee_vote_request_operation& o) {
-        _db.get_account(o.voter);
+        const auto &voter = _db.get_account(o.voter);
+        const auto &median_props = _db.get_validator_schedule_object().median_props;
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!voter.valid, "Account flagged as invalid");
         const auto &idx = _db.get_index<committee_request_index>().indices().get<by_request_id>();
@@ -96,23 +97,31 @@ namespace graphene { namespace chain {
         FC_ASSERT(itr != idx.end(), "Committee request id not found.");
 
         if(itr->status == 0){
-            bool find=false;
-            const auto &vote_idx = _db.get_index<committee_vote_index>().indices().get<by_request_id>();
-            auto vote_itr = vote_idx.lower_bound(itr->request_id);
-            while (vote_itr != vote_idx.end() &&
-                   vote_itr->request_id == itr->request_id) {
-                const auto &cur_vote = *vote_itr;
-                ++vote_itr;
-                if(cur_vote.voter==o.voter){
-                    find = true;
-                    FC_ASSERT(cur_vote.vote_percent != o.vote_percent, "Committee vote percent equal last vote.");
-                    _db.modify(cur_vote, [&](committee_vote_object &c) {
-                        c.vote_percent = o.vote_percent;
-                        c.last_update = _db.head_block_time();
-                    });
-                }
+            // q#687 (2026-08-20): mirror the PM-dispute Sybil gate — DAO votes are free and the
+            // tally weighs effective vesting, so require a vesting floor (in the same unit) before
+            // anyone casts/revises a ballot. Gated on HF14 so pre-fork sub-floor voters are unaffected.
+            if (_db.has_hardfork(CHAIN_HARDFORK_14)) {
+                const auto vprice = _db.get_dynamic_global_properties().get_vesting_share_price();
+                const asset min_shares = median_props.committee_vote_min_vesting * vprice;
+                FC_ASSERT(voter.effective_vesting_shares() >= min_shares,
+                          "Insufficient vesting for committee vote (min 1000.000 VIZ)");
             }
-            if(!find){
+            // H2 (2026-08-20): a repeat vote used to linear-scan every ballot of the request to
+            // find the voter's previous one — O(n) per vote and O(n²) to fill a request. Look the
+            // ballot up directly on the (voter, request_id) unique index instead.
+            const auto &vote_idx = _db.get_index<committee_vote_index>().indices().get<by_voter_request>();
+            auto vote_itr = vote_idx.find(boost::make_tuple(o.voter, itr->request_id));
+            if (vote_itr != vote_idx.end()) {
+                FC_ASSERT(vote_itr->vote_percent != o.vote_percent, "Committee vote percent equal last vote.");
+                _db.modify(*vote_itr, [&](committee_vote_object &c) {
+                    c.vote_percent = o.vote_percent;
+                    c.last_update = _db.head_block_time();
+                });
+            } else {
+                if (_db.has_hardfork(CHAIN_HARDFORK_14)) {
+                    FC_ASSERT(itr->votes_count < median_props.committee_votes_per_request,
+                              "Committee request vote cap reached");
+                }
                 _db.create<committee_vote_object>([&](committee_vote_object& c) {
                     c.request_id = itr->request_id;
                     c.voter = o.voter;

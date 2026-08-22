@@ -54,7 +54,10 @@ namespace graphene {
                 try {
                     pimpl->_chain.accept_transaction(trx);
                 } catch (const fc::exception& e) {
-                    dlog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
+                    // elog (was dlog): apply/assert failures here are otherwise invisible — the API
+                    // still returns {} and (sync) hangs waiting for a block that never includes the
+                    // dropped tx. Surface the exact reason (e.g. leverage worst-case assert) at error level.
+                    elog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
                          ("id", trx.id())("e", e.to_detail_string()));
                 }
                 pimpl->_p2p.broadcast_transaction(trx);
@@ -90,7 +93,10 @@ namespace graphene {
                 try {
                     pimpl->_chain.accept_transaction(trx);
                 } catch (const fc::exception& e) {
-                    dlog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
+                    // elog (was dlog): apply/assert failures here are otherwise invisible — the API
+                    // still returns {} and (sync) hangs waiting for a block that never includes the
+                    // dropped tx. Surface the exact reason (e.g. leverage worst-case assert) at error level.
+                    elog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
                          ("id", trx.id())("e", e.to_detail_string()));
                 }
                 pimpl->_p2p.broadcast_transaction(trx);
@@ -141,7 +147,10 @@ namespace graphene {
                 try {
                     pimpl->_chain.accept_transaction(trx);
                 } catch (const fc::exception& e) {
-                    dlog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
+                    // elog (was dlog): apply/assert failures here are otherwise invisible — the API
+                    // still returns {} and (sync) hangs waiting for a block that never includes the
+                    // dropped tx. Surface the exact reason (e.g. leverage worst-case assert) at error level.
+                    elog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
                          ("id", trx.id())("e", e.to_detail_string()));
                 }
                 pimpl->_p2p.broadcast_transaction(trx);

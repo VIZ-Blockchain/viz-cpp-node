@@ -434,6 +434,31 @@ namespace graphene { namespace chain {
 
             void adjust_balance(const account_object &a, const asset &delta);
 
+            // PM frozen-funds telemetry (display-only; account_object.pm_*). kind:
+            // 0 = liquidity_committed, 1 = bets_staked, 2 = leverage_collateral.
+            // NEVER gate consensus on these; they only feed get_accounts for clients.
+            void pm_adjust_frozen(const account_name_type &account, uint8_t kind, share_type delta);
+            // One-time seed of the pm_* counters from existing objects on the first block
+            // processed after the upgrade (guarded by dgpo.pm_frozen_counters_seeded).
+            void pm_seed_frozen_counters();
+            // Debug drift-check: recompute the frozen counters straight from the live objects and
+            // compare against the stored per-account aggregates. Logs every mismatch and returns
+            // false if any is found. Read-only; safe to call any time (walks accounts + PM objects).
+            bool pm_verify_frozen_counters() const;
+            // One-time seed of pm_oracle_object.active_markets from live markets (guarded by
+            // dgpo.pm_active_markets_seeded). Display-only O(1) live-market count per oracle.
+            void pm_seed_oracle_active_markets();
+            // Debug drift-check for active_markets: recompute per-oracle from live markets and diff
+            // against the stored counter. Read-only; logs mismatches; returns false if any is found.
+            bool pm_verify_oracle_active_markets() const;
+            // One-time seed of the per-oracle workload gauges (markets_in_dispute_window,
+            // disputes_awaiting_response, disputes_awaiting_decision) from live markets/disputes
+            // (guarded by dgpo.pm_oracle_gauges_seeded). Display-only; never gates consensus.
+            void pm_seed_oracle_gauges();
+            // Debug drift-check for the workload gauges: recompute per-oracle from live state and
+            // diff against the stored counters. Read-only; logs mismatches; returns false on drift.
+            bool pm_verify_oracle_gauges() const;
+
             void burn_asset(const asset &delta);
 
             void adjust_rshares(const content_object &content, fc::uint128_t old_rshares, fc::uint128_t new_rshares);
@@ -478,6 +503,7 @@ namespace graphene { namespace chain {
             void process_validator_epoch_distribution(); ///< HF13: distribute accumulated delegator TOKEN rewards
             void committee_processing();
             void paid_subscribe_processing();
+            void process_pm_markets();               ///< HF14: bounded per-block PM cron
 
             void expire_award_shares_processing();
 

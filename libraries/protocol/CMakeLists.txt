@@ -17,6 +17,8 @@ list(APPEND ${CURRENT_TARGET}_HEADERS
         include/graphene/protocol/sign_state.hpp
         include/graphene/protocol/chain_operations.hpp
         include/graphene/protocol/chain_virtual_operations.hpp
+        include/graphene/protocol/pm_operations.hpp
+        include/graphene/protocol/pm_virtual_operations.hpp
         include/graphene/protocol/transaction.hpp
         include/graphene/protocol/types.hpp
         include/graphene/protocol/version.hpp
@@ -32,22 +34,16 @@ list(APPEND ${CURRENT_TARGET}_SOURCES
         proposal_operations.cpp
         sign_state.cpp
         chain_operations.cpp
+        pm_operations.cpp
         transaction.cpp
         types.cpp
         version.cpp
         )
 
-if(BUILD_SHARED_LIBRARIES)
-    add_library(graphene_${CURRENT_TARGET} SHARED
+add_library(graphene_${CURRENT_TARGET} ${VIZ_LIBRARY_TYPE}
             ${${CURRENT_TARGET}_HEADERS}
             ${${CURRENT_TARGET}_SOURCES}
             )
-else()
-    add_library(graphene_${CURRENT_TARGET} STATIC
-            ${${CURRENT_TARGET}_HEADERS}
-            ${${CURRENT_TARGET}_SOURCES}
-            )
-endif()
 
 add_library(graphene::${CURRENT_TARGET} ALIAS graphene_${CURRENT_TARGET})
 set_property(TARGET graphene_${CURRENT_TARGET} PROPERTY EXPORT_NAME ${CURRENT_TARGET})
@@ -55,6 +51,10 @@ set_property(TARGET graphene_${CURRENT_TARGET} PROPERTY EXPORT_NAME ${CURRENT_TA
 target_link_libraries(graphene_${CURRENT_TARGET} fc)
 target_include_directories(graphene_${CURRENT_TARGET}
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}/include")
+
+if(ENABLE_PCH)
+    target_precompile_headers(graphene_${CURRENT_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pch.hpp")
+endif()
 
 if(WITH_COVERAGE)
     target_compile_options(graphene_${CURRENT_TARGET} PRIVATE --coverage)

@@ -10,6 +10,20 @@ endif()
 
 cmake_minimum_required(VERSION 3.16)
 
+# Default to a Release build when the caller doesn't specify one. Without this,
+# a bare `cmake ..` (or an IDE that doesn't pass -DCMAKE_BUILD_TYPE) configures
+# with empty optimization flags, producing an unoptimized node. Single-config
+# generators only; multi-config generators (MSVC, Ninja Multi-Config) pick the
+# type at build time and leave CMAKE_BUILD_TYPE empty by design.
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT _is_multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING
+        "Choose the build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set; defaulting to Release")
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
 set(CHAIN_NAME "VIZ")
 
 
@@ -52,6 +66,16 @@ list(APPEND BOOST_COMPONENTS thread
 option(Boost_USE_STATIC_LIBS "Build with Boost static libraries usage" TRUE)
 
 option(BUILD_SHARED_LIBRARIES "Build shared libraries" FALSE)
+
+# Single source of truth for the library linkage type. Each library/plugin uses
+# add_library(<name> ${VIZ_LIBRARY_TYPE} ...) instead of duplicating the full
+# source list across if(BUILD_SHARED_LIBRARIES)/else() branches. Set at root
+# scope so it propagates into every add_subdirectory below.
+if(BUILD_SHARED_LIBRARIES)
+    set(VIZ_LIBRARY_TYPE SHARED)
+else()
+    set(VIZ_LIBRARY_TYPE STATIC)
+endif()
 
 option(BUILD_TESTNET "Build source for test network (ON OR OFF)" FALSE)
 message(STATUS "BUILD_TESTNET: ${BUILD_TESTNET}")
@@ -114,10 +138,36 @@ if(CCACHE_FOUND)
     set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
 endif(CCACHE_FOUND)
 
+# Precompiled headers (opt-in, default OFF). When ON, the heaviest libraries
+# (chain, protocol, wallet) precompile a curated set of stable third-party
+# headers (Boost.MultiIndex, FC reflection/serialization, std) once per target
+# instead of re-parsing them in every translation unit. See each library's
+# pch.hpp for the header list and rationale.
+#
+# Left OFF by default so it cannot affect existing/CI builds until a maintainer
+# opts in and measures. If ccache is in use, PCH only helps when ccache is told
+# not to hash the (large, stable) PCH timestamp: export
+#   CCACHE_SLOPPINESS=pch_defines,time_macros
+# before building, otherwise ccache conservatively disables its own cache for
+# PCH-using compilations and you lose the ccache win without gaining the PCH one.
+option(ENABLE_PCH "Enable precompiled headers for heavy libraries" OFF)
+if(ENABLE_PCH)
+    message(STATUS "ENABLE_PCH: ON (precompiling stable third-party headers for chain/protocol/wallet)")
+    if(CCACHE_FOUND AND NOT "$ENV{CCACHE_SLOPPINESS}" MATCHES "pch_defines")
+        message(WARNING
+            "ENABLE_PCH is ON and ccache is active, but CCACHE_SLOPPINESS does not "
+            "include pch_defines,time_macros. ccache will likely disable caching for "
+            "PCH-using compilations. Export "
+            "CCACHE_SLOPPINESS=pch_defines,time_macros before building.")
+    endif()
+else()
+    message(STATUS "ENABLE_PCH: OFF")
+endif()
+
 if(WIN32)
 
     message(STATUS "Configuring VIZ on WIN32")
-    set(PLATFORM_SPECIFIC_LIBS) # Păstrăm inițializarea pentru alte biblioteci
+    set(PLATFORM_SPECIFIC_LIBS) # Keep the initialization for other libraries
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
@@ -164,7 +214,7 @@ if(WIN32)
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
     endif(FULL_STATIC_BUILD)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
-    # bcrypt trebuie sa fie dupa toate librariile Boost statice
+    # bcrypt must come after all the static Boost libraries
     list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
         # We remove the explicit addition of bcrypt to PLATFORM_SPECIFIC_LIBS, as it is now linked globally
     endif(MSVC)
@@ -229,6 +279,7 @@ add_subdirectory(programs)
 if(BUILD_CONSENSUS_TESTS)
     enable_testing()
     add_subdirectory(tests/consensus_sim)
+    add_subdirectory(tests/pm)
 endif()
 
 if(ENABLE_INSTALLER)

@@ -8,6 +8,7 @@
 #else
 #include <graphene/protocol/config.hpp>
 #endif
+#include <graphene/protocol/pm_operations.hpp>
 #include <graphene/wallet/wallet.hpp>
 #include <graphene/wallet/api_documentation.hpp>
 #include <graphene/wallet/reflect_util.hpp>
@@ -222,9 +223,24 @@ namespace graphene { namespace wallet {
 
                     _wallet.ws_server = initial_data.ws_server;
                     chain_id = _chain_id;
+
+                    // The prediction_market_api plugin is optional; bind it only if the node serves it
+                    // so a wallet pointed at a node without HF14 PM read API still starts normally.
+                    try {
+                        _remote_prediction_market_api = con.get_remote_api< remote_prediction_market_api >( 0, "prediction_market_api" );
+                    } catch ( const fc::exception& ) {
+                        ilog( "prediction_market_api not available on this node; pm_get_* read methods are disabled." );
+                    }
                 }
                 virtual ~wallet_api_impl()
                 {}
+
+                /// Returns the prediction_market_api proxy, asserting the node actually serves it.
+                fc::api< remote_prediction_market_api >& pm_api() {
+                    FC_ASSERT( _remote_prediction_market_api.valid(),
+                               "This node does not run the prediction_market_api plugin; pm_get_* calls are unavailable." );
+                    return *_remote_prediction_market_api;
+                }
 
                 void encrypt_keys() {
                     if( !is_locked() ) {
@@ -886,6 +902,8 @@ namespace graphene { namespace wallet {
                 fc::api< remote_network_broadcast_api>  _remote_network_broadcast_api;
                 fc::api< remote_account_by_key >        _remote_account_by_key;
                 fc::api< remote_validator_api >           _remote_validator_api;
+                /// Optional: only bound if the node runs the HF14 prediction_market_api plugin.
+                fc::optional< fc::api< remote_prediction_market_api > > _remote_prediction_market_api;
                 uint32_t                                _tx_expiration_seconds = 30;
 
                 flat_map<string, operation>             _prototype_ops;
@@ -2482,6 +2500,400 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             tx.validate();
 
             return my->sign_transaction(tx, broadcast);
+        }
+
+        // ========== HF14 Prediction Market Helper Implementations ==========
+
+        annotated_signed_transaction wallet_api::pm_oracle_register(string owner, asset insurance, uint16_t fee_percent, asset fixed_fee, string rules_url, string auto_accept_creator, string auto_accept_resolver, bool auto_accept, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_oracle_register_operation op;
+            op.owner = owner;
+            op.insurance = insurance;
+            op.fee_percent = fee_percent;
+            op.fixed_fee = fixed_fee;
+            op.rules_url = rules_url;
+            // Empty string ⇒ unset (any creator / committee-only), matching the operation's defaults.
+            op.auto_accept_creator = auto_accept_creator;
+            op.auto_accept_resolver = auto_accept_resolver;
+            op.auto_accept = auto_accept;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_oracle_update(string owner, optional<asset> insurance_delta, optional<uint16_t> fee_percent, optional<asset> fixed_fee, optional<string> rules_url, optional<string> auto_accept_creator, optional<string> auto_accept_resolver, optional<bool> auto_accept, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_oracle_update_operation op;
+            op.owner = owner;
+            op.insurance_delta = insurance_delta;
+            op.fee_percent = fee_percent;
+            op.fixed_fee = fixed_fee;
+            op.rules_url = rules_url;
+            if (auto_accept_creator.valid())  op.auto_accept_creator  = account_name_type(*auto_accept_creator);
+            if (auto_accept_resolver.valid()) op.auto_accept_resolver = account_name_type(*auto_accept_resolver);
+            op.auto_accept = auto_accept;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_create_market(string creator, string oracle, uint8_t market_type, vector<string> outcomes, string url, uint16_t oracle_fee_percent, asset oracle_fixed_fee, uint16_t creator_fee_percent, uint16_t liquidity_fee_percent, asset liquidity, share_type lmsr_b, time_point_sec betting_expiration, time_point_sec result_expiration, uint8_t dispute_mode, string dispute_resolver, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_create_market_operation op;
+            op.creator = creator;
+            op.oracle = oracle;
+            op.market_type = market_type;
+            op.outcomes = outcomes;
+            op.url = url;
+            op.oracle_fee_percent = oracle_fee_percent;
+            op.oracle_fixed_fee = oracle_fixed_fee;
+            op.creator_fee_percent = creator_fee_percent;
+            op.liquidity_fee_percent = liquidity_fee_percent;
+            op.liquidity = liquidity;
+            op.lmsr_b = lmsr_b;
+            op.betting_expiration = betting_expiration;
+            op.result_expiration = result_expiration;
+            op.dispute_mode = dispute_mode;
+            op.dispute_resolver = dispute_resolver;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_oracle_accept_market(string oracle, int64_t market_id, bool accept, uint16_t oracle_fee_percent, asset oracle_fixed_fee, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_oracle_accept_market_operation op;
+            op.oracle = oracle;
+            op.market_id = market_id;
+            op.accept = accept;
+            op.oracle_fee_percent = oracle_fee_percent;
+            op.oracle_fixed_fee = oracle_fixed_fee;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_place_bet(string account, int64_t market_id, int8_t side, int16_t outcome_index, asset amount, share_type min_tokens, uint8_t mode, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_place_bet_operation op;
+            op.account = account;
+            op.market_id = market_id;
+            op.side = side;
+            op.outcome_index = outcome_index;
+            op.amount = amount;
+            op.min_tokens = min_tokens;
+            op.mode = mode;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        fc::sha256 wallet_api::pm_commitment_hash(int64_t market_id, string account, int8_t side, int16_t outcome_index, asset amount, share_type min_tokens, string salt) const {
+            // Byte-identical to verify_commit() in pm_evaluator.cpp.
+            fc::sha256::encoder enc;
+            int64_t mid = market_id;
+            enc.write(reinterpret_cast<const char*>(&mid), (uint32_t)sizeof(mid));
+            account_name_type acc = account;
+            enc.write(reinterpret_cast<const char*>(&acc.data), (uint32_t)sizeof(acc.data));
+            enc.write(reinterpret_cast<const char*>(&side), (uint32_t)sizeof(side));
+            enc.write(reinterpret_cast<const char*>(&outcome_index), (uint32_t)sizeof(outcome_index));
+            int64_t amt = amount.amount.value;
+            enc.write(reinterpret_cast<const char*>(&amt), (uint32_t)sizeof(amt));
+            int64_t mnt = min_tokens.value;
+            enc.write(reinterpret_cast<const char*>(&mnt), (uint32_t)sizeof(mnt));
+            enc.write(salt.data(), (uint32_t)salt.size());
+            return enc.result();
+        }
+
+        annotated_signed_transaction wallet_api::pm_commit_bet(string account, int64_t market_id, int8_t side, int16_t outcome_index, asset amount, share_type min_tokens, string salt, uint16_t no_reveal_fee_percent, asset escrow_amount, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_commit_bet_operation op;
+            op.account = account;
+            op.market_id = market_id;
+            op.commitment = pm_commitment_hash(market_id, account, side, outcome_index, amount, min_tokens, salt);
+            op.escrow_amount = escrow_amount;
+            op.no_reveal_fee_percent = no_reveal_fee_percent;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_reveal_bet(string account, int64_t commit_id, int8_t side, int16_t outcome_index, asset amount, string salt, share_type min_tokens, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_reveal_bet_operation op;
+            op.account = account;
+            op.commit_id = commit_id;
+            op.side = side;
+            op.outcome_index = outcome_index;
+            op.amount = amount;
+            op.salt = salt;
+            op.min_tokens = min_tokens;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_cancel_bet(string account, int64_t bet_id, share_type min_return, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_cancel_bet_operation op;
+            op.account = account;
+            op.bet_id = bet_id;
+            op.min_return = min_return;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_add_liquidity(string provider, int64_t market_id, asset amount, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_add_liquidity_operation op;
+            op.provider = provider;
+            op.market_id = market_id;
+            op.amount = amount;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_withdraw_liquidity(string provider, int64_t liquidity_id, asset amount, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_withdraw_liquidity_operation op;
+            op.provider = provider;
+            op.liquidity_id = liquidity_id;
+            op.amount = amount;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_resolve_market(string oracle, int64_t market_id, int16_t winning_outcome, string decision_url, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_resolve_market_operation op;
+            op.oracle = oracle;
+            op.market_id = market_id;
+            op.winning_outcome = winning_outcome;
+            op.decision_url = decision_url;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_no_contest(string oracle, int64_t market_id, string reason, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_no_contest_operation op;
+            op.oracle = oracle;
+            op.market_id = market_id;
+            op.reason = reason;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_dispute_create(string disputer, int64_t market_id, int16_t proposed_outcome, string reason, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_dispute_create_operation op;
+            op.disputer = disputer;
+            op.market_id = market_id;
+            op.proposed_outcome = proposed_outcome;
+            op.reason = reason;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_dispute_vote(string voter, int64_t market_id, int16_t vote_outcome, int16_t vote_percent, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_dispute_vote_operation op;
+            op.voter = voter;
+            op.market_id = market_id;
+            op.vote_outcome = vote_outcome;
+            op.vote_percent = vote_percent;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_dispute_resolve(string resolver, int64_t market_id, int16_t correct_outcome, asset penalty_amount, bool ban_oracle, time_point_sec ban_oracle_until, bool ban_creator, time_point_sec ban_creator_until, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_dispute_resolve_operation op;
+            op.resolver = resolver;
+            op.market_id = market_id;
+            op.correct_outcome = correct_outcome;
+            op.penalty_amount = penalty_amount;
+            op.ban_oracle = ban_oracle;
+            op.ban_oracle_until = ban_oracle_until;
+            op.ban_creator = ban_creator;
+            op.ban_creator_until = ban_creator_until;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_transfer_position(string from, int64_t bet_id, string to, share_type amount, string memo, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_transfer_position_operation op;
+            op.from = from;
+            op.bet_id = bet_id;
+            op.to = to;
+            op.amount = amount;
+            op.memo = memo;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_lazy_deposit(string account, asset amount, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_lazy_deposit_operation op;
+            op.account = account;
+            op.amount = amount;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_lazy_withdraw(string account, share_type shares, bool emergency, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_lazy_withdraw_operation op;
+            op.account = account;
+            op.shares = shares;
+            op.emergency = emergency;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_leverage_open(string account, int64_t market_id, int16_t outcome_index, asset collateral, asset loan, share_type min_tokens, uint16_t max_slippage_percent, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_leverage_open_operation op;
+            op.account = account;
+            op.market_id = market_id;
+            op.outcome_index = outcome_index;
+            op.collateral = collateral;
+            op.loan = loan;
+            op.min_tokens = min_tokens;
+            op.max_slippage_percent = max_slippage_percent;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_leverage_close(string account, int64_t position_id, share_type min_return, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_leverage_close_operation op;
+            op.account = account;
+            op.position_id = position_id;
+            op.min_return = min_return;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::pm_leverage_convert(string account, int64_t position_id, uint16_t conversion_profit_cost, bool broadcast) {
+            FC_ASSERT(!is_locked());
+            pm_leverage_convert_operation op;
+            op.account = account;
+            op.position_id = position_id;
+            op.conversion_profit_cost = conversion_profit_cost;
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        // ---------- prediction_market_api read pass-throughs ----------
+
+        fc::variant wallet_api::pm_get_market(int64_t market_id) const {
+            return my->pm_api()->get_market(market_id);
+        }
+        fc::variant wallet_api::pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets(status, from, limit);
+        }
+        fc::variant wallet_api::pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_oracle(oracle, from, limit);
+        }
+        fc::variant wallet_api::pm_list_markets_by_oracle_status(string oracle, int8_t status, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_oracle_status(oracle, status, from, limit);
+        }
+        fc::variant wallet_api::pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_creator(creator, from, limit);
+        }
+        fc::variant wallet_api::pm_get_market_outcomes(int64_t market_id) const {
+            return my->pm_api()->get_market_outcomes(market_id);
+        }
+        fc::variant wallet_api::pm_get_market_weight_sums(int64_t market_id) const {
+            return my->pm_api()->get_market_weight_sums(market_id);
+        }
+        fc::variant wallet_api::pm_get_market_bets(int64_t market_id, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->get_market_bets(market_id, from, limit);
+        }
+        fc::variant wallet_api::pm_get_account_positions(string account, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->get_account_positions(account, from, limit);
+        }
+        fc::variant wallet_api::pm_get_market_liquidity(int64_t market_id, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->get_market_liquidity(market_id, from, limit);
+        }
+        fc::variant wallet_api::pm_get_account_leverage_positions(string account, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->get_account_leverage_positions(account, from, limit);
+        }
+        fc::variant wallet_api::pm_get_market_leverage_positions(int64_t market_id, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->get_market_leverage_positions(market_id, from, limit);
+        }
+        fc::variant wallet_api::pm_get_creator_ban(string account) const {
+            return my->pm_api()->get_creator_ban(account);
+        }
+        fc::variant wallet_api::pm_get_oracle(string owner) const {
+            return my->pm_api()->get_oracle(owner);
+        }
+        fc::variant wallet_api::pm_list_oracles(uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_oracles(from, limit);
+        }
+        fc::variant wallet_api::pm_get_dispute(int64_t market_id) const {
+            return my->pm_api()->get_dispute(market_id);
+        }
+        fc::variant wallet_api::pm_get_dispute_votes(int64_t market_id) const {
+            return my->pm_api()->get_dispute_votes(market_id);
+        }
+        fc::variant wallet_api::pm_get_lazy_pool() const {
+            return my->pm_api()->get_lazy_pool();
+        }
+        fc::variant wallet_api::pm_get_lazy_deposit(string account) const {
+            return my->pm_api()->get_lazy_deposit(account);
+        }
+        fc::variant wallet_api::pm_get_chain_properties() const {
+            return my->pm_api()->get_pm_chain_properties();
+        }
+        fc::variant wallet_api::pm_get_market_meta(int64_t market_id) const {
+            return my->pm_api()->get_market_meta(market_id);
+        }
+        fc::variant wallet_api::pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_category(category, from, limit);
+        }
+        fc::variant wallet_api::pm_list_markets_by_event(string event, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_event(event, from, limit);
+        }
+        fc::variant wallet_api::pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->get_market_kline(market_id, from, limit);
         }
 
         // ========== VIZ DNS Nameserver Helper Implementations ==========

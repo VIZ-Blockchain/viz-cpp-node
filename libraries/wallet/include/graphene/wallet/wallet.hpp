@@ -1297,6 +1297,69 @@ namespace graphene { namespace wallet {
                 bool broadcast = false
             );
 
+            // ========== HF14 Prediction Market Helpers ==========
+
+            annotated_signed_transaction pm_oracle_register(string owner, asset insurance, uint16_t fee_percent, asset fixed_fee, string rules_url, string auto_accept_creator, string auto_accept_resolver, bool auto_accept, bool broadcast = false);
+            annotated_signed_transaction pm_oracle_update(string owner, optional<asset> insurance_delta, optional<uint16_t> fee_percent, optional<asset> fixed_fee, optional<string> rules_url, optional<string> auto_accept_creator, optional<string> auto_accept_resolver, optional<bool> auto_accept, bool broadcast = false);
+            annotated_signed_transaction pm_create_market(string creator, string oracle, uint8_t market_type, vector<string> outcomes, string url, uint16_t oracle_fee_percent, asset oracle_fixed_fee, uint16_t creator_fee_percent, uint16_t liquidity_fee_percent, asset liquidity, share_type lmsr_b, time_point_sec betting_expiration, time_point_sec result_expiration, uint8_t dispute_mode, string dispute_resolver, bool broadcast = false);
+            annotated_signed_transaction pm_oracle_accept_market(string oracle, int64_t market_id, bool accept, uint16_t oracle_fee_percent, asset oracle_fixed_fee, bool broadcast = false);
+            annotated_signed_transaction pm_place_bet(string account, int64_t market_id, int8_t side, int16_t outcome_index, asset amount, share_type min_tokens, uint8_t mode, bool broadcast = false);
+
+            /// Deterministic commitment hash, byte-identical to the node's verify_commit().
+            fc::sha256 pm_commitment_hash(int64_t market_id, string account, int8_t side, int16_t outcome_index, asset amount, share_type min_tokens, string salt) const;
+            annotated_signed_transaction pm_commit_bet(string account, int64_t market_id, int8_t side, int16_t outcome_index, asset amount, share_type min_tokens, string salt, uint16_t no_reveal_fee_percent, asset escrow_amount, bool broadcast = false);
+            annotated_signed_transaction pm_reveal_bet(string account, int64_t commit_id, int8_t side, int16_t outcome_index, asset amount, string salt, share_type min_tokens, bool broadcast = false);
+            annotated_signed_transaction pm_cancel_bet(string account, int64_t bet_id, share_type min_return, bool broadcast = false);
+            annotated_signed_transaction pm_add_liquidity(string provider, int64_t market_id, asset amount, bool broadcast = false);
+            annotated_signed_transaction pm_withdraw_liquidity(string provider, int64_t liquidity_id, asset amount, bool broadcast = false);
+            annotated_signed_transaction pm_resolve_market(string oracle, int64_t market_id, int16_t winning_outcome, string decision_url, bool broadcast = false);
+            annotated_signed_transaction pm_no_contest(string oracle, int64_t market_id, string reason, bool broadcast = false);
+            annotated_signed_transaction pm_dispute_create(string disputer, int64_t market_id, int16_t proposed_outcome, string reason, bool broadcast = false);
+            annotated_signed_transaction pm_dispute_vote(string voter, int64_t market_id, int16_t vote_outcome, int16_t vote_percent, bool broadcast = false);
+            annotated_signed_transaction pm_dispute_resolve(string resolver, int64_t market_id, int16_t correct_outcome, asset penalty_amount, bool ban_oracle, time_point_sec ban_oracle_until, bool ban_creator, time_point_sec ban_creator_until, bool broadcast = false);
+            annotated_signed_transaction pm_transfer_position(string from, int64_t bet_id, string to, share_type amount, string memo, bool broadcast = false);
+            annotated_signed_transaction pm_lazy_deposit(string account, asset amount, bool broadcast = false);
+            annotated_signed_transaction pm_lazy_withdraw(string account, share_type shares, bool emergency, bool broadcast = false);
+            annotated_signed_transaction pm_leverage_open(string account, int64_t market_id, int16_t outcome_index, asset collateral, asset loan, share_type min_tokens, uint16_t max_slippage_percent, bool broadcast = false);
+            annotated_signed_transaction pm_leverage_close(string account, int64_t position_id, share_type min_return, bool broadcast = false);
+            annotated_signed_transaction pm_leverage_convert(string account, int64_t position_id, uint16_t conversion_profit_cost, bool broadcast = false);
+
+            // ========== HF14 Prediction Market read API (prediction_market_api plugin) ==========
+            // Thin pass-throughs to the node's prediction_market_api plugin so cli_wallet can inspect
+            // markets, oracles, positions, disputes and the lazy pool. Require the node to run that plugin.
+
+            // These read pass-throughs return fc::variant (raw JSON from the node) rather than the
+            // node's typed objects: the underlying chainbase state objects and the API DTOs that embed
+            // them are not default-constructible, so the fc::api client proxy cannot deserialize them
+            // into concrete types. cli_wallet renders the variant as JSON, so the surface is unchanged.
+            fc::variant  pm_get_market(int64_t market_id) const;
+            fc::variant  pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_list_markets_by_oracle_status(string oracle, int8_t status, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_outcomes(int64_t market_id) const;
+            fc::variant  pm_get_market_weight_sums(int64_t market_id) const;
+            fc::variant  pm_get_market_bets(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_account_positions(string account, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_liquidity(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_account_leverage_positions(string account, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_leverage_positions(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_creator_ban(string account) const;
+            fc::variant  pm_get_oracle(string owner) const;
+            fc::variant  pm_list_oracles(uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_dispute(int64_t market_id) const;
+            fc::variant  pm_get_dispute_votes(int64_t market_id) const;
+            fc::variant  pm_get_lazy_pool() const;
+            fc::variant  pm_get_lazy_deposit(string account) const;
+            fc::variant  pm_get_chain_properties() const;
+            fc::variant  pm_get_market_meta(int64_t market_id) const;
+            fc::variant  pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const;
+            /// Sibling markets sharing a parent event key (one match/game); full cards, oldest-first.
+            fc::variant  pm_list_markets_by_event(string event, uint32_t from, uint32_t limit) const;
+            /// Kline / weight-over-time history for charting. Pagination is offset-from-newest:
+            /// (from=0,limit=1000) = latest ≤1000 changes; (from=1000,…) steps another 1000 back.
+            fc::variant  pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const;
+
             // ========== VIZ DNS Nameserver Helpers ==========
 
             /**
@@ -1514,6 +1577,56 @@ FC_API( graphene::wallet::wallet_api,
                 (set_subaccount_price)
                 (buy_account)
                 (target_account_sale)
+
+                /// HF14 prediction market helpers
+                (pm_oracle_register)
+                (pm_oracle_update)
+                (pm_create_market)
+                (pm_oracle_accept_market)
+                (pm_place_bet)
+                (pm_commitment_hash)
+                (pm_commit_bet)
+                (pm_reveal_bet)
+                (pm_cancel_bet)
+                (pm_add_liquidity)
+                (pm_withdraw_liquidity)
+                (pm_resolve_market)
+                (pm_no_contest)
+                (pm_dispute_create)
+                (pm_dispute_vote)
+                (pm_dispute_resolve)
+                (pm_transfer_position)
+                (pm_lazy_deposit)
+                (pm_lazy_withdraw)
+                (pm_leverage_open)
+                (pm_leverage_close)
+                (pm_leverage_convert)
+
+                /// HF14 prediction market read API (prediction_market_api plugin)
+                (pm_get_market)
+                (pm_list_markets)
+                (pm_list_markets_by_oracle)
+                (pm_list_markets_by_oracle_status)
+                (pm_list_markets_by_creator)
+                (pm_get_market_outcomes)
+                (pm_get_market_weight_sums)
+                (pm_get_market_bets)
+                (pm_get_account_positions)
+                (pm_get_market_liquidity)
+                (pm_get_account_leverage_positions)
+                (pm_get_market_leverage_positions)
+                (pm_get_creator_ban)
+                (pm_get_oracle)
+                (pm_list_oracles)
+                (pm_get_dispute)
+                (pm_get_dispute_votes)
+                (pm_get_lazy_pool)
+                (pm_get_lazy_deposit)
+                (pm_get_chain_properties)
+                (pm_get_market_meta)
+                (pm_list_markets_by_category)
+                (pm_list_markets_by_event)
+                (pm_get_market_kline)
 
                 /// NS DNS helpers
                 (ns_validate_ipv4)

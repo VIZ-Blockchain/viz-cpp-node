@@ -19,17 +19,10 @@ list(APPEND ${CURRENT_TARGET}_SOURCES
         wallet.cpp
         )
 
-if(BUILD_SHARED_LIBRARIES)
-    add_library(graphene_${CURRENT_TARGET} SHARED
+add_library(graphene_${CURRENT_TARGET} ${VIZ_LIBRARY_TYPE}
             ${${CURRENT_TARGET}_HEADERS}
             ${${CURRENT_TARGET}_SOURCES}
             )
-else()
-    add_library(graphene_${CURRENT_TARGET} STATIC
-            ${${CURRENT_TARGET}_HEADERS}
-            ${${CURRENT_TARGET}_SOURCES}
-            )
-endif()
 # I don't know why graphene_app is required twice in the following line, I just know the linker breaks if it isn't.
 target_link_libraries(
         graphene_${CURRENT_TARGET}
@@ -42,6 +35,7 @@ target_link_libraries(
         graphene::operation_history
         graphene::account_by_key
         graphene::validator_api
+        graphene::prediction_market_api
         graphene_protocol
         graphene_utilities
         fc
@@ -49,6 +43,10 @@ target_link_libraries(
         ${PLATFORM_SPECIFIC_LIBS}
 )
 target_include_directories( graphene_${CURRENT_TARGET} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+if(ENABLE_PCH)
+    target_precompile_headers(graphene_${CURRENT_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pch.hpp")
+endif()
 
 if(MSVC)
     set_source_files_properties(wallet.cpp PROPERTIES COMPILE_FLAGS "/bigobj")

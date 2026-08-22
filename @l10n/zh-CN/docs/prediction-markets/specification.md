@@ -81,7 +81,7 @@ description: Onix 协议的正式技术规范，已实现为 VIZ DLT 上的共�
 | 费用与罚则（bp） | `pm_max_oracle_fee_percent`、`pm_oracle_penalty_percent`、`pm_no_contest_penalty_percent`、`pm_default_time_penalty_percent`、`pm_max_time_penalty` |
 | 接受窗口 | `pm_oracle_accept_window_sec`（默认 3600 = 1 小时；未在此期限内被接受/拒绝的待定市场由 cron 作废——种子退还，创建费保留） |
 | 风险 / 覆盖率（成交量 %） | `pm_listing_min_coverage_percent`（250 = 2.5×；覆盖率低于此值的市场从默认目录中隐藏，经 `show_risky` 展示）、`pm_betting_min_coverage_percent`（150 = 1.5×；建议性客户端风险确认阈值，`≤` 挂牌阈值，不在链上强制） |
-| 争议 | `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_oracle_dispute_response_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`（bp）、`pm_dispute_reward_multiplier`（bp） |
+| 争议 | `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_oracle_dispute_response_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`（bp）、`pm_dispute_reward_multiplier`（bp）、`pm_dispute_votes_per_market`、`pm_dispute_vote_min_vesting` |
 | 懒惰池 | `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent`、`pm_lazy_min_liquidity_fee_percent`（默认 200 = 2%；池跳过 `liquidity_fee_percent` 低于此奖励下限的市场） |
 | 杠杆 | `pm_leverage_enabled`、`pm_leverage_fund_percent`、`pm_leverage_max_per_position_bp`、`pm_leverage_max_position_ratio_percent`、`pm_leverage_min_market_liquidity`、`pm_leverage_safety_margin_percent`、`pm_leverage_max_slippage_percent`、`pm_leverage_m_factor_percent`、`pm_leverage_pool_profit_percent`、`pm_leverage_expiration_buffer_sec`、`pm_conversion_profit_cost_percent` |
 | 批量 / 提交-揭示 | `pm_commit_reveal_enabled`、`pm_batch_epoch_blocks`、`pm_reveal_window_blocks`、`pm_commit_no_reveal_penalty_percent`（bp）、`pm_min_batch_bet` |
@@ -972,3 +972,13 @@ API：`get_account_leverage_positions`、`get_market_leverage_positions`、`get_
 `metadata` 字符串构建，从不参与共识。
 
 这些对象的完整字段定义见[预测市场操作](../protocol/operations/prediction-markets)。
+
+## 18. 区块工作量边界与抗垃圾攻击
+
+预测市场 cron 和每次按区块的清扫都受到限制，确保没有任何廉价操作可以无上限地放大区块的工作量
+（抗垃圾 / 防区块过载）。核心预算是中位数投票的 `pm_settle_rows_per_block`（默认 2 000，下限
+100），由结算、垃圾回收、作废退款、批量执行器、争议计票、封禁到期和惰性提款队列共同扣减。行的
+创建由 `pm_min_bet`（1 VIZ）和 `pm_min_liquidity`（100 VIZ）定价，因此即便仍未计量的遍历（结算
+第 1、5 阶段、按交易的清算级联）也受经济约束。每个市场的硬上限约束着存续的参与者向量（索赔 /
+争议投票 / 未平仓承诺，各 10 000）。完整论证、权衡过的方案和实测的单行成本见
+[settlement-work-bounds](./settlement-work-bounds.md)。

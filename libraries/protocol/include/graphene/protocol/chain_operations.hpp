@@ -550,7 +550,6 @@ namespace graphene { namespace protocol {
              */
             uint16_t withdraw_intervals = CHAIN_VESTING_WITHDRAW_INTERVALS;
 
-
             void validate() const {
                 chain_properties_hf6::validate();
                 FC_ASSERT(create_invite_min_balance.amount > 0);
@@ -627,6 +626,209 @@ namespace graphene { namespace protocol {
             chain_properties_hf13& operator=(const chain_properties_hf13&) = default;
         };
 
+        // HF14 Prediction Markets (Onix). Inherits all hf13 fields and appends the PM consensus
+        // params (spec §5). Defaults are inline (single protocol definition → mainnet and testnet
+        // share identical consensus values, which is required). Variant index 5; index 4 is hf13.
+        struct chain_properties_pm: public chain_properties_hf13 {
+            // Oracle / market economics
+            asset    pm_oracle_registration_fee   = asset(10000,   TOKEN_SYMBOL); ///< 10.000 VIZ → committee fund
+            asset    pm_min_oracle_insurance      = asset(5000000, TOKEN_SYMBOL); ///< 5000.000 VIZ bond floor
+            asset    pm_market_creation_fee       = asset(5000,    TOKEN_SYMBOL); ///< 5.000 VIZ → committee fund
+            asset    pm_min_liquidity             = asset(100000,  TOKEN_SYMBOL); ///< 100.000 VIZ seed floor
+            uint8_t  pm_max_outcomes              = 64;
+            uint32_t pm_max_market_duration       = 31536000; ///< ≤ 1 year (s)
+            uint16_t pm_max_oracle_fee_percent    = 500;     ///< bp cap on the oracle % (5%)
+            uint32_t pm_oracle_accept_window_sec  = 3600;    ///< 1 h for the named oracle to accept/reject a
+                                                             ///< pending market; on expiry the cron refunds the
+                                                             ///< seed liquidity (NOT the creation fee) and voids it
+            // Oracle-insurance coverage floors, as percent of a market's betting volume (100 = 1.0x).
+            // Listing: markets below it are hidden from the default catalog (revealed via show_risky) —
+            // enforced by the prediction_market_api plugin. Betting: advisory threshold below which a
+            // client should require an explicit risk confirmation (not enforced on-chain).
+            uint16_t pm_listing_min_coverage_percent = 250;  ///< hide if insurance < 2.5x bets
+            uint16_t pm_betting_min_coverage_percent = 150;  ///< client risk-confirm below 1.5x (advisory)
+            uint16_t pm_default_time_penalty_percent = 50;
+            uint32_t pm_max_time_penalty          = 1000000; ///< 100% of profit (1e6 precision)
+            // Disputes
+            asset    pm_dispute_fee               = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
+            uint32_t pm_dispute_grace_sec         = 43200;   ///< 12 h
+            uint32_t pm_oracle_dispute_response_sec = 43200; ///< 12 h
+            uint32_t pm_dispute_auto_close_sec    = 1209600; ///< 14 d (anti-freeze)
+            uint32_t pm_dispute_vote_period_sec   = 259200;  ///< 3 d (committee mode)
+            uint16_t pm_dispute_approve_min_percent = 1000;  ///< participation threshold (bp)
+            uint16_t pm_oracle_penalty_percent    = 500;     ///< insurance slashed on missed deadline (bp)
+            uint16_t pm_no_contest_penalty_percent = 5000;   ///< bp of dispute fee (50%)
+            uint32_t pm_dispute_reward_multiplier = 30000;   ///< bp multiplier (10000=1x; default 3x)
+            // Batch / commit-reveal
+            uint32_t pm_batch_epoch_blocks        = 20;      ///< ~60 s
+            uint32_t pm_reveal_window_blocks      = 200;     ///< ~10 min liveness
+            uint16_t pm_commit_no_reveal_penalty_percent = 2000; ///< bp (20%) → winners' pool
+            asset    pm_min_batch_bet             = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
+            bool     pm_commit_reveal_enabled     = true;    ///< kill-switch (median-voted)
+            // Cron / fairness
+            uint32_t pm_processing_cap_per_block  = 200;     ///< bounded per-block virtual-op work
+            // #432 fix A: anti-dust floor for the INSTANT bet path, mirroring pm_min_batch_bet on the
+            // batch/commit path. Every pm_place_bet creates a new pm_bet_object, and settlement has to
+            // touch each of those rows — with no floor a single account could mint rows at 1 raw
+            // (0.001 VIZ) apiece. Raises the cost of row-spam by three orders of magnitude; it does NOT
+            // bound the row count on its own (that is fix D, the incremental settle below).
+            asset    pm_min_bet                   = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
+            // #432 fix D: GLOBAL per-block budget of row-level PM cron work — the maximum number of
+            // bet / claim / liquidity / cluster rows that ALL markets settled or collected in one block
+            // may touch between them (pm_processing_cap_per_block counts markets, which says nothing
+            // about the work each carries). Markets are served oldest-first and a market that exhausts
+            // the budget resumes in the next block, so no number of rows can make block application
+            // unbounded. Floor 100 guarantees forward progress; see
+            // docs/prediction-markets/settlement-work-bounds.md for the measurement behind the default.
+            uint32_t pm_settle_rows_per_block     = 2000;    ///< global rows/block for settle + GC
+            // Lazy pool (allocation-only; leverage out of scope for HF14)
+            bool     pm_lazy_pool_enabled         = true;    ///< kill-switch (median-voted)
+            uint16_t pm_lazy_alloc_percent        = 2000;    ///< bp of free_balance allocated per market
+            uint16_t pm_lazy_max_total_alloc_percent = 7000; ///< bp cap on total allocation
+            uint32_t pm_lazy_lock_sec             = 604800;  ///< 7 d deposit lock
+            uint16_t pm_lazy_recall_step_percent  = 1000;    ///< bp recalled per idle step
+            uint16_t pm_lazy_emergency_penalty_percent = 5000; ///< bp of profit slashed on emergency
+                                                               ///< withdraw before unlock (→ reward_per_share)
+            uint16_t pm_lazy_min_liquidity_fee_percent = 200; ///< bp; the pool refuses to subsidize markets
+                                                              ///< whose liquidity_fee_percent is below this
+                                                              ///< reward floor (2% default)
+            // Leverage (margin via lazy-pool loans; CPMM-binary only). Kill-switch ON by
+            // default on this pm/testnet branch so a fresh chain enables leverage out of the
+            // box; on an already-running chain the median persists, so validators must still
+            // vote it on. See leverage-risk-off-strategy.md §8.
+            bool     pm_leverage_enabled                    = true;  ///< kill-switch (median-voted)
+            uint16_t pm_leverage_fund_percent               = 10;    ///< % of free_balance usable for loans (F)
+            uint16_t pm_leverage_max_per_position_bp        = 20;    ///< bp of leverage-fund-available per position (P=0.2%)
+            uint16_t pm_leverage_pool_profit_percent        = 10;    ///< pool profit per loan (R)
+            uint16_t pm_leverage_safety_margin_percent      = 1;     ///< open-time safety buffer (S)
+            uint16_t pm_leverage_max_slippage_percent       = 10;    ///< max price impact per bet (SL)
+            asset    pm_leverage_min_market_liquidity        = asset(5000000, TOKEN_SYMBOL); ///< min liquidity for leverage
+            uint16_t pm_leverage_max_position_ratio_percent = 5;     ///< max position as % of liquidity_sum (POS)
+            uint32_t pm_leverage_expiration_buffer_sec       = 86400; ///< leverage disabled N sec before expiration
+            uint16_t pm_leverage_m_factor_percent           = 50;    ///< M_effective = M_max × this% (VIZ DLT relaxation)
+            uint32_t pm_leverage_funding_rate_ppm_per_day    = 100;   ///< funding on the loan per 24h, in ppm (1e6). 0.01%/day = 100 ppm (~3.65%/yr); 0 disables
+            uint16_t pm_conversion_profit_cost_percent      = 50;    ///< fee % of unrealized profit on convert
+            // Garbage collection of terminal markets
+            uint32_t pm_closed_market_retention_sec         = 432000; ///< 5 d: a market and its whole object
+                                                                     ///< cluster are pruned from state this long
+                                                                     ///< after it becomes terminal (finalized_time).
+                                                                     ///< Median-voted → identical on every node, so
+                                                                     ///< pruning stays deterministic / snapshot-safe.
+            // Early-exit reward cap (F1/#300). A bet or leverage position that exits BEFORE
+            // resolution no longer extracts curve value from LPs. Its outcome-contingent profit
+            // is paid at settlement from a BOUNDED slice of the losing pool (FIFO by exit time,
+            // no per-position cap); a losing outcome earns nothing; any unused slice returns to
+            // the winners' pool. This is the bp cap of that slice (3300 = 33% of losers_sum).
+            // Median-voted (validator param). See early-exit-deferred-claim.md.
+            uint16_t pm_early_exit_reward_cap_percent       = 3300;   ///< bp of losers_sum for early-exit claims
+            // Dispute anti-spam / Sybil floors (median-voted). pm_dispute_votes_per_market caps the
+            // number of ballot rows a single market can accumulate — it bounds the §4 tally pass per
+            // market (see settlement-work-bounds.md §4.6). pm_dispute_vote_min_vesting is the
+            // effective-vesting floor for a dispute ballot, mirroring committee_vote_min_vesting.
+            uint32_t pm_dispute_votes_per_market            = 100000;
+            asset    pm_dispute_vote_min_vesting            = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
+            // Committee anti-spam / Sybil floors (median-voted, HF14-gated). Committee voting predates
+            // HF14, so these caps live in the PM struct rather than extending the already-live hf9 wire
+            // format — adding fields to chain_properties_hf9 would re-serialize existing validator
+            // versioned_chain_properties votes with a new positional layout and break pre-HF14 voters.
+            // Enforcement is gated on HF14 in committee_evaluator.
+            uint32_t committee_votes_per_request            = 100000;
+            asset    committee_vote_min_vesting             = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
+
+            void validate() const {
+                chain_properties_hf13::validate();
+                auto check_token = [](const asset& a, const char* n) {
+                    FC_ASSERT(a.symbol == TOKEN_SYMBOL, "${n} must be VIZ", ("n", n));
+                    FC_ASSERT(a.amount > 0, "${n} must be positive", ("n", n));
+                };
+                check_token(pm_oracle_registration_fee, "pm_oracle_registration_fee");
+                check_token(pm_min_oracle_insurance, "pm_min_oracle_insurance");
+                check_token(pm_market_creation_fee, "pm_market_creation_fee");
+                check_token(pm_min_liquidity, "pm_min_liquidity");
+                check_token(pm_dispute_fee, "pm_dispute_fee");
+                check_token(pm_min_batch_bet, "pm_min_batch_bet");
+                FC_ASSERT(pm_max_outcomes >= 2 && pm_max_outcomes <= MAX_PM_OUTCOMES_PER_MARKET,
+                    "pm_max_outcomes must be in [2, ${m}]", ("m", MAX_PM_OUTCOMES_PER_MARKET));
+                FC_ASSERT(pm_max_market_duration > 0, "pm_max_market_duration must be positive");
+                FC_ASSERT(pm_max_oracle_fee_percent <= 10000, "pm_max_oracle_fee_percent out of range");
+                FC_ASSERT(pm_oracle_accept_window_sec > 0, "pm_oracle_accept_window_sec must be positive");
+                FC_ASSERT(pm_betting_min_coverage_percent <= pm_listing_min_coverage_percent,
+                    "pm_betting_min_coverage_percent must be <= pm_listing_min_coverage_percent");
+                FC_ASSERT(pm_default_time_penalty_percent <= 10000, "pm_default_time_penalty_percent out of range");
+                // B9 wired compute_time_penalty to spend this as profit*penalty/1e6 in compute_settlement,
+                // so it is only sound while <= 1e6 (100% of profit). Bound it like every sibling ratio.
+                FC_ASSERT(pm_max_time_penalty <= 1000000, "pm_max_time_penalty out of range (<= 1000000 = 100% of profit)");
+                FC_ASSERT(pm_dispute_approve_min_percent <= 10000, "pm_dispute_approve_min_percent out of range");
+                FC_ASSERT(pm_oracle_penalty_percent <= 10000, "pm_oracle_penalty_percent out of range");
+                FC_ASSERT(pm_no_contest_penalty_percent <= 10000, "pm_no_contest_penalty_percent out of range");
+                // M6: grace anchors the settle-sweep (§5) cutoff and the missed-resolution / auto-close
+                // crons. Zero grace races the cleanup crons against settlement — a commit-forfeit can land
+                // on an already-settled market and burn tokens, and an instant resolve+settle orphans queued
+                // bets. Default is 12 h; floor at 1 h so only pathological governance votes are rejected.
+                FC_ASSERT(pm_dispute_grace_sec >= 3600, "pm_dispute_grace_sec must be >= 3600 (1 h structural floor)");
+                // Reward multiplier is a bp multiplier (10000 = 1x). Floor at 10000 so a vindicated
+                // disputer at least recovers the fee; cap at 100x.
+                FC_ASSERT(pm_dispute_reward_multiplier >= 10000 && pm_dispute_reward_multiplier <= 1000000,
+                    "pm_dispute_reward_multiplier must be in [10000, 1000000]");
+                FC_ASSERT(pm_commit_no_reveal_penalty_percent <= 10000, "pm_commit_no_reveal_penalty_percent out of range");
+                // M4: keep the batch-bet floor economically meaningful — voting it toward zero makes
+                // commit-spam nearly free (each forfeit costs only the 20% penalty on the escrow,
+                // and that escrow feeds the §1 cron backlog capped by MAX_PM_OPEN_COMMITS_PER_MARKET).
+                FC_ASSERT(pm_min_batch_bet.amount >= 100, "pm_min_batch_bet must be >= 0.1 VIZ");
+                // #432 A: same reasoning for the instant path — voting the floor toward zero brings
+                // back free row-spam, and every row is work the settlement sweep has to pay for.
+                check_token(pm_min_bet, "pm_min_bet");
+                FC_ASSERT(pm_min_bet.amount >= 100, "pm_min_bet must be >= 0.1 VIZ");
+                FC_ASSERT(pm_batch_epoch_blocks > 0, "pm_batch_epoch_blocks must be positive");
+                FC_ASSERT(pm_reveal_window_blocks > 0, "pm_reveal_window_blocks must be positive");
+                // A commit's reveal deadline can fall up to (batch_epoch + reveal_window) blocks
+                // after the commit (pm_commit_bet), and its escrow is only refunded/forfeited by the
+                // reveal-forfeit cron at that deadline. gc_market deletes commit rows unconditionally
+                // once a market has been finalized for pm_closed_market_retention_sec. Require the
+                // retention to strictly exceed the worst-case reveal deadline so a still-unrevealed
+                // commit can never be garbage-collected before its escrow is returned — makes the
+                // "commit is always cleared before GC" invariant hold by construction, not by the
+                // default parameter magnitudes (5 d vs ~11 min) alone.
+                FC_ASSERT(pm_closed_market_retention_sec
+                              > (uint64_t)(pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL,
+                    "pm_closed_market_retention_sec must exceed the worst-case commit reveal deadline "
+                    "((pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL)");
+                FC_ASSERT(pm_processing_cap_per_block > 0, "pm_processing_cap_per_block must be positive");
+                // #432 D: the settle budget must guarantee PROGRESS (a market with N rows finishes in
+                // ~N/budget blocks) and still bound the work of a single block. Zero would wedge every
+                // settlement forever; an unbounded value re-opens exactly the hole this fix closes.
+                FC_ASSERT(pm_settle_rows_per_block >= 100 && pm_settle_rows_per_block <= 100000,
+                    "pm_settle_rows_per_block must be in [100, 100000]");
+                FC_ASSERT(pm_lazy_alloc_percent <= 10000, "pm_lazy_alloc_percent out of range");
+                FC_ASSERT(pm_lazy_max_total_alloc_percent <= 10000, "pm_lazy_max_total_alloc_percent out of range");
+                FC_ASSERT(pm_lazy_recall_step_percent <= 10000, "pm_lazy_recall_step_percent out of range");
+                FC_ASSERT(pm_lazy_emergency_penalty_percent <= 10000, "pm_lazy_emergency_penalty_percent out of range");
+                FC_ASSERT(pm_lazy_min_liquidity_fee_percent <= 10000, "pm_lazy_min_liquidity_fee_percent out of range");
+                FC_ASSERT(pm_leverage_fund_percent <= 100, "pm_leverage_fund_percent out of range");
+                FC_ASSERT(pm_leverage_max_per_position_bp <= 10000, "pm_leverage_max_per_position_bp out of range");
+                FC_ASSERT(pm_leverage_pool_profit_percent <= 100, "pm_leverage_pool_profit_percent out of range");
+                FC_ASSERT(pm_leverage_safety_margin_percent <= 100, "pm_leverage_safety_margin_percent out of range");
+                FC_ASSERT(pm_leverage_max_slippage_percent <= 100, "pm_leverage_max_slippage_percent out of range");
+                FC_ASSERT(pm_leverage_max_position_ratio_percent <= 100, "pm_leverage_max_position_ratio_percent out of range");
+                FC_ASSERT(pm_leverage_m_factor_percent <= 100, "pm_leverage_m_factor_percent out of range");
+                FC_ASSERT(pm_leverage_funding_rate_ppm_per_day <= 1000000, "pm_leverage_funding_rate_ppm_per_day out of range (<= 100%/day)");
+                FC_ASSERT(pm_conversion_profit_cost_percent <= 100, "pm_conversion_profit_cost_percent out of range");
+                FC_ASSERT(pm_early_exit_reward_cap_percent <= 10000, "pm_early_exit_reward_cap_percent out of range");
+                check_token(pm_leverage_min_market_liquidity, "pm_leverage_min_market_liquidity");
+                check_token(pm_dispute_vote_min_vesting, "pm_dispute_vote_min_vesting");
+                FC_ASSERT(pm_dispute_votes_per_market > 0, "pm_dispute_votes_per_market must be positive");
+                check_token(committee_vote_min_vesting, "committee_vote_min_vesting");
+                FC_ASSERT(committee_votes_per_request > 0, "committee_votes_per_request must be positive");
+            }
+
+            chain_properties_pm& operator=(const chain_properties_init& src) { chain_properties_init::operator=(src); return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf4& src)  { chain_properties_hf4::operator=(src);  return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf6& src)  { chain_properties_hf6::operator=(src);  return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf9& src)  { chain_properties_hf9::operator=(src);  return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf13& src) { chain_properties_hf13::operator=(src); return *this; }
+            chain_properties_pm& operator=(const chain_properties_pm&) = default;
+        };
+
         inline chain_properties_init& chain_properties_init::operator=(const chain_properties_hf13& src) {
             account_creation_fee = src.account_creation_fee;
             maximum_block_size = src.maximum_block_size;
@@ -696,7 +898,8 @@ namespace graphene { namespace protocol {
             chain_properties_hf4,
             chain_properties_hf6,
             chain_properties_hf9,
-            chain_properties_hf13
+            chain_properties_hf13,
+            chain_properties_pm      // index 5 (HF14) — APPEND ONLY
         >;
 
         /**
@@ -1210,6 +1413,28 @@ FC_REFLECT_DERIVED(
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf13),((graphene::protocol::chain_properties_hf9)),
     (distribution_epoch_length))
+FC_REFLECT_DERIVED(
+    (graphene::protocol::chain_properties_pm),((graphene::protocol::chain_properties_hf13)),
+    (pm_oracle_registration_fee)(pm_min_oracle_insurance)(pm_market_creation_fee)(pm_min_liquidity)
+    (pm_max_outcomes)(pm_max_market_duration)(pm_max_oracle_fee_percent)(pm_oracle_accept_window_sec)
+    (pm_listing_min_coverage_percent)(pm_betting_min_coverage_percent)
+    (pm_default_time_penalty_percent)(pm_max_time_penalty)(pm_dispute_fee)(pm_dispute_grace_sec)
+    (pm_oracle_dispute_response_sec)(pm_dispute_auto_close_sec)(pm_dispute_vote_period_sec)
+    (pm_dispute_approve_min_percent)(pm_oracle_penalty_percent)(pm_no_contest_penalty_percent)
+    (pm_dispute_reward_multiplier)(pm_batch_epoch_blocks)(pm_reveal_window_blocks)
+    (pm_commit_no_reveal_penalty_percent)(pm_min_batch_bet)(pm_commit_reveal_enabled)
+    (pm_processing_cap_per_block)(pm_lazy_pool_enabled)(pm_lazy_alloc_percent)
+    (pm_lazy_max_total_alloc_percent)(pm_lazy_lock_sec)(pm_lazy_recall_step_percent)
+    (pm_lazy_emergency_penalty_percent)(pm_lazy_min_liquidity_fee_percent)
+    (pm_leverage_enabled)(pm_leverage_fund_percent)(pm_leverage_max_per_position_bp)
+    (pm_leverage_pool_profit_percent)(pm_leverage_safety_margin_percent)(pm_leverage_max_slippage_percent)
+    (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)
+    (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_leverage_funding_rate_ppm_per_day)
+    (pm_conversion_profit_cost_percent)
+    (pm_closed_market_retention_sec)(pm_early_exit_reward_cap_percent)
+    (pm_min_bet)(pm_settle_rows_per_block)
+    (committee_votes_per_request)(committee_vote_min_vesting)
+    (pm_dispute_votes_per_market)(pm_dispute_vote_min_vesting))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 

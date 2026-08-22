@@ -1,0 +1,2196 @@
+#include <graphene/chain/pm_evaluator.hpp>
+#include <graphene/chain/database.hpp>
+#include <graphene/chain/chain_objects.hpp>
+#include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/pm/lmsr_q96.hpp>
+#include <graphene/chain/pm/parimutuel.hpp>
+#include <graphene/chain/pm/leverage.hpp>
+#include <graphene/protocol/pm_operations.hpp>
+#include <graphene/protocol/pm_virtual_operations.hpp>
+#include <graphene/protocol/config.hpp>
+
+#include <fc/crypto/sha256.hpp>
+
+#include <graphene/chain/pm_evaluator_detail.hpp>
+
+namespace graphene { namespace chain {
+
+using namespace graphene::protocol;
+
+// ─── Internal helper definitions (declared in pm_evaluator_detail.hpp) ─────────
+
+namespace pm_detail {
+
+
+    const chain_properties_pm& median(const database& db) {
+        return db.get_validator_schedule_object().median_props;
+    }
+
+    // ── B9 (spec §8): late-bet anti-sniping penalty ──────────────────────────────
+    // Returns the 1e6-scaled penalty applied ONLY to a winning bet's PROFIT at settlement
+    // (never principal — see compute_settlement). It is 0 outside the penalty window, when the
+    // market configured none (time_penalty_value == 0), or for open-ended markets (no deadline).
+    // `risk_time` is when the market exposure was actually taken — bet placement for instant bets,
+    // the COMMIT time for commit-reveal (blind, not the later reveal), the leverage OPEN time for a
+    // converted position — so honest early risk-takers are never penalised for later mechanics.
+    // Integer-only (consensus); the field was defined + read but never assigned before this fix.
+    uint32_t compute_time_penalty(const pm_market_object& mkt, time_point_sec risk_time,
+                                  uint32_t max_time_penalty) {
+        if (mkt.time_penalty_value == 0) return 0;
+        if (mkt.betting_expiration == time_point_sec()) return 0; // open-ended: no window
+        const int64_t be = (int64_t)mkt.betting_expiration.sec_since_epoch();
+        const int64_t ct = (int64_t)mkt.created_time.sec_since_epoch();
+        int64_t window;
+        if (mkt.time_penalty_type == 0) {
+            window = (int64_t)mkt.time_penalty_value;                 // fixed seconds before expiry
+        } else {
+            const int64_t duration = be - ct;                        // percentage of market lifetime
+            if (duration <= 0) return 0;
+            window = (int64_t)(fc::uint128_t((uint64_t)mkt.time_penalty_value)
+                     * fc::uint128_t((uint64_t)duration) / fc::uint128_t(100u)).lo;
+        }
+        if (window <= 0) return 0;
+        int64_t tte = be - (int64_t)risk_time.sec_since_epoch();      // time left when risk was taken
+        if (tte < 0) tte = 0;
+        if (tte >= window) return 0;                                 // placed before the window opened
+        const int64_t into = window - tte;                           // deeper into window = later = harsher
+        fc::uint128_t num, den;
+        if (mkt.penalty_curve_type == 1) {                           // quadratic
+            num = fc::uint128_t((uint64_t)into) * fc::uint128_t((uint64_t)into);
+            den = fc::uint128_t((uint64_t)window) * fc::uint128_t((uint64_t)window);
+        } else {                                                     // linear
+            num = fc::uint128_t((uint64_t)into);
+            den = fc::uint128_t((uint64_t)window);
+        }
+        int64_t penalty = (int64_t)(fc::uint128_t((uint64_t)max_time_penalty) * num / den).lo;
+        if (penalty < 0) penalty = 0;
+        if (penalty > (int64_t)max_time_penalty) penalty = max_time_penalty;
+        return (uint32_t)penalty;
+    }
+
+    // ── Per-oracle live active-market counter (display-only, pm_oracle_object.active_markets) ──
+    // O(1) upkeep so get_oracle/watchdogs read the count without paging list_markets. NEVER gates
+    // consensus. A market is "active" == status 1; inc when it enters (create-active / accept),
+    // dec when it leaves (resolve / no_contest / missed-void). Both no-op when the oracle has no
+    // pm_oracle_object (self-oracle accounts that never registered) — such markets aren't counted
+    // anywhere, and are correctly excluded by the seed/verify walks too.
+    void pm_oracle_inc_active(database& db, const account_name_type& oracle) {
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(oracle);
+        if (it != oidx.end())
+            db.modify(*it, [](pm_oracle_object& o) { o.active_markets++; });
+    }
+    // Guarded: decrements only if the market is still active(1), so it is safe (idempotent) to call
+    // at any terminal transition even if the market was already non-active.
+    void pm_oracle_dec_active(database& db, const pm_market_object& mkt) {
+        if (mkt.status != 1) return;
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(mkt.oracle);
+        if (it != oidx.end())
+            db.modify(*it, [](pm_oracle_object& o) { if (o.active_markets > 0) o.active_markets--; });
+    }
+
+    // ── Per-oracle workload gauges (display-only) ─────────────────────────────────
+    // Generic ±1 on any uint32_t gauge of the oracle named `oracle`. Decrement clamps at 0 so a
+    // stray double-dec can never wrap the counter. No-op when the oracle has no pm_oracle_object.
+    // NEVER gates consensus (cosmetic aggregate; a drift is caught by pm_verify_oracle_gauges).
+    void pm_oracle_gauge_adj(database& db, const account_name_type& oracle,
+                             uint32_t pm_oracle_object::* field, int delta) {
+        if (delta == 0) return;
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(oracle);
+        if (it == oidx.end()) return;
+        db.modify(*it, [&](pm_oracle_object& o) {
+            if (delta > 0) (o.*field) += (uint32_t)delta;
+            else { uint32_t d = (uint32_t)(-delta); (o.*field) = (o.*field) > d ? (o.*field) - d : 0u; }
+        });
+    }
+    // A dispute is leaving the open(0) state (responded/finalized/auto-closed): decrement whichever
+    // open-dispute gauge it currently sits in, keyed on whether the oracle had responded. Call while
+    // the dispute is still status 0 (oracle_response_time is stable across the transition either way).
+    void pm_oracle_dispute_left_open(database& db, const account_name_type& oracle,
+                                     const pm_dispute_object& d) {
+        pm_oracle_gauge_adj(db, oracle,
+            (d.oracle_response_time == time_point_sec())
+                ? &pm_oracle_object::disputes_awaiting_response
+                : &pm_oracle_object::disputes_awaiting_decision,
+            -1);
+    }
+
+    // Resolution-latency histogram bucket for rt seconds — 8 buckets (≤1h,≤6h,≤24h,≤3d,≤7d,≤14d,≤30d,>30d).
+    int pm_rt_bucket(uint64_t rt) {
+        static const uint64_t ub[7] = {3600u, 21600u, 86400u, 259200u, 604800u, 1209600u, 2592000u};
+        for (int i = 0; i < 7; ++i) if (rt <= ub[i]) return i;
+        return 7;
+    }
+
+    // Pay queued lazy-pool withdrawals FIFO (oldest id first) from whatever is liquid in
+    // free_balance right now. Each request is paid in full or in part; when free is exhausted we
+    // stop. Called at every point capital returns to free_balance (LP return, deposit, leverage
+    // repay) so queued withdrawers have first claim on returning capital and free_balance never
+    // goes negative — the ledger never hands out more than the pool holds liquid.
+    //
+    // row_limit bounds how many requests ONE call may touch. The queue can be huge (one row per
+    // partial withdrawal, minted for as little as 1 raw) and a capital-return event used to drain
+    // it ALL in one call (#678); per-tx callers pass 1 (pay just the FIFO head — the bulk is
+    // picked up by cron section 9 on the shared per-block row budget), the cron passes the
+    // remaining row budget. Returns the number of rows actually processed so the caller can
+    // charge the shared budget honestly.
+    uint32_t service_lazy_withdraw_queue(database& db, uint32_t row_limit) {
+        const auto* poolp = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (!poolp || row_limit == 0) return 0;
+        uint32_t done = 0;
+        while (done < row_limit) {
+            const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
+            if (pool.free_balance.value <= 0) break;
+            const auto& qidx = db.get_index<pm_lazy_withdraw_request_index>().indices().get<by_id>();
+            if (qidx.empty()) break;
+            const auto& req = *qidx.begin();                 // FIFO: lowest id == oldest
+            const int64_t pay = std::min(pool.free_balance.value, req.amount.value);
+            if (pay <= 0) break;
+            db.adjust_balance(db.get_account(req.account), asset(share_type(pay), TOKEN_SYMBOL));
+            db.modify(pool, [&](pm_lazy_pool_object& p) {
+                p.free_balance        -= share_type(pay);
+                p.pending_withdrawals -= share_type(pay);
+            });
+            ++done;                                          // this request was paid (full or partial)
+            if (req.amount.value == pay) {
+                db.remove(req);                              // fully settled
+            } else {
+                db.modify(req, [&](pm_lazy_withdraw_request_object& r) { r.amount -= share_type(pay); });
+                break;                                       // free_balance exhausted
+            }
+        }
+        return done;
+    }
+
+    // Return a lazy-pool LP position's capital to the pool: principal to free_balance,
+    // yield (its share of the LP bonus) into the MasterChef accumulator (reward_per_share
+    // ×1e9) so depositors can claim it. Mirrors the lazy deposit/withdraw accounting.
+    void route_pool_lp_return(database& db, int64_t principal, int64_t yield) {
+        const auto* pool = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (!pool) return;
+        db.modify(*pool, [&](pm_lazy_pool_object& p) {
+            // Principal leaves allocation; principal AND yield both land in free_balance so the
+            // yield is spendable on withdrawal (spec lazy-pool Transition 4: free += return).
+            p.free_balance      += share_type(principal + yield);
+            p.allocated_balance -= share_type(principal);
+            if (yield > 0) {
+                p.earned_balance += share_type(yield);
+                if (p.total_shares.value > 0)
+                    p.reward_per_share += fc::uint128_t((uint64_t)yield)
+                                        * fc::uint128_t((uint64_t)1000000000)
+                                        / fc::uint128_t((uint64_t)p.total_shares.value);
+            }
+        });
+        service_lazy_withdraw_queue(db, 1);   // pay just the FIFO head; bulk drain is cron §9
+    }
+
+    // Close the market's lazy allocation (recall-tracking object) once its LP position
+    // has been settled/returned, so the recall cron skips it.
+    void mark_alloc_settled(database& db, pm_market_id_type market) {
+        const auto& aidx = db.get_index<pm_lazy_allocation_index>().indices().get<by_market>();
+        auto it = aidx.find(market);
+        if (it != aidx.end() && it->status == 0)
+            db.modify(*it, [&](pm_lazy_allocation_object& a) {
+                a.returned_amount += a.amount; a.amount = 0; a.status = 1;
+            });
+    }
+
+    // ── Leverage funding (spec §7 — perpetual carry cost) ────────────────────────
+    // Charge any whole 24h funding periods that have come due on an ACTIVE position.
+    // funding_per_period = loan × pm_leverage_funding_rate_ppm_per_day / 1e6, accrued into
+    // pos.funding_paid, which raises the effective pool obligation (liquidation_threshold +
+    // funding_paid) and therefore pulls the liquidation point up over time. Funding is realized
+    // out of the bettor's own equity (the collateral leg of the position value) at settlement.
+    // Idempotent: after charging, funding_due_time is advanced strictly past `now`. One-shot
+    // catch-up (multiplies by the number of whole periods due) so a cap-throttled sweep can never
+    // under-charge. rate 0 → no-op except advancing the clock (no retroactive charge on re-enable).
+    void accrue_leverage_funding(database& db, const pm_leverage_position_object& pos,
+                                 uint32_t rate_ppm_per_day, time_point_sec now) {
+        if (pos.status != 0) return;
+        if (pos.funding_due_time == time_point_sec()) return;   // not initialized (pre-funding position)
+        if (pos.funding_due_time > now) return;
+        uint32_t due = ((now.sec_since_epoch() - pos.funding_due_time.sec_since_epoch()) / 86400u) + 1u;
+        int64_t add = 0;
+        if (rate_ppm_per_day > 0)
+            add = (int64_t)(fc::uint128_t((uint64_t)pos.loan.value)
+                          * fc::uint128_t((uint64_t)rate_ppm_per_day)
+                          * fc::uint128_t((uint64_t)due)
+                          / fc::uint128_t((uint64_t)1000000u)).lo;
+        db.modify(pos, [&](pm_leverage_position_object& p) {
+            p.funding_paid    += share_type(add);
+            p.funding_due_time = time_point_sec(p.funding_due_time.sec_since_epoch() + 86400u * due);
+            p.last_update      = now;
+        });
+    }
+
+    // ── Leverage liquidation (spec §5/§6) ────────────────────────────────────────
+    // Liquidate one position at CURRENT reserves: sell its tokens back, the pool recovers
+    // min(cancel_value, obligation), the bettor gets any remainder. Zero-sum: the C+L that
+    // entered the curve at open returns as cancel_value (split pool/bettor); the price-impact
+    // difference accrues to the rest of the market. reason: 0 opposing-bet, 1 cancel-bet, 2 expiry,
+    // 3 funding (position pulled underwater by accrued carry cost), 4 terminal void/no-contest
+    // (refund the residual immediately — no outcome to defer a claim to). See F1/#300.
+    void liquidate_position(database& db, const pm_leverage_position_object& pos, uint8_t reason) {
+        // Bring funding current before settling so the obligation reflects carry owed to now.
+        accrue_leverage_funding(db, pos,
+            db.get_validator_schedule_object().median_props.pm_leverage_funding_rate_ppm_per_day,
+            db.head_block_time());
+        const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
+        int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                            pos.tokens.value, (int)pos.outcome_index);
+        // Effective obligation = base pool markup (loan×(1+R%)) + accrued funding. The funding
+        // portion is captured by pool_profit = pool_received − loan and thus flows to LP yield.
+        int64_t obligation      = pos.liquidation_threshold.value + pos.funding_paid.value;
+        int64_t pool_received   = cv < obligation ? cv : obligation;
+        int64_t bettor_received = cv - pool_received; // ≥ 0
+        int64_t pool_profit     = pool_received - pos.loan.value;
+
+        // F1/#300 deferred-claim conservation. (C+L)=total_bet entered the curve at open. The pool
+        // recovers its obligation from cv; everything the pool does NOT take stays in the market pot
+        // (forfeit_pool). The bettor's residual (cv − pool_received) is NOT paid against the curve now —
+        // it becomes an OUTCOME-CONTINGENT deferred claim paid at settlement from a bounded slice of the
+        // losing pool (or nothing if its outcome loses). So forfeit gets `total_bet − pool_received`
+        // (≥ 0 for normal closes → no negative-forfeit / uncovered mint, no LP hit). Model validated:
+        // early-exit-deferred-claim.md. EXCEPTION reason 4 = terminal void/no-contest: there is no
+        // outcome, so the bettor is REFUNDED immediately (old path) and forfeit gets total_bet − cv.
+        const bool voiding = (reason == 4);
+        // Clamp pot_retained at 0: accrued funding can push obligation above total_bet for a
+        // long-lived position (funding_paid grows unbounded in accrue_leverage_funding), which
+        // would drive forfeit_pool negative and manufacture an `uncovered` shortfall (LP hit /
+        // mint) at settlement — defeating the F1/#300 no-uncovered guarantee. The pool still
+        // recovers its obligation from cv (reserves); the pot simply never goes negative.
+        const int64_t pot_retained = voiding ? (pos.total_bet.value - cv)
+                                             : (pos.total_bet.value - pool_received);
+        const int64_t pot_retained_capped = pot_retained > 0 ? pot_retained : 0;
+        db.modify(mkt, [&](pm_market_object& m) { // unwind tokens (k preserved)
+            if (pos.outcome_index == 0) {
+                int64_t new_rb = m.reserve_b.value + pos.tokens.value;
+                m.reserve_b = share_type(new_rb);
+                m.reserve_a = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_rb)).lo);
+            } else {
+                int64_t new_ra = m.reserve_a.value + pos.tokens.value;
+                m.reserve_a = share_type(new_ra);
+                m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
+            }
+            m.forfeit_pool += share_type(pot_retained_capped);
+        });
+        db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
+            p.free_balance       += share_type(pool_received);
+            p.leverage_fund_used -= pos.loan;
+            if (pool_profit > 0) {
+                p.earned_balance += share_type(pool_profit);
+                if (p.total_shares.value > 0)
+                    p.reward_per_share += fc::uint128_t((uint64_t)pool_profit)
+                                        * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
+            }
+        });
+        service_lazy_withdraw_queue(db, 1);   // pay just the FIFO head; bulk drain is cron §9
+        if (bettor_received > 0) {
+            if (voiding) {
+                // Terminal void/no-contest: refund the residual immediately (no outcome to defer to).
+                db.adjust_balance(db.get_account(pos.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
+            } else if (mkt.deferred_claim_count < MAX_PM_DEFERRED_CLAIMS_PER_MARKET) {
+                // Defer as an outcome-contingent claim (F1/#300) — paid at settlement from the bounded
+                // early-exit bucket iff pos.outcome_index wins; otherwise it pays nothing. #349: skip
+                // once the per-market cap is hit (the residual stays in the curve and pays 0, exactly
+                // like bucket-exhaustion) so settle_market's claim loop stays bounded.
+                db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
+                    c.market = pos.market; c.account = pos.account; c.kind = 1;
+                    c.outcome_index = pos.outcome_index; c.claim_amount = share_type(bettor_received);
+                    c.exit_time = db.head_block_time();
+                });
+                db.modify(mkt, [](pm_market_object& m) { m.deferred_claim_count++; });
+            }
+        }
+
+        // reason 2 = resolving, 4 = voiding → SETTLEMENT (pm_leverage_resolve); 0/1/3 = mid-market
+        // liquidation (pm_leverage_liquidate). `won` = the position was solvent.
+        const bool settle = (reason == 2 || reason == 4);
+        const bool won    = (cv >= obligation);
+        db.modify(pos, [&](pm_leverage_position_object& p) {
+            p.status = settle ? (won ? (uint8_t)2 : (uint8_t)3) : (uint8_t)1;
+            p.cancel_value_at_liquidation = share_type(cv);
+            p.pool_received   = share_type(pool_received);
+            p.bettor_received = share_type(bettor_received);
+            p.last_update     = db.head_block_time();
+        });
+        db.pm_adjust_frozen(pos.account, 2, -pos.collateral); // UNLOCK: collateral leaves active leverage (liquidate/settle)
+        if (settle) {
+            uint16_t lev = pos.collateral.value > 0
+                         ? (uint16_t)(pos.total_bet.value / pos.collateral.value) : (uint16_t)0;
+            db.push_virtual_operation(pm_leverage_resolve_operation(
+                pos.account, pos.id._id, pos.market._id, won,
+                asset(share_type(pool_received), TOKEN_SYMBOL),
+                asset(share_type(bettor_received), TOKEN_SYMBOL),
+                pos.outcome_index, lev));
+        } else {
+            db.push_virtual_operation(pm_leverage_liquidate_operation(
+                pos.account, pos.id._id, pos.market._id,
+                asset(share_type(cv), TOKEN_SYMBOL), asset(share_type(pool_received), TOKEN_SYMBOL),
+                asset(share_type(bettor_received), TOKEN_SYMBOL), reason));
+        }
+    }
+
+    // Cascade: liquidate EVERY active position on `market` (restricted to `side`, -1 = any)
+    // whose cancel_value ≤ threshold, re-evaluating after each liquidation (reserves change).
+    // No iteration cap — the pool must never be left exposed by a partial cascade. Termination
+    // is guaranteed: each liquidation flips a position to status 1 (excluded from the scan),
+    // so the loop runs at most once per position. One-directional (only same-side worsen).
+    void cascade_liquidate(database& db, pm_market_id_type market, int16_t side, uint8_t reason) {
+        for (;;) {
+            const auto& mkt = db.get<pm_market_object, by_id>(market);
+            const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
+            auto it = idx.lower_bound(boost::make_tuple(market, (uint8_t)0, pm_leverage_position_id_type()));
+            const pm_leverage_position_object* victim = nullptr;
+            for (; it != idx.end() && it->market == market && it->status == 0; ++it) {
+                if (side >= 0 && it->outcome_index != side) continue;
+                int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                    it->tokens.value, (int)it->outcome_index);
+                if (cv <= it->liquidation_threshold.value + it->funding_paid.value) { victim = &*it; break; }
+            }
+            if (!victim) break;
+            liquidate_position(db, *victim, reason);
+        }
+    }
+
+    // Force-close ALL active positions on a market (terminal: market resolving/voided).
+    // Unbounded by design — every position must be closed; terminates because each
+    // liquidation flips status 0→1 (excluded from the next lower_bound).
+    // reason 2 = normal resolution (defer residuals as claims); reason 4 = terminal void/no-contest
+    // (refund residuals immediately, no outcome to defer to). See liquidate_position.
+    void force_close_positions(database& db, pm_market_id_type market, uint8_t reason) {
+        uint32_t closed = 0;
+        for (;;) {
+            const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
+            auto it = idx.lower_bound(boost::make_tuple(market, (uint8_t)0, pm_leverage_position_id_type()));
+            if (it == idx.end() || it->market != market || it->status != 0) break;
+            liquidate_position(db, *it, reason);
+            ++closed;
+        }
+        // P2 (DoS review 2026-08-20): settle phase 1 walks every open position of a market UNMETERED —
+        // it is currently bounded only economically (each position holds >= pm_min_liquidity). Emit a
+        // loud log-only signal when the walk overshoots the block's row budget, so a future change that
+        // lowers the collateral floor (e.g. unwinding #536 toward small loans) makes the phase visibly
+        // expensive instead of silently degrading block time. Deterministic, no consensus effect.
+        const uint32_t row_budget = db.get_validator_schedule_object().median_props.pm_settle_rows_per_block;
+        if (row_budget > 0 && closed > row_budget)
+            elog("PM settle phase-1 unbounded: force-closed ${n} positions on market ${m} in one step "
+                 "(pm_settle_rows_per_block=${b}) — the collateral floor no longer bounds this phase.",
+                 ("n", closed)("m", market._id)("b", row_budget));
+    }
+
+    // Delete every deferred early-exit claim of a market WITHOUT paying (terminal void/no-contest:
+    // no winning outcome, so outcome-contingent claims are worthless). F1/#300.
+    void purge_deferred_claims(database& db, pm_market_id_type market) {
+        const auto& cidx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
+        // Streaming remove (P1 / DoS review 2026-08-20): the old code built an in-memory vector of
+        // every claim first, the same participant-vector pattern refund_all_bets used to. Claims are
+        // already bounded by MAX_PM_DEFERRED_CLAIMS_PER_MARKET (10k), but the vector is free to drop —
+        // remove in place, advancing the iterator before db.remove invalidates it.
+        for (auto it = cidx.lower_bound(boost::make_tuple(market, pm_deferred_claim_id_type()));
+             it != cidx.end() && it->market == market; ) {
+            const auto& obj = *it; ++it; db.remove(obj);
+        }
+    }
+
+    // Graduated recall: withdraw `amount` of the lazy pool's LP position from an idle
+    // market and return it to free_balance. Mirrors pm_withdraw_liquidity — shrink
+    // liquidity_sum and shrink the pricing curve price-neutrally (LMSR b for multi,
+    // both CPMM reserves proportionally for binary) so depth tracks the remaining
+    // capital while the odds stay put. Returns the amount actually recalled.
+    share_type recall_pool_liquidity(database& db, const pm_market_object& mkt, share_type amount) {
+        if (amount.value <= 0) return share_type(0);
+        const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+        const pm_liquidity_object* poollp = nullptr;
+        for (auto it = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+             it != lidx.end() && it->market == mkt.id; ++it) {
+            if (it->status == 0 && it->provider.size() == 0) { poollp = &*it; break; }
+        }
+        if (!poollp) return share_type(0);
+
+        share_type w = amount;
+        if (w.value > poollp->amount.value) w = poollp->amount;
+        share_type b_remove = 0;
+        if (mkt.market_type == 1 && poollp->b_share.value > 0 && poollp->amount.value > 0) {
+            b_remove = (w == poollp->amount) ? poollp->b_share :
+                share_type((int64_t)(fc::uint128_t((uint64_t)poollp->b_share.value)
+                          * fc::uint128_t((uint64_t)w.value) / fc::uint128_t((uint64_t)poollp->amount.value)).lo);
+        }
+        db.modify(mkt, [&](pm_market_object& m) {
+            const int64_t L = m.liquidity_sum.value; // capital BEFORE this recall
+            m.liquidity_sum -= w;
+            if (m.market_type == 1) {
+                m.lmsr_b -= b_remove;
+            } else if (L > 0) {
+                // CPMM: price-neutral shrink, mirroring pm_withdraw_liquidity so the
+                // reserve ratio (odds) is preserved and depth tracks liquidity_sum.
+                const fc::uint128_t num((uint64_t)(L - w.value));
+                const fc::uint128_t den((uint64_t)L);
+                m.reserve_a = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_a.value) * num / den).lo);
+                m.reserve_b = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_b.value) * num / den).lo);
+                m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+            }
+        });
+        if (w == poollp->amount)
+            db.modify(*poollp, [](pm_liquidity_object& l) { l.status = 3; });
+        else
+            db.modify(*poollp, [&](pm_liquidity_object& l) { l.amount -= w; l.b_share -= b_remove; });
+        route_pool_lp_return(db, w.value, 0); // principal back to pool, no yield
+        return w;
+    }
+
+    // ── Liquidity settlement ────────────────────────────────────────────────────
+    // Returns every active LP's principal UNCONDITIONALLY and distributes `bonus`
+    // (liquidity fee + time-penalty pool + undistributed winners' pool) weighted by
+    // principal × time-in-market (pure, unit-tested distribute_lp; last entry absorbs
+    // rounding). The lazy pool is a real LP (pm_liquidity_object with empty provider);
+    // its principal + yield route back into the pool instead of to an account.
+    // `uncovered` (F1): the parimutuel shortfall compute_settlement could not fund from the
+    // losers'+forfeit pot (see settle_result::uncovered). LPs are the leverage counterparty, so the
+    // shortfall is charged against LP principal pro-rata here — otherwise flooring winners_pool at 0
+    // would silently emit exactly `uncovered` tokens. Default 0 for void/refund callers.
+    void settle_liquidity(database& db, const pm_market_object& mkt, share_type bonus,
+                          share_type uncovered) {
+        const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+        auto first = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+
+        const fc::time_point_sec now = db.head_block_time();
+
+        // #348 / goal #290: F1 guarantees `uncovered == 0` by construction (winners_pool ≥ (1−cap)·losers
+        // − fees ≥ 0). If it is ever > 0, some invariant broke (e.g. a new unbounded accrual like the
+        // #141 funding path) and LP principal is being silently eroded (or tokens emitted when no LP).
+        // Emit ONE always-on loud signal here — regardless of LP presence — so a regression is visible in
+        // node logs / acceptance instead of slipping through silently the way #141 did. Log-only:
+        // deterministic, no consensus effect, and does NOT halt (a hard assert would take the chain down
+        // on an unforeseen edge, worse than charging LP).
+        if (uncovered.value > 0)
+            elog("PM F1 INVARIANT VIOLATED: uncovered shortfall ${u} on market ${m} — winners_pool<0 was "
+                 "floored, shortfall charged to LP principal (or emitted if no LP). This must be 0 by "
+                 "construction; investigate the exit/settle path.", ("u", uncovered.value)("m", mkt.id._id));
+
+        std::vector<const pm_liquidity_object*> active;
+        std::vector<pm::lp_in> lps;
+        for (auto it = first; it != lidx.end() && it->market == mkt.id; ++it) {
+            if (it->status != 0) continue;
+            active.push_back(&*it);
+            int64_t sec = (int64_t)now.sec_since_epoch() - (int64_t)it->deposit_time.sec_since_epoch();
+            lps.push_back(pm::lp_in{ it->amount.value, sec });
+        }
+        // P2 (DoS review 2026-08-20): settle phase 5 walks every active LP row of a market UNMETERED —
+        // bounded only economically (each row >= pm_min_liquidity = 100 VIZ). Log-only early signal for
+        // the day the liquidity floor stops protecting this phase (mirrors the F1 `uncovered` signal).
+        const uint32_t row_budget = db.get_validator_schedule_object().median_props.pm_settle_rows_per_block;
+        if (row_budget > 0 && active.size() > (size_t)row_budget)
+            elog("PM settle phase-5 unbounded: ${n} active LP rows on market ${m} exceed "
+                 "pm_settle_rows_per_block (${b}) — the 100 VIZ liquidity floor no longer bounds this phase.",
+                 ("n", active.size())("m", mkt.id._id)("b", row_budget));
+
+        if (active.empty()) {
+            // No LP principal to absorb the F1 shortfall → 100% of it is emitted. This is the worst
+            // case and must be logged here, above the early return, since the diagnostic in the charge
+            // block below is unreachable when there are no LPs. (PR #124 review.)
+            if (uncovered.value > 0)
+                wlog("PM settle: no active LP to absorb uncovered ${u} on market ${m} — fully emitted",
+                     ("u", uncovered.value)("m", mkt.id._id));
+            return;
+        }
+
+        const std::vector<int64_t> shares = pm::distribute_lp(lps, bonus.value);
+
+        // F1: split `uncovered` across LP principal pro-rata (by principal, not time — it's a capital
+        // loss, not a fee). Each floor charge is <= its LP's principal (to_charge <= total_principal);
+        // the rounding remainder is then spread ONLY over LPs that still have headroom, so no single
+        // LP is ever charged above its principal (a naive "remainder → last LP" could exceed a small
+        // last LP's principal, clamp to 0, and re-emit the difference — PR #124 review).
+        std::vector<int64_t> charge(active.size(), 0);
+        if (uncovered.value > 0) {
+            int64_t total_principal = 0;
+            for (auto* lp : active) total_principal += lp->amount.value;
+            if (total_principal > 0) {
+                int64_t to_charge = uncovered.value < total_principal ? uncovered.value : total_principal;
+                int64_t assigned = 0;
+                for (size_t i = 0; i < active.size(); ++i) {
+                    int64_t c = (int64_t)(fc::uint128_t((uint64_t)to_charge)
+                                * fc::uint128_t((uint64_t)active[i]->amount.value)
+                                / fc::uint128_t((uint64_t)total_principal)).lo;
+                    charge[i] = c; assigned += c;
+                }
+                // Distribute the floor remainder over LPs with headroom (charge < principal). Total
+                // headroom (total_principal - assigned) >= (to_charge - assigned), so it always fits.
+                int64_t remainder = to_charge - assigned;
+                for (size_t i = 0; i < active.size() && remainder > 0; ++i) {
+                    int64_t room = active[i]->amount.value - charge[i];
+                    int64_t add  = remainder < room ? remainder : room;
+                    charge[i] += add; remainder -= add;
+                }
+                // uncovered beyond the whole pool cannot be charged to anyone — it is a real (bounded)
+                // over-emission the strict supply invariant (#126) would only catch on a later import,
+                // so flag it here where it happens. pos_cap should make this unreachable.
+                if (uncovered.value > total_principal)
+                    wlog("PM settle: uncovered ${u} exceeds LP principal ${p} on market ${m} — ${e} emitted",
+                         ("u", uncovered.value)("p", total_principal)("m", mkt.id._id)("e", uncovered.value - total_principal));
+            } else if (uncovered.value > 0) {
+                // active LPs exist but their principals sum to zero → nothing to charge, so 100% of
+                // uncovered is emitted. Same over-emission as the no-active-LP case above, one level
+                // deeper; log it here too so the supply-invariant trail is never silent. (PR #124 review.)
+                wlog("PM settle: active LPs hold zero principal — uncovered ${u} fully emitted on market ${m}",
+                     ("u", uncovered.value)("m", mkt.id._id));
+            }
+        }
+
+        // #442/#681=D: record the market's total LP income (liquidity fee + time-penalty pool +
+        // undistributed dust), written post-hoc at settlement for client observability. The old spec
+        // formula "liq_fee − liquidity_fee_earned" never matched the code — the field was never
+        // assigned; early-exit LP withdrawals earn no commission and void markets earn none either
+        // (bonus == 0 here). Round-trips through the snapshot as a plain reflected field.
+        db.modify(mkt, [&](pm_market_object& m) { m.liquidity_fee_earned = bonus; });
+
+        for (size_t i = 0; i < active.size(); ++i) {
+            const pm_liquidity_object& lp = *active[i];
+            share_type share(shares[i]);
+            int64_t principal_ret = lp.amount.value - charge[i];
+            if (principal_ret < 0) principal_ret = 0; // defensive; charge[i] ≤ amount by construction
+            if (lp.provider.size() > 0) {
+                share_type ret = share_type(principal_ret + share.value);
+                if (ret.value > 0)
+                    db.adjust_balance(db.get_account(lp.provider), asset(ret, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(lp.provider, 0, -lp.amount); // UNLOCK: full committed principal releases
+                // #442/#681=D: per-LP income visible in account_history (adjust_balance alone leaves
+                // no trace). Lazy-pool allocations (empty provider) return to the pool's free_balance
+                // and stay market-level only — covered by the liquidity_fee_earned counter above.
+                db.push_virtual_operation(pm_lp_payout_operation(
+                    lp.provider, mkt.id._id,
+                    asset(share_type(principal_ret), TOKEN_SYMBOL),
+                    asset(share, TOKEN_SYMBOL),
+                    asset(share_type(charge[i]), TOKEN_SYMBOL)));
+            } else {
+                route_pool_lp_return(db, principal_ret, share.value); // lazy pool LP
+            }
+            db.modify(lp, [&](pm_liquidity_object& l) { l.earned_fee += share; l.status = 3; });
+        }
+
+        mark_alloc_settled(db, mkt.id);
+    }
+
+    // ── Market settlement (unified parimutuel, spec parimutuel-settlement.md §2) ──
+    // Winners are paid by curve WEIGHT out of the losers' stakes:
+    //   losers_sum   = Σ amount of losing bets
+    //   winners_pool = losers_sum − oracle_fee − creator_fee − liq_fee − oracle_fixed + forfeit_pool
+    //   payout_i     = bet_amount_i + floor(winners_pool × weight_i / Σweight) − time_penalty(profit)
+    // LP principal is returned unconditionally; liq_fee + time-penalty pool + any
+    // undistributed winners_pool form the LP bonus. Money is conserved exactly:
+    //   Σ outputs == Σ all bet amounts + LP principal + forfeit_pool.
+    // oracle_fixed_fee is funded FROM the pool (capped), never minted.
+    // Settlement is INCREMENTAL (#432 fix D): the block's row budget can stop it at any point and it
+    // resumes in a later block. The state lives in pm_settlement_object — created on entry, removed at
+    // finalization — and `payout_status` stays 4 ("settling") for the whole flight, which keeps §5
+    // from picking the market up twice and blocks pm_dispute_create (that requires payout_status 1).
+    // Rows cannot move underneath us: every operation that creates, splits or removes a bet asserts
+    // mkt.status == 1 and a settling market is at status 3, so phase 2 walks exactly what phase 4 pays.
+    //
+    // Phases, in order:
+    //   1  force-close leverage, zero-volume oracle stamp
+    //   2  walk bets: refund queued rows, accumulate the pot and the winners' weight     [budgeted]
+    //   3  pay outcome-contingent deferred claims out of the bounded bucket              [budgeted]
+    //   4  walk bets again: pay winners, close losers                                    [budgeted]
+    //   5  fees, liquidity, dust, finalize
+    //
+    // Only phases 2-4 are budgeted, because only BET rows are cheap: pm_min_bet floors a bet at
+    // 1 VIZ, while a liquidity row and a leveraged position each cost pm_min_liquidity (100 VIZ by
+    // default). The work in phases 1 and 5 is bounded by what an attacker would have to pay to create
+    // those rows, not by anything the chain can be made to do for free.
+    //
+    // Within one block the phases run back to back while budget remains, so a market that fits the
+    // budget settles in the block it becomes due and produces exactly the numbers the one-shot
+    // implementation produced — the arithmetic below mirrors pm::compute_settlement term for term.
+    //
+    // Returns true once the market is finalized.
+    bool settle_market_step(database& db, const pm_market_object& mkt, uint32_t& budget) {
+        const bool binary = (mkt.market_type == 0);
+        const int16_t win = mkt.resolved_outcome;
+
+        const auto& sidx = db.get_index<pm_settlement_index>().indices().get<by_settlement_market>();
+        auto sit = sidx.find(mkt.id);
+        if (sit == sidx.end()) {
+            db.create<pm_settlement_object>([&](pm_settlement_object& s) {
+                s.market = mkt.id;
+                s.phase  = 1;
+                s.cursor = 0;
+            });
+            sit = sidx.find(mkt.id);
+        }
+        const pm_settlement_object& st = *sit;
+
+        const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
+        auto is_winner = [&](const pm_bet_object& b) {
+            return binary ? (b.side == win) : (b.outcome_index == win);
+        };
+        // Row-level work: refuse to start another row once the block's allowance is gone.
+        auto spend = [&]() -> bool {
+            if (budget == 0) return false;
+            --budget;
+            return true;
+        };
+
+        // ── Phase 1: leverage force-close + zero-volume stamp ────────────────────────────────────
+        // Must complete before phase 3: closing leveraged positions routes residuals into
+        // forfeit_pool and defers outcome-contingent claims, both of which phase 3 reads.
+        if (st.phase == 1) {
+            force_close_positions(db, mkt.id, win < 0 ? (uint8_t)4 : (uint8_t)2);
+
+            // Zero-volume resolution → fault stamp on the oracle (§4.10 lazy-pool defense:
+            // discourages spam markets that lock pool capital with no betting volume).
+            if (win >= 0 && mkt.bets_sum.value == 0) {
+                const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end())
+                    db.modify(*oit, [&](pm_oracle_object& o) {
+                        o.penalty_stamps++;
+                        o.last_penalty_stamp_time = db.head_block_time();
+                    });
+            }
+            db.modify(st, [](pm_settlement_object& s) { s.phase = 2; s.cursor = 0; });
+        }
+
+        // ── Phase 2: one pass over the bet rows ──────────────────────────────────────────────────
+        // H2: queued / revealed-pending batch rows (status 5/6) hold escrowed stake, but the §6
+        // executor only runs on status-1 markets — the market is terminal here, so those stakes would
+        // stay frozen forever (and drift the PM supply invariant once GC drops the rows). They never
+        // touched the curve, so a nominal refund is conservation-correct on every outcome. Escrow is
+        // untouched by that refund: the row stops being counted as held and the same amount lands in
+        // an account balance, so both sides of the invariant move together.
+        //
+        // Accumulators are kept in locals and flushed once per block rather than per row — a modify()
+        // per row would double the cost of the very walk this fix exists to bound.
+        if (st.phase == 2) {
+            int64_t       add_stake = 0;
+            int64_t       add_rows  = 0;
+            fc::uint128_t add_weight(0);
+            bool          exhausted = false;
+            int64_t       resume_at = 0;
+
+            auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type(st.cursor)));
+            for (; it != bidx.end() && it->market == mkt.id; ) {
+                if (!spend()) { exhausted = true; resume_at = it->id._id; break; }
+                const auto& bet = *it; ++it;
+                if (bet.status == 5 || bet.status == 6) {
+                    db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                    db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: queued stake refunded (market terminal)
+                    db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
+                    continue;
+                }
+                if (bet.status != 0) continue;
+                ++add_rows;
+                if (win >= 0 && is_winner(bet)) add_weight += fc::uint128_t((uint64_t)bet.weight.value);
+                else                            add_stake  += bet.amount.value;
+            }
+
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.stake_total  += add_stake;
+                s.weight_total += add_weight;
+                s.rows_total   += add_rows;
+                if (exhausted) s.cursor = resume_at;
+                else         { s.phase = 3; s.cursor = 0; }
+            });
+            if (exhausted) return false;
+        }
+
+        // ── Phase 3: deferred claims ─────────────────────────────────────────────────────────────
+        // F1/#300: pay outcome-contingent deferred claims (early bet-cancels + leverage closes) BEFORE
+        // the parimutuel split, from a BOUNDED slice of the losing pool. Only claims on the winning
+        // outcome are funded, FIFO by exit order (== id via by_claim_market), capped so the total drawn
+        // from losers <= pm_early_exit_reward_cap_percent x losers_sum. The unfunded remainder is a
+        // haircut; the unused slice simply stays in the pot. Losing-outcome claims pay 0. Every claim
+        // for this market is then consumed. Conservation model:
+        // docs/prediction-markets/early-exit-deferred-claim.md.
+        // Claims are consumed as they are processed, so like GC this needs no cursor — the range
+        // shrinks from the front and lower_bound resumes where it stopped.
+        if (st.phase == 3) {
+            const int64_t losers_sum = st.stake_total.value;
+            int64_t bucket = 0;
+            if (win >= 0) {
+                const auto& mp = median(db);
+                bucket = (int64_t)(fc::uint128_t((uint64_t)losers_sum)
+                    * fc::uint128_t(mp.pm_early_exit_reward_cap_percent) / fc::uint128_t(10000u)).lo;
+                // ADVERSARIAL FIX (own F1 review, goal #350 paper Theorem 2): the reward CAP alone does
+                // NOT bound solvency. Per-market fees are capped only by oracle+creator+liquidity <= 100%
+                // at creation — NOT by any chain param — and a valid market can push fees near 100%. With
+                // the default early-exit cap (33%) that makes fees + bucket exceed losers_sum, and the
+                // split would floor winners_pool at 0 and charge the shortfall to LP principal
+                // (`uncovered`). Clamp the bucket to the settlement headroom (== winners_pool BEFORE
+                // claims) so paid_claims can never drive winners_pool negative. Fee math MUST mirror
+                // parimutuel.cpp exactly (same int64 order/flooring) so headroom == the pot the split
+                // will actually see.
+                const int64_t oracle_fee  = losers_sum * (int64_t)mkt.oracle_fee_percent    / 10000;
+                const int64_t creator_fee = losers_sum * (int64_t)mkt.creator_fee_percent   / 10000;
+                const int64_t liq_fee     = losers_sum * (int64_t)mkt.liquidity_fee_percent / 10000;
+                int64_t avail = losers_sum - oracle_fee - creator_fee - liq_fee;
+                if (avail < 0) avail = 0;
+                const int64_t fixed_paid = (mkt.oracle_fixed_fee.value < avail)
+                    ? mkt.oracle_fixed_fee.value : avail;
+                int64_t headroom = avail - fixed_paid + mkt.forfeit_pool.value;
+                if (headroom < 0) headroom = 0;
+                if (bucket > headroom) bucket = headroom;
+            }
+
+            const auto& cidx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
+            for (;;) {
+                auto cit = cidx.lower_bound(boost::make_tuple(mkt.id, pm_deferred_claim_id_type()));
+                if (cit == cidx.end() || cit->market != mkt.id) break;
+                if (!spend()) return false;
+                const pm_deferred_claim_object& c = *cit;
+                if (win >= 0 && (int16_t)c.outcome_index == win) {
+                    const int64_t remaining = bucket - st.paid_claims.value;
+                    const int64_t pay = c.claim_amount.value < remaining ? c.claim_amount.value : remaining;
+                    if (pay > 0) {
+                        db.adjust_balance(db.get_account(c.account), asset(share_type(pay), TOKEN_SYMBOL));
+                        db.modify(st, [&](pm_settlement_object& s) {
+                            s.paid_claims += pay;
+                            s.escrow      -= pay;   // paid out of a pot whose rows are still standing
+                        });
+                        // Put the credit in the early-exiter's account history (adjust_balance alone
+                        // leaves no trace); `claimed` vs `paid` exposes any bucket-exhaustion haircut.
+                        db.push_virtual_operation(pm_early_exit_claim_paid_operation(
+                            c.account, mkt.id._id, c.kind, c.outcome_index,
+                            asset(c.claim_amount, TOKEN_SYMBOL), asset(share_type(pay), TOKEN_SYMBOL)));
+                    }
+                }
+                db.remove(c);
+            }
+
+            // The split constants are fixed here, once claims are final.
+            if (win < 0) {
+                // Void: two pots are handed out pro-rata to the refunded bettors. `winners_pool`
+                // carries the oracle's no-contest penalty and `uncovered` the forfeit pool (dual use,
+                // documented on the object) — kept as two separate floor divisions so the amounts
+                // match the one-shot implementation exactly.
+                const auto& mp = median(db);
+                share_type penalty(0);
+                if (st.stake_total.value > 0) {
+                    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+                    auto oit = oidx.find(mkt.oracle);
+                    if (oit != oidx.end()) {
+                        int64_t want = (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                            * fc::uint128_t((uint64_t)mp.pm_no_contest_penalty_percent) / fc::uint128_t(10000)).lo;
+                        penalty = share_type(want > oit->insurance.value ? oit->insurance.value : want);
+                        if (penalty.value > 0)
+                            db.modify(*oit, [&](pm_oracle_object& o) {
+                                o.insurance               -= penalty;
+                                o.total_insurance_slashed += penalty;
+                            });
+                    }
+                }
+                db.modify(st, [&](pm_settlement_object& s) {
+                    s.winners_pool = penalty;                 // pot A: oracle penalty
+                    s.uncovered    = mkt.forfeit_pool;        // pot B: forfeit pool
+                    s.escrow      += penalty;                 // slashed insurance enters the pot
+                    s.phase        = 4;
+                    s.cursor       = 0;
+                });
+            } else {
+                // Normal resolution: mirror pm::compute_settlement's fee/pool arithmetic exactly.
+                const int64_t losers = st.stake_total.value;
+                const int64_t oracle_fee  = losers * (int64_t)mkt.oracle_fee_percent    / 10000;
+                const int64_t creator_fee = losers * (int64_t)mkt.creator_fee_percent   / 10000;
+                const int64_t liq_fee     = losers * (int64_t)mkt.liquidity_fee_percent / 10000;
+                int64_t avail = losers - oracle_fee - creator_fee - liq_fee;
+                if (avail < 0) avail = 0;
+                const int64_t fixed_paid = (mkt.oracle_fixed_fee.value < avail)
+                    ? mkt.oracle_fixed_fee.value : avail;
+                // forfeit_pool is a SIGNED accumulator (profitable leverage exits route a negative
+                // residual), and paid claims come straight off the pot.
+                int64_t winners_pool = avail - fixed_paid + mkt.forfeit_pool.value - st.paid_claims.value;
+                int64_t uncovered = 0;
+                if (winners_pool < 0) { uncovered = -winners_pool; winners_pool = 0; } // F1
+                db.modify(st, [&](pm_settlement_object& s) {
+                    s.winners_pool = share_type(winners_pool);
+                    s.uncovered    = share_type(uncovered);
+                    s.lp_bonus     = share_type(liq_fee);   // + time penalties and dust later
+                    s.phase        = 4;
+                    s.cursor       = 0;
+                });
+            }
+        }
+
+        // ── Phase 4: pay the rows ────────────────────────────────────────────────────────────────
+        if (st.phase == 4) {
+            const int64_t pot_total = st.stake_total.value;
+            int64_t add_distributed = 0;
+            int64_t add_lp_bonus    = 0;
+            int64_t add_escrow      = 0;
+            int64_t done_rows       = 0;
+            bool    exhausted       = false;
+            int64_t resume_at       = 0;
+
+            auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type(st.cursor)));
+            for (; it != bidx.end() && it->market == mkt.id; ) {
+                if (!spend()) { exhausted = true; resume_at = it->id._id; break; }
+                const auto& bet = *it; ++it;
+                if (bet.status != 0) continue;
+                // "The last participant absorbs the remainder" — the rounding rule of the one-shot
+                // loops. The count comes from phase 2 rather than from peeking ahead: scanning the
+                // rest of the market for every row would be quadratic, which is the very thing this
+                // fix exists to prevent.
+                const bool last = (st.rows_done + done_rows + 1 == st.rows_total);
+
+                if (win < 0) {
+                    // Void: refund the stake, then hand out both pots pro-rata by stake.
+                    db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                    db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: stake refunded on void
+                    db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
+
+                    int64_t extra = 0;
+                    if (pot_total > 0) {
+                        const int64_t pen_pot = st.winners_pool.value;
+                        const int64_t fpl_pot = st.uncovered.value;
+                        if (pen_pot > 0) {
+                            const int64_t paid = st.distributed.value + add_distributed;
+                            const int64_t share = last
+                                ? pen_pot - paid
+                                : (int64_t)(fc::uint128_t((uint64_t)pen_pot)
+                                    * fc::uint128_t((uint64_t)bet.amount.value) / fc::uint128_t((uint64_t)pot_total)).lo;
+                            if (share > 0) { extra += share; add_distributed += share; }
+                        }
+                        if (fpl_pot > 0) {
+                            const int64_t paid = st.lp_bonus.value + add_lp_bonus;
+                            const int64_t share = last
+                                ? fpl_pot - paid
+                                : (int64_t)(fc::uint128_t((uint64_t)fpl_pot)
+                                    * fc::uint128_t((uint64_t)bet.amount.value) / fc::uint128_t((uint64_t)pot_total)).lo;
+                            if (share > 0) { extra += share; add_lp_bonus += share; }
+                        }
+                    }
+                    if (extra > 0) db.adjust_balance(db.get_account(bet.account), asset(share_type(extra), TOKEN_SYMBOL));
+                    // The stake leaves the held set and returns to its owner (net zero on the
+                    // invariant); only the pot payouts move escrow.
+                    add_escrow -= extra;
+                    ++done_rows;
+                    continue;
+                }
+
+                if (!is_winner(bet)) {
+                    db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: losing stake leaves the bet set at settle
+                    db.modify(bet, [](pm_bet_object& b) { b.status = 3; b.resolved_amount = 0; });
+                    add_escrow += bet.amount.value;
+                    ++done_rows;
+                    db.push_virtual_operation(pm_payout_operation(
+                        bet.account, mkt.id._id, bet.id._id, bet.side, bet.outcome_index,
+                        asset(bet.amount, TOKEN_SYMBOL), asset(share_type(0), TOKEN_SYMBOL)));
+                    continue;
+                }
+
+                // Winner: the same terms as pm::compute_settlement, one row at a time.
+                int64_t profit = 0;
+                if (st.weight_total > fc::uint128_t(0))
+                    profit = (int64_t)(fc::uint128_t((uint64_t)st.winners_pool.value)
+                        * fc::uint128_t((uint64_t)bet.weight.value) / st.weight_total).lo;
+                int64_t penalty = (int64_t)(fc::uint128_t((uint64_t)profit)
+                    * fc::uint128_t((uint64_t)bet.time_penalty) / fc::uint128_t((uint64_t)1000000)).lo;
+                // F3 defensive clamp: validate() bounds pm_max_time_penalty <= 1e6 so penalty <= profit
+                // already, but never let a (mis-configured / legacy) median push penalty past profit —
+                // that would make payout < principal and silently drop the winner's stake.
+                if (penalty > profit) penalty = profit;
+                const share_type payout(bet.amount.value + profit - penalty);
+                if (payout.value > 0)
+                    db.adjust_balance(db.get_account(bet.account), asset(payout, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: original stake leaves the bet set (payout is winnings)
+                db.modify(bet, [&](pm_bet_object& b) { b.status = 3; b.resolved_amount = payout; });
+                add_distributed += profit;
+                add_lp_bonus    += penalty;
+                add_escrow      += bet.amount.value - payout.value;
+                ++done_rows;
+                db.push_virtual_operation(pm_payout_operation(
+                    bet.account, mkt.id._id, bet.id._id, bet.side, bet.outcome_index,
+                    asset(bet.amount, TOKEN_SYMBOL), asset(payout, TOKEN_SYMBOL)));
+            }
+
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.distributed += add_distributed;
+                s.lp_bonus    += add_lp_bonus;
+                s.escrow      += add_escrow;
+                s.rows_done   += done_rows;
+                if (exhausted) s.cursor = resume_at;
+                else         { s.phase = 5; s.cursor = 0; }
+            });
+            if (exhausted) return false;
+        }
+
+        // ── Phase 5: fees, liquidity, dust, finalize ─────────────────────────────────────────────
+        // forfeit_pool stops being counted separately by the supply invariant here, so it enters the
+        // escrow instead. Anything cron §1 dropped into it mid-flight (an unrevealed commitment
+        // forfeited while this settlement was in progress) rides along rather than being orphaned.
+        db.modify(st, [&](pm_settlement_object& s) { s.escrow += mkt.forfeit_pool; });
+
+        if (win < 0) {
+            settle_liquidity(db, mkt, 0);
+            // With no bettors at all there is nobody to hand the forfeit pool to, so it leaves the
+            // supply — exactly what the one-shot path did.
+            const int64_t leftover = st.escrow.value;
+            if (leftover > 0) {
+                db.burn_asset(asset(share_type(-leftover), TOKEN_SYMBOL));
+                db.modify(st, [&](pm_settlement_object& s) { s.escrow -= leftover; });
+            }
+        } else {
+            const int64_t losers = st.stake_total.value;
+            const int64_t oracle_fee  = losers * (int64_t)mkt.oracle_fee_percent    / 10000;
+            const int64_t creator_fee = losers * (int64_t)mkt.creator_fee_percent   / 10000;
+            const int64_t liq_fee     = losers * (int64_t)mkt.liquidity_fee_percent / 10000;
+            int64_t avail = losers - oracle_fee - creator_fee - liq_fee;
+            if (avail < 0) avail = 0;
+            const int64_t fixed_paid = (mkt.oracle_fixed_fee.value < avail) ? mkt.oracle_fixed_fee.value : avail;
+            const int64_t oracle_take  = oracle_fee + fixed_paid;
+            const int64_t creator_take = creator_fee;
+
+            int64_t lp_bonus = st.lp_bonus.value;   // liquidity fee (seeded at 3->4) + time penalties
+            if (st.weight_total == fc::uint128_t(0)) {
+                lp_bonus += st.winners_pool.value;  // no winning tokens: the whole pool is undistributed
+            } else {
+                const int64_t dust = st.winners_pool.value - st.distributed.value;
+                if (dust > 0) lp_bonus += dust;     // rounding dust from the weight split → LP
+            }
+
+            if (oracle_take > 0)
+                db.adjust_balance(db.get_account(mkt.oracle),  asset(share_type(oracle_take),  TOKEN_SYMBOL));
+            if (creator_take > 0)
+                db.adjust_balance(db.get_account(mkt.creator), asset(share_type(creator_take), TOKEN_SYMBOL));
+
+            // settle_liquidity pays lp_bonus out of the pot and retains `uncovered` from LP principal
+            // back into it (F1: the shortfall is charged to the leverage counterparty, not minted).
+            settle_liquidity(db, mkt, share_type(lp_bonus), st.uncovered);
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.escrow -= (oracle_take + creator_take);
+                s.escrow -= lp_bonus;
+                s.escrow += s.uncovered;
+            });
+        }
+
+        // Conservation: everything the settlement took out of the rows has been handed to someone.
+        FC_ASSERT(st.escrow.value == 0,
+                  "PM settlement did not balance for market ${m}: escrow=${e}",
+                  ("m", mkt.id._id)("e", st.escrow.value));
+
+        db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+        db.remove(st);
+        return true;
+    }
+    // Garbage-collect a fully-finalized market and its whole object cluster. A settled market
+    // (status 3 / payout_status 3) can no longer be acted on — no betting, dispute, resolve or
+    // payout is possible — it only lingers "for history". process_pm_markets() calls this a few
+    // days after closure. Deletion is driven purely by chain time, so every node prunes exactly
+    // the same markets at the same block → shared-memory state and snapshots stay identical
+    // network-wide. Nothing else holds an id-reference to a settled market, so no dangling refs.
+    // #432 fix D: collection is INCREMENTAL. The caller passes the block's remaining row budget
+    // (`pm_settle_rows_per_block`, median-voted, shared by every settling/collected market in the
+    // block); this drops at most that many objects and returns true only once the cluster is gone.
+    // Running out of budget just leaves the market for the next block: each range is re-entered at
+    // its lower_bound and removed rows are gone, so the sweep resumes where it stopped with no
+    // persisted cursor. A half-collected market is inert — it is terminal (status 3 /
+    // payout_status 3, finalized_time set) so no operation can reach it, and the rows being dropped
+    // hold no money (bets are status 2/3, LP 3, leverage terminal), so the supply invariant is flat
+    // across the pause.
+    bool gc_market_step(database& db, const pm_market_object& mkt, uint32_t& budget) {
+        const pm_market_id_type mid = mkt.id;
+        // Conservation backstop (drift-400, 2026-08-16): forfeit_pool holds real tokens (routed
+        // leverage-exit dust / commit forfeits). Every terminal path routes it to zero before
+        // finalization, but a legacy market (e.g. voided before the #5/H4 forfeit-routing fix) can
+        // reach GC with a non-zero pool. At GC there are no bettors/LPs left to return to, so burn it
+        // from supply — otherwise db.remove(mkt) silently orphans those tokens and the re-armed PM
+        // supply invariant drifts on the next snapshot import (exactly the -400 seen on testnet).
+        // Zeroed in the same step as the burn: collection can now span blocks, and a burn that left
+        // the field standing would fire again on every re-entry — burning the same tokens repeatedly
+        // and driving current_supply below the accounted sum.
+        if (mkt.forfeit_pool.value > 0) {
+            db.burn_asset(asset(share_type(-mkt.forfeit_pool.value), TOKEN_SYMBOL));
+            db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+        }
+        bool drained = true;
+        // Composite (market, …)-keyed indexes: drop the whole market range, budget permitting.
+        auto drop_range = [&](const auto& idx) {
+            if (!drained) return; // budget already spent — the rest waits for the next block
+            for (auto it = idx.lower_bound(boost::make_tuple(mid));
+                 it != idx.end() && it->market == mid; ) {
+                if (budget == 0) { drained = false; return; }
+                const auto& obj = *it; ++it; db.remove(obj); --budget;
+            }
+        };
+        // Single-key (unique per market) by_market indexes: at most one row.
+        auto drop_unique = [&](const auto& idx) {
+            if (!drained) return;
+            auto it = idx.find(mid);
+            if (it != idx.end()) {
+                if (budget == 0) { drained = false; return; }
+                db.remove(*it); --budget;
+            }
+        };
+        drop_range(db.get_index<pm_outcome_index>().indices().get<by_market_outcome>());
+        drop_range(db.get_index<pm_bet_index>().indices().get<by_market>());
+        drop_range(db.get_index<pm_liquidity_index>().indices().get<by_market>());
+        drop_range(db.get_index<pm_commit_index>().indices().get<by_market>());
+        drop_range(db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>());
+        drop_range(db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>());
+        // Backstop: every terminal path that can hold deferred claims already clears them —
+        // settle_market consumes them, refund_market_step purges them on void/no-contest/missed-
+        // resolution, and accept-expired markets are pending (never had bets). This drop is a
+        // defensive net so no overlooked or future finalize path can leave a claim row dangling
+        // in shared memory / drift the snapshot. Money-neutral: the range is normally empty here.
+        drop_range(db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>());
+        drop_unique(db.get_index<pm_settlement_index>().indices().get<by_settlement_market>());
+        drop_unique(db.get_index<pm_dispute_index>().indices().get<by_market>());
+        drop_unique(db.get_index<pm_lazy_allocation_index>().indices().get<by_market>());
+        if (!drained) return false;                     // resume next block; market object stays
+        if (budget == 0) return false;                  // the market row itself costs one unit
+        db.remove(mkt); --budget;
+        return true;
+    }
+
+    // #432 fix D part 3 — the void paths (cron §2 missed resolution, §3 dispute auto-close) used to
+    // refund every bet row of a market inside the single block where the deadline passed, and to
+    // build an in-memory vector of every participant on top of that walk. Both are now metered by
+    // the block's row budget, on the same pm_settlement_object phase machine as settlement.
+    //
+    // Two passes, because the forfeit pool is shared pro-rata and the denominator has to be known
+    // before the first payment. Pass one only MEASURES, which is what makes "who is being refunded
+    // by this void" answerable across a pause without tagging the rows: pass two re-walks the very
+    // same predicate (status 0/5/6) and finds exactly the set pass one counted.
+    //
+    // Returns true when the market has been fully refunded; the caller then finalizes it. Until
+    // then the market wears payout_status 4, which the oracle-facing evaluators refuse to touch.
+    bool refund_market_step(database& db, const pm_market_object& mkt, uint32_t& budget) {
+        const auto& sidx = db.get_index<pm_settlement_index>().indices().get<by_settlement_market>();
+        auto sit = sidx.find(mkt.id);
+        if (sit == sidx.end()) {
+            // The forfeit pool moves into the settlement escrow in one step, so the supply
+            // invariant keeps counting it (pm_forfeit → pm_settling) while it is paid out over
+            // several blocks. winners_pool holds the pot as a CONSTANT: shares must be computed
+            // against the original size, not against what is left after earlier blocks paid out.
+            db.create<pm_settlement_object>([&](pm_settlement_object& s) {
+                s.market       = mkt.id;
+                s.phase        = 11;
+                s.cursor       = 0;
+                s.escrow       = mkt.forfeit_pool.value;
+                s.winners_pool = mkt.forfeit_pool.value;
+            });
+            if (mkt.forfeit_pool.value > 0)
+                db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+            sit = sidx.find(mkt.id);
+        }
+        const pm_settlement_object& st = *sit;
+        const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
+        auto spend = [&]() -> bool {
+            if (budget == 0) return false;
+            --budget;
+            return true;
+        };
+        // H2: statuses 5/6 (queued / revealed-pending batch bets) hold escrowed stake, but the §6
+        // executor only runs on status-1 markets — a terminal market would orphan them and burn the
+        // stake. They never touched the curve, so a nominal refund is correct.
+        auto refundable = [](const pm_bet_object& b) {
+            return b.status == 0 || b.status == 5 || b.status == 6;
+        };
+
+        // ── Pass one: measure the stake and the row count ────────────────────────────────────────
+        if (st.phase == 11) {
+            int64_t add_stake = 0, add_rows = 0, resume_at = 0;
+            bool    exhausted = false;
+            auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type(st.cursor)));
+            for (; it != bidx.end() && it->market == mkt.id; ++it) {
+                if (!spend()) { exhausted = true; resume_at = it->id._id; break; }
+                if (!refundable(*it)) continue;
+                ++add_rows;
+                add_stake += it->amount.value;
+            }
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.stake_total += add_stake;
+                s.rows_total  += add_rows;
+                if (exhausted) s.cursor = resume_at;
+                else          { s.phase = 12; s.cursor = 0; }
+            });
+            if (exhausted) return false;
+        }
+
+        // ── Pass two: refund the stake and hand out the forfeit pool ─────────────────────────────
+        if (st.phase == 12) {
+            const int64_t fpool = st.winners_pool.value;   // constant across blocks
+            const int64_t total = st.stake_total.value;
+            int64_t add_paid = 0, add_rows = 0, resume_at = 0;
+            bool    exhausted = false;
+            auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type(st.cursor)));
+            for (; it != bidx.end() && it->market == mkt.id; ) {
+                if (!spend()) { exhausted = true; resume_at = it->id._id; break; }
+                const auto& bet = *it; ++it;
+                if (!refundable(bet)) continue;
+                // Stake back. Escrow is untouched by this: the row stops being counted as held and
+                // the same amount lands in an account balance, so both sides of the invariant move
+                // together.
+                db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: stake refunded on void
+                // H4 routing, now incremental: pro-rata by stake, last refunded row absorbs the
+                // rounding remainder. "Last" is the row counter, not a peek at the rest of the
+                // market — under resume the rows already paid are still in the range.
+                if (fpool > 0 && total > 0) {
+                    const bool last = (st.rows_done + add_rows + 1 == st.rows_total);
+                    int64_t share = last
+                        ? fpool - (st.distributed.value + add_paid)
+                        : (int64_t)(fc::uint128_t((uint64_t)fpool)
+                            * fc::uint128_t((uint64_t)bet.amount.value)
+                            / fc::uint128_t((uint64_t)total)).lo;
+                    if (share < 0) share = 0;   // by construction unreachable; never mint on void
+                    if (share > 0) {
+                        db.adjust_balance(db.get_account(bet.account), asset(share_type(share), TOKEN_SYMBOL));
+                        add_paid += share;
+                    }
+                }
+                db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
+                ++add_rows;
+            }
+            db.modify(st, [&](pm_settlement_object& s) {
+                s.rows_done   += add_rows;
+                s.distributed += add_paid;
+                s.escrow      -= add_paid;
+                if (exhausted) s.cursor = resume_at;
+                else          { s.phase = 13; s.cursor = 0; }
+            });
+            if (exhausted) return false;
+        }
+
+        // ── Finalize ─────────────────────────────────────────────────────────────────────────────
+        // Liquidity rows and leveraged positions are NOT metered: each costs pm_min_liquidity
+        // (100 VIZ) to create, a hundred times a bet row, so their count is bounded economically.
+        // This runs BEFORE the leftover is accounted for, because force-closing a leveraged
+        // position routes its curve residual INTO forfeit_pool: draining the pool first would let
+        // those tokens ride on the market row until GC dropped it, stranding them in current_supply
+        // with no owner — exactly the H4 break the void routing exists to prevent. (The old
+        // one-block path had this ordering the other way round.)
+        return_liquidity(db, mkt);
+        // Leftover exists when nobody was refunded (a market with no live bets), when cron §1
+        // credited a commit forfeit after the refund started, or from the residual just routed
+        // above. None of it has an owner left, so it is burned — the same choice the old
+        // route_forfeit_on_void made for the no-participants case.
+        const int64_t leftover = st.escrow.value + mkt.forfeit_pool.value;
+        FC_ASSERT(leftover >= 0, "PM void refund paid out more than it held: ${l}", ("l", leftover));
+        if (mkt.forfeit_pool.value > 0)
+            db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+        if (leftover > 0)
+            db.burn_asset(asset(share_type(-leftover), TOKEN_SYMBOL));
+        db.remove(st);
+        return true;
+    }
+
+    void return_liquidity(database& db, const pm_market_object& mkt) {
+        // Void/refund terminal: force-close open leveraged positions (reason 4 = refund residuals now,
+        // no outcome to defer to) and discard any deferred early-exit claims (no winning outcome).
+        force_close_positions(db, mkt.id, 4);
+        purge_deferred_claims(db, mkt.id);
+        const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+        auto it = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+        while (it != lidx.end() && it->market == mkt.id) {
+            if (it->status == 0) {
+                if (it->provider.size() > 0) {
+                    db.adjust_balance(db.get_account(it->provider), asset(it->amount, TOKEN_SYMBOL));
+                    db.pm_adjust_frozen(it->provider, 0, -it->amount); // UNLOCK: LP principal on void/refund
+                } else
+                    route_pool_lp_return(db, it->amount.value, 0); // lazy pool LP, no yield on refund
+                db.modify(*it, [](pm_liquidity_object& l) { l.status = 3; });
+            }
+            ++it;
+        }
+        // Void/refund paths (no_contest, missed, auto-close) bypass settle_liquidity, so
+        // close the lazy allocation's recall-tracking object here.
+        mark_alloc_settled(db, mkt.id);
+    }
+
+    // Allocate a slice of idle lazy-pool capital to a newly-active market as a REAL LP
+    // position (enters CPMM reserves / LMSR b, provider = pool) — spec lazy-pool-properties
+    // Transition 2. Triggered at activation (status 0→1, before bets). One allocation per
+    // market, bounded by pm_lazy_alloc_percent of free_balance and pm_lazy_max_total_alloc_percent
+    // of total pool capital, minus the §4.10 per-oracle exposure penalties.
+    void maybe_allocate_lazy(database& db, const pm_market_object& mkt) {
+        const auto& mp = median(db);
+        if (!mp.pm_lazy_pool_enabled) return;
+        // Reward floor: the pool only subsidizes markets whose LP fee pays it enough. Below the
+        // governed minimum it stays out entirely (spec lazy-pool §min-fee gate).
+        if (mkt.liquidity_fee_percent < mp.pm_lazy_min_liquidity_fee_percent) return;
+        const auto* pool = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (!pool || pool->free_balance.value <= 0) return;
+
+        const auto& aidx = db.get_index<pm_lazy_allocation_index>().indices().get<by_market>();
+        if (aidx.find(mkt.id) != aidx.end()) return; // already allocated
+
+        int64_t total_capital = pool->free_balance.value + pool->allocated_balance.value;
+        int64_t max_total = (int64_t)(fc::uint128_t((uint64_t)total_capital)
+                            * fc::uint128_t(mp.pm_lazy_max_total_alloc_percent) / fc::uint128_t(10000)).lo;
+        int64_t headroom = max_total - pool->allocated_balance.value;
+        if (headroom <= 0) return;
+
+        int64_t alloc = (int64_t)(fc::uint128_t((uint64_t)pool->free_balance.value)
+                       * fc::uint128_t(mp.pm_lazy_alloc_percent) / fc::uint128_t(10000)).lo;
+        if (alloc > pool->free_balance.value) alloc = pool->free_balance.value;
+        if (alloc > headroom) alloc = headroom;
+        if (alloc <= 0) return;
+
+        const auto now = db.head_block_time();
+
+        // Per-oracle exposure penalties (security-threat-model §4.10) — limit how much
+        // pool capital a single oracle can attract into idle/abusive markets.
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto oit = oidx.find(mkt.oracle);
+        {
+            // (a) Active-market penalty: 5% recursive reduction per OTHER active market
+            //     of this oracle (bounded scan; cap 20 markets).
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle>();
+            uint32_t active_cnt = 0, scanned = 0;
+            for (auto mit = midx.lower_bound(mkt.oracle);
+                 mit != midx.end() && mit->oracle == mkt.oracle && scanned < 128 && active_cnt < 20;
+                 ++mit, ++scanned) {
+                if (mit->status == 1 && mit->id != mkt.id) ++active_cnt;
+            }
+            for (uint32_t i = 0; i < active_cnt; ++i) alloc = alloc * 95 / 100;
+
+            // (b) Fault penalty stamps: zero-volume resolutions stamp the oracle; each
+            //     non-expired stamp halves the allocation (cap 4). Stamps expire 10 days
+            //     after the most recent one (coarse, deterministic decay).
+            if (oit != oidx.end() && oit->penalty_stamps > 0 &&
+                now < oit->last_penalty_stamp_time + fc::seconds(864000)) {
+                uint32_t st = oit->penalty_stamps > 4 ? 4 : oit->penalty_stamps;
+                for (uint32_t i = 0; i < st; ++i) alloc /= 2;
+            }
+        }
+        if (alloc <= 0) return;
+
+        // Deploy the allocation into the curve as a REAL LP position (provider = pool),
+        // exactly like pm_add_liquidity. This happens at activation (status 0→1, before
+        // any bets) — the genesis of the active curve, not a mid-life edit.
+        share_type b_share = 0;
+        if (mkt.market_type == 1 && mkt.liquidity_sum.value > 0) {
+            b_share = share_type((int64_t)(fc::uint128_t((uint64_t)mkt.lmsr_b.value)
+                      * fc::uint128_t((uint64_t)alloc) / fc::uint128_t((uint64_t)mkt.liquidity_sum.value)).lo);
+        }
+        db.modify(mkt, [&](pm_market_object& m) {
+            m.liquidity_sum += share_type(alloc);
+            if (m.market_type == 1) {
+                m.lmsr_b       += b_share;
+                m.lmsr_subsidy += share_type(alloc);
+            } else {
+                share_type half = share_type(alloc / 2);
+                m.reserve_a += half;
+                m.reserve_b += share_type(alloc - half.value);
+                m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+            }
+        });
+        db.create<pm_liquidity_object>([&](pm_liquidity_object& lp) {
+            lp.market       = mkt.id;
+            lp.provider     = account_name_type(); // empty = lazy pool
+            lp.amount       = share_type(alloc);
+            lp.deposit_time = now;
+            lp.status       = 0;
+            lp.b_share      = b_share;
+        });
+        db.create<pm_lazy_allocation_object>([&](pm_lazy_allocation_object& a) {
+            a.market            = mkt.id;
+            a.amount            = share_type(alloc);
+            a.original_amount   = share_type(alloc);
+            a.bets_sum_at_check = mkt.bets_sum;
+            a.last_check_time   = now;
+            a.check_step        = 0;
+            a.status            = 0;
+        });
+        db.modify(*pool, [&](pm_lazy_pool_object& p) {
+            p.free_balance      -= share_type(alloc);
+            p.allocated_balance += share_type(alloc);
+        });
+    }
+
+    bool verify_commit(const pm_commit_object& commit,
+                       int8_t side, int16_t outcome_index,
+                       share_type amount, share_type min_tokens, const std::string& salt) {
+        fc::sha256::encoder enc;
+        int64_t mid = commit.market._id;
+        enc.write(reinterpret_cast<const char*>(&mid),          (uint32_t)sizeof(mid));
+        enc.write(reinterpret_cast<const char*>(&commit.account.data), (uint32_t)sizeof(commit.account.data));
+        enc.write(reinterpret_cast<const char*>(&side),         (uint32_t)sizeof(side));
+        enc.write(reinterpret_cast<const char*>(&outcome_index),(uint32_t)sizeof(outcome_index));
+        int64_t amt = amount.value;
+        enc.write(reinterpret_cast<const char*>(&amt),          (uint32_t)sizeof(amt));
+        int64_t mnt = min_tokens.value;
+        enc.write(reinterpret_cast<const char*>(&mnt),          (uint32_t)sizeof(mnt));
+        enc.write(salt.data(),                                   (uint32_t)salt.size());
+        return enc.result() == commit.commitment;
+    }
+
+    // Get pm_market_object by raw int64 id
+    const pm_market_object& get_market(const database& db, int64_t market_id) {
+        return db.get<pm_market_object, by_id>(pm_market_id_type(market_id));
+    }
+
+
+} // namespace pm_detail
+
+using namespace pm_detail;
+
+void database::process_pm_markets() {
+    if (!has_hardfork(CHAIN_HARDFORK_14)) return;
+
+    // First seed OR the task #266 corrective re-seed (fixes the over-counted live counters). The
+    // (re)seed zeroes then re-sums from objects, so running it again converges to the exact totals.
+    if (!get_dynamic_global_properties().pm_frozen_counters_reseeded_v1) {
+        const bool first = !get_dynamic_global_properties().pm_frozen_counters_seeded;
+        pm_seed_frozen_counters();
+        modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
+            d.pm_frozen_counters_seeded      = true;
+            d.pm_frozen_counters_reseeded_v1 = true;
+        });
+        ilog("pm frozen-counters ${w}; drift-check ${r}",
+             ("w", first ? "seeded" : "re-seeded (#266 correction)")
+             ("r", pm_verify_frozen_counters() ? "clean" : "MISMATCH"));
+    }
+
+    // One-time seed of the per-oracle live active-market counter (display-only). Runs once on the
+    // first block after this upgrade; thereafter maintained incrementally by pm_oracle_inc/dec_active.
+    if (!get_dynamic_global_properties().pm_active_markets_seeded) {
+        pm_seed_oracle_active_markets();
+        modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
+            d.pm_active_markets_seeded = true;
+        });
+        ilog("pm oracle active_markets seeded; drift-check ${r}",
+             ("r", pm_verify_oracle_active_markets() ? "clean" : "MISMATCH"));
+    }
+
+    // One-time seed of the per-oracle workload gauges (display-only). Same pattern as above.
+    if (!get_dynamic_global_properties().pm_oracle_gauges_seeded) {
+        pm_seed_oracle_gauges();
+        modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
+            d.pm_oracle_gauges_seeded = true;
+        });
+        ilog("pm oracle workload gauges seeded; drift-check ${r}",
+             ("r", pm_verify_oracle_gauges() ? "clean" : "MISMATCH"));
+    }
+
+    const auto  now = head_block_time();
+    const auto& mp  = get_validator_schedule_object().median_props;
+    uint32_t cap  = (mp.pm_processing_cap_per_block > 0) ? (uint32_t)mp.pm_processing_cap_per_block : 20u;
+    uint32_t done = 0;
+    // #432 fix D: `cap` counts MARKETS, which says nothing about the work a market carries — a
+    // single settlement or collection touches every bet row of its market. `row_budget` is the
+    // second, orthogonal limiter: a GLOBAL per-block allowance of row-level work shared by every
+    // market processed in this block (median-voted, floor 100 so progress is always guaranteed).
+    // Spending it in market order — the sweeps walk oldest-first — keeps the split deterministic
+    // across nodes. A market that exhausts it resumes in the next block.
+    uint32_t row_budget = (mp.pm_settle_rows_per_block > 0) ? (uint32_t)mp.pm_settle_rows_per_block : 2000u;
+
+    // ── 1. Commit forfeits ────────────────────────────────────────────────────
+    // Commitments that were never revealed within the reveal window.
+    {
+        const auto& idx = get_index<pm_commit_index>().indices().get<by_reveal_deadline>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_commit_id_type()));
+        while (it != idx.end() && it->status == 0 && it->reveal_deadline <= now && done < cap) {
+            const auto& commit = *it; ++it;
+
+            share_type penalty = share_type(commit.escrow_amount.value *
+                                            commit.no_reveal_fee_percent / 10000);
+            share_type refund  = share_type(commit.escrow_amount.value - penalty.value);
+
+            if (refund.value > 0)
+                adjust_balance(get_account(commit.account), asset(refund, TOKEN_SYMBOL));
+
+            const auto* mkt_ptr = find<pm_market_object>(commit.market);
+            if (mkt_ptr)
+                modify(*mkt_ptr, [&](pm_market_object& m) {
+                    if (penalty.value > 0) m.forfeit_pool += penalty;
+                    // M4: commit left the unrevealed backlog (clamp: pre-M4 snapshots import 0).
+                    if (m.open_commits > 0) m.open_commits--;
+                });
+
+            push_virtual_operation(pm_commit_forfeit_operation(
+                commit.account, commit.id._id, commit.market._id,
+                asset(penalty, TOKEN_SYMBOL), asset(refund, TOKEN_SYMBOL)));
+
+            modify(commit, [](pm_commit_object& c) { c.status = 2; }); // forfeited
+            ++done;
+        }
+    }
+
+    // ── 2. Oracle missed resolution deadline ──────────────────────────────────
+    // Active markets whose result_expiration passed with no oracle report, plus a resolution grace.
+    // The grace is not optional politeness: process_pm_markets() runs at the END of a block, after
+    // dgp.time has advanced to this block's timestamp (database.cpp update_global_dynamic_data),
+    // whereas in-block transactions still saw the PREVIOUS block's time. A zero-slack void
+    // (result_expiration <= now) therefore fires one block before any resolve transaction's clock
+    // can first reach result_expiration, making pm_resolve_market unreachable for a fixed-deadline
+    // market without allow_early_resolution — it would always die here as missed-resolution and slash
+    // the oracle for a deadline it had no reachable block to meet. Voiding only once
+    // result_expiration + pm_dispute_grace_sec has elapsed (the same cutoff the settle sweep in §5
+    // uses) leaves the oracle a real window [result_expiration, result_expiration + grace] to report.
+    {
+        const time_point_sec cutoff(
+            (now.sec_since_epoch() > mp.pm_dispute_grace_sec)
+                ? (now.sec_since_epoch() - mp.pm_dispute_grace_sec)
+                : 0u);
+        const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        // finalized_time == 0 == "still owes work" sorts first inside the status bucket, so this
+        // walks live markets only (a status-1 market is never finalized, but the guard keeps the
+        // loop honest if that ever changes).
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)1, time_point_sec(0), time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 1 && it->finalized_time == time_point_sec()
+               && it->result_expiration <= cutoff && done < cap) {
+            const auto& mkt = *it; ++it;
+
+            // One-shot prologue: slash the oracle and raise the "hands off" flag BEFORE any money
+            // moves, so a refund that spans several blocks cannot be overtaken by a late
+            // pm_resolve_market / pm_no_contest / pm_transfer_position on the same market.
+            if (mkt.payout_status != 4) {
+                share_type slashed(0);
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end() && oit->insurance.value > 0) {
+                    slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
+                    if (slashed.value > 0) {
+                        modify(*oit, [&](pm_oracle_object& o) {
+                            o.insurance -= slashed;
+                            o.missed_count++;
+                            o.total_insurance_slashed += slashed;
+                        });
+                        adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
+                                       asset(slashed, TOKEN_SYMBOL));
+                    }
+                }
+                modify(mkt, [](pm_market_object& m) { m.payout_status = 4; }); // refund in flight
+                push_virtual_operation(pm_oracle_missed_penalty_operation(
+                    mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
+            }
+
+            if (!refund_market_step(*this, mkt, row_budget)) break; // budget spent; resumes next block
+
+            pm_oracle_dec_active(*this, mkt);   // leaves active set (1 → 3, missed-resolution void)
+            modify(mkt, [&](pm_market_object& m) {
+                m.status           = 3;
+                m.payout_status    = 3; // closed — no payout
+                m.resolved_outcome = -1;
+                m.finalized_time   = now;
+            });
+            ++done;
+        }
+    }
+
+    // ── 2b. Oracle acceptance window expired ───────────────────────────────────
+    // Pending markets (status 0) the named oracle never accepted nor rejected within
+    // pm_oracle_accept_window_sec. Refund the creator's seed liquidity (return_liquidity)
+    // and void the market (status -1). The non-refundable creation fee already went to the
+    // DAO fund at creation and is NOT returned. Mirrors the oracle-reject path, minus the
+    // oracle action. liquidity_sum == the single seed LP (a pending market cannot receive
+    // pm_add_liquidity), so it is the amount reported as refunded.
+    {
+        const auto& idx = get_index<pm_market_index>().indices().get<by_accept_deadline>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)0, time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 0 && it->accept_deadline <= now && done < cap) {
+            const auto& mkt = *it; ++it;
+            share_type refunded = mkt.liquidity_sum;
+            return_liquidity(*this, mkt);
+            modify(mkt, [&](pm_market_object& m) {
+                m.status        = -1;
+                m.payout_status = 3; // closed — no payout
+                m.finalized_time = now;
+            });
+            push_virtual_operation(pm_market_expired_operation(
+                mkt.oracle, mkt.creator, mkt.id._id, asset(refunded, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 2c. Leverage funding accrual + liquidation check ──────────────────────
+    // Active leverage positions whose 24h funding period has come due: charge the carry cost
+    // (raising the effective obligation via accrue_leverage_funding), then re-price at current
+    // reserves — if the higher obligation now exceeds cancel_value, liquidate (reason 3). This is
+    // the "recompute the liquidation point + maybe liquidate" step. by_lev_funding_due keeps the
+    // due set contiguous (status 0, funding_due_time ascending); accrue advances the clock so a
+    // position is revisited only once per period. funding_due_time > 0 sentinel skips legacy rows.
+    {
+        const uint32_t frate = mp.pm_leverage_funding_rate_ppm_per_day;
+        const auto& idx = get_index<pm_leverage_position_index>().indices().get<by_lev_funding_due>();
+        auto it = idx.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec(1), pm_leverage_position_id_type()));
+        while (it != idx.end() && it->status == 0 && it->funding_due_time <= now && done < cap) {
+            const auto& pos = *it; ++it;
+            accrue_leverage_funding(*this, pos, frate, now);
+            const auto& mkt = get<pm_market_object>(pos.market);
+            int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                    pos.tokens.value, (int)pos.outcome_index);
+            if (cv <= pos.liquidation_threshold.value + pos.funding_paid.value)
+                liquidate_position(*this, pos, 3);   // reason 3 = funding pulled the position underwater
+            ++done;
+        }
+    }
+
+    // ── 2d. Force-close leverage once betting can no longer happen ─────────────
+    // A leveraged position is a bet on the market PRICE (crowd sentiment) and settles at its
+    // cancel_value — it does NOT depend on the oracle outcome. So it must not linger open through
+    // resolution + dispute grace, bleeding carry (funding still accrues, secs 2c) and staying
+    // funding-liquidatable while nobody can even bet anymore. Close it the moment NEW betting is
+    // impossible: at betting_expiration for fixed-deadline markets (before the oracle resolves), or
+    // at resolve/void (status >= 3) for open-ended markets (betting_expiration == 0, no deadline).
+    // settle_market / return_liquidity still force-close as a backstop; both are idempotent (a
+    // position already out of status 0 is skipped). Anchored on the OPEN-position set (status 0)
+    // via by_lev_funding_due so each position is force-closed exactly once and, once it flips out
+    // of status 0, never re-scanned. done is charged per close only (cap = settlements/block); the
+    // status-0 working set is bounded by pool free capital, so a full scan per block is cheap.
+    {
+        const auto& idx = get_index<pm_leverage_position_index>().indices().get<by_lev_funding_due>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(), pm_leverage_position_id_type()));
+        while (it != idx.end() && it->status == 0 && done < cap) {
+            const auto& pos = *it; ++it;
+            const auto& mkt = get<pm_market_object>(pos.market);
+            const bool betting_over =
+                (mkt.betting_expiration != time_point_sec() && mkt.betting_expiration <= now)
+                || mkt.status >= 3;
+            if (betting_over) {
+                liquidate_position(*this, pos, 2); // reason 2 = settlement force-close (pm_leverage_resolve)
+                ++done;
+            }
+        }
+    }
+
+    // ── 3. Dispute auto-close (priority over voting finalize) ─────────────────
+    {
+        const auto& idx = get_index<pm_dispute_index>().indices().get<by_auto_close>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+        while (it != idx.end() && it->status == 0 && it->auto_close_time <= now && done < cap) {
+            const auto& disp = *it; ++it;
+            const auto& mkt  = get<pm_market_object>(disp.market);
+
+            // One-shot prologue (see §2): slash, return the disputer's escrow and raise the
+            // "hands off" flag before the metered refund starts. payout_status 4 also keeps §4
+            // (voting finalize) off a dispute this path has already claimed.
+            if (mkt.payout_status != 4) {
+                share_type slashed(0);
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end() && oit->insurance.value > 0) {
+                    slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
+                    if (slashed.value > 0) {
+                        modify(*oit, [&](pm_oracle_object& o) {
+                            o.insurance -= slashed;
+                            o.dispute_responses_missed++;
+                            o.disputes_auto_closed++;
+                            o.total_insurance_slashed += slashed;
+                        });
+                        adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
+                                       asset(slashed, TOKEN_SYMBOL));
+                    }
+                }
+                // Anti-freeze: the dispute stalled through no fault of the disputer → return the
+                // escrowed dispute fee (spec §4 pm_dispute_auto_close — "disputer fee return").
+                if (disp.dispute_fee.value > 0)
+                    adjust_balance(get_account(disp.disputer),
+                                   asset(disp.dispute_fee, TOKEN_SYMBOL));
+                modify(mkt, [](pm_market_object& m) { m.payout_status = 4; }); // refund in flight
+                push_virtual_operation(pm_dispute_auto_close_operation(
+                    mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
+            }
+
+            if (!refund_market_step(*this, mkt, row_budget)) break; // budget spent; resumes next block
+
+            modify(mkt, [&](pm_market_object& m) {
+                m.status           = 3;
+                m.payout_status    = 3;
+                m.resolved_outcome = -1;
+                m.finalized_time   = now;
+            });
+            pm_oracle_dispute_left_open(*this, mkt.oracle, disp); // drop from open-dispute gauge
+            modify(disp, [](pm_dispute_object& d) { d.status = 3; }); // auto-closed
+            ++done;
+        }
+    }
+
+    // ── 4. Dispute voting finalize ────────────────────────────────────────────
+    {
+        // HF14 governance bridge: VIZ parked in the lazy pool would otherwise lose its committee-vote
+        // weight (only vested SHARES count). A depositor's claim on the pool — its net asset value
+        // (free + allocated + loans-out) times their share of total pool shares — is converted to
+        // vesting-SHARES with the SAME token↔shares price as create_vesting (drifts with dust), and
+        // added to their dispute-vote weight. The pool's whole NAV is likewise folded into the
+        // participation-threshold denominator so the quorum scales with the full electorate.
+        const auto& gpo = get_dynamic_global_properties();
+        const auto vprice = gpo.get_vesting_share_price();
+        const pm_lazy_pool_object* lpool = find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        const int64_t pool_nav = (lpool && lpool->total_shares.value > 0)
+            ? lpool->free_balance.value + lpool->allocated_balance.value + lpool->leverage_fund_used.value : 0;
+        const int64_t pool_total_shares = (lpool ? lpool->total_shares.value : 0);
+        const int64_t pool_nav_shares = (pool_nav > 0)
+            ? (asset(share_type(pool_nav), TOKEN_SYMBOL) * vprice).amount.value : 0;
+        auto lazy_vote_weight = [&](const account_name_type& acct) -> int64_t {
+            if (pool_nav <= 0 || pool_total_shares <= 0) return 0;
+            const auto& ldidx = get_index<pm_lazy_deposit_index>().indices().get<by_deposit_account>();
+            auto d = ldidx.find(acct);
+            if (d == ldidx.end() || d->shares.value <= 0) return 0;
+            int64_t viz = (int64_t)(fc::uint128_t((uint64_t)pool_nav)
+                          * fc::uint128_t((uint64_t)d->shares.value)
+                          / fc::uint128_t((uint64_t)pool_total_shares)).lo;
+            if (viz <= 0) return 0;
+            return (asset(share_type(viz), TOKEN_SYMBOL) * vprice).amount.value;
+        };
+
+        const auto& idx = get_index<pm_dispute_index>().indices().get<by_voting_end>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+        // #432 follow-up: the tally below walks EVERY ballot of the disputed market (M3 caps them at
+        // pm_dispute_votes_per_market) while charging a single `cap` slot, so a full sweep could
+        // visit cap × ballot-cap rows in one block — orders of magnitude past the row budget every
+        // other sweep now respects. A tally cannot be resumed the way settlement is (the verdict
+        // needs all ballots at once, and parking the partial per-outcome sums would mean carrying a
+        // vector on the dispute row), so the budget is enforced BETWEEN disputes: one only starts
+        // while budget is left, and is then charged for the ballots it walked. Worst case per block
+        // is row_budget + one market's ballot cap. Deferring a finalize is economically inert —
+        // pm_dispute_vote refuses ballots past voting_end_time, so the electorate is already final.
+        while (it != idx.end() && it->status == 0 && it->voting_end_time <= now
+               && done < cap && row_budget > 0) {
+            // #432 fix D part 3: §3 claims a dispute by raising payout_status 4 on its market and
+            // may then take several blocks to refund it. Its dispute row stays status 0 for that
+            // whole flight, so voting finalize has to step over markets already being voided —
+            // otherwise both paths would settle the same market.
+            if (get<pm_market_object>(it->market).payout_status == 4) { ++it; continue; }
+            const auto& disp = *it; ++it;
+            const auto& mkt  = get<pm_market_object>(disp.market);
+
+            // Dispute is being finalized (uphold or override below): drop from the open-dispute gauge.
+            pm_oracle_dispute_left_open(*this, mkt.oracle, disp);
+
+            // Step 1 — stake-weighted tally (mirrors committee-request finalize). Weight is the
+            // voter's vesting shares. vote_percent>0 on a real outcome supports that change;
+            // anything else (negative conviction, or vote_outcome<0) defends the oracle.
+            // committee-dao-and-prediction-markets.md §Resolution.
+            share_type max_rshares(0), oracle_defense(0), total_change(0);
+            std::vector<share_type> outcome_rshares(mkt.outcome_count, share_type(0));
+            {
+                const auto& vidx =
+                    get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+                auto vit = vidx.lower_bound(boost::make_tuple(disp.market, account_name_type()));
+                uint32_t ballots = 0;
+                for (; vit != vidx.end() && vit->market == disp.market; ++vit) {
+                    ++ballots;
+                    int64_t w = get_account(vit->voter).effective_vesting_shares().amount.value
+                              + lazy_vote_weight(vit->voter); // + lazy-pool stake as vesting-shares
+                    max_rshares += w;
+                    int32_t pct = (int32_t)vit->vote_percent;
+                    if (pct > 0 && vit->vote_outcome >= 0 &&
+                        vit->vote_outcome < (int16_t)mkt.outcome_count) {
+                        share_type r = share_type(w * pct / CHAIN_100_PERCENT);
+                        outcome_rshares[vit->vote_outcome] += r;
+                        total_change += r;
+                    } else {
+                        int32_t a = pct < 0 ? -pct : pct;
+                        oracle_defense += share_type(w * a / CHAIN_100_PERCENT);
+                    }
+                }
+                // Charge every ballot visited (two account-index lookups apiece). The walk itself is
+                // never cut short — the clamp only closes the loop above for the next dispute.
+                row_budget = (ballots >= row_budget) ? 0 : row_budget - ballots;
+            }
+
+            // Step 2 — participation threshold; Step 3 — oracle defense vs change votes.
+            share_type approve_min = share_type((int64_t)(
+                fc::uint128_t((uint64_t)(gpo.total_vesting_shares.amount.value + pool_nav_shares))
+                * mp.pm_dispute_approve_min_percent / fc::uint128_t(CHAIN_100_PERCENT)).lo);
+            bool uphold = (max_rshares < approve_min) ||
+                          (total_change.value <= 0) ||
+                          (oracle_defense >= total_change);
+
+            // Step 4 — winning outcome among change votes; Step 5 — consensus strength.
+            int16_t winning_outcome = mkt.resolved_outcome;
+            share_type winning_rshares(0);
+            if (!uphold) {
+                int best = 0;
+                for (uint8_t i = 1; i < mkt.outcome_count; ++i)
+                    if (outcome_rshares[i] > outcome_rshares[best]) best = (int)i;
+                winning_outcome = (int16_t)best;
+                winning_rshares = outcome_rshares[best];
+            }
+
+            asset oracle_penalty(0, TOKEN_SYMBOL);
+            if (uphold) {
+                // Oracle upheld: original outcome stands; the escrowed dispute fee compensates
+                // the oracle (committee-dao §Resolution step 3 — "fee goes to oracle").
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end())
+                    modify(*oit, [](pm_oracle_object& o) { o.disputes_won++; });
+                if (disp.dispute_fee.value > 0)
+                    adjust_balance(get_account(mkt.oracle), asset(disp.dispute_fee, TOKEN_SYMBOL));
+                modify(mkt, [&](pm_market_object& m) {
+                    m.payout_status     = 1;
+                    m.result_expiration = time_point_sec(1);
+                });
+                modify(disp, [](pm_dispute_object& d) { d.status = 2; }); // oracle right
+            } else {
+                // Override. The oracle penalty policy is per-market (dispute_penalty_percent),
+                // scaled by consensus strength (winning / total participation):
+                //   >0 → slash that % of insurance; fund the disputer reward + winners' forfeit;
+                //   <0 → good-faith oracle: no slash, oracle keeps a carve-out of the fee;
+                //    0 → outcome corrected, nobody penalized (disputer just refunded).
+                fc::uint128_t cs = max_rshares.value > 0
+                    ? fc::uint128_t((uint64_t)winning_rshares.value) * fc::uint128_t(CHAIN_100_PERCENT)
+                          / fc::uint128_t((uint64_t)max_rshares.value)
+                    : fc::uint128_t(0);
+                int32_t pp  = (int32_t)mkt.dispute_penalty_percent;
+                int64_t fee = disp.dispute_fee.value > 0 ? disp.dispute_fee.value : 0;
+
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+
+                if (pp < 0) {
+                    // Good-faith oracle: keep a slice of the dispute fee; refund the rest to the
+                    // disputer. Insurance untouched.
+                    int64_t oracle_bonus = (int64_t)(fc::uint128_t((uint64_t)fee)
+                        * fc::uint128_t((uint64_t)(-(int64_t)pp)) / fc::uint128_t(10000)).lo;
+                    if (oracle_bonus > fee) oracle_bonus = fee;
+                    if (oracle_bonus > 0)
+                        adjust_balance(get_account(mkt.oracle), asset(share_type(oracle_bonus), TOKEN_SYMBOL));
+                    if (fee - oracle_bonus > 0)
+                        adjust_balance(get_account(disp.disputer),
+                                       asset(share_type(fee - oracle_bonus), TOKEN_SYMBOL));
+                    if (oit != oidx.end())
+                        modify(*oit, [](pm_oracle_object& o) { o.disputes_lost++; });
+                } else {
+                    share_type slash(0);
+                    if (pp > 0 && oit != oidx.end() && oit->insurance.value > 0) {
+                        int64_t base = (int64_t)(fc::uint128_t((uint64_t)oit->insurance.value)
+                            * fc::uint128_t((uint64_t)pp) / fc::uint128_t(10000)).lo;
+                        slash = share_type((int64_t)(fc::uint128_t((uint64_t)base) * cs
+                            / fc::uint128_t(CHAIN_100_PERCENT)).lo);
+                        if (slash.value > oit->insurance.value) slash = oit->insurance;
+                        if (slash.value > 0) {
+                            modify(*oit, [&](pm_oracle_object& o) {
+                                o.insurance               -= slash;
+                                o.disputes_lost++;
+                                o.total_insurance_slashed += slash;
+                            });
+                            oracle_penalty = asset(slash, TOKEN_SYMBOL);
+                        }
+                    } else if (oit != oidx.end()) {
+                        modify(*oit, [](pm_oracle_object& o) { o.disputes_lost++; });
+                    }
+
+                    // Disputer: refund the escrowed fee + a reward carve-out
+                    // (pm_dispute_reward_multiplier ‰ — total target fee×mult/1000) drawn from the
+                    // slash; the remainder of the slash boosts the winners via forfeit_pool.
+                    int64_t reward_target = (int64_t)(fc::uint128_t((uint64_t)fee)
+                        * fc::uint128_t((uint64_t)mp.pm_dispute_reward_multiplier) / fc::uint128_t(10000)).lo;
+                    int64_t bonus = reward_target - fee;
+                    if (bonus < 0) bonus = 0;
+                    if (bonus > slash.value) bonus = slash.value;
+                    if (fee + bonus > 0)
+                        adjust_balance(get_account(disp.disputer),
+                                       asset(share_type(fee + bonus), TOKEN_SYMBOL));
+                    modify(mkt, [&](pm_market_object& m) {
+                        m.forfeit_pool += share_type(slash.value - bonus);
+                    });
+                }
+
+                modify(mkt, [&](pm_market_object& m) {
+                    m.resolved_outcome  = winning_outcome;
+                    m.payout_status     = 1;
+                    m.result_expiration = time_point_sec(1);
+                });
+                modify(disp, [](pm_dispute_object& d) { d.status = 1; }); // oracle wrong
+            }
+
+            push_virtual_operation(pm_dispute_finalize_operation(
+                mkt.oracle, mkt.id._id, mkt.resolved_outcome, oracle_penalty));
+            ++done;
+        }
+    }
+
+    // ── 5. Auto-payouts (dispute grace elapsed) ───────────────────────────────
+    // Cutoff = now - pm_dispute_grace_sec; markets with result_expiration <= cutoff
+    // and payout_status==1 have their dispute window closed and are ready to settle.
+    {
+        const time_point_sec cutoff(
+            (now.sec_since_epoch() > mp.pm_dispute_grace_sec)
+                ? (now.sec_since_epoch() - mp.pm_dispute_grace_sec)
+                : 0u);
+
+        const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        // Only markets that still owe a settlement (finalized_time == 0) — a settled one leaves this
+        // group the moment finalized_time is stamped below, instead of sitting at the head of the
+        // range and being re-read (for free, no `cap` charged) on every block until GC retention.
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)3, time_point_sec(0), time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 3 && it->finalized_time == time_point_sec()
+               && it->result_expiration <= cutoff && done < cap) {
+            const auto& mkt = *it; ++it;
+
+            // Still reachable here: payout_status 2 (dispute open) — that market owes work, just not
+            // settlement yet. Its dispute row is gated economically (pm_dispute_fee), so the skip set
+            // stays small, unlike the settled markets this walk no longer sees at all.
+            if (mkt.payout_status != 1 && mkt.payout_status != 4) continue; // 4 = settlement in flight
+
+            // #432 D: settlement is incremental. `payout_status = 4` ("settling") marks the market
+            // in flight — it keeps this sweep from starting it twice, blocks pm_dispute_create (which
+            // requires payout_status 1) and keeps GC away (finalized_time is only set at the end).
+            // Everything that must happen ONCE per settlement belongs in this first-entry block: the
+            // market is revisited on every block until the row budget lets it finish.
+            if (mkt.payout_status != 4) {
+                // If this market was never disputed it is still counted in markets_in_dispute_window;
+                // settling closes that window. A market whose dispute finalized (payout returned to 1)
+                // already left the gauge at dispute_create and carries a dispute row — don't double-dec.
+                const auto& didx = get_index<pm_dispute_index>().indices().get<by_market>();
+                if (didx.find(mkt.id) == didx.end())
+                    pm_oracle_gauge_adj(*this, mkt.oracle,
+                                        &pm_oracle_object::markets_in_dispute_window, -1);
+                modify(mkt, [](pm_market_object& m) { m.payout_status = 4; });
+            }
+            if (!settle_market_step(*this, mkt, row_budget)) break; // budget spent; resumes next block
+            modify(mkt, [&](pm_market_object& m) { m.payout_status = 3; m.finalized_time = now; });
+
+            push_virtual_operation(pm_auto_payout_operation(
+                mkt.oracle, mkt.id._id, -1LL, asset(mkt.bets_sum, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 5b. Garbage-collect terminal markets ──────────────────────────────────
+    // Any market that has become terminal — resolved+paid, void/no-contest, oracle-rejected,
+    // or accept-window-expired — carries a non-zero finalized_time and can never be acted on
+    // again; it only lingers "for history". Reclaim its whole object cluster
+    // pm_closed_market_retention_sec after that moment. The retention is median-voted, so it is
+    // identical on every node at any block → pruning is deterministic: every node deletes the
+    // same markets at the same block, keeping shared-memory state and snapshots in lock-step
+    // network-wide (a node syncing from a snapshot ends up with the same market set as all).
+    {
+        const uint32_t retention = mp.pm_closed_market_retention_sec; // median-voted, 5 d default
+        const time_point_sec cutoff(
+            (now.sec_since_epoch() > retention) ? (uint32_t)(now.sec_since_epoch() - retention) : 0u);
+
+        // finalized_time == 0 for every live market (sorts first) — start just past them.
+        const auto& idx = get_index<pm_market_index>().indices().get<by_finalized>();
+        auto it = idx.lower_bound(boost::make_tuple(time_point_sec(1), pm_market_id_type()));
+        while (it != idx.end() && it->finalized_time <= cutoff && done < cap) {
+            const auto& mkt = *it; ++it;
+            // Bounded (#432 D): a market too large to collect in one block keeps its place at the
+            // head of the sweep (finalized_time never changes) and continues next block. GC is
+            // served AFTER settlement in the block, so a heavy settlement backlog can defer
+            // collection — harmless, it only stretches retention, and settlement is finite.
+            if (!gc_market_step(*this, mkt, row_budget)) break;
+            ++done;
+        }
+    }
+
+    // ── 6. Batch epoch settle ─────────────────────────────────────────────────
+    // At global epoch boundary execute all queued (status=5) bets for batch markets.
+    // L1: NOT gated on pm_commit_reveal_enabled — the kill-switch stops NEW commitments
+    // (pm_commit_bet asserts the flag; new markets cannot set allow_batch while it is off), but it
+    // must NOT freeze funds already in the queue. Gating §6 on the flag stranded revealed-but-
+    // unexecuted bets for as long as the market stayed active. Drain the queue regardless; batch-A
+    // H2 additionally refunds any residual status 5/6 at terminal settle as a backstop.
+    // #432 §6: the executor also runs OFF the epoch boundary whenever a partial pass is in flight
+    // (bet cursor set). Waiting for the next boundary would leave already-revealed stakes queued —
+    // and the market's epoch frozen — for a whole epoch window just because the row budget ran out.
+    // The `row_budget > 0` guard is load-bearing, not an optimisation: §6 runs LAST and the budget
+    // is shared, so a settle-heavy block can arrive here with nothing left. Entering anyway would
+    // fall through to the persist block with stopped_mid_mkt == false and silently reset the parked
+    // row cursor to 0 — the next pass would then re-walk the epoch from its head, paying budget for
+    // rows it already executed.
+    if (mp.pm_batch_epoch_blocks > 0 && row_budget > 0 &&
+        (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0 ||
+         get_dynamic_global_properties().pm_batch_settle_bet_cursor != 0)) {
+
+        const auto& qidx = get_index<pm_bet_index>().indices().get<by_status_market>();
+
+        // #432 P0 (DoS review 2026-08-20): drive the scan from queued (status=5) bets instead of
+        // walking EVERY active market. The old walk was O(active batch markets) per boundary and NOT
+        // metered — an idle market paid a free index probe, so the per-boundary scan grew linearly
+        // with the number of markets regardless of how much queue actually existed. With
+        // by_status_market only markets that actually hold queued bets are visited at all.
+        const uint64_t start_mkt = get_dynamic_global_properties().pm_batch_settle_cursor;
+        const uint64_t start_bet = get_dynamic_global_properties().pm_batch_settle_bet_cursor;
+        // NOT a market/bet id sentinel: id 0 is an ordinary id (and the first one ever created),
+        // so "stopped mid-market" needs its own flag rather than relying on a zero cursor.
+        bool     stopped_mid_mkt = false;
+        uint64_t next_cursor     = 0;   // resume (market), 0 = drained
+        uint64_t next_bet_cursor = 0;   // resume (bet), 0 = drained
+
+        auto qit = qidx.lower_bound(boost::make_tuple(
+            (uint8_t)5, pm_market_id_type(start_mkt), pm_bet_id_type(start_bet)));
+
+        while (qit != qidx.end() && qit->status == 5 && done < cap && row_budget > 0) {
+            const pm_market_id_type mid = qit->market;
+            const pm_market_object* mkt_ptr = find<pm_market_object>(mid);
+
+            // Defensive (unreachable by construction): queued bets only ever exist on active,
+            // allow_batch, non-voiding markets. If status-5 rows ever leak onto a terminal market,
+            // step over the whole market's queue untouched — §2/H2 refund pays those rows, and
+            // executing them here would move rows between the measuring and paying passes.
+            if (!mkt_ptr || mkt_ptr->status != 1 || !mkt_ptr->allow_batch ||
+                mkt_ptr->payout_status == 4) {
+                while (qit != qidx.end() && qit->status == 5 && qit->market == mid) ++qit;
+                continue;
+            }
+            const auto& mkt = *mkt_ptr;
+
+            // Snapshot LMSR q-vector
+            std::vector<int64_t> q_vec;
+            if (mkt.market_type == 1) {
+                const auto& oidx = get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+                for (uint8_t i = 0; i < mkt.outcome_count; i++) {
+                    auto oit = oidx.find(boost::make_tuple(mkt.id, i));
+                    q_vec.push_back(oit != oidx.end() ? oit->q.value : 0LL);
+                }
+            }
+
+            uint32_t settled = 0;
+
+            // Execute every queued row of THIS market, charging the shared row budget for each.
+            while (qit != qidx.end() && qit->status == 5 && qit->market == mid && row_budget > 0) {
+                const auto& bet = *qit; ++qit;   // advance before the status flip reindexes the row
+                --row_budget;
+
+                share_type tokens(0);
+
+                if (mkt.market_type == 0) { // CPMM
+                    share_type ra = mkt.reserve_a, rb = mkt.reserve_b;
+                    if (ra.value > 0 && rb.value > 0) {
+                        fc::uint128_t k128 = fc::uint128_t((uint64_t)ra.value) *
+                                             fc::uint128_t((uint64_t)rb.value);
+                        // Side convention MUST match pm_place_bet: side 0 adds VIZ to reserve_a
+                        // (tokens = reserve_b drop); side 1 adds to reserve_b (tokens = reserve_a
+                        // drop). Otherwise batch and instant bets on the same side move the curve
+                        // in opposite directions and their weights become incomparable at settle.
+                        if (bet.side == 0) {
+                            share_type new_ra = share_type(ra.value + bet.amount.value);
+                            share_type new_rb = share_type((int64_t)
+                                (k128 / fc::uint128_t((uint64_t)new_ra.value)).lo);
+                            tokens = share_type(rb.value - new_rb.value);
+                        } else {
+                            share_type new_rb = share_type(rb.value + bet.amount.value);
+                            share_type new_ra = share_type((int64_t)
+                                (k128 / fc::uint128_t((uint64_t)new_rb.value)).lo);
+                            tokens = share_type(ra.value - new_ra.value);
+                        }
+                    }
+                } else { // LMSR
+                    if ((size_t)bet.outcome_index < q_vec.size()) {
+                        int64_t t = lmsr::lmsr_tokens_for_amount(
+                            q_vec, mkt.lmsr_b.value, (int)bet.outcome_index, bet.amount.value);
+                        if (t > 0) {
+                            tokens = share_type(t);
+                            q_vec[(size_t)bet.outcome_index] += t; // update in-memory
+                        }
+                    }
+                }
+
+                if (tokens.value > 0 && tokens.value >= bet.min_tokens.value) {
+                    // Execute
+                    if (mkt.market_type == 0) {
+                        modify(mkt, [&](pm_market_object& m) {
+                            if (bet.side == 0) {
+                                m.reserve_a += bet.amount; m.reserve_b -= tokens;
+                                m.a_bets_sum += bet.amount;
+                            } else {
+                                m.reserve_b += bet.amount; m.reserve_a -= tokens;
+                                m.b_bets_sum += bet.amount;
+                            }
+                            m.bets_sum += bet.amount;
+                            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) *
+                                  fc::uint128_t((uint64_t)m.reserve_b.value);
+                        });
+                    } else {
+                        const auto& oidx = get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+                        auto oit = oidx.find(boost::make_tuple(mkt.id, (uint8_t)bet.outcome_index));
+                        if (oit != oidx.end())
+                            modify(*oit, [&](pm_outcome_object& out) {
+                                out.q        = share_type(q_vec[(size_t)bet.outcome_index]);
+                                out.bets_sum += bet.amount;
+                                out.bets_count++;
+                            });
+                        modify(mkt, [&](pm_market_object& m) { m.bets_sum += bet.amount; });
+                    }
+                    modify(bet, [&](pm_bet_object& b) {
+                        b.status = 0; b.weight = tokens;
+                        if (mkt.market_type == 0) b.entry_liquidity = mkt.liquidity_sum; // #1-C: depth at fill
+                    });
+                    settled++;
+                } else {
+                    // Slippage: refund
+                    adjust_balance(get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                    pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: queued stake refunded (slippage)
+                    modify(bet, [](pm_bet_object& b) { b.status = 2; });
+                }
+            }
+
+            // Anything still queued for this market means the budget cut the pass short. Park both
+            // cursors and stop: the epoch must NOT advance while rows still carry it, or they would
+            // never be matched again.
+            const bool more = (qit != qidx.end() && qit->status == 5 && qit->market == mid);
+            if (more) {
+                stopped_mid_mkt = true;
+                next_cursor     = (uint64_t)mid._id;
+                next_bet_cursor = (uint64_t)qit->id._id;
+                break;
+            }
+
+            if (settled > 0)
+                push_virtual_operation(pm_batch_settle_operation(
+                    mkt.id._id, mkt.current_epoch, settled));
+
+            // Queue drained → advance the epoch and charge the cap (this market did real work).
+            modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
+            ++done;
+        }
+
+        // If the scan stopped BETWEEN markets (cap or budget spent right after a drained market),
+        // park the next market that holds queued bets as the resume point. `next_bet_cursor` stays 0
+        // so the pass resumes from the head of that market's queue on the next boundary — matching
+        // the old by_status walk, which parked only a market cursor.
+        if (!stopped_mid_mkt && (done >= cap || row_budget == 0) &&
+            qit != qidx.end() && qit->status == 5) {
+            next_cursor = (uint64_t)qit->market._id;
+        }
+        const auto& dgp_now = get_dynamic_global_properties();
+        if (next_cursor != start_mkt || next_bet_cursor != dgp_now.pm_batch_settle_bet_cursor)
+            modify(dgp_now, [&](dynamic_global_property_object& d) {
+                d.pm_batch_settle_cursor     = next_cursor;
+                d.pm_batch_settle_bet_cursor = next_bet_cursor;
+            });
+    }
+
+    // ── 7. Lazy pool recall step ──────────────────────────────────────────────
+    if (mp.pm_lazy_pool_enabled) {
+        const auto& idx = get_index<pm_lazy_allocation_index>().indices().get<by_alloc_check>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_lazy_allocation_id_type()));
+
+        while (it != idx.end() && it->status == 0 && done < cap) {
+            const auto& alloc = *it; ++it;
+
+            const auto* mkt_ptr = find<pm_market_object>(alloc.market);
+            if (!mkt_ptr || mkt_ptr->status == -1) {
+                // Market rejected/gone (never settled) — pull the LP position fully.
+                if (mkt_ptr && alloc.amount.value > 0) {
+                    share_type r = recall_pool_liquidity(*this, *mkt_ptr, alloc.amount);
+                    if (r.value > 0)
+                        push_virtual_operation(pm_lazy_recall_operation(
+                            alloc.market._id, asset(r, TOKEN_SYMBOL)));
+                }
+                modify(alloc, [](pm_lazy_allocation_object& a) { a.status = 1; });
+            } else if (mkt_ptr->status >= 2) {
+                // Resolved/closed: settle_liquidity / return_liquidity returns the LP
+                // position (with yield). Defer the scan so we don't pre-empt it.
+                modify(alloc, [&](pm_lazy_allocation_object& a) { a.last_check_time = now; });
+            } else {
+                const auto& mkt = *mkt_ptr;
+                bool idle = (mkt.bets_sum.value <= alloc.bets_sum_at_check.value);
+
+                // Graduated recall is spread across the market's lifetime: up to 10 steps,
+                // each gated by ~10% of the (creation → result_expiration) window. This cron
+                // runs every block, so without a time gate an idle market's whole subsidy
+                // would be drained within ~10 blocks instead of over its full duration
+                // (spec lazy-pool-properties: check_step = "10% duration step", last_check_time).
+                int64_t window   = (int64_t)mkt.result_expiration.sec_since_epoch()
+                                 - (int64_t)mkt.created_time.sec_since_epoch();
+                int64_t step_dur = window > 0 ? window / 10 : 0;
+                bool step_due = (int64_t)now.sec_since_epoch()
+                              >= (int64_t)alloc.last_check_time.sec_since_epoch() + step_dur;
+
+                if (!idle) {
+                    // New bets since the last check → market is live; reset the recall schedule.
+                    modify(alloc, [&](pm_lazy_allocation_object& a) {
+                        a.bets_sum_at_check = mkt.bets_sum;
+                        a.last_check_time   = now;
+                        a.check_step        = 0;
+                    });
+                } else if (alloc.check_step >= 10 || alloc.amount.value <= 0) {
+                    modify(alloc, [](pm_lazy_allocation_object& a) { a.status = 1; });
+                } else if (step_due) {
+                    share_type want = share_type(
+                        alloc.amount.value * mp.pm_lazy_recall_step_percent / 10000);
+                    if (want.value <= 0) want = share_type(1);
+                    if (want.value > alloc.amount.value) want = alloc.amount;
+
+                    share_type recalled = recall_pool_liquidity(*this, mkt, want);
+                    if (recalled.value > 0) {
+                        modify(alloc, [&](pm_lazy_allocation_object& a) {
+                            a.amount           -= recalled;
+                            a.recalled_amount  += recalled;
+                            a.bets_sum_at_check = mkt.bets_sum;
+                            a.last_check_time   = now;
+                            a.check_step++;
+                        });
+                        push_virtual_operation(pm_lazy_recall_operation(
+                            mkt.id._id, asset(recalled, TOKEN_SYMBOL)));
+                    } else {
+                        modify(alloc, [](pm_lazy_allocation_object& a) { a.status = 1; });
+                    }
+                }
+                // else: idle, steps remain, but this step isn't due yet → leave untouched.
+            }
+            ++done;   // charged for every row VISITED, due or not — that is what bounds this scan
+        }
+    }
+    // NOTE for whoever appends the next section: `done` is exhausted here on any real chain (the
+    // status-0 allocation set is orders of magnitude larger than the cap), so a section placed
+    // below this point and gated on `done < cap` will never execute. Give it its own counter, or
+    // put it ahead of section 7. See docs/prediction-markets/settlement-work-bounds.md section 4.7.
+
+    // ── 8. Ban expiry sweep ───────────────────────────────────────────────────
+    // Temporary oracle/creator bans lapse at banned_until. We clear the expired ones (banned_until
+    // → 0) and emit pm_ban_expired so history/indexers see the lift; cleared bans fall into the
+    // 0-bucket and are never re-swept, permanent bans (maximum()) sort past `now` and are skipped.
+    // lower_bound at epoch+1 skips the huge never-banned/cleared 0-cluster.
+    //
+    // This sweep gets its OWN counter, and that is load-bearing rather than tidiness. `done` is a
+    // single budget shared by every section above, so section order is priority order — and sec 7
+    // walks the whole status-0 lazy-allocation set, charging `done` for rows it merely inspects.
+    // That set is tens of thousands of rows on a live chain (34548 on the testnet at block
+    // 82646702) against a cap of 200, so sec 7 exhausts the budget EVERY block and anything behind
+    // it on the shared counter never executes: expired bans were never cleared and pm_ban_expired
+    // was never emitted. Enforcement compares banned_until against `now`, so nobody stayed blocked,
+    // but the row and its history event stayed wrong forever. A private counter is safe here
+    // because this sweep is self-clearing — a visit sets banned_until to 0, which moves the row out
+    // of the swept range permanently, so per-block work is the number of bans that just expired,
+    // and the cap bounds even a synchronized burst of them.
+    uint32_t ban_done = 0;
+    {
+        const auto& oidx = get_index<pm_oracle_index>().indices().get<by_status>();
+        auto it = oidx.lower_bound(time_point_sec(1));
+        while (it != oidx.end() && it->banned_until <= now && ban_done < cap) {
+            const auto& ora = *it; ++it;
+            const account_name_type owner = ora.owner;
+            modify(ora, [](pm_oracle_object& o) { o.banned_until = time_point_sec(0); o.banned_by = account_name_type(); });
+            push_virtual_operation(pm_ban_expired_operation(owner, true, false));
+            ++ban_done;
+        }
+    }
+    {
+        const auto& cbidx = get_index<pm_creator_ban_index>().indices().get<by_ban_expiry>();
+        auto it = cbidx.lower_bound(boost::make_tuple(time_point_sec(1), pm_creator_ban_id_type()));
+        while (it != cbidx.end() && it->banned_until <= now && ban_done < cap) {
+            const auto& cb = *it; ++it;
+            const account_name_type who = cb.creator;
+            modify(cb, [](pm_creator_ban_object& b) { b.banned_until = time_point_sec(0); b.banned_by = account_name_type(); });
+            push_virtual_operation(pm_ban_expired_operation(who, false, true));
+            ++ban_done;
+        }
+    }
+
+    // ── 9. Lazy withdraw queue drain ───────────────────────────────────────────
+    // Bounded FIFO drain of pending lazy-pool withdrawals. The queue can be huge (one row per
+    // partial withdrawal, minted for as little as 1 raw) and a capital-return event used to drain
+    // it ALL in one call (#678). Per-tx callers now pay only the FIFO head (row limit 1); this
+    // section is the liveness backstop that pays the rest up to the shared per-block row budget,
+    // so the queue keeps progressing even when no capital returns to free_balance. It consumes
+    // row_budget (not the `done` market cap): the queue is row work, and it is bounded by
+    // pending_withdrawals — not a self-growing scan like §7, so a later section cannot starve an
+    // earlier section's counter.
+    {
+        const auto* pool = find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (pool && pool->pending_withdrawals.value > 0 && row_budget > 0)
+            row_budget -= service_lazy_withdraw_queue(*this, row_budget);
+    }
+}
+
+}} // graphene::chain
+

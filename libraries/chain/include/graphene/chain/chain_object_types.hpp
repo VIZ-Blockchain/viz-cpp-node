@@ -73,7 +73,25 @@ namespace graphene { namespace chain {
             paid_subscription_object_type,
             paid_subscribe_object_type,
             validator_penalty_expire_object_type,
-            validator_confirmation_object_type
+            validator_confirmation_object_type,
+
+            // HF14 Prediction Markets (Onix) — APPEND ONLY, never reorder existing ids.
+            pm_oracle_object_type,
+            pm_market_object_type,
+            pm_outcome_object_type,
+            pm_bet_object_type,
+            pm_liquidity_object_type,
+            pm_commit_object_type,
+            pm_dispute_object_type,
+            pm_dispute_vote_object_type,
+            pm_lazy_pool_object_type,
+            pm_lazy_deposit_object_type,
+            pm_lazy_allocation_object_type,
+            pm_leverage_position_object_type,
+            pm_creator_ban_object_type,
+            pm_lazy_withdraw_request_object_type,
+            pm_deferred_claim_object_type,
+            pm_settlement_object_type
         };
 
         class dynamic_global_property_object;
@@ -110,6 +128,24 @@ namespace graphene { namespace chain {
         class validator_penalty_expire_object;
         class validator_confirmation_object;
 
+        // HF14 Prediction Markets
+        class pm_oracle_object;
+        class pm_market_object;
+        class pm_outcome_object;
+        class pm_bet_object;
+        class pm_liquidity_object;
+        class pm_commit_object;
+        class pm_dispute_object;
+        class pm_dispute_vote_object;
+        class pm_lazy_pool_object;
+        class pm_lazy_deposit_object;
+        class pm_lazy_allocation_object;
+        class pm_leverage_position_object;
+        class pm_creator_ban_object;
+        class pm_lazy_withdraw_request_object;
+        class pm_deferred_claim_object;
+        class pm_settlement_object;
+
         typedef object_id<dynamic_global_property_object> dynamic_global_property_id_type;
         typedef object_id<account_object> account_id_type;
         typedef object_id<account_authority_object> account_authority_id_type;
@@ -142,6 +178,24 @@ namespace graphene { namespace chain {
         typedef object_id<paid_subscribe_object> paid_subscribe_object_id_type;
         typedef object_id<validator_penalty_expire_object> validator_penalty_expire_object_id_type;
         typedef object_id<validator_confirmation_object> validator_confirmation_object_id_type;
+
+        // HF14 Prediction Markets
+        typedef object_id<pm_oracle_object> pm_oracle_id_type;
+        typedef object_id<pm_market_object> pm_market_id_type;
+        typedef object_id<pm_outcome_object> pm_outcome_id_type;
+        typedef object_id<pm_bet_object> pm_bet_id_type;
+        typedef object_id<pm_liquidity_object> pm_liquidity_id_type;
+        typedef object_id<pm_commit_object> pm_commit_id_type;
+        typedef object_id<pm_dispute_object> pm_dispute_id_type;
+        typedef object_id<pm_dispute_vote_object> pm_dispute_vote_id_type;
+        typedef object_id<pm_lazy_pool_object> pm_lazy_pool_id_type;
+        typedef object_id<pm_lazy_deposit_object> pm_lazy_deposit_id_type;
+        typedef object_id<pm_lazy_allocation_object> pm_lazy_allocation_id_type;
+        typedef object_id<pm_leverage_position_object> pm_leverage_position_id_type;
+        typedef object_id<pm_creator_ban_object> pm_creator_ban_id_type;
+        typedef object_id<pm_lazy_withdraw_request_object> pm_lazy_withdraw_request_id_type;
+        typedef object_id<pm_deferred_claim_object> pm_deferred_claim_id_type;
+        typedef object_id<pm_settlement_object> pm_settlement_id_type;
 
 } } //graphene::chain
 
@@ -239,6 +293,22 @@ FC_REFLECT_ENUM(graphene::chain::object_type,
                 (paid_subscribe_object_type)
                 (validator_penalty_expire_object_type)
                 (validator_confirmation_object_type)
+                (pm_oracle_object_type)
+                (pm_market_object_type)
+                (pm_outcome_object_type)
+                (pm_bet_object_type)
+                (pm_liquidity_object_type)
+                (pm_commit_object_type)
+                (pm_dispute_object_type)
+                (pm_dispute_vote_object_type)
+                (pm_lazy_pool_object_type)
+                (pm_lazy_deposit_object_type)
+                (pm_lazy_allocation_object_type)
+                (pm_leverage_position_object_type)
+                (pm_creator_ban_object_type)
+                (pm_lazy_withdraw_request_object_type)
+                (pm_deferred_claim_object_type)
+                (pm_settlement_object_type)
 )
 
 FC_REFLECT_TYPENAME((graphene::chain::shared_string))

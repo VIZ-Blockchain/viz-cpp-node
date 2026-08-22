@@ -1,0 +1,24 @@
+// 14 Hardfork — Prediction Markets (Onix): binary CPMM + multi LMSR, oracles,
+// disputes, batch/commit-reveal, lazy liquidity pool. See plan Prediction_Market_HF14.
+#ifndef CHAIN_HARDFORK_14
+#define CHAIN_HARDFORK_14 14
+// Mainnet activation: 2026-08-28 00:00:00 UTC (1787875200).
+// Keep this date in the FUTURE. A validator running this binary votes for the version+time above
+// AUTOMATICALLY (database.cpp _generate_block injects hardfork_version_vote whenever the recorded
+// vote differs from the binary), and process_hardforks() fires as soon as
+// CHAIN_HARDFORK_REQUIRED_VALIDATORS agree AND this timestamp is reached. With a timestamp in the
+// past the fork therefore activates in whatever block the 17th validator happens to upgrade in —
+// no announceable moment, no coordination window.
+// STILL OPEN (was the original reason this date was a placeholder): pm_processing_cap_per_block
+// bounds the NUMBER of markets touched per block, not the work per market — settle_market walks
+// every bet row of a market in a single block and costs one cap unit. Bet rows per market are
+// uncapped and cost one raw unit each, so the per-block cost is unbounded. Benchmark before relying
+// on the cap.
+#ifdef BUILD_TESTNET
+// Testnet activates earlier so the full PM feature set can be exercised ahead of mainnet.
+#define CHAIN_HARDFORK_14_TIME 1780000000
+#else
+#define CHAIN_HARDFORK_14_TIME 1787875200
+#endif
+#define CHAIN_HARDFORK_14_VERSION hardfork_version( version(4, 0, 0) )
+#endif

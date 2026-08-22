@@ -29,18 +29,24 @@ set_target_properties(consensus_sim_harness PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# Sanitizers on by default for the harness
-target_compile_options(consensus_sim_harness PUBLIC
-    -fsanitize=address
-    -fsanitize=undefined
-    -fno-omit-frame-pointer
-    -O1
-    -g
-)
-target_link_options(consensus_sim_harness PUBLIC
-    -fsanitize=address
-    -fsanitize=undefined
-)
+# Sanitizers on by default for the harness (GCC/Clang only — MSVC rejects these flags).
+if(NOT MSVC)
+    target_compile_options(consensus_sim_harness PUBLIC
+        -fsanitize=address
+        -fsanitize=undefined
+        # fc's static_variant / boost flat_set storage is intentionally under-aligned (benign on
+        # x86); the alignment check floods the log with non-fatal noise, so disable just that one.
+        -fno-sanitize=alignment
+        -fno-omit-frame-pointer
+        -O1
+        -g
+    )
+    target_link_options(consensus_sim_harness PUBLIC
+        -fsanitize=address
+        -fsanitize=undefined
+        -fno-sanitize=alignment
+    )
+endif()
 
 if(WITH_COVERAGE)
     target_compile_options(consensus_sim_harness PUBLIC --coverage)
@@ -56,6 +62,7 @@ set(SCENARIO_SOURCES
     scenarios/test_smoke_no_faults.cpp
     scenarios/test_determinism_replay.cpp
     scenarios/test_equivocation.cpp
+    scenarios/test_pm_lifecycle.cpp
     scenarios/test_wedge_predicate.cpp
     scenarios/test_routable_endpoint.cpp
 )
@@ -103,3 +110,21 @@ if(WITH_COVERAGE)
         message(WARNING "gcovr not found; coverage report target unavailable")
     endif()
 endif()
+
+# Settlement cost benchmark (#432) — see bench/settle_bench.cpp. Deliberately NOT linked against
+# consensus_sim_harness: that library carries ASAN/UBSAN as PUBLIC options, and sanitized timings
+# are useless for choosing pm_settle_rows_per_block. The same harness sources are compiled here at
+# the project's normal optimisation level. Not registered with add_test — it measures, it does not
+# assert.
+add_executable(pm_settle_bench EXCLUDE_FROM_ALL ${HARNESS_SOURCES} bench/settle_bench.cpp)
+
+target_include_directories(pm_settle_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+
+target_link_libraries(pm_settle_bench
+    PRIVATE graphene_chain graphene_protocol graphene_utilities fc
+)
+
+set_target_properties(pm_settle_bench PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)

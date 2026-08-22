@@ -88,6 +88,7 @@
 
 - `vote_percent` > 0 → 支持；`vote_percent` < 0 → 反对；`vote_percent` = 0 → 移除投票。
 - 当加权净投票百分比 ≥ 链属性 `committee_request_approve_min_percent` 时，请求被批准。
+- (HF14，中位数投票) 一个请求最多持有 `committee_votes_per_request`（默认 100 000）张选票，投出一票要求 `effective_vesting_shares` 至少 `committee_vote_min_vesting`（默认 1000 VIZ）。
 
 **委员会生命周期触发的虚拟操作：**
 

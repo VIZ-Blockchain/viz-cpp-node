@@ -4,6 +4,8 @@
 #include <graphene/protocol/proposal_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
 #include <graphene/protocol/chain_virtual_operations.hpp>
+#include <graphene/protocol/pm_operations.hpp>
+#include <graphene/protocol/pm_virtual_operations.hpp>
 
 namespace graphene { namespace protocol {
 
@@ -103,7 +105,56 @@ namespace graphene { namespace protocol {
                 // VIZ HF 13: Validator reward sharing
                 set_reward_sharing_operation,
                 // virtual operations:
-                stakeholder_reward_operation
+                stakeholder_reward_operation,
+
+                // VIZ HF 14: Prediction Markets (Onix) — APPEND ONLY, never reorder.
+                // The variant index is the consensus op-id; order is frozen by the plan.
+                pm_oracle_register_operation,
+                pm_oracle_update_operation,
+                pm_create_market_operation,
+                pm_oracle_accept_market_operation,
+                pm_place_bet_operation,
+                pm_commit_bet_operation,
+                pm_reveal_bet_operation,
+                pm_cancel_bet_operation,
+                pm_add_liquidity_operation,
+                pm_withdraw_liquidity_operation,
+                pm_resolve_market_operation,
+                pm_no_contest_operation,
+                pm_dispute_create_operation,
+                pm_dispute_vote_operation,
+                pm_dispute_resolve_operation,
+                pm_transfer_position_operation,
+                pm_lazy_deposit_operation,
+                pm_lazy_withdraw_operation,
+                // virtual operations:
+                pm_batch_settle_operation,
+                pm_commit_forfeit_operation,
+                pm_auto_payout_operation,
+                pm_dispute_finalize_operation,
+                pm_dispute_auto_close_operation,
+                pm_oracle_missed_penalty_operation,
+                pm_lazy_recall_operation,
+                pm_leverage_open_operation,
+                pm_leverage_close_operation,
+                pm_leverage_convert_operation,
+                pm_leverage_liquidate_operation,
+                pm_leverage_resolve_operation,
+                pm_market_accepted_operation,
+                pm_payout_operation,
+
+                // HF14 PM follow-ups (appended after the initial block — indices stay stable):
+                pm_dispute_oracle_respond_operation,
+                pm_unban_operation,
+                // virtual operation:
+                pm_ban_expired_operation,
+                pm_market_expired_operation,
+                // P1 oracle-metrics: dispute filed -> oracle+disputer history (virtual)
+                pm_dispute_opened_operation,
+                // F1/#300 early-exit deferred claim paid at settlement (virtual)
+                pm_early_exit_claim_paid_operation,
+                // #442/#681=D: LP income paid at settlement -> LP's own history (virtual)
+                pm_lp_payout_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,

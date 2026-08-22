@@ -81,6 +81,11 @@ public:
 
     graphene::protocol::chain_id_type chain_id() const;
 
+    /// Direct access to the wrapped chain state for assertions (read PM objects /
+    /// account balances). Tests must not mutate it outside block application.
+    graphene::chain::database& db() noexcept { return *db_; }
+    const graphene::chain::database& db() const noexcept { return *db_; }
+
     const std::string& label() const noexcept { return label_; }
 
 private:
