@@ -23,6 +23,21 @@ namespace graphene { namespace plugins { namespace database_api {
 
 using protocol::share_type;
 
+// Case-sensitive "does this account's name start with prefix" test for the marketplace
+// listings. Names on chain are already lowercase, so no folding is needed here.
+static bool name_has_prefix(const account_object &acc, const std::string &prefix) {
+    const std::string name = acc.name;
+    return name.size() >= prefix.size() && 0 == name.compare(0, prefix.size(), prefix);
+}
+
+// The marketplace listings filter by name prefix by walking the existing by_name index over the
+// prefix range (lower_bound seek + stop once the name no longer matches). Walking accounts rather
+// than a dedicated (on_sale, name) index keeps us from adding anything to account_index: a new
+// index grows the multi_index node and chainbase::validate() then refuses to open shared memory
+// written by an older binary, which would force a snapshot reload on every node. The cap bounds
+// the walk for pathologically short prefixes; hitting it logs and returns a partial page.
+static constexpr uint32_t MAX_MARKET_PREFIX_SCAN = 100000;
+
 struct block_applied_callback_info {
     using ptr = std::shared_ptr<block_applied_callback_info>;
     using cont = std::list<ptr>;
@@ -457,14 +472,43 @@ std::set<std::string> plugin::api_impl::lookup_accounts(
 }
 
 DEFINE_API(plugin, get_accounts_on_sale) {
-    CHECK_ARG_SIZE(2)
+    FC_ASSERT(args.args->size() == 2 || args.args->size() == 3,
+              "Expected 2-3 arguments, was ${n}", ("n", args.args->size()));
     uint32_t from = args.args->at(0).as<uint32_t>();
     uint32_t limit = args.args->at(1).as<uint32_t>();
+    // Optional 3rd arg: only return accounts whose name starts with this prefix. Matched by
+    // walking the by_name index over the prefix range — not by filtering every on-sale account.
+    std::string name_prefix = args.args->size() > 2 ? args.args->at(2).as<std::string>() : std::string();
     FC_ASSERT(limit <= 1000);
     return my->database().with_weak_read_lock([&]() {
         std::vector<account_on_sale_api_object> result;
 
         result.reserve(limit);
+
+        if(!name_prefix.empty()){
+            const auto &idx = my->database().get_index<account_index>().indices().get<by_name>();
+            auto itr = idx.lower_bound(name_prefix);
+            uint32_t scanned = 0;
+            while(from>0 && itr != idx.end() && name_has_prefix(*itr, name_prefix) && scanned < MAX_MARKET_PREFIX_SCAN){
+                ++scanned;
+                if(itr->account_on_sale == true && itr->account_on_sale_start_time <= my->database().head_block_time()){
+                    from--;
+                }
+                ++itr;
+            }
+            while (result.size() < limit && itr != idx.end() && name_has_prefix(*itr, name_prefix) && scanned < MAX_MARKET_PREFIX_SCAN) {
+                ++scanned;
+                if(itr->account_on_sale == true && itr->account_on_sale_start_time <= my->database().head_block_time()){
+                    result.push_back(account_object(*itr));
+                }
+                ++itr;
+            }
+            if(scanned >= MAX_MARKET_PREFIX_SCAN){
+                wlog("get_accounts_on_sale: prefix '${p}' hit the ${n}-account scan cap, results truncated",
+                     ("p", name_prefix)("n", MAX_MARKET_PREFIX_SCAN));
+            }
+            return result;
+        }
 
         const auto &idx = my->database().get_index<account_index>().indices().get<by_account_on_sale>();
         auto itr = idx.lower_bound(true);
@@ -485,14 +529,43 @@ DEFINE_API(plugin, get_accounts_on_sale) {
 }
 
 DEFINE_API(plugin, get_accounts_on_auction) {
-    CHECK_ARG_SIZE(2)
+    FC_ASSERT(args.args->size() == 2 || args.args->size() == 3,
+              "Expected 2-3 arguments, was ${n}", ("n", args.args->size()));
     uint32_t from = args.args->at(0).as<uint32_t>();
     uint32_t limit = args.args->at(1).as<uint32_t>();
+    std::string name_prefix = args.args->size() > 2 ? args.args->at(2).as<std::string>() : std::string();
     FC_ASSERT(limit <= 1000);
     return my->database().with_weak_read_lock([&]() {
         std::vector<account_on_sale_api_object> result;
 
         result.reserve(limit);
+
+        if(!name_prefix.empty()){
+            const auto &idx = my->database().get_index<account_index>().indices().get<by_name>();
+            auto itr = idx.lower_bound(name_prefix);
+            uint32_t scanned = 0;
+            while(from>0 && itr != idx.end() && name_has_prefix(*itr, name_prefix) && scanned < MAX_MARKET_PREFIX_SCAN){
+                ++scanned;
+                if(itr->account_on_sale == true && itr->account_on_sale_start_time >= my->database().head_block_time()
+                   && itr->target_buyer == ""){
+                    from--;
+                }
+                ++itr;
+            }
+            while (result.size() < limit && itr != idx.end() && name_has_prefix(*itr, name_prefix) && scanned < MAX_MARKET_PREFIX_SCAN) {
+                ++scanned;
+                if(itr->account_on_sale == true && itr->account_on_sale_start_time >= my->database().head_block_time()
+                   && itr->target_buyer == ""){
+                    result.push_back(account_object(*itr));
+                }
+                ++itr;
+            }
+            if(scanned >= MAX_MARKET_PREFIX_SCAN){
+                wlog("get_accounts_on_auction: prefix '${p}' hit the ${n}-account scan cap, results truncated",
+                     ("p", name_prefix)("n", MAX_MARKET_PREFIX_SCAN));
+            }
+            return result;
+        }
 
         const auto &idx = my->database().get_index<account_index>().indices().get<by_account_on_sale>();
         auto itr = idx.lower_bound(true);
@@ -517,14 +590,41 @@ DEFINE_API(plugin, get_accounts_on_auction) {
 }
 
 DEFINE_API(plugin, get_subaccounts_on_sale) {
-    CHECK_ARG_SIZE(2)
+    FC_ASSERT(args.args->size() == 2 || args.args->size() == 3,
+              "Expected 2-3 arguments, was ${n}", ("n", args.args->size()));
     uint32_t from = args.args->at(0).as<uint32_t>();
     uint32_t limit = args.args->at(1).as<uint32_t>();
+    std::string name_prefix = args.args->size() > 2 ? args.args->at(2).as<std::string>() : std::string();
     FC_ASSERT(limit <= 1000);
     return my->database().with_weak_read_lock([&]() {
         std::vector<subaccount_on_sale_api_object> result;
 
         result.reserve(limit);
+
+        if(!name_prefix.empty()){
+            const auto &idx = my->database().get_index<account_index>().indices().get<by_name>();
+            auto itr = idx.lower_bound(name_prefix);
+            uint32_t scanned = 0;
+            while(from>0 && itr != idx.end() && name_has_prefix(*itr, name_prefix) && scanned < MAX_MARKET_PREFIX_SCAN){
+                ++scanned;
+                if(itr->subaccount_on_sale == true){
+                    from--;
+                }
+                ++itr;
+            }
+            while (result.size() < limit && itr != idx.end() && name_has_prefix(*itr, name_prefix) && scanned < MAX_MARKET_PREFIX_SCAN) {
+                ++scanned;
+                if(itr->subaccount_on_sale == true){
+                    result.push_back(account_object(*itr));
+                }
+                ++itr;
+            }
+            if(scanned >= MAX_MARKET_PREFIX_SCAN){
+                wlog("get_subaccounts_on_sale: prefix '${p}' hit the ${n}-account scan cap, results truncated",
+                     ("p", name_prefix)("n", MAX_MARKET_PREFIX_SCAN));
+            }
+            return result;
+        }
 
         const auto &idx = my->database().get_index<account_index>().indices().get<by_subaccount_on_sale>();
         auto itr = idx.lower_bound(true);
