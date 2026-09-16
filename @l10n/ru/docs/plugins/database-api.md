@@ -358,7 +358,7 @@ json_rpc::plugin, chain::plugin
 
 ## Рынок аккаунтов
 
-### `get_accounts_on_sale(from, limit)`
+### `get_accounts_on_sale(from, limit, name_prefix)`
 
 Возвращает аккаунты, выставленные на продажу (прямая продажа, не аукцион).
 
@@ -366,11 +366,22 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_accounts_on_sale", "params": [0, 100] }
 ```
 
+**`name_prefix`** (необязательный, по умолчанию `""`) ограничивает выдачу аккаунтами, имя которых
+начинается с указанного префикса. Сравнение идёт по индексу имён аккаунтов, то есть поиск идёт по
+всему множеству, а не по той странице, на которой вы находитесь — аккаунт за пределами первых
+`limit` записей всё равно находится. Пустой префикс (или отсутствие аргумента) возвращает всё, как
+раньше. Учитываются только начальные символы: `name_prefix: "ali"` найдёт `alice` и `alina`, но не
+`malice`.
+
+```json
+{ "method": "database_api.get_accounts_on_sale", "params": [0, 100, "ali"] }
+```
+
 **Возвращает:** Массив `account_on_sale_api_object` — `account`, `account_seller`, `account_offer_price`, `account_on_sale_start_time`, `target_buyer`.
 
 ---
 
-### `get_accounts_on_auction(from, limit)`
+### `get_accounts_on_auction(from, limit, name_prefix)`
 
 Возвращает аккаунты, выставленные на аукцион.
 
@@ -378,17 +389,23 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_accounts_on_auction", "params": [0, 100] }
 ```
 
+**`name_prefix`** (необязательный, по умолчанию `""`) — то же, что у `get_accounts_on_sale`:
+сравнение с началом имени по индексу имён, пустой возвращает всё.
+
 **Возвращает:** Массив `account_on_sale_api_object` — то же плюс `current_bid`, `current_bidder`, `current_bidder_key`, `last_bid`.
 
 ---
 
-### `get_subaccounts_on_sale(from, limit)`
+### `get_subaccounts_on_sale(from, limit, name_prefix)`
 
 Возвращает регистрации пространства имён аккаунтов, доступные для продажи (права на создание субаккаунтов).
 
 ```json
 { "method": "database_api.get_subaccounts_on_sale", "params": [0, 100] }
 ```
+
+**`name_prefix`** (необязательный, по умолчанию `""`) — то же, что у `get_accounts_on_sale`:
+сравнение с началом имени по индексу имён, пустой возвращает всё.
 
 **Возвращает:** Массив `subaccount_on_sale_api_object` — `account`, `subaccount_seller`, `subaccount_offer_price`.
 

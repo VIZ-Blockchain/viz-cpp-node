@@ -358,7 +358,7 @@ json_rpc::plugin, chain::plugin
 
 ## 账户市场
 
-### `get_accounts_on_sale(from, limit)`
+### `get_accounts_on_sale(from, limit, name_prefix)`
 
 返回当前挂牌出售的账户（直接出售，非拍卖）。
 
@@ -366,11 +366,20 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_accounts_on_sale", "params": [0, 100] }
 ```
 
+**`name_prefix`**（可选，默认 `""`）只返回名称以指定前缀开头的账户。匹配走的是账户名索引，
+因此搜索的是整个集合，而不是你当前所在的那一页——即使账户排在前 `limit` 条之外也能找到。
+空前缀（或不传该参数）返回全部，与之前一致。只比较开头字符：`name_prefix: "ali"` 会匹配
+`alice` 和 `alina`，但不会匹配 `malice`。
+
+```json
+{ "method": "database_api.get_accounts_on_sale", "params": [0, 100, "ali"] }
+```
+
 **返回：** `account_on_sale_api_object` 数组 — `account`、`account_seller`、`account_offer_price`、`account_on_sale_start_time`、`target_buyer`。
 
 ---
 
-### `get_accounts_on_auction(from, limit)`
+### `get_accounts_on_auction(from, limit, name_prefix)`
 
 返回挂牌拍卖的账户。
 
@@ -378,17 +387,23 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_accounts_on_auction", "params": [0, 100] }
 ```
 
+**`name_prefix`**（可选，默认 `""`）——与 `get_accounts_on_sale` 相同：按名称索引匹配名称开头，
+空值返回全部。
+
 **返回：** `account_on_sale_api_object` 数组 — 同上，另加 `current_bid`、`current_bidder`、`current_bidder_key`、`last_bid`。
 
 ---
 
-### `get_subaccounts_on_sale(from, limit)`
+### `get_subaccounts_on_sale(from, limit, name_prefix)`
 
 返回可出售的账户命名空间注册（子账户创建权限）。
 
 ```json
 { "method": "database_api.get_subaccounts_on_sale", "params": [0, 100] }
 ```
+
+**`name_prefix`**（可选，默认 `""`）——与 `get_accounts_on_sale` 相同：按名称索引匹配名称开头，
+空值返回全部。
 
 **返回：** `subaccount_on_sale_api_object` 数组 — `account`、`subaccount_seller`、`subaccount_offer_price`。
 
