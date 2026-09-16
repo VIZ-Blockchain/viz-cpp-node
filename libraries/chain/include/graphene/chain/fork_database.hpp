@@ -39,6 +39,19 @@ namespace graphene {
              * building on top of it.
              */
             bool invalid = false;
+            /**
+             * True for a minimal anchor entry created by insert_anchor_block():
+             * it carries the head block's id/num but has NO block data.  Its
+             * data is default-constructed, so data.block_num() and data.id()
+             * do NOT describe this block (block_num() is derived from previous,
+             * which is unset, and would report 1).
+             *
+             * Such an item exists only as a linkage target for parent lookups
+             * in fork_db::_push_block().  No caller may treat it as a real
+             * block: its data must never be returned as block data, and it must
+             * never be applied via apply_block().
+             */
+            bool anchor_only = false;
             block_id_type id;
             signed_block data;
         };
@@ -78,6 +91,24 @@ namespace graphene {
              * (e.g., a block inserted via start_block that should link here).
              */
             void insert_as_base(signed_block b);
+
+            /**
+             * Insert a minimal anchor entry into fork_db using only the block id
+             * and block number, without the full block data.  Used after snapshot
+             * import when the head block is known from chain state but its full
+             * data is absent from the (empty) DLT block log.  Without this anchor,
+             * incoming blocks whose previous == head_block_id() cannot find their
+             * parent in fork_db and are rejected as unlinkable, preventing the
+             * node from ever advancing past the snapshot block.
+             *
+             * The anchor's signed_block data is default-constructed (empty) and
+             * the item is flagged with fork_item::anchor_only, so it can never
+             * be mistaken for a real block: fetch_block_by_number() skips such
+             * entries and fetch_branch_from() refuses to put one into a branch
+             * that the caller would apply via apply_block().  The anchor serves
+             * only as a linkage target for parent lookups in _push_block().
+             */
+            void insert_anchor_block(const block_id_type &id, uint32_t block_num);
 
             void remove(block_id_type b);
 

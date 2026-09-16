@@ -1373,6 +1373,14 @@ namespace graphene { namespace chain {
         optional<signed_block> database::fetch_block_by_id(const block_id_type &id) const {
             try {
                 auto b = _fork_db.fetch_block(id);
+                if (b && b->anchor_only) {
+                    // An anchor entry carries no block data (see
+                    // fork_database::insert_anchor_block).  Treat it as "block
+                    // data unavailable" so callers keep the distinction between
+                    // "no data" and "block exists", and so the block logs are
+                    // still consulted below.
+                    b.reset();
+                }
                 if (!b) {
                     auto tmp = _block_log.read_block_by_num(protocol::block_header::num_from_id(id));
 
@@ -1398,6 +1406,8 @@ namespace graphene { namespace chain {
             try {
                 optional<signed_block> b;
 
+                // fetch_block_by_number() skips anchor entries (they carry no
+                // block data), so anything it returns is a real block.
                 auto results = _fork_db.fetch_block_by_number(block_num);
                 if (results.size() == 1) {
                     b = results[0]->data;
@@ -1411,7 +1421,9 @@ namespace graphene { namespace chain {
                     // still reachable via the prev-pointer chain.
                     if (_fork_db.head()) {
                         auto fitem = _fork_db.walk_main_branch_to_num(block_num);
-                        if (fitem) {
+                        // The walk follows prev pointers and may land on the
+                        // data-less anchor at the snapshot head (insert_anchor_block).
+                        if (fitem && !fitem->anchor_only) {
                             b = fitem->data;
                         }
                     }
@@ -2020,6 +2032,16 @@ namespace graphene { namespace chain {
                                  "(was missing, required for block linkage)",
                                  ("h", head_block_num()));
                             _fork_db.start_block(*head_blk);
+                        } else {
+                            // After snapshot import the head block is known from
+                            // chain state but its full data is absent from the
+                            // (empty) DLT block log.  Insert a minimal anchor
+                            // so incoming blocks whose previous == head_block_id()
+                            // can find their parent in fork_db.
+                            wlog("Seeding fork_db with anchor for head #${h} "
+                                 "(block data unavailable, DLT log empty)",
+                                 ("h", head_block_num()));
+                            _fork_db.insert_anchor_block(head_block_id(), head_block_num());
                         }
                     }
 
@@ -2054,6 +2076,15 @@ namespace graphene { namespace chain {
                     // is the correct next block after our actual chain head.
                     if (new_block.previous == head_block_id()) {
                         // Fall through to apply_block below
+                    } else if (new_head->anchor_only) {
+                        // fork_db returned a data-less anchor as its head: the
+                        // block we pushed sits at or below the snapshot head and
+                        // did not become a chain tip.  An anchor is not a
+                        // competing block, and reading data.* from it would
+                        // compare garbage (data.block_num() reports 1), so skip
+                        // the fork-switch logic entirely.  The block stays in
+                        // fork_db and can still be linked later.
+                        return false;
                     } else if (new_head->data.previous != head_block_id()) {
                         //If the newly pushed block is the same height as head, we get head back in new_head
                         //Only switch forks if new_head is actually higher than head
@@ -2096,6 +2127,8 @@ namespace graphene { namespace chain {
                             _fork_db.reset();
                             if (head_blk) {
                                 _fork_db.start_block(*head_blk);
+                            } else {
+                                _fork_db.insert_anchor_block(head_block_id(), head_block_num());
                             }
                             FC_THROW_EXCEPTION(unlinkable_block_exception,
                                 "fork switch failed: broken prev chain in fork_db, reset to head #${h}",
@@ -2127,6 +2160,8 @@ namespace graphene { namespace chain {
                                 _fork_db.reset();
                                 if (head_blk) {
                                     _fork_db.start_block(*head_blk);
+                                } else {
+                                    _fork_db.insert_anchor_block(head_block_id(), head_block_num());
                                 }
                                 FC_THROW_EXCEPTION(unlinkable_block_exception,
                                     "fork switch failed: broken prev chain in fork_db, reset to head #${h}",

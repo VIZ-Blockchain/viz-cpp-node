@@ -49,6 +49,34 @@ namespace graphene {
             _repair_child_prev_links(item);
         }
 
+        void fork_database::insert_anchor_block(const block_id_type &id, uint32_t block_num) {
+            auto &id_index = _index.get<block_id>();
+            auto existing = id_index.find(id);
+            if (existing != id_index.end()) {
+                return;  // already present (e.g., from start_block or a real block push)
+            }
+            // Construct a minimal fork_item with the correct id and num but
+            // default-constructed (empty) signed_block data.  The fork_item
+            // constructor takes a signed_block and derives num/id from it,
+            // but we need to override those fields since our data is empty.
+            signed_block empty_block;
+            auto item = std::make_shared<fork_item>(std::move(empty_block));
+            item->id = id;
+            item->num = block_num;
+            // data.previous remains default (block_id_type()) — the anchor has
+            // no parent in fork_db.  This is intentional: the anchor represents
+            // the snapshot head whose parent data is not available.
+            //
+            // Mark the entry so no reader mistakes the empty data for block
+            // data: see fork_item::anchor_only and the guards in
+            // fetch_block_by_number() / fetch_branch_from().
+            item->anchor_only = true;
+            _index.insert(item);
+            if (!_head || block_num >= _head->num) {
+                _head = item;
+            }
+        }
+
         void fork_database::_repair_child_prev_links(const item_ptr &parent) {
             auto &num_idx = _index.get<block_num>();
             auto it = num_idx.lower_bound(parent->num + 1);
@@ -72,7 +100,9 @@ namespace graphene {
             }
             catch (const unlinkable_block_exception &e) {
                 wlog("Pushing block to fork database that failed to link: ${id}, ${num}", ("id", b.id())("num", b.block_num()));
-                wlog("Head: ${num}, ${id}", ("num", _head->data.block_num())("id", _head->data.id()));
+                // Report the head's own fields: _head may be an anchor, whose
+                // data is empty and does not describe the block it stands for.
+                wlog("Head: ${num}, ${id}", ("num", _head->num)("id", _head->id));
                 _unlinked_index.insert(item);
                 throw;
             }
@@ -210,7 +240,12 @@ namespace graphene {
                 auto itr = _index.get<block_num>().find(num);
                 while (itr != _index.get<block_num>().end()) {
                     if ((*itr)->num == num) {
-                        result.push_back(*itr);
+                        // Anchor entries carry no block data (insert_anchor_block):
+                        // callers of this method ask for real blocks (competing
+                        // blocks at a height, block data lookups), so keep them out.
+                        if (!(*itr)->anchor_only) {
+                            result.push_back(*itr);
+                        }
                     } else {
                         break;
                     }
@@ -227,6 +262,19 @@ namespace graphene {
                 // This function gets a branch (i.e. vector<fork_item>) leading
                 // back to the most recent common ancestor.
                 pair<branch_type, branch_type> result;
+
+                // An anchor entry (see fork_item::anchor_only) has no block data:
+                // its data.block_num()/data.id()/data.previous do not describe it.
+                // Callers apply the branches returned here via apply_block() and
+                // use the common ancestor's data.previous as a pop target, so an
+                // anchor must never take part in a branch — refuse loudly instead
+                // of letting an empty block or a bogus common ancestor through.
+                auto no_anchor = [](const item_ptr &i, const char *where) {
+                    FC_ASSERT(i && !i->anchor_only,
+                        "fetch_branch_from: fork_db anchor entry reached ${w} "
+                        "(anchor carries no block data)",
+                        ("w", where));
+                };
                 auto first_branch_itr = _index.get<block_id>().find(first);
                 if (first_branch_itr == _index.get<block_id>().end()) {
                     wlog("fetch_branch_from: first block not in fork_db index");
@@ -248,6 +296,7 @@ namespace graphene {
 
                 while (first_branch->data.block_num() >
                        second_branch->data.block_num()) {
+                    no_anchor(first_branch, "first branch");
                     result.first.push_back(first_branch);
                     first_branch = first_branch->prev.lock();
                     if (!first_branch) {
@@ -259,6 +308,7 @@ namespace graphene {
                 }
                 while (second_branch->data.block_num() >
                        first_branch->data.block_num()) {
+                    no_anchor(second_branch, "second branch");
                     result.second.push_back(second_branch);
                     second_branch = second_branch->prev.lock();
                     if (!second_branch) {
@@ -270,6 +320,8 @@ namespace graphene {
                 }
                 while (first_branch->data.previous !=
                        second_branch->data.previous) {
+                    no_anchor(first_branch, "first branch ancestor search");
+                    no_anchor(second_branch, "second branch ancestor search");
                     result.first.push_back(first_branch);
                     result.second.push_back(second_branch);
                     first_branch = first_branch->prev.lock();
@@ -286,6 +338,11 @@ namespace graphene {
                     }
                 }
                 if (first_branch && second_branch) {
+                    // The last pushed items are the common ancestor.  Its
+                    // data.previous is used by the caller as the pop target, so
+                    // an anchor here would make the caller pop to a bogus id.
+                    no_anchor(first_branch, "common ancestor");
+                    no_anchor(second_branch, "common ancestor");
                     result.first.push_back(first_branch);
                     result.second.push_back(second_branch);
                 }
