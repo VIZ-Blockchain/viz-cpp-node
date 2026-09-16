@@ -97,9 +97,9 @@ All VIZ node APIs use JSON-RPC 2.0 over HTTP POST or WebSocket.
 | `verify_account_authority(name, keys[])` | `true` if keys satisfy authority |
 | `get_database_info()` | Chainbase memory usage stats |
 | `get_proposed_transactions(account, from, limit)` | Proposals requiring account approval |
-| `get_accounts_on_sale(from, limit)` | Accounts listed for direct sale |
-| `get_accounts_on_auction(from, limit)` | Accounts listed for auction |
-| `get_subaccounts_on_sale(from, limit)` | Subaccount creation rights for sale |
+| `get_accounts_on_sale(from, limit, name_prefix)` | Accounts listed for direct sale |
+| `get_accounts_on_auction(from, limit, name_prefix)` | Accounts listed for auction |
+| `get_subaccounts_on_sale(from, limit, name_prefix)` | Subaccount creation rights for sale |
 
 ---
 
@@ -179,7 +179,7 @@ Returns a map of `{ sequence: { trx_id, block, op: [type_id, data] } }`.
 
 | Method | Description |
 |--------|-------------|
-| `get_paid_subscriptions(from, limit)` | All subscription offerings |
+| `get_paid_subscriptions(from, limit, creator_prefix)` | All subscription offerings |
 | `get_paid_subscription_options(account)` | Subscription config for account |
 | `get_paid_subscription_status(subscriber, account)` | Subscription status |
 | `get_active_paid_subscriptions(subscriber, from, limit)` | Active subscriptions |

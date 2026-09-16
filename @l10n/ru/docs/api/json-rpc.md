@@ -97,9 +97,9 @@
 | `verify_account_authority(name, keys[])` | `true`, если ключи удовлетворяют авторизации |
 | `get_database_info()` | Статистика использования памяти chainbase |
 | `get_proposed_transactions(account, from, limit)` | Предложения, требующие одобрения аккаунта |
-| `get_accounts_on_sale(from, limit)` | Аккаунты, выставленные на прямую продажу |
-| `get_accounts_on_auction(from, limit)` | Аккаунты, выставленные на аукцион |
-| `get_subaccounts_on_sale(from, limit)` | Права создания субаккаунтов на продажу |
+| `get_accounts_on_sale(from, limit, name_prefix)` | Аккаунты, выставленные на прямую продажу |
+| `get_accounts_on_auction(from, limit, name_prefix)` | Аккаунты, выставленные на аукцион |
+| `get_subaccounts_on_sale(from, limit, name_prefix)` | Права создания субаккаунтов на продажу |
 
 ---
 
@@ -179,7 +179,7 @@
 
 | Метод | Описание |
 |-------|---------|
-| `get_paid_subscriptions(from, limit)` | Все предложения подписок |
+| `get_paid_subscriptions(from, limit, creator_prefix)` | Все предложения подписок |
 | `get_paid_subscription_options(account)` | Конфигурация подписок для аккаунта |
 | `get_paid_subscription_status(subscriber, account)` | Статус подписки |
 | `get_active_paid_subscriptions(subscriber, from, limit)` | Активные подписки |

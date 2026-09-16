@@ -358,7 +358,7 @@ Returns governance proposals that require approval from `account`.
 
 ## Account Market
 
-### `get_accounts_on_sale(from, limit)`
+### `get_accounts_on_sale(from, limit, name_prefix)`
 
 Returns accounts currently listed for sale (direct sale, not auction).
 
@@ -366,11 +366,21 @@ Returns accounts currently listed for sale (direct sale, not auction).
 { "method": "database_api.get_accounts_on_sale", "params": [0, 100] }
 ```
 
+**`name_prefix`** (optional, default `""`) restricts the result to accounts whose name starts with
+the given prefix. It is matched against the account-name index, so it searches the whole set rather
+than the page you happen to be on — an account past the first `limit` entries is still found. An
+empty prefix (or omitting the argument) returns everything, as before. Only the leading characters
+count: `name_prefix: "ali"` matches `alice` and `alina`, but not `malice`.
+
+```json
+{ "method": "database_api.get_accounts_on_sale", "params": [0, 100, "ali"] }
+```
+
 **Returns:** Array of `account_on_sale_api_object` — `account`, `account_seller`, `account_offer_price`, `account_on_sale_start_time`, `target_buyer`.
 
 ---
 
-### `get_accounts_on_auction(from, limit)`
+### `get_accounts_on_auction(from, limit, name_prefix)`
 
 Returns accounts listed for auction.
 
@@ -378,17 +388,23 @@ Returns accounts listed for auction.
 { "method": "database_api.get_accounts_on_auction", "params": [0, 100] }
 ```
 
+**`name_prefix`** (optional, default `""`) — same as `get_accounts_on_sale`: matches the start of
+the account name against the name index, empty returns everything.
+
 **Returns:** Array of `account_on_sale_api_object` — same as above plus `current_bid`, `current_bidder`, `current_bidder_key`, `last_bid`.
 
 ---
 
-### `get_subaccounts_on_sale(from, limit)`
+### `get_subaccounts_on_sale(from, limit, name_prefix)`
 
 Returns account namespace registrations available for sale (subaccount creation rights).
 
 ```json
 { "method": "database_api.get_subaccounts_on_sale", "params": [0, 100] }
 ```
+
+**`name_prefix`** (optional, default `""`) — same as `get_accounts_on_sale`: matches the start of
+the account name against the name index, empty returns everything.
 
 **Returns:** Array of `subaccount_on_sale_api_object` — `account`, `subaccount_seller`, `subaccount_offer_price`.
 

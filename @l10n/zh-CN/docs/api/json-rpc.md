@@ -97,9 +97,9 @@
 | `verify_account_authority(name, keys[])` | 密钥满足授权时返回 `true` |
 | `get_database_info()` | Chainbase 内存使用统计 |
 | `get_proposed_transactions(account, from, limit)` | 需要账户批准的提案 |
-| `get_accounts_on_sale(from, limit)` | 挂牌直接出售的账户 |
-| `get_accounts_on_auction(from, limit)` | 挂牌拍卖的账户 |
-| `get_subaccounts_on_sale(from, limit)` | 挂牌出售的子账户创建权 |
+| `get_accounts_on_sale(from, limit, name_prefix)` | 挂牌直接出售的账户 |
+| `get_accounts_on_auction(from, limit, name_prefix)` | 挂牌拍卖的账户 |
+| `get_subaccounts_on_sale(from, limit, name_prefix)` | 挂牌出售的子账户创建权 |
 
 ---
 
@@ -179,7 +179,7 @@
 
 | 方法 | 描述 |
 |------|------|
-| `get_paid_subscriptions(from, limit)` | 所有订阅服务 |
+| `get_paid_subscriptions(from, limit, creator_prefix)` | 所有订阅服务 |
 | `get_paid_subscription_options(account)` | 账户的订阅配置 |
 | `get_paid_subscription_status(subscriber, account)` | 订阅状态 |
 | `get_active_paid_subscriptions(subscriber, from, limit)` | 活跃订阅 |
