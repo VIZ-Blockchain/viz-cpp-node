@@ -47,8 +47,10 @@ jobs:
                 -DBUILD_SHARED_LIBRARIES=FALSE \
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
                 -DBUILD_CONSENSUS_TESTS=ON ..
-          make -j"$(nproc)" consensus_sim_tests \
-            pm_lmsr_vectors_tests pm_parimutuel_tests pm_leverage_tests pm_meta_parse_tests
+          # Build exactly the binaries ctest will run, so a new add_test never shows up as "Not Run".
+          TEST_BINS=$(grep -ho 'add_test(NAME [a-z_]* COMMAND [a-z_]*' \
+            ../tests/pm/CMakeLists.txt ../tests/consensus_sim/CMakeLists.txt | awk '{print $NF}')
+          make -j"$(nproc)" $TEST_BINS
 
       - name: Run tests
         env:
