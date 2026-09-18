@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    paths-ignore:
+      - 'documentation/**'
+      - 'docs/**'
+      - '**.md'
+
+jobs:
+  consensus-and-pm:
+    name: consensus_sim + pm unit tests (distro Boost)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache cmake libboost-all-dev libssl-dev \
+            libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
+            libtool ncurses-dev pkg-config zlib1g-dev
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.ccache
+          key: tests-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: tests-ccache-${{ runner.os }}-
+
+      - name: Configure and build test targets
+        run: |
+          set -euo pipefail
+          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
+          mkdir -p build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+                -DBUILD_SHARED_LIBRARIES=FALSE \
+                -DCHAINBASE_CHECK_LOCKING=FALSE \
+                -DBUILD_CONSENSUS_TESTS=ON ..
+          make -j"$(nproc)" consensus_sim_tests \
+            pm_lmsr_vectors_tests pm_parimutuel_tests pm_leverage_tests pm_meta_parse_tests
+
+      - name: Run tests
+        env:
+          # Pre-existing ASan/UBSan findings in chain code, see tests/consensus_sim/README.md
+          ASAN_OPTIONS: new_delete_type_mismatch=0:detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=0:print_stacktrace=0
+        run: cd build && ctest --output-on-failure
+
+      - name: Upload consensus_sim failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-sim-failures
+          path: tests/consensus_sim/failures/
+          if-no-files-found: ignore
