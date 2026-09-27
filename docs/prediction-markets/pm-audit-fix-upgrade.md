@@ -80,7 +80,7 @@ is nothing to recompute on activation.
   alone decides the block.
 * **Mainnet activation checklist.** (1) Confirm or replace the provisional date and announce it well
   ahead of the timestamp — that is the only remaining scheduling decision. (2) Run the stale-state
-  detector from §3 and settle the migration question in §4. (3) Ship the image and let validators
+  detector from §4 and settle the migration question there. (3) Ship the image and let validators
   update; the vote is automatic. (4) Confirm the activation from the node log and re-run the checks
   in §3 against the live chain. Note that HF14's own mainnet date (2026-08-28) is already in the
   past, so a first mainnet deployment carrying both forks activates them together in one block
@@ -96,8 +96,8 @@ is nothing to recompute on activation.
 
 Pre-activation (the testnet, after deploying the new image and before the timestamp):
 `get_hardfork_property_object` (or `database_api.get_hardfork_property`) reports the current fork
-still at 14 with the next fork's version/time pending and validators voting for it; the detector below
-reports on the state that is about to be gated.
+still at 14 with the next fork's version/time pending and validators voting for it; the detector in §4
+(`scripts/pm_stale_bshare_detect.py`) reports on the state that is about to be gated.
 
 Post-activation:
 
@@ -123,6 +123,28 @@ operation the new gate refuses.
 Only markets whose LP performed a partial withdrawal before activation can be in this state; anything
 created after the fork cannot, and a market where every LP exit was all-or-nothing is consistent by
 construction.
+
+### Detector
+
+`scripts/pm_stale_bshare_detect.py <snapshot-block-NNNN.vizjson>` walks the snapshot and prints, per
+market, `Σ b_share` over the active (`status 0`) rows against `lmsr_b`. It is read-only, needs no
+node and no chain access, and is verdict-first: **exit 0** = every LMSR market satisfies the invariant
+(nothing to migrate), **1** = at least one market diverges (the list is printed), **2** = the snapshot
+could not be read or the sections were not found. A `.vizjson` snapshot is zlib-compressed JSON, so the
+file has to be the node's own snapshot, not a re-serialized export.
+
+Snapshot location: with `--snapshot-auto-latest` the node writes `snapshot-block-*.vizjson` into its
+vizhome (`/var/lib/vizd/snapshots/` inside the container, i.e. `<vizhome>/snapshots/` on the host;
+every 15 minutes on the current testnet). On the shelter box that is
+`/root/testnethome/snapshots/`, readable only via `sudo` — copy it out first:
+`sudo cp <snap> /tmp/snap.vizjson && sudo chown $USER /tmp/snap.vizjson`.
+
+Measured 2026-09-27 on testnet snapshot block **83748900** (the state HF15 is about to gate):
+129 806 markets, 9 615 of them LMSR; 8 251 have active LP rows and **all 8 251 satisfy the invariant
+exactly** (`Σ b_share == lmsr_b`), 0 diverging. So on this chain the legacy partial-withdraw path left
+no residue: the "refuse the stale exit" behaviour has nothing to refuse, and the one-shot attribution
+repair from the options below is not needed. Re-run the detector against a fresh snapshot right before
+scheduling the fork — a chain that has served more partial LMSR withdrawals since can differ.
 
 Options, and what the chain does about each:
 
