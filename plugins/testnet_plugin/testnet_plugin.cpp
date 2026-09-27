@@ -80,9 +80,9 @@ struct testnet_plugin::impl {
     std::string requested; // raw --testnet-hardfork value; empty means "do nothing"
 };
 
-testnet_plugin::testnet_plugin() : pimpl(new impl()) {}
+testnet_plugin::testnet_plugin() {}
 
-testnet_plugin::~testnet_plugin() {}
+testnet_plugin::~testnet_plugin() = default;
 
 void testnet_plugin::set_program_options(
     bpo::options_description &command_line_options,
@@ -99,6 +99,14 @@ void testnet_plugin::set_program_options(
 }
 
 void testnet_plugin::plugin_initialize(const bpo::variables_map &options) {
+    // The chain plugin is resolved HERE, not in the constructor. appbase constructs the plugin
+    // object when it is registered — before any plugin is initialized — and get_plugin() refuses
+    // plugins that are still in the 'registered' state, so building the impl eagerly threw
+    // "unable to find plugin: chain" while merely registering the plugin. That aborted every
+    // startup of the binary, including `--help`. appbase's plugin<>::initialize() runs the
+    // dependencies declared through APPBASE_PLUGIN_REQUIRES first, so by the time this is called
+    // chain::plugin is initialized and reachable.
+    pimpl = std::make_unique<impl>();
     if (options.count("testnet-hardfork")) {
         pimpl->requested = options.at("testnet-hardfork").as<std::string>();
     }
