@@ -1,3 +1,6 @@
+// SOAK/VERIFICATION BRANCH — NEVER MERGE: this file carries an early activation time so a
+// private chain can be taken through HF15 activation and the audit-fix acceptance before the
+// production date. The real value lives on `pm`. See docs/prediction-markets/pm-audit-fix-upgrade.md.
 // 15 Hardfork — PM audit fixes: partial-LP b_share bookkeeping on LMSR markets (a legacy
 // partial withdrawal took the full historical share out of the curve while the position kept
 // its full b_share, so the next withdrawal could drive market.lmsr_b to <= 0 and every outcome
@@ -33,7 +36,8 @@
 // Note that HF14's own mainnet date (1787875200) has already passed, so on mainnet the pair will
 // activate together in one block whenever quorum is reached; only the testnet, whose snapshot
 // carries HF14 already processed, can exercise HF15 on its own.
-#define CHAIN_HARDFORK_15_TIME 1791158400      // 2026-10-05 00:00:00 UTC
+// SOAK BRANCH ONLY - NOT FOR MERGE.
+#define CHAIN_HARDFORK_15_TIME 1790505000      // 2026-09-27 10:30:00 UTC (soak build)
 #define CHAIN_HARDFORK_15_VERSION hardfork_version( version(4, 1, 0) )
 #endif
 // Registration itself is unconditional in both configs (CHAIN_NUM_HARDFORKS is 15 everywhere), so
