@@ -121,9 +121,36 @@ be scheduled — the compiled activation time is a dead knob. Exiting emergency 
 validators are imported mainnet history will not reach.
 
 So on such a chain "deploy first, watch the fork activate" verifies the deployment (image runs, snapshot
-imports, invariants hold) but **not** the activation. Observing activation before mainnet needs a chain
-whose producer is not the emergency committee — a fresh `BUILD_TESTNET` build, where the quorum is 1 and
-an ordinary validator votes and applies the fork on its own.
+imports, invariants hold) but **not** the activation — the tally there can never produce a result. Two
+ways out: a fresh `BUILD_TESTNET` build (quorum 1, an ordinary validator votes and applies the fork on its
+own), or `testnet_plugin` below, which forces the fork on the production-config chain itself.
+
+### Forcing the fork at startup: `testnet_plugin`
+
+`testnet_plugin` exists for exactly this case and needs no consensus change. It adds one startup command:
+
+    --testnet-hardfork <version|number>        # e.g. 4.1.0, or 15
+
+With the plugin loaded (`plugin = testnet_plugin`, already in `config_testnet.ini`) **and** given a target,
+it applies every hardfork up to the requested one as soon as the chain state is loaded — after the snapshot
+import, before block production starts — through `database::set_hardfork(n, true)`. The validator tally is
+bypassed entirely, so it also works while `emergency_consensus_active` is true. That is what makes
+"verify the activation on the production-config testnet, ahead of the production date" possible.
+
+Safety: the plugin does nothing unless it is both loaded and given a target, so the production image can
+carry it; the production `config.ini` never enables it. A forced fork cannot be rolled back — point it at a
+chain you own, never at mainnet.
+
+Operator sequence (shelter testnet): deploy the image that **contains** the plugin first — a config line
+naming a plugin the binary does not register aborts startup with `unable to find plugin: testnet_plugin` —
+then restart the container with `VIZD_EXTRA_OPTS="--testnet-hardfork 15"`, or put `testnet-hardfork = 15`
+in the config. The node logs
+
+    *** testnet_plugin: FORCING HARDFORK 15 (requested '15') at head=#... ***
+    *** testnet_plugin: hardfork 15 applied at head=#...: last_hardfork=15, current_hardfork_version=4.1.0 ***
+
+and `get_hardfork_version` reports `4.1.0` from then on. Drop the option after the run: the fork is chain
+state now, and forcing it again on a restart from an older snapshot is harmless but noisy.
 
 Post-activation:
 
