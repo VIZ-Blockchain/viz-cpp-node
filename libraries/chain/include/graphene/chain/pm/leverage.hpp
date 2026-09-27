@@ -45,7 +45,7 @@ namespace graphene { namespace chain { namespace pm { namespace leverage {
     // §4.4 — pool obligation / liquidation threshold = loan × (1 + r_percent/100).
     int64_t liquidation_threshold(int64_t loan, uint16_t r_percent);
 
-    // §4.6 Constraint 2 (API preview) — max loan L (50-iter binary search over [0, hi])
+    // §4.6 Constraint 2 (API preview) — max loan L (inclusive binary search over [0, hi])
     // such that, after placing (collateral+L) on `outcome`, the worst-case cancel value
     // ≥ liquidation_threshold(L) × (1 + s_percent/100). Reserves are the PRE-bet market
     // reserves. Returns the loan (0 if none qualifies).

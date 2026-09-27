@@ -1,0 +1,7 @@
+// Reserved, UNSCHEDULED PM audit fixes. Production CHAIN_NUM_HARDFORKS remains 14.
+// No time/version/vote is assigned: deployment requires a separate coordinated
+// protocol upgrade that registers and schedules HF15. Tests opt in by setting
+// a processed marker on a disposable local chain only.
+#ifndef CHAIN_PM_AUDIT_FIX_HARDFORK
+#define CHAIN_PM_AUDIT_FIX_HARDFORK 15
+#endif

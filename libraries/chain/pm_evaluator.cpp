@@ -405,8 +405,12 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
     FC_ASSERT(mkt.status == 1, "Market not active");
     FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Betting period ended");
 
-    // Betting-mode gate (scenario #55): a market may disable instant bets (allow_instant_bet=false)
-    // to force the front-run-resistant batch / commit-reveal flow. mode 0 = instant, mode 1 = batch.
+    // Pre-upgrade mode=1 was filled immediately despite its batch label. Preserve
+    // historical replay; after the separately scheduled PM fix upgrade, batch
+    // stakes must enter through commit -> reveal (which creates status=5 rows).
+    if (db.has_hardfork(CHAIN_PM_AUDIT_FIX_HARDFORK))
+        FC_ASSERT(o.mode == 0, "Batch bets must use commit and reveal");
+    // Betting-mode gate (scenario #55): a market may disable instant bets (allow_instant_bet=false).
     if (o.mode == 0) FC_ASSERT(mkt.allow_instant_bet, "Instant betting is disabled for this market");
     else             FC_ASSERT(mkt.allow_batch,       "Batch betting is not enabled for this market");
 
@@ -876,17 +880,21 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     db.adjust_balance(db.get_account(o.provider), asset(total, TOKEN_SYMBOL));
     db.pm_adjust_frozen(o.provider, 0, -withdraw); // UNLOCK: principal back to free (earned_fee is profit, not frozen)
 
+    // Compute once from the pre-withdraw LP state. Legacy replay subtracts from
+    // the curve but leaves the partial LP share untouched; post-upgrade both
+    // records must shrink by the same (integer-rounded) amount.
+    share_type b_remove(0);
+    if (mkt.market_type == 1 && lp.b_share.value > 0 && lp.amount.value > 0) {
+        b_remove = (withdraw == lp.amount) ? lp.b_share :
+            share_type((int64_t)(fc::uint128_t((uint64_t)lp.b_share.value) *
+                                fc::uint128_t((uint64_t)withdraw.value) /
+                                fc::uint128_t((uint64_t)lp.amount.value)).lo);
+    }
     db.modify(mkt, [&](pm_market_object& m) {
         const int64_t L = m.liquidity_sum.value; // capital BEFORE this withdrawal
         m.liquidity_sum -= withdraw;
         if (m.market_type == 1) {
-            if (lp.b_share.value > 0 && lp.amount.value > 0) {
-                share_type b_remove = (withdraw == lp.amount) ? lp.b_share :
-                    share_type((int64_t)(fc::uint128_t((uint64_t)lp.b_share.value) *
-                                fc::uint128_t((uint64_t)withdraw.value) /
-                                fc::uint128_t((uint64_t)lp.amount.value)).lo);
-                m.lmsr_b -= b_remove;
-            }
+            m.lmsr_b -= b_remove;
         } else if (L > 0) {
             // CPMM: price-neutral withdraw. Shrink both reserves by (L - withdraw) / L so
             // the reserve ratio (the odds) is unchanged and depth falls with capital.
@@ -902,7 +910,11 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     if (withdraw == lp.amount) {
         db.modify(lp, [](pm_liquidity_object& l) { l.status = 3; l.earned_fee = 0; });
     } else {
-        db.modify(lp, [&](pm_liquidity_object& l) { l.amount -= withdraw; l.earned_fee = 0; });
+        db.modify(lp, [&](pm_liquidity_object& l) {
+            l.amount -= withdraw;
+            l.earned_fee = 0;
+            if (db.has_hardfork(CHAIN_PM_AUDIT_FIX_HARDFORK)) l.b_share -= b_remove;
+        });
     }
 
     // #2 cascade backstop: the raised floor above bounds AGGREGATE depth, but shrinking the reserves

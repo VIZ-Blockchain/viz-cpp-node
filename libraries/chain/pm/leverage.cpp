@@ -74,19 +74,24 @@ namespace graphene { namespace chain { namespace pm { namespace leverage {
                               int64_t collateral, int outcome, int64_t hi_loan,
                               uint16_t r_percent, uint16_t s_percent,
                               uint16_t sl_percent, uint16_t m_factor_percent) {
-        int64_t lo = 0, hi = hi_loan, best = 0;
-        for (int i = 0; i < 50; ++i) {
-            int64_t mid = (lo + hi) / 2;
-            if (mid <= lo) break;
+        if (hi_loan <= 0) return 0;
+        int64_t lo = 0, hi = hi_loan;
+        // Inclusive upper-bound search. The previous floor midpoint never tested
+        // hi itself and returned cap-1 even when the cap was solvent. In quotes
+        // this could turn the minimum valid loan into an invalid sub-floor loan.
+        // Upper midpoint ensures progress; computing the distance avoids lo+hi overflow.
+        while (lo < hi) {
+            const int64_t distance = hi - lo;
+            const int64_t mid = lo + distance / 2 + distance % 2;
             cpmm_fill f = cpmm_buy(reserve_a, reserve_b, k, collateral + mid, outcome);
             int64_t m = worst_opposing_bet(f.new_reserve_a, f.new_reserve_b, sl_percent, m_factor_percent);
             int64_t cvw = cancel_value_after_opposing(f.new_reserve_a, f.new_reserve_b, k,
                                                       f.tokens, outcome, m);
             int64_t thr_safe = mul_pct(liquidation_threshold(mid, r_percent), s_percent);
-            if (cvw >= thr_safe) { best = mid; lo = mid; }
-            else                 { hi = mid; }
+            if (cvw >= thr_safe) lo = mid;
+            else                 hi = mid - 1;
         }
-        return best;
+        return lo;
     }
 
 }}}} // graphene::chain::pm::leverage
