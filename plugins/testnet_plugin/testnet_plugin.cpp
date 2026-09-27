@@ -88,6 +88,14 @@ void testnet_plugin::set_program_options(
     bpo::options_description &command_line_options,
     bpo::options_description &config_file_options
 ) {
+    // Registered in the CONFIG description only, which appbase also accepts on the command line:
+    // initialize_impl() parses argv against `all_options = _cli_options + _cfg_options`, so this
+    // option is settable both as `--testnet-hardfork 4.1.0` and as a `testnet-hardfork = 4.1.0`
+    // line in config.ini. Adding it to the command-line description as well (the obvious-looking
+    // "also show it in --help" move) puts two descriptions of the same long name into all_options
+    // and boost then refuses every start with "option '--testnet-hardfork' is ambiguous and
+    // matches different versions of '--testnet-hardfork'". The price is that --help does not list
+    // it (help prints _cli_options alone), so diagnostics should look at the startup log, not help.
     config_file_options.add_options()
         ("testnet-hardfork",
          bpo::value<std::string>()->default_value(""),
@@ -95,7 +103,6 @@ void testnet_plugin::set_program_options(
          "vote tally (so it also works on a chain stuck in emergency consensus mode). Accepts a "
          "hardfork number (15) or a version (4.1.0). Empty (the default) does nothing. A forced "
          "hardfork cannot be rolled back — never use this on the production network.");
-    command_line_options.add(config_file_options);
 }
 
 void testnet_plugin::plugin_initialize(const bpo::variables_map &options) {

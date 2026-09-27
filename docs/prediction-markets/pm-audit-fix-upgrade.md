@@ -152,6 +152,13 @@ in the config. The node logs
 and `get_hardfork_version` reports `4.1.0` from then on. Drop the option after the run: the fork is chain
 state now, and forcing it again on a restart from an older snapshot is harmless but noisy.
 
+One trap when checking the deployment: `--testnet-hardfork` is declared as a *config-file* option, which
+appbase also accepts on the command line (it parses argv against `cli + cfg` merged) — but `--help` prints
+the command-line options only, so the flag is **not** listed there. Verify the flag by starting the node and
+reading the `FORCING HARDFORK` banner, not by grepping `--help`. An option declared in *both* descriptions
+is worse than invisible: boost then refuses every start with
+`option '--testnet-hardfork' is ambiguous and matches different versions of '--testnet-hardfork'`.
+
 Post-activation:
 
 * the fork appears in `processed_hardforks` and the node log shows the activation;
