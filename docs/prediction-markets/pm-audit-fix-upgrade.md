@@ -85,7 +85,9 @@ is nothing to recompute on activation.
   in §3 against the live chain. Note that HF14's own mainnet date (2026-08-28) is already in the
   past, so a first mainnet deployment carrying both forks activates them together in one block
   (`process_hardforks` walks while `_hardfork_versions[last] < next_hardfork`); the testnet, whose
-  snapshot carries HF14 already processed, is the only place HF15 can be exercised on its own.
+  snapshot carries HF14 already processed, is the only place HF15 can be exercised on its own — but only
+  if that chain is not in emergency consensus (see §3: an emergency committee neither votes nor is
+  counted, so the fork never even becomes pending there).
 * **Rollback.** Before the activation timestamp, redeploying the previous image is safe: the fork
   simply stays pending (the state keeps a voted-but-unapplied fork; rolling the new image back in
   clears it). After activation the marker is chain state, so do not roll back — a pre-HF15 binary does
@@ -94,10 +96,34 @@ is nothing to recompute on activation.
 
 ## 3. Verification
 
-Pre-activation (the testnet, after deploying the new image and before the timestamp):
-`get_hardfork_property_object` (or `database_api.get_hardfork_property`) reports the current fork
-still at 14 with the next fork's version/time pending and validators voting for it; the detector in §4
-(`scripts/pm_stale_bshare_detect.py`) reports on the state that is about to be gated.
+Pre-activation (after deploying the new image and before the timestamp), read the state with the two
+RPC methods this build actually exposes — `database_api.get_hardfork_property` is **not** registered on
+VIZ, so a call for it fails with `Could not find method`:
+
+* `database_api.get_hardfork_version` — the **applied** fork version (`4.0.0` while HF14 is current);
+* `database_api.get_next_scheduled_hardfork` — `hf_version` / `live_time` of the fork the validator
+  tally has scheduled. Once the new image's validators vote, this is the HF15 version and the compiled
+  activation time; the detector in §4 (`scripts/pm_stale_bshare_detect.py`) reports on the state that is
+  about to be gated.
+
+**A production-config testnet in emergency consensus cannot get there at all, and this is the trap to
+know about.** While `dynamic_global_property_object.emergency_consensus_active` is true the validator
+schedule is filled with `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` (= `committee`, `database.cpp:575`), and
+that account is excluded from the fork vote in **both** directions: `database.cpp:2811` skips the vote
+injection for the producing validator, and the tally loop (`database.cpp:3413`) skips its slots so a
+single entity holding many slots cannot inflate its own weight. The observable consequence, measured on
+the testnet 2026-09-27 after deploying 4.1.0 over a chain sitting at 4.0.0: every block the node
+produces carries an **empty `extensions`** array (no `hardfork_version_vote`), and
+`get_next_scheduled_hardfork` keeps returning `4.0.0` with the *previous* fork's time. The tally is
+empty, `process_hardforks` pins `next_hardfork` to `current_hardfork_version`, and **no** hardfork can
+be scheduled — the compiled activation time is a dead knob. Exiting emergency consensus needs
+`CHAIN_HARDFORK_REQUIRED_VALIDATORS` real validators to update (HF12's exit rule), which a testnet whose
+validators are imported mainnet history will not reach.
+
+So on such a chain "deploy first, watch the fork activate" verifies the deployment (image runs, snapshot
+imports, invariants hold) but **not** the activation. Observing activation before mainnet needs a chain
+whose producer is not the emergency committee — a fresh `BUILD_TESTNET` build, where the quorum is 1 and
+an ordinary validator votes and applies the fork on its own.
 
 Post-activation:
 
