@@ -179,6 +179,15 @@ inline u256 to256(const fc::uint128_t &t) {
             }
         }
 
+        fc::optional<uint32_t> database::get_hardfork_number(const protocol::hardfork_version &v) const {
+            for (uint32_t i = 0; i <= CHAIN_NUM_HARDFORKS; ++i) {
+                if (_hardfork_versions[i] == v) {
+                    return i;
+                }
+            }
+            return fc::optional<uint32_t>();
+        }
+
         void database::apply_hardfork(uint32_t hardfork) {
             if (_log_hardforks) {
                 elog("HARDFORK ${hf} at block ${b}", ("hf", hardfork)("b", head_block_num()));
