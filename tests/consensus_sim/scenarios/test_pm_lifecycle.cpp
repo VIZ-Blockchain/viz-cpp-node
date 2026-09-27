@@ -110,6 +110,26 @@ namespace {
         produce(node, gp, when);
     }
 
+    // The vote floors (pm_dispute_vote_min_vesting / committee_vote_min_vesting) are compared
+    // against effective_vesting_shares(), i.e. VESTS — funding a voter with liquid TOKEN does not
+    // clear them, it is rejected before the ballot's weight is ever read. Vest in its own block:
+    // inside one block the create/fund tx and this one would be ordered by trx_id, not by intent.
+    void vest(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+              const std::string& name, const fc::ecc::private_key& key, share_type token) {
+        transfer_to_vesting_operation tv;
+        tv.from = name; tv.to = name;
+        tv.amount = asset(token, TOKEN_SYMBOL);
+        node.push_pending_transaction(sign_ops({tv}, key, node));
+        produce(node, gp, when);
+    }
+
+    // Twice the dispute-vote floor: the VIZ→VESTS conversion truncates, so staking exactly the
+    // floor can land one satoshi short of it.
+    share_type vote_stake(const simulated_node& node) {
+        return share_type(node.db().get_validator_schedule_object()
+                              .median_props.pm_dispute_vote_min_vesting.amount.value * 2);
+    }
+
     // Long-market odds-drift simulation, shared by the binary/skewed/multi cases.
     // Places the given (outcome, stake) bets from the initiator, prints how far the
     // commission-baked BOARD coefficient shown at bet time drifts from the FINAL one, then
@@ -574,12 +594,16 @@ BOOST_AUTO_TEST_CASE(committee_dispute_lazy_pool_voting_weight) {
     node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
     produce(node, gp, when);
 
-    // carol: no vesting SHARES; her only governance weight is a lazy-pool deposit. Size it to
-    // ~tvf/3 so that even after it inflates the quorum denominator she clears the 10% bar.
+    // carol: her *governance weight* comes from a lazy-pool deposit, sized to ~tvf/3 so that even
+    // after it inflates the quorum denominator she clears the 10% bar. She still has to clear the
+    // vesting FLOOR first: pm_dispute_vote gates on effective_vesting_shares() (the lazy stake is
+    // counted in the TALLY only), so a deposit-only voter is rejected before her weight is read.
     const int64_t tvf = node.db().get_dynamic_global_properties().total_vesting_fund.amount.value;
     const int64_t deposit_amt = tvf / 3;
+    const share_type stake = vote_stake(node);
     auto carol_key = derive_key("carol"), bob_key = derive_key("bob");
-    create_and_fund(node, gp, when, "carol", carol_key, share_type(deposit_amt + unit));
+    create_and_fund(node, gp, when, "carol", carol_key, share_type(deposit_amt + unit + stake.value));
+    vest(node, gp, when, "carol", carol_key, stake);
     create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
 
     pm_lazy_deposit_operation dep;
@@ -2596,19 +2620,28 @@ BOOST_AUTO_TEST_CASE(instant_bet_disabled_gate) {
     BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({instant}, alice_key, node)),
                       std::runtime_error);
 
-    // Batch bet (mode 1) is accepted.
+    // Batch bet (mode 1): accepted while the audit fork is pending (historical immediate fill), and
+    // rejected once it is active — the whole point of the fix is that mode=1 could be sent straight
+    // into an instant fill, bypassing the commit -> reveal flow the market opted into with
+    // allow_batch. Which side runs depends on whether this node has the fork: on a BUILD_TESTNET
+    // build the harness validator reaches quorum by itself, so it is active whenever the simulation
+    // clock is past the fork time (this case starts at now(); the dedicated regression in
+    // test_pm_audit_fixes.cpp drives both sides explicitly on a pinned clock).
     const asset alice_before = node.db().get_account("alice").balance;
+    const bool fix_active = node.db().has_hardfork(CHAIN_PM_AUDIT_FIX_HARDFORK);
     pm_place_bet_operation batch = instant; batch.mode = 1;
-    node.push_pending_transaction(sign_ops({batch}, alice_key, node));
+    if (fix_active) BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({batch}, alice_key, node)),
+                                     std::runtime_error);
+    else node.push_pending_transaction(sign_ops({batch}, alice_key, node));
     produce(node, gp, when);
 
     const int64_t spent = (alice_before - node.db().get_account("alice").balance).amount.value;
-    BOOST_TEST_MESSAGE("instant-gate: batch spent=" << spent);
-    BOOST_CHECK_EQUAL(spent, unit);   // batch bet went through (stake debited)
+    BOOST_TEST_MESSAGE("instant-gate: fix_active=" << fix_active << " batch spent=" << spent);
+    BOOST_CHECK_EQUAL(spent, fix_active ? 0 : unit);   // pre-fix: stake debited; post-fix: refused
     uint32_t bets = 0;
     for (const auto& b : node.db().get_index<pm_bet_index>().indices())
         if (b.market == market_id && b.account == account_name_type("alice")) ++bets;
-    BOOST_CHECK_EQUAL(bets, 1u);
+    BOOST_CHECK_EQUAL(bets, fix_active ? 0u : 1u);
 }
 
 // #14 — Dispute + time-limited creator ban. An account-mode resolver bars the creator from opening
@@ -5649,10 +5682,12 @@ BOOST_AUTO_TEST_CASE(dispute_tally_row_budget_defers_next) {
     // markets' own timers out from under the test.
     std::vector<std::string> voters;
     std::vector<fc::ecc::private_key> vkeys;
+    const share_type stake = vote_stake(node);
     for (int v = 0; v < VOTERS; ++v) {
         std::string name = "voter" + std::to_string(v);
         auto k = derive_key(name);
-        create_and_fund(node, gp, when, name, k, share_type(1000));
+        create_and_fund(node, gp, when, name, k, share_type(stake.value + unit));
+        vest(node, gp, when, name, k, stake);   // liquid TOKEN alone is barred by the vote floor
         voters.push_back(name); vkeys.push_back(k);
     }
     auto bob_key = derive_key("bob");
@@ -5786,10 +5821,12 @@ BOOST_AUTO_TEST_CASE(dispute_ballot_counter_matches_rows) {
 
     std::vector<std::string> voters;
     std::vector<fc::ecc::private_key> vkeys;
+    const share_type stake = vote_stake(node);
     for (int v = 0; v < VOTERS; ++v) {
         std::string name = "elector" + std::to_string(v);
         auto k = derive_key(name);
-        create_and_fund(node, gp, when, name, k, share_type(1000));
+        create_and_fund(node, gp, when, name, k, share_type(stake.value + unit));
+        vest(node, gp, when, name, k, stake);
         voters.push_back(name); vkeys.push_back(k);
     }
     auto bob_key = derive_key("bob");
