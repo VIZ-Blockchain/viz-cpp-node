@@ -102,6 +102,14 @@ inline u256 to256(const fc::uint128_t &t) {
             _hardfork_times[CHAIN_HARDFORK_14] = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
             _hardfork_versions[CHAIN_HARDFORK_14] = CHAIN_HARDFORK_14_VERSION;
 
+            // HF15 (PM audit fixes) is registered in BOTH configs — production included, because the
+            // shelter testnet runs the production config and a testnet-only fork could never
+            // activate there. The gate is the activation time (15.hf) plus the validator quorum,
+            // not the build flavour; CHAIN_NUM_HARDFORKS is 15 everywhere so the arrays are sized
+            // [CHAIN_NUM_HARDFORKS + 1] = [16] and these indices are in bounds.
+            _hardfork_times[CHAIN_HARDFORK_15] = fc::time_point_sec(CHAIN_HARDFORK_15_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_15] = CHAIN_HARDFORK_15_VERSION;
+
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
                 hardforks.last_hardfork <= CHAIN_NUM_HARDFORKS,

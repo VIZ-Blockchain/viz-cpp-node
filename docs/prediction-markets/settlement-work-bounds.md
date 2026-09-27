@@ -12,6 +12,7 @@ walk still bounded only economically emits a loud log signal instead of degradin
 summarises the closed surface.
 
 Sibling internal specs: [early-exit-deferred-claim](./early-exit-deferred-claim.md),
+[pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md) (HF15 checklist),
 [specification](./specification.md) §5 (crons).
 
 ## 1. The hole

@@ -406,8 +406,9 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
     FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Betting period ended");
 
     // Pre-upgrade mode=1 was filled immediately despite its batch label. Preserve
-    // historical replay; after the separately scheduled PM fix upgrade, batch
-    // stakes must enter through commit -> reveal (which creates status=5 rows).
+    // historical replay; after HF15 (CHAIN_PM_AUDIT_FIX_HARDFORK) batch stakes must
+    // enter through commit -> reveal (which creates status=5 rows).
+    // docs/prediction-markets/pm-audit-fix-upgrade.md
     if (db.has_hardfork(CHAIN_PM_AUDIT_FIX_HARDFORK))
         FC_ASSERT(o.mode == 0, "Batch bets must use commit and reveal");
     // Betting-mode gate (scenario #55): a market may disable instant bets (allow_instant_bet=false).
@@ -889,6 +890,21 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
             share_type((int64_t)(fc::uint128_t((uint64_t)lp.b_share.value) *
                                 fc::uint128_t((uint64_t)withdraw.value) /
                                 fc::uint128_t((uint64_t)lp.amount.value)).lo);
+        // Post-fix the two records are written in step, so Σ b_share over the active rows is equal
+        // to mkt.lmsr_b and b_remove can never exceed it. State written by the legacy path can
+        // break that: a pre-fix partial withdrawal took b_remove out of the curve while leaving
+        // this row's b_share untouched, so the row now claims more than the market holds. Taking it
+        // out anyway would drive lmsr_b to <= 0, and that is not a merely flat curve — lmsr_q96
+        // fails soft (lmsr_price/lmsr_buy_cost/lmsr_tokens_for_amount all return 0 for b <= 0), so
+        // every outcome prices at zero and a bet costs nothing while the market still holds the
+        // remaining LP capital and the bettors' stakes. Fail closed instead: the position keeps its
+        // principal (returned in full at settlement, where the live-market floor below no longer
+        // applies) and the stale row shows up in the log and in the pre-upgrade detector instead of
+        // as a drained curve. Unreachable for markets created after the fix.
+        FC_ASSERT(!db.has_hardfork(CHAIN_PM_AUDIT_FIX_HARDFORK) || b_remove <= mkt.lmsr_b,
+                  "Withdrawal would drain the LMSR pricing curve: this position's b_share is larger "
+                  "than the market holds (pre-audit-fix partial-withdraw bookkeeping)",
+                  ("b_remove", b_remove)("lmsr_b", mkt.lmsr_b)("market", mkt.id)("liquidity", lp.id));
     }
     db.modify(mkt, [&](pm_market_object& m) {
         const int64_t L = m.liquidity_sum.value; // capital BEFORE this withdrawal

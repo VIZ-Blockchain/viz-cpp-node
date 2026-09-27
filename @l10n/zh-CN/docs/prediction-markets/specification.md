@@ -490,6 +490,13 @@ returned = withdraw_amount + fee_share
 提取减去原始 `weight_a` 与 `weight_b`（而非当前储备的比例份额）。若 `reserve_a < weight_a` 或
 `reserve_b < weight_b`，提取被**阻止**。
 
+**LMSR 市场（§6）单独跟踪深度：** 曲线按市场持有 `lmsr_b`，每条 LP 记录持有自己的 `b_share`，按比例
+提取（`b_remove = floor(b_share × withdraw / amount)`）。两条记录必须同步变动 —— 部分提取若只缩减曲线，
+会让该记录声称的深度超过市场实际持有，其下一次全额退出就可能把 `lmsr_b` 抽干为零（这会静默地把所有
+价格归零并使下注免费）。该修复由分叉门控（`CHAIN_PM_AUDIT_FIX_HARDFORK`）：分叉后两条记录按同一个
+`b_remove` 同步缩减，而 `b_remove` 会超过 `lmsr_b` 的提取将被拒绝。激活方式、陈旧记录不变量与迁移选项见
+[pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md)。
+
 ### 创建者作为首位 LP
 
 市场创建者自动成为首位 LP。其 `sec_to_expiration` 等于完整市场时长，给予最大时间权重。
@@ -942,6 +949,9 @@ API：`get_account_leverage_positions`、`get_market_leverage_positions`、`get_
   `pm_commit_no_reveal_penalty_percent`（bp）。
 - 在每个纪元边界（`pm_batch_epoch_blocks`，揭示窗口 `pm_reveal_window_blocks`）入队下注由 `pm_batch_settle`
   定时任务以**统一价格**结算 —— 只有净残量推动 AMM，故批内排序无优势，且 `Σ reserve ≥ L` 不变量得以保持。
+- 在 `allow_instant_bet = false` 的市场上，上述 commit-reveal 流程是唯一被接受的路径：直接的
+  `pm_place_bet(mode = 1)` 会走到即时成交并绕过它。拒绝该调用由分叉门控
+  （`CHAIN_PM_AUDIT_FIX_HARDFORK`）—— 见 [pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md)。
 
 ## 17. 链上对象模型
 

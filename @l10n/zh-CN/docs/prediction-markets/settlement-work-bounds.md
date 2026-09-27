@@ -9,6 +9,7 @@
 仅受经济约束的遍历会发出响亮的日志信号，而不是静默退化。第 7 节汇总了已封堵的攻击面。
 
 姊妹内部规范：[early-exit-deferred-claim](./early-exit-deferred-claim.md)、
+[pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md)（HF15 清单）、
 [specification](./specification.md) §5（crons）。
 
 ## 1. 漏洞

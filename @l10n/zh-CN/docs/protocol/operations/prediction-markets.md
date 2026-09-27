@@ -127,7 +127,7 @@ flowchart TD
 | `outcome_index` | `int16_t` | 多元：0..N-1；二元：-1 |
 | `amount` | `asset`（VIZ） | 下注（`> 0`） |
 | `min_tokens` | `share_type` | 滑点下限（0 = 无） |
-| `mode` | `uint8_t` | 0 即时，1 批次 |
+| `mode` | `uint8_t` | 0 即时，1 批次。当 `allow_instant_bet = false` 时，唯一被接受的路径是 `pm_commit_bet` → `pm_reveal_bet`：`CHAIN_PM_AUDIT_FIX_HARDFORK` 之后，直接发送 `mode = 1` 会被拒绝（分叉前它会静默走即时成交，绕过市场自己选择的门控）。 |
 
 ### `pm_commit_bet_operation`（ID 71）
 **Auth：** `account` 的 `active`

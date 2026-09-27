@@ -503,6 +503,10 @@ returned = withdraw_amount + fee_share
 
 Withdrawal subtracts original `weight_a` and `weight_b` (not proportional share of current reserves). If `reserve_a < weight_a` or `reserve_b < weight_b`, withdrawal is **blocked**.
 
+**LMSR markets (§6) track depth separately:** the curve carries a per-market `lmsr_b` and each LP row its own `b_share`, withdrawn proportionally (`b_remove = floor(b_share × withdraw / amount)`). Both records must move together — a partial withdrawal that
+shrank only the curve left the row claiming more depth than the market held, and the row's next full exit could then drain `lmsr_b` to zero (which silently zeroes every price and makes bets free). Fix is
+hardfork-gated (`CHAIN_PM_AUDIT_FIX_HARDFORK`): post-fork both records shrink by the same `b_remove`, and a withdrawal whose `b_remove` would exceed `lmsr_b` is refused. Activation, the stale-row invariant and the migration options are in [pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md).
+
 ### Creator as First LP
 
 Market creator is automatically the first LP. Their `sec_to_expiration` equals the full market duration, giving maximum time-weight.
@@ -1026,6 +1030,10 @@ opt-in per market (`allow_batch` / `allow_instant_bet`), median kill-switch `pm_
 - At each epoch boundary (`pm_batch_epoch_blocks`, reveal window `pm_reveal_window_blocks`) queued bets
   settle at a **uniform price** via the `pm_batch_settle` cron — only the net residual moves the AMM, so
   intra-batch ordering carries no advantage and the `Σ reserve ≥ L` invariant is preserved.
+- On a market with `allow_instant_bet = false`, the commit-reveal flow above is the only accepted path:
+  a direct `pm_place_bet(mode = 1)` reached the instant fill instead and bypassed it. Rejecting that
+  call is hardfork-gated (`CHAIN_PM_AUDIT_FIX_HARDFORK`) — see
+  [pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md).
 
 ## 17. On-Chain Object Model
 
