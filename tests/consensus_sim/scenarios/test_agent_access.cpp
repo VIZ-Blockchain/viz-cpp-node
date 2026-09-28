@@ -504,3 +504,46 @@ BOOST_AUTO_TEST_CASE(agent_access_recovery_wipes) {
     BOOST_REQUIRE_MESSAGE(recovered, "recovery did not go through — the wipe check would be vacuous");
     BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "recovered account kept its delegation");
 }
+
+// Cap: a principal holds at most CHAIN_AGENT_MAX_PER_ACCOUNT live delegations; re-granting an
+// existing pair is an overwrite and does not count as a new slot. An expired row is swept on the
+// principal's next grant and frees its slot.
+BOOST_AUTO_TEST_CASE(agent_access_cap_and_expired_sweep) {
+    agent_fixture f(0xAA9E23, "aa-cap");
+    std::vector<account_name_type> agents;
+    for (int i = 0; i < CHAIN_AGENT_MAX_PER_ACCOUNT + 1; ++i) {
+        const std::string n = "agentx" + std::string(1, char('a' + i));
+        create_account(f.node, f.gp, f.when, n, derive_key(n), 1000);
+        agents.push_back(n);
+    }
+    // Fill the cap with perpetual grants.
+    for (int i = 0; i < CHAIN_AGENT_MAX_PER_ACCOUNT; ++i)
+        grant(f.node, f.gp, f.when, f.principal, f.principal_key, agents[i], {"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, agents[CHAIN_AGENT_MAX_PER_ACCOUNT - 1]));
+
+    // The 17th distinct agent is refused.
+    set_agent_permission_operation op;
+    op.account = f.principal; op.agent = agents[CHAIN_AGENT_MAX_PER_ACCOUNT];
+    op.operations.insert("transfer");
+    expect_rejected(f.node, sign_ops({op}, f.principal_key, f.node), "17th agent accepted over the cap");
+
+    // Re-granting an existing pair at the cap is an overwrite, not a new slot: here it shortens
+    // agents[0]'s grant to a few blocks.
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, agents[0], {"transfer"},
+          fc::time_point_sec(f.node.head_block_time() + fc::seconds(CHAIN_BLOCK_INTERVAL * 2)));
+    BOOST_REQUIRE(has_row(f.node, f.principal, agents[0]));
+
+    // Once it has expired, the next grant sweeps it and takes the freed slot.
+    for (int i = 0; i < 4; ++i) produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE_MESSAGE(has_row(f.node, f.principal, agents[0]), "expired row vanished before any grant touched it");
+    f.node.push_pending_transaction(sign_ops({op}, f.principal_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, agents[0]), "expired row not swept on the next grant");
+    BOOST_CHECK(has_row(f.node, f.principal, agents[CHAIN_AGENT_MAX_PER_ACCOUNT]));
+
+    // Now the cap is full again with live rows only: one more distinct agent is refused.
+    const std::string extra = "agentextra";
+    create_account(f.node, f.gp, f.when, extra, derive_key(extra), 1000);
+    op.agent = extra;
+    expect_rejected(f.node, sign_ops({op}, f.principal_key, f.node, 2), "agent over the cap accepted");
+}

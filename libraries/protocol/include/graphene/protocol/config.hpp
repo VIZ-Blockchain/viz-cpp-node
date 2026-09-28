@@ -135,6 +135,9 @@
 #define CHAIN_ACCOUNT_AUCTION_MIN_STEP        (CHAIN_100_PERCENT/10) // 10%
 #define CHAIN_ACCOUNT_AUCTION_EXTENSION_TIME  fc::minutes(5)
 
+/// HF15 agent access: live delegations one principal may hold (owner decision 2026-09-28).
+#define CHAIN_AGENT_MAX_PER_ACCOUNT           16
+
 #define COMMITTEE_MIN_DURATION                (60*60*24*5)
 #define COMMITTEE_MAX_DURATION                (60*60*24*30)
 #define COMMITTEE_MAX_REQUIRED_AMOUNT         int64_t(CHAIN_INIT_SUPPLY/100)

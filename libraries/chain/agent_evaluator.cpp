@@ -192,6 +192,17 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
         return;
     }
 
+    // Touch-time cleanup: every grant sweeps the principal's expired rows, so a dead row lives at
+    // most until the principal's next grant. Bounded by the per-principal cap below.
+    uint32_t live_others = 0;
+    for (auto it = pidx.lower_bound(boost::make_tuple(o.account)); it != pidx.end() && it->account == o.account;) {
+        const auto& row = *it++;   // advance before a possible remove
+        if (row.expiration != time_point_sec() && row.expiration <= now)
+            db.remove(row);
+        else if (row.agent != o.agent)
+            ++live_others;
+    }
+    existing = pidx.find(boost::make_tuple(o.account, o.agent));   // the sweep may have removed it
     const string packed = join_operation_names(o.operations);
     if (existing != pidx.end()) {
         db.modify(*existing, [&](agent_permission_object& p) {
@@ -199,6 +210,11 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
             p.expiration = o.expiration;
         });
     } else {
+        // The hook walks all of a principal's rows for every transaction the principal did not sign
+        // itself, and a rejected transaction pays no bandwidth — so the row count must be bounded.
+        FC_ASSERT(live_others < CHAIN_AGENT_MAX_PER_ACCOUNT,
+                  "Account ${a} already has ${n} agents, the limit is ${m}",
+                  ("a", o.account)("n", live_others)("m", CHAIN_AGENT_MAX_PER_ACCOUNT));
         db.create<agent_permission_object>([&](agent_permission_object& p) {
             p.account  = o.account;
             p.agent    = o.agent;
