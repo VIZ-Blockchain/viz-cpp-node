@@ -18,6 +18,7 @@
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
 #include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/agent_objects.hpp>
 #include <graphene/chain/pm_meta_object.hpp>
 #include <graphene/chain/hardfork.hpp>
 
@@ -969,6 +970,24 @@ inline uint32_t import_pm_outcomes(graphene::chain::database& db, const fc::vari
     return count;
 }
 
+inline uint32_t import_agent_permissions(graphene::chain::database& db, const fc::variants& arr) {
+    // HF15 agent access. Not import_simple_objects: `operations` is a shared_string, which needs the
+    // allocator-aware setter rather than from_variant.
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto& mutable_idx = db.get_mutable_index<agent_permission_index>();
+        mutable_idx.set_next_id(agent_permission_id_type(v["id"].as_int64()));
+        db.create<agent_permission_object>([&](agent_permission_object& obj) {
+            obj.account    = v["account"].as<account_name_type>();
+            obj.agent      = v["agent"].as<account_name_type>();
+            set_shared_string(obj.operations, v["operations"]);
+            obj.expiration = v["expiration"].as<fc::time_point_sec>();
+        });
+        ++count;
+    }
+    return count;
+}
+
 inline uint32_t import_pm_disputes(graphene::chain::database& db, const fc::variants& arr) {
     uint32_t count = 0;
     for (const auto& v : arr) {
@@ -1413,6 +1432,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(pm_commit_index,         pm_commit_object,         "pm_commit")
     EXPORT_INDEX(pm_dispute_index,        pm_dispute_object,        "pm_dispute")
     EXPORT_INDEX(pm_dispute_vote_index,   pm_dispute_vote_object,   "pm_dispute_vote")
+    EXPORT_INDEX(agent_permission_index,  agent_permission_object,  "agent_permission")
     EXPORT_INDEX(pm_lazy_pool_index,      pm_lazy_pool_object,      "pm_lazy_pool")
     EXPORT_INDEX(pm_lazy_deposit_index,   pm_lazy_deposit_object,   "pm_lazy_deposit")
     EXPORT_INDEX(pm_lazy_allocation_index,pm_lazy_allocation_object,"pm_lazy_allocation")
@@ -2084,6 +2104,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("pm_dispute")) {
             auto n = detail::import_pm_disputes(db, state["pm_dispute"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} pm_dispute objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("agent_permission")) {
+            auto n = detail::import_agent_permissions(db, state["agent_permission"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} agent_permission objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("pm_dispute_vote")) {
             auto n = detail::import_simple_objects<pm_dispute_vote_object, pm_dispute_vote_index>(db, state["pm_dispute_vote"].get_array());
