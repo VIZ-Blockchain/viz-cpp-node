@@ -4062,6 +4062,24 @@ namespace graphene { namespace chain {
                 auth.master = master_authority;
                 auth.last_master_update = head_block_time();
             });
+            // Master change (account_update, recover_account): the delegation dies with the keys.
+            wipe_agent_permissions(account.name);
+        }
+
+        void database::wipe_agent_permissions(const account_name_type &name) {
+            if (!has_hardfork(CHAIN_HARDFORK_15))
+                return;
+            const auto &by_principal = get_index<agent_permission_index>().indices().get<by_permission_account>();
+            for (auto it = by_principal.lower_bound(boost::make_tuple(name));
+                 it != by_principal.end() && it->account == name;) {
+                const auto &row = *it++;   // advance before remove: remove invalidates `it`
+                remove(row);
+            }
+            const auto &by_agent = get_index<agent_permission_index>().indices().get<by_permission_agent>();
+            for (auto it = by_agent.lower_bound(name); it != by_agent.end() && it->agent == name;) {
+                const auto &row = *it++;
+                remove(row);
+            }
         }
 
         void database::process_vesting_withdrawals() {
@@ -4845,6 +4863,8 @@ namespace graphene { namespace chain {
                                                 auth.regular = auth.active;
                                                 auth.last_master_update = head_block_time();
                                             });
+                                            // Auction closed: the account has a new owner.
+                                            wipe_agent_permissions(account.name);
 
                                             account.account_seller = "";
                                             account.account_on_sale=false;
@@ -4968,6 +4988,8 @@ namespace graphene { namespace chain {
                                                     auth.regular = auth.active;
                                                     auth.last_master_update = head_block_time();
                                                 });
+                                                // Auction closed: the account has a new owner.
+                                                wipe_agent_permissions(account.name);
 
                                                 account.account_seller = "";
                                                 account.account_on_sale=false;

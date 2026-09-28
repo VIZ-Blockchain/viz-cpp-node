@@ -466,6 +466,12 @@ namespace graphene { namespace chain {
 
             void update_master_authority(const account_object &account, const authority &master_authority);
 
+            /// HF15 agent access: drop every delegation `name` takes part in, on BOTH sides (as the
+            /// principal and as the agent). Called in the same step as any change of an existing
+            /// account's master/active authority, recovery and sale, so a delegation never survives
+            /// the keys it was granted under. No-op below HF15.
+            void wipe_agent_permissions(const account_name_type &name);
+
             asset get_balance(const account_object &a, asset_symbol_type symbol) const;
 
             asset get_balance(const string &aname, asset_symbol_type symbol) const {

@@ -363,3 +363,54 @@ BOOST_AUTO_TEST_CASE(agent_access_does_not_leak_through_nested_authorities) {
                     sign_ops({transfer_op(second, f.gp.initiator_name, 6000, TOKEN_SYMBOL)}, f.agent_key, f.node),
                     "the principal's agent inherited the principal's nested authority elsewhere");
 }
+
+// Wipe rules: a delegation must not outlive the keys it was granted under — on either side.
+// Principal rotates its ACTIVE key → the row goes and the agent can no longer act.
+BOOST_AUTO_TEST_CASE(agent_access_principal_active_change_wipes) {
+    agent_fixture f(0xAA9E1D, "aa-wipe-principal");
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.agent));
+
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(derive_key("principal-key-2").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "principal's active change left the row");
+    expect_rejected(f.node,
+                    sign_ops({transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node),
+                    "agent acted after the principal rotated its active key");
+}
+
+// Principal changes only REGULAR → the grant is untouched (agents sign with active).
+BOOST_AUTO_TEST_CASE(agent_access_regular_change_keeps_row) {
+    agent_fixture f(0xAA9E1E, "aa-keep-regular");
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+
+    account_update_operation au;
+    au.account = f.principal;
+    au.regular = single_key_auth(derive_key("principal-regular-2").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK(has_row(f.node, f.principal, f.agent));
+}
+
+// The AGENT rotates its master key (the sale path rewrites master too) → rows where it is the
+// agent go as well, so a delegation never passes to whoever controls the agent account next.
+BOOST_AUTO_TEST_CASE(agent_access_agent_master_change_wipes) {
+    agent_fixture f(0xAA9E1F, "aa-wipe-agent");
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+
+    account_update_operation au;
+    au.account = f.agent;
+    au.master = single_key_auth(derive_key("agent-master-2").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "agent's master change left the row");
+    expect_rejected(f.node,
+                    sign_ops({transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node),
+                    "agent acted after its own master rotation");
+}
