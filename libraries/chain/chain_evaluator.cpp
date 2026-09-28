@@ -2156,7 +2156,16 @@ namespace graphene { namespace chain {
                                     a.current_bidder_key = public_key_type(op.account_authorities_key);
                                     a.account_on_auction=true;
 
-                                    time_point_sec expand_start_time=fc::time_point::now() + CHAIN_ACCOUNT_AUCTION_EXTENSION_TIME;
+                                    // A late bid extends the auction. Before HF15 the extension was measured from the
+                                    // node's WALL CLOCK, so every node (and every replay) computed its own close time:
+                                    // validators could close the auction in different blocks, and a replay from the
+                                    // block log could not reproduce the historical state. From HF15 it is measured from
+                                    // head_block_time(), which every node agrees on. The pre-fork branch is kept as is
+                                    // only because past blocks were applied that way.
+                                    const time_point_sec extension_base = _db.has_hardfork(CHAIN_HARDFORK_15)
+                                            ? _db.head_block_time()
+                                            : time_point_sec(fc::time_point::now());
+                                    time_point_sec expand_start_time = extension_base + CHAIN_ACCOUNT_AUCTION_EXTENSION_TIME;
                                     a.account_on_sale_start_time = std::max(a.account_on_sale_start_time, expand_start_time);
 
                                     const auto& new_account_bidder = _db.get_account(op.buyer);
