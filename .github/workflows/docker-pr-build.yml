@@ -174,7 +174,8 @@ jobs:
                 -DBUILD_CONSENSUS_TESTS=ON ..
           make -j"$(nproc)" \
             pm_lmsr_vectors_tests pm_parimutuel_tests pm_leverage_tests \
-            pm_meta_parse_tests pm_props_validate_tests
+            pm_meta_parse_tests pm_props_validate_tests \
+            pm_agent_access_tests
 
       - name: Run ctest (PM suite)
         run: |
