@@ -100,6 +100,17 @@ namespace graphene {
             }
         };
 
+        // Agent fallback is evaluated only for the direct requirement of each operation.
+        // Nested account_auths and independent other authorities retain ordinary getters.
+        using agent_authority_checker = std::function<bool(const operation&, const account_name_type&,
+                                                            bool, sign_state&)>;
+        void verify_authority_with_agents(const vector<operation>& ops,
+                const flat_set<public_key_type>& sigs,
+                const authority_getter& get_active, const authority_getter& get_master,
+                const authority_getter& get_regular, const agent_authority_checker& agent,
+                uint32_t max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH,
+                bool allow_unused = false, flat_set<public_key_type>* used = nullptr);
+
         void verify_authority(const vector<operation> &ops, const flat_set<public_key_type> &sigs,
                 const authority_getter &get_active,
                 const authority_getter &get_master,

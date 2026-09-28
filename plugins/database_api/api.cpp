@@ -1,4 +1,6 @@
 #include <graphene/plugins/database_api/plugin.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
+#include <graphene/chain/agent_objects.hpp>
 
 
 #include <graphene/protocol/get_config.hpp>
@@ -791,6 +793,17 @@ std::set<public_key_type> plugin::api_impl::get_required_signatures(
     const signed_transaction &trx,
     const flat_set<public_key_type> &available_keys
 ) const {
+    if (database().has_hardfork(CHAIN_HARDFORK_15)) {
+        flat_set<public_key_type> candidate = available_keys;
+        const auto signed_keys = trx.get_signature_keys(CHAIN_ID);
+        candidate.insert(signed_keys.begin(), signed_keys.end());
+        flat_set<public_key_type> used;
+        graphene::chain::verify_agent_transaction(database(), trx, candidate, true, &used);
+        std::set<public_key_type> result;
+        for (const auto& key : used)
+            if (available_keys.count(key)) result.insert(key);
+        return result;
+    }
     //   wdump((trx)(available_keys));
     auto result = trx.get_required_signatures(
         CHAIN_ID, available_keys,
@@ -844,6 +857,23 @@ std::set<public_key_type> plugin::api_impl::get_potential_signatures(const signe
         CHAIN_MAX_SIG_CHECK_DEPTH
     );
 
+    if (database().has_hardfork(CHAIN_HARDFORK_15)) {
+        const auto& idx = database().get_index<agent_permission_index>().indices().get<by_permission_account>();
+        for (const auto& op : trx.operations) {
+            flat_set<account_name_type> active, master, regular;
+            std::vector<authority> other;
+            operation_get_required_authorities(op, active, master, regular, other);
+            if (!master.empty()) continue;
+            active.insert(regular.begin(), regular.end());
+            for (const auto& account : active) {
+                for (auto it = idx.lower_bound(boost::make_tuple(account));
+                     it != idx.end() && it->account == account; ++it) {
+                    if (it->expiration != fc::time_point_sec() && it->expiration <= database().head_block_time()) continue;
+                    if (unpack_operation_names(it->operations).count(operation_wire_name(op))) result.insert(it->agent_key);
+                }
+            }
+        }
+    }
     //   wdump((result));
     return result;
 }
@@ -856,6 +886,10 @@ DEFINE_API(plugin, verify_authority) {
 }
 
 bool plugin::api_impl::verify_authority(const signed_transaction &trx) const {
+    if (database().has_hardfork(CHAIN_HARDFORK_15)) {
+        graphene::chain::verify_agent_transaction(database(), trx, trx.get_signature_keys(CHAIN_ID));
+        return true;
+    }
     trx.verify_authority(CHAIN_ID, [&](std::string account_name) {
         return authority(database().get<account_authority_object, by_account>(account_name).active);
     }, [&](std::string account_name) {

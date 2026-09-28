@@ -62,10 +62,10 @@ Re-issuing by the same name replaces the key, operations, addons and expiration 
 
 ## Rules
 
-- **Never delegable:** `set_agent_permission`, `proposal_create`, `proposal_update`, `proposal_delete`, `account_update`, `recover_account`, `change_recovery_account`, `set_account_price`, `set_subaccount_price`, `target_account_sale`. Virtual operations and deprecated aliases (use `validator_update`, not `witness_update`) are rejected.
-- **One key, one agent:** a key already bound to another agent name of the same principal is rejected.
+- **Delegable only for direct active/regular requirements:** `set_agent_permission`, proposal wrappers and `account_update` are allowed explicitly; an agent granted `set_agent_permission` can grant broader rights, and an agent granted active-only `account_update` may rotate active keys. The agent never satisfies a master requirement, including an `account_update` carrying a master field. Master-only operations (`recover_account`, `change_recovery_account`, `set_account_price`, `set_subaccount_price`, `target_account_sale`), virtual operations and deprecated aliases are rejected.
+- **Shared keys:** multiple names for one principal may use the same public key; their effective operation lists are combined while each row remains live. Revoking one name does not revoke another.
 - **At most 16 agents** per principal. A grant first removes the principal's expired agents.
-- **When an agent signature counts:** the transaction needs no master or regular authority, the principal's own keys do not already sign it, the agent is live (not expired, operation list non-empty), its list covers **every** operation of the transaction that needs a signature, and its key is among the signatures. No reach through nested `account_auths`.
+- **When an agent signature counts:** only a direct active/regular requirement for the principal and the named operation is covered. Every operation in a transaction is checked independently; unrelated requirements still need their own signatures. The agent never grants authority through nested `account_auths` or `other` authorities. A revoke or rotation earlier in the same transaction takes effect before later operations.
 - **Wipes:** all agents of the principal are removed on master change, active change, account recovery, direct sale and auction close. A regular-only change keeps them. "Change" means the field is **present** in `account_update`: sending `master` or `active` wipes the agents even if the key is the same, so a client that only edits regular or memo must leave `master`/`active` out of the operation (viz-php-lib `build_account_update` always sends all three — it wipes).
 
 ## Reading agents

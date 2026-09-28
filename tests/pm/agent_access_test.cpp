@@ -14,6 +14,7 @@
 
 #include <graphene/protocol/operations.hpp>
 #include <graphene/protocol/agent_operations.hpp>
+#include <graphene/protocol/operation_util_impl.hpp>
 #include <fc/crypto/sha256.hpp>
 #include <fc/crypto/elliptic.hpp>
 
@@ -93,17 +94,16 @@ BOOST_AUTO_TEST_CASE(validate_bounds_addons_only) {
     g.agent_key = public_key_type();
     BOOST_CHECK(!accepts(g));                              // addon-only still needs a key
 }
-BOOST_AUTO_TEST_CASE(validate_refuses_escalation_and_wrappers) {
-    BOOST_CHECK(!accepts(grant({"set_agent_permission"})));  // would let an agent re-delegate
-    BOOST_CHECK(!accepts(grant({"proposal_create"})));       // wraps arbitrary ops: bypasses the list
-    BOOST_CHECK(!accepts(grant({"proposal_update"})));
-    BOOST_CHECK(!accepts(grant({"proposal_delete"})));
-    // An active-signed account_update without the master field may rewrite the ACTIVE authority,
-    // i.e. rotate it to a key the agent controls: one granted op would be ownership itself.
-    BOOST_CHECK(!accepts(grant({"account_update"})));
+BOOST_AUTO_TEST_CASE(validate_accepts_explicit_management_and_wrappers) {
+    BOOST_CHECK(accepts(grant({"set_agent_permission"})));
+    BOOST_CHECK(accepts(grant({"proposal_create"})));
+    BOOST_CHECK(accepts(grant({"proposal_update"})));
+    BOOST_CHECK(accepts(grant({"proposal_delete"})));
+    BOOST_CHECK(accepts(grant({"account_update"})));
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_master_only_operations) {
+    // Grant-time validation excludes master-only names, not conditional active names.
     // Not reachable through a delegation (the hook never substitutes master), so granting one
     // would be a permission that can never succeed.
     BOOST_CHECK(!accepts(grant({"recover_account"})));
@@ -111,6 +111,20 @@ BOOST_AUTO_TEST_CASE(validate_refuses_master_only_operations) {
     BOOST_CHECK(!accepts(grant({"set_account_price"})));
     BOOST_CHECK(!accepts(grant({"set_subaccount_price"})));
     BOOST_CHECK(!accepts(grant({"target_account_sale"})));
+}
+
+BOOST_AUTO_TEST_CASE(all_default_direct_active_regular_names_are_grantable) {
+    for (int id = 0; id < operation::count(); ++id) {
+        operation op;
+        op.set_which(id);
+        const auto name = operation_wire_name(op);
+        if (!is_broadcastable_operation_wire_name(name)) continue;
+        fc::flat_set<account_name_type> active, master, regular;
+        std::vector<authority> other;
+        operation_get_required_authorities(op, active, master, regular, other);
+        if ((!active.empty() || !regular.empty()) && master.empty())
+            BOOST_CHECK_MESSAGE(accepts(grant({name.c_str()})), name << " must be grantable");
+    }
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_dead_permissions) {

@@ -5708,35 +5708,9 @@ namespace graphene { namespace chain {
             if (!(skip & (skip_transaction_signatures | skip_authority_check))) {
                 const chain_id_type &chain_id = CHAIN_ID;
 
-                // HF15 agent access. A principal may issue agent keys, each allowed to sign a listed
-                // set of operations for it. The decision lives in the chain layer (it needs
-                // the permission objects); the signatures are still checked by the ordinary
-                // sign_state path below, which is why substituting the getter is enough — nothing
-                // here approves anything on its own. The map is empty below HF15 and for every
-                // transaction master/regular touches, so the pre-fork behaviour is bit-for-bit.
-                const auto delegated = delegated_active_authorities(*this, trx, chain_id);
-
-                auto get_active = [&](const account_name_type& name) {
-                    const auto itr = delegated.find(name);
-                    if (itr != delegated.end()) {
-                        authority a;
-                        a.weight_threshold = 1;
-                        a.key_auths[itr->second] = 1;
-                        return a;
-                    }
-                    return authority(get<account_authority_object, by_account>(name).active);
-                };
-
-                auto get_master = [&](const account_name_type& name) {
-                    return authority(get<account_authority_object, by_account>(name).master);
-                };
-
-                auto get_regular = [&](const account_name_type& name) {
-                    return authority(get<account_authority_object, by_account>(name).regular);
-                };
-
+                // Agent permissions apply to direct operation requirements, never nested authorities.
                 try {
-                    trx.verify_authority(chain_id, get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH);
+                    verify_agent_transaction(*this, trx, trx.get_signature_keys(chain_id));
                 }
                 catch (protocol::tx_missing_active_auth &e) {
                     if (get_shared_db_merkle().find(head_block_num() + 1) == get_shared_db_merkle().end()) {
@@ -6085,8 +6059,19 @@ namespace graphene { namespace chain {
 
                 //Finally process the operations
                 _current_op_in_trx = 0;
+                // Validate the complete transaction against entry state above. Recheck each
+                // operation at application time so an earlier revoke/rotation cannot be bypassed
+                // by a later operation using the same agent signature.
+                const auto agent_sigs = (!(skip & (skip_transaction_signatures | skip_authority_check)) &&
+                                         has_hardfork(CHAIN_HARDFORK_15))
+                    ? trx.get_signature_keys(CHAIN_ID) : flat_set<public_key_type>();
                 for (const auto &op : trx.operations) {
                     try {
+                        if (!agent_sigs.empty()) {
+                            signed_transaction one;
+                            one.operations.push_back(op);
+                            verify_agent_transaction(*this, one, agent_sigs, true);
+                        }
                         apply_operation(op);
                         ++_current_op_in_trx;
                     } FC_CAPTURE_AND_RETHROW((op));

@@ -222,6 +222,66 @@ namespace graphene {
         } FC_CAPTURE_AND_RETHROW((ops)(sigs)) }
 
 
+        void verify_authority_with_agents(const vector<operation>& ops,
+                const flat_set<public_key_type>& sigs,
+                const authority_getter& get_active, const authority_getter& get_master,
+                const authority_getter& get_regular, const agent_authority_checker& agent,
+                uint32_t max_recursion, bool allow_unused, flat_set<public_key_type>* used) {
+            flat_set<account_name_type> all_active, all_master, all_regular;
+            vector<authority> all_other;
+            for (const auto& op : ops)
+                operation_get_required_authorities(op, all_active, all_master, all_regular, all_other);
+            // Preserve the transaction-wide legacy regular mixing restriction.
+            if (!all_regular.empty()) {
+                FC_ASSERT(all_active.empty() && all_master.empty() && all_other.empty());
+            }
+            flat_set<public_key_type> consumed;
+            const flat_set<public_key_type> no_available_keys;
+            for (const auto& op : ops) {
+                flat_set<account_name_type> active, master, regular;
+                vector<authority> other;
+                operation_get_required_authorities(op, active, master, regular, other);
+                sign_state s(sigs, regular.empty() ? get_active : get_regular,
+                             no_available_keys);
+                s.max_recursion = max_recursion;
+                for (const auto& auth : other)
+                    CHAIN_ASSERT(s.check_authority(auth), tx_missing_other_auth,
+                                 "Missing other authority");
+                for (const auto& id : active) {
+                    // Failed ordinary checks can touch partial multisig keys; retain only the
+                    // successful branch, otherwise an irrelevant signature becomes useful.
+                    sign_state ordinary = s;
+                    if (ordinary.check_authority(id) || ordinary.check_authority(get_master(id))) {
+                        s.provided_signatures = ordinary.provided_signatures;
+                        s.approved_by = ordinary.approved_by;
+                    } else {
+                        CHAIN_ASSERT(master.empty() && agent(op, id, false, s),
+                                     tx_missing_active_auth, "Missing Active Authority ${id}", ("id", id));
+                    }
+                }
+                for (const auto& id : regular) {
+                    sign_state ordinary = s;
+                    if (ordinary.check_authority(id) || ordinary.check_authority(get_active(id)) ||
+                        ordinary.check_authority(get_master(id))) {
+                        s.provided_signatures = ordinary.provided_signatures;
+                        s.approved_by = ordinary.approved_by;
+                    } else {
+                        CHAIN_ASSERT(master.empty() && agent(op, id, true, s),
+                                     tx_missing_regular_auth, "Missing Regular Authority ${id}", ("id", id));
+                    }
+                }
+                for (const auto& id : master)
+                    CHAIN_ASSERT(s.check_authority(get_master(id)), tx_missing_master_auth,
+                                 "Missing Master Authority ${id}", ("id", id));
+                for (const auto& key : s.provided_signatures)
+                    if (key.second) consumed.insert(key.first);
+            }
+            if (used) *used = consumed;
+            if (!allow_unused)
+                for (const auto& key : sigs)
+                    CHAIN_ASSERT(consumed.count(key), tx_irrelevant_sig, "Unnecessary signature detected");
+        }
+
         flat_set<public_key_type> signed_transaction::get_signature_keys(const chain_id_type &chain_id) const {
             try {
                 auto d = sig_digest(chain_id);

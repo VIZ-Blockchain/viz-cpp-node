@@ -1771,6 +1771,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     state_json.shrink_to_fit();
 
     const auto& state = snapshot["state"].get_object();
+    // A post-HF15 snapshot without this section would silently erase delegated rights.
+    // Legacy pre-HF15 snapshots have no rows and remain importable.
+    if (state.contains("hardfork_property")) {
+        const auto& hardforks = state["hardfork_property"].get_array();
+        if (!hardforks.empty() && hardforks.front()["last_hardfork"].as_uint64() >= CHAIN_HARDFORK_15)
+            FC_ASSERT(state.contains("agent_permission"),
+                      "Post-HF15 snapshot lacks agent_permission section");
+    }
 
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
@@ -1892,8 +1900,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             while (!pm_com_idx.empty())  { db.remove(*pm_com_idx.begin()); }
             const auto& pm_dsp_idx  = db.get_index<pm_dispute_index>().indices();
             while (!pm_dsp_idx.empty())  { db.remove(*pm_dsp_idx.begin()); }
-            const auto& pm_dvt_idx  = db.get_index<pm_dispute_vote_index>().indices();
+            const auto& pm_dvt_idx = db.get_index<pm_dispute_vote_index>().indices();
             while (!pm_dvt_idx.empty())  { db.remove(*pm_dvt_idx.begin()); }
+            const auto& agent_idx = db.get_index<agent_permission_index>().indices();
+            while (!agent_idx.empty()) { db.remove(*agent_idx.begin()); }
             const auto& pm_lpl_idx  = db.get_index<pm_lazy_pool_index>().indices();
             while (!pm_lpl_idx.empty())  { db.remove(*pm_lpl_idx.begin()); }
             const auto& pm_ldp_idx  = db.get_index<pm_lazy_deposit_index>().indices();

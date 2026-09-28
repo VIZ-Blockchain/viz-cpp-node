@@ -355,8 +355,8 @@ BOOST_AUTO_TEST_CASE(agent_access_invalid_rows_grant_nothing) {
     bad.account = f.principal;
     bad.agent_name = f.bot;
     bad.agent_key = f.agent_key.get_public_key();
-    bad.operations.insert("account_update");
-    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node), "granting account_update was accepted");
+    bad.operations.insert("recover_account");
+    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node), "granting master-only op was accepted");
 
     // 4) Unknown name.
     bad.operations.clear();
@@ -403,8 +403,71 @@ BOOST_AUTO_TEST_CASE(agent_access_does_not_leak_through_nested_authorities) {
                     "the principal's agent key reached an account that only nests the principal");
 }
 
-// One key, one agent: the same key under a second name is refused.
-BOOST_AUTO_TEST_CASE(agent_access_key_is_unique_per_principal) {
+BOOST_AUTO_TEST_CASE(agent_access_two_transfers_cannot_spend_nested_account) {
+    agent_fixture f(0xAA9E31, "aa-two-transfers");
+    const account_name_type second = "second";
+    const auto second_key = derive_key("second-owner");
+    create_account(f.node, f.gp, f.when, second, second_key, 100000);
+    authority nested;
+    nested.weight_threshold = 1;
+    nested.account_auths[f.principal] = 1;
+    account_update_operation au;
+    au.account = second;
+    au.active = nested;
+    f.node.push_pending_transaction(sign_ops({au}, second_key, f.node));
+    produce(f.node, f.gp, f.when);
+    f.issue({"transfer"});
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    expect_rejected(f.node, sign_ops({f.pay(1000),
+        transfer_op(second, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node),
+        "agent of A spent B via nested A authority in the same transaction");
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name), before);
+    // Positive control: the identical agent key still transfers from A alone.
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+    auto mixed = sign_ops({f.pay(1000),
+        transfer_op(second, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node, 1);
+    mixed.sign(second_key, f.node.chain_id());
+    f.node.push_pending_transaction(mixed);
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 3000);
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_regular_and_same_transaction_revoke) {
+    agent_fixture f(0xAA9E32, "aa-regular-revoke");
+    f.issue({"account_metadata", "set_agent_permission", "transfer"});
+    account_metadata_operation metadata;
+    metadata.account = f.principal;
+    metadata.json_metadata = "{}";
+    f.node.push_pending_transaction(sign_ops({metadata}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    set_agent_permission_operation revoke;
+    revoke.account = f.principal;
+    revoke.agent_name = f.bot;
+    expect_rejected(f.node, sign_ops({revoke, f.pay(1000)}, f.agent_key, f.node),
+                    "agent used revoked permission in later operation of same transaction");
+    BOOST_CHECK(has_row(f.node, f.principal, f.bot));
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_management_requires_explicit_scope) {
+    agent_fixture f(0xAA9E33, "aa-agent-management");
+    f.issue({"set_agent_permission"});
+    set_agent_permission_operation wider;
+    wider.account = f.principal;
+    wider.agent_name = "expanded";
+    wider.agent_key = f.agent_key.get_public_key();
+    wider.operations.insert("transfer");
+    f.node.push_pending_transaction(sign_ops({wider}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(has_row(f.node, f.principal, "expanded"));
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(has_row(f.node, f.principal, f.bot));
+}
+
+// Multiple labels may share a key; replacement of one label does not mutate the other.
+BOOST_AUTO_TEST_CASE(agent_access_shared_key_and_rotation) {
     agent_fixture f(0xAA9E25, "aa-key-unique");
     f.issue({"transfer"});
 
@@ -413,7 +476,9 @@ BOOST_AUTO_TEST_CASE(agent_access_key_is_unique_per_principal) {
     dup.agent_name = "other-bot";
     dup.agent_key = f.agent_key.get_public_key();
     dup.operations.insert("award");
-    expect_rejected(f.node, sign_ops({dup}, f.principal_key, f.node), "one key accepted for two agents");
+    f.node.push_pending_transaction(sign_ops({dup}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(has_row(f.node, f.principal, "other-bot"));
 
     // Re-issuing the SAME name with a new key replaces the key: the old one stops working.
     const auto new_key = derive_key("agent-key-2");
