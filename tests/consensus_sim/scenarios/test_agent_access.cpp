@@ -467,6 +467,22 @@ BOOST_AUTO_TEST_CASE(agent_access_management_requires_explicit_scope) {
     BOOST_CHECK(has_row(f.node, f.principal, f.bot));
 }
 
+BOOST_AUTO_TEST_CASE(agent_access_account_update_active_but_not_master) {
+    agent_fixture f(0xAA9E35, "aa-account-update-roles");
+    f.issue({"account_update"});
+    account_update_operation master_change;
+    master_change.account = f.principal;
+    master_change.master = single_key_auth(derive_key("new-master").get_public_key());
+    expect_rejected(f.node, sign_ops({master_change}, f.agent_key, f.node),
+                    "agent satisfied master account_update");
+    account_update_operation active_change;
+    active_change.account = f.principal;
+    active_change.active = single_key_auth(derive_key("new-active").get_public_key());
+    f.node.push_pending_transaction(sign_ops({active_change}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(!has_row(f.node, f.principal, f.bot)); // PR167 rotation policy
+}
+
 BOOST_AUTO_TEST_CASE(agent_access_rpc_authority_core_uses_same_rules_as_chain) {
     agent_fixture f(0xAA9E34, "aa-rpc-parity");
     f.issue({"transfer", "account_metadata"});
