@@ -139,11 +139,13 @@ struct agent_permission_api_object {
     public_key_type agent_key;
     std::vector<std::string> operations;
     time_point_sec expiration;          ///< epoch = perpetual
+    std::vector<std::string> addons;    ///< off-chain scopes (e.g. "vizhub"); opaque to consensus
     bool expired = false;               ///< past expiration at head block time: grants nothing
 
     agent_permission_api_object(const graphene::chain::agent_permission_object& o, time_point_sec now)
     :   account(o.account), agent_name(o.agent_name), agent_key(o.agent_key), expiration(o.expiration) {
         for (const auto& n : graphene::chain::unpack_operation_names(o.operations)) operations.push_back(n);
+        for (const auto& n : graphene::chain::unpack_operation_names(o.addons)) addons.push_back(n);
         expired = o.expiration != time_point_sec() && o.expiration <= now;
     }
 
@@ -454,4 +456,4 @@ FC_REFLECT((graphene::plugins::database_api::database_info), (total_size)(free_s
 
 FC_REFLECT((graphene::plugins::database_api::account_on_sale_api_object), (account)(account_seller)(account_offer_price)(account_on_sale_start_time)(target_buyer)(current_bid)(current_bidder)(current_bidder_key)(last_bid))
 FC_REFLECT((graphene::plugins::database_api::subaccount_on_sale_api_object), (account)(subaccount_seller)(subaccount_offer_price))
-FC_REFLECT((graphene::plugins::database_api::agent_permission_api_object), (account)(agent_name)(agent_key)(operations)(expiration)(expired))
+FC_REFLECT((graphene::plugins::database_api::agent_permission_api_object), (account)(agent_name)(agent_key)(operations)(expiration)(addons)(expired))

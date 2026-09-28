@@ -7,6 +7,8 @@ namespace graphene { namespace protocol {
         /// Longest wire name of an existing operation is well below this; the cap is anti-spam, not
         /// a semantic limit (the list itself is what a delegation is).
         static const size_t AGENT_MAX_OPERATION_NAME_LEN = 64;
+        static const size_t AGENT_MAX_ADDONS = 10;          // owner decision 2026-09-28
+        static const size_t AGENT_MAX_ADDON_LEN = 63;       // "shorter than 64"
 
         const flat_set<string>& never_delegable_operation_names() {
             static const flat_set<string> names = []() {
@@ -47,8 +49,17 @@ namespace graphene { namespace protocol {
             FC_ASSERT(!label.empty(), "agent_name is empty");
             FC_ASSERT(label.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") == string::npos,
                       "agent_name ${n} must be lower-case ascii, digits, '_' or '-'", ("n", label));
-            if (!operations.empty())
+            if (!operations.empty() || !addons.empty())
                 FC_ASSERT(agent_key != public_key_type(), "agent_key is required when granting");
+
+            // Addons are opaque to the node; only bounded. ',' is the storage separator.
+            FC_ASSERT(addons.size() <= AGENT_MAX_ADDONS, "at most ${c} addons", ("c", AGENT_MAX_ADDONS));
+            for (const string& a : addons) {
+                FC_ASSERT(!a.empty(), "empty addon");
+                FC_ASSERT(a.size() <= AGENT_MAX_ADDON_LEN, "addon ${a} is longer than ${c} bytes",
+                          ("a", a)("c", AGENT_MAX_ADDON_LEN));
+                FC_ASSERT(a.find(',') == string::npos, "addon ${a} must not contain ','", ("a", a));
+            }
 
             for (const string& raw : operations) {
                 FC_ASSERT(!raw.empty(), "empty operation name in the permission list");

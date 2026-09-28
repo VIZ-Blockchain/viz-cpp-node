@@ -142,13 +142,14 @@ void vest(simulated_node& node, const genesis_params& gp, fc::time_point_sec& wh
 void grant(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
            const account_name_type& principal, const fc::ecc::private_key& pkey,
            const account_name_type& name, const public_key_type& key, const std::vector<std::string>& ops,
-           fc::time_point_sec expiration = fc::time_point_sec()) {
+           fc::time_point_sec expiration = fc::time_point_sec(), const std::vector<std::string>& addons = {}) {
     set_agent_permission_operation op;
     op.account = principal;
     op.agent_name = name;
     op.agent_key = key;
     op.expiration = expiration;
     for (const auto& s : ops) op.operations.insert(s);
+    for (const auto& s : addons) op.addons.insert(s);
     node.push_pending_transaction(sign_ops({op}, pkey, node));
     produce(node, gp, when);
 }
@@ -209,8 +210,9 @@ struct agent_fixture {
         vest(node, gp, when, principal, principal_key, 50000);
     }
 
-    void issue(const std::vector<std::string>& ops, fc::time_point_sec exp = fc::time_point_sec()) {
-        grant(node, gp, when, principal, principal_key, bot, agent_key.get_public_key(), ops, exp);
+    void issue(const std::vector<std::string>& ops, fc::time_point_sec exp = fc::time_point_sec(),
+               const std::vector<std::string>& addons = {}) {
+        grant(node, gp, when, principal, principal_key, bot, agent_key.get_public_key(), ops, exp, addons);
     }
     transfer_operation pay(share_type amount) {
         return transfer_op(principal, gp.initiator_name, amount, TOKEN_SYMBOL);
@@ -255,6 +257,34 @@ BOOST_AUTO_TEST_CASE(agent_access_agent_key_signs_granted_operation) {
     f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
     produce(f.node, f.gp, f.when);
     BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
+std::string stored_addons(simulated_node& n, const account_name_type& p, const account_name_type& a) {
+    const auto& idx = n.db().get_index<agent_permission_index>().indices().get<by_permission_account>();
+    auto it = idx.find(boost::make_tuple(p, a));
+    return it == idx.end() ? std::string("<no row>") : to_string(it->addons);
+}
+
+// Addons (q1718=A) are off-chain scopes: an addon-only agent is a real row the services can read,
+// but on chain its key signs for nothing. Adding operations later keeps the addons; clearing both
+// lists revokes.
+BOOST_AUTO_TEST_CASE(agent_access_addons_are_stored_and_grant_nothing_on_chain) {
+    agent_fixture f(0xAA9E30, "aa-addons");
+    f.issue({}, fc::time_point_sec(), {"vizhub", "mail"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.bot));
+    BOOST_CHECK_EQUAL(stored_addons(f.node, f.principal, f.bot), "mail,vizhub");
+
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node), "addon-only agent moved funds");
+
+    f.issue({"transfer"}, fc::time_point_sec(), {"vizhub"});
+    BOOST_CHECK_EQUAL(stored_addons(f.node, f.principal, f.bot), "vizhub");
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+
+    f.issue({});   // both lists empty = revoke
+    BOOST_CHECK(!has_row(f.node, f.principal, f.bot));
 }
 
 // Issuing an agent must not break the principal's own transactions.

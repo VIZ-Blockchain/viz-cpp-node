@@ -43,8 +43,12 @@ namespace graphene { namespace protocol {
             account_name_type account;     ///< principal granting the access
             account_name_type agent_name;  ///< label, unique per principal; [a-z0-9_-], 1..32
             public_key_type   agent_key;   ///< key the agent signs with; ignored on revoke
-            flat_set<string>  operations;  ///< wire names; empty = revoke
+            flat_set<string>  operations;  ///< wire names; empty with empty addons = revoke
             time_point_sec    expiration;  ///< epoch (default) = perpetual
+            /// Off-chain scopes for external services (e.g. "vizhub": the service accepts this key's
+            /// signatures for its own actions). The node stores them and never interprets them:
+            /// they grant nothing on chain. At most AGENT_MAX_ADDONS, each shorter than 64 bytes.
+            flat_set<string>  addons;
 
             extensions_type extensions;
 
@@ -55,4 +59,4 @@ namespace graphene { namespace protocol {
 } } // graphene::protocol
 
 FC_REFLECT((graphene::protocol::set_agent_permission_operation),
-    (account)(agent_name)(agent_key)(operations)(expiration)(extensions))
+    (account)(agent_name)(agent_key)(operations)(expiration)(addons)(extensions))

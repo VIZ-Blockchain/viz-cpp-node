@@ -161,8 +161,9 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
     auto existing = pidx.find(boost::make_tuple(o.account, o.agent_name));
     const auto now = db.head_block_time();
 
-    // Empty list = revoke.
-    if (o.operations.empty()) {
+    // Both lists empty = revoke. Addons alone make a valid agent (a key for off-chain services only,
+    // q1718=A); such a row grants nothing on chain — the hook skips an empty operation list.
+    if (o.operations.empty() && o.addons.empty()) {
         if (existing != pidx.end())
             db.remove(*existing);
         return;
@@ -204,11 +205,13 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
     }
     existing = pidx.find(boost::make_tuple(o.account, o.agent_name));   // the sweep may have removed it
     const string packed = join_operation_names(o.operations);
+    const string packed_addons = join_operation_names(o.addons);
     if (existing != pidx.end()) {
         db.modify(*existing, [&](agent_permission_object& p) {
             p.agent_key = o.agent_key;
             from_string(p.operations, packed);
             p.expiration = o.expiration;
+            from_string(p.addons, packed_addons);
         });
     } else {
         // The hook walks all of a principal's rows for every transaction the principal did not sign
@@ -222,6 +225,7 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
             p.agent_key  = o.agent_key;
             from_string(p.operations, packed);
             p.expiration = o.expiration;
+            from_string(p.addons, packed_addons);
         });
     }
 }

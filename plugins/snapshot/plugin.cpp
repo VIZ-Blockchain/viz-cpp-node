@@ -520,6 +520,8 @@ inline uint32_t import_transactions(
             }
             obj.trx_id = v["trx_id"].as<transaction_id_type>();
             obj.expiration = v["expiration"].as<fc::time_point_sec>();
+            if (v.contains("addons"))
+                set_shared_string(obj.addons, v["addons"]);
         });
         ++count;
     }

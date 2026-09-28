@@ -72,6 +72,27 @@ BOOST_AUTO_TEST_CASE(validate_accepts_plain_grants) {
     BOOST_CHECK(accepts(grant({"transfer_to_vesting"}))); // money-moving, but explicit and active-only
 }
 
+BOOST_AUTO_TEST_CASE(validate_bounds_addons_only) {
+    auto g = grant({});
+    g.addons = {"vizhub"};
+    BOOST_CHECK(accepts(g));                               // addon-only agent (q1718=A)
+    g.addons = {"Any Text/with:chars", std::string(63, 'x')};
+    BOOST_CHECK(accepts(g));                               // opaque to the node
+    g.addons = {std::string(64, 'x')};
+    BOOST_CHECK(!accepts(g));                              // must be shorter than 64
+    g.addons = {""};
+    BOOST_CHECK(!accepts(g));
+    g.addons = {"a,b"};
+    BOOST_CHECK(!accepts(g));                              // ',' is the storage separator
+    g.addons.clear();
+    for (int i = 0; i < 10; ++i) g.addons.insert("s" + std::to_string(i));
+    BOOST_CHECK(accepts(g));
+    g.addons.insert("s10");
+    BOOST_CHECK(!accepts(g));                              // at most 10
+    g.addons = {"vizhub"};
+    g.agent_key = public_key_type();
+    BOOST_CHECK(!accepts(g));                              // addon-only still needs a key
+}
 BOOST_AUTO_TEST_CASE(validate_refuses_escalation_and_wrappers) {
     BOOST_CHECK(!accepts(grant({"set_agent_permission"})));  // would let an agent re-delegate
     BOOST_CHECK(!accepts(grant({"proposal_create"})));       // wraps arbitrary ops: bypasses the list

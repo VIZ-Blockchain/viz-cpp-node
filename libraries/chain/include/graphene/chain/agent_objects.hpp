@@ -52,14 +52,15 @@ namespace graphene { namespace chain {
         public:
             agent_permission_object() = delete;
             template<typename Constructor, typename Allocator>
-            agent_permission_object(Constructor&& c, allocator<Allocator> a) : operations(a) { c(*this); }
+            agent_permission_object(Constructor&& c, allocator<Allocator> a) : operations(a), addons(a) { c(*this); }
 
             id_type           id;
             account_name_type account;      ///< principal that granted the access
             account_name_type agent_name;   ///< label, unique per principal (not an account)
             public_key_type   agent_key;    ///< key that signs for the principal; unique per principal
-            shared_string     operations;   ///< canonical `,`-joined wire names; never empty
+            shared_string     operations;   ///< canonical `,`-joined wire names; empty = addon-only agent
             time_point_sec    expiration;   ///< epoch = perpetual; past = no longer valid
+            shared_string     addons;       ///< `,`-joined off-chain scopes; opaque to consensus
         };
 
         struct by_permission_account;
@@ -83,5 +84,5 @@ namespace graphene { namespace chain {
 
 } } // graphene::chain
 
-FC_REFLECT((graphene::chain::agent_permission_object), (id)(account)(agent_name)(agent_key)(operations)(expiration))
+FC_REFLECT((graphene::chain::agent_permission_object), (id)(account)(agent_name)(agent_key)(operations)(expiration)(addons))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::agent_permission_object, graphene::chain::agent_permission_index)
