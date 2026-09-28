@@ -66,7 +66,7 @@ Re-issuing by the same name replaces the key, operations, addons and expiration 
 - **One key, one agent:** a key already bound to another agent name of the same principal is rejected.
 - **At most 16 agents** per principal. A grant first removes the principal's expired agents.
 - **When an agent signature counts:** the transaction needs no master or regular authority, the principal's own keys do not already sign it, the agent is live (not expired, operation list non-empty), its list covers **every** operation of the transaction that needs a signature, and its key is among the signatures. No reach through nested `account_auths`.
-- **Wipes:** all agents of the principal are removed on master change, active change, account recovery, direct sale and auction close. A regular-only change keeps them.
+- **Wipes:** all agents of the principal are removed on master change, active change, account recovery, direct sale and auction close. A regular-only change keeps them. "Change" means the field is **present** in `account_update`: sending `master` or `active` wipes the agents even if the key is the same, so a client that only edits regular or memo must leave `master`/`active` out of the operation (viz-php-lib `build_account_update` always sends all three — it wipes).
 
 ## Reading agents
 
