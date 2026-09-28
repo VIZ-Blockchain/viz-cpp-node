@@ -70,3 +70,15 @@ target_link_libraries(pm_props_validate_tests
 )
 
 add_test(NAME pm_props_validate COMMAND pm_props_validate_tests)
+
+# HF15 agent access — op-id/wire contract of set_agent_permission_operation + validate() gates
+# (typo / virtual name / escalation / proposal wrappers). Protocol library only, no chain.
+add_executable(pm_agent_access_tests agent_access_test.cpp)
+
+target_link_libraries(pm_agent_access_tests
+    PRIVATE graphene_protocol
+            fc
+            Boost::unit_test_framework
+)
+
+add_test(NAME pm_agent_access COMMAND pm_agent_access_tests)
