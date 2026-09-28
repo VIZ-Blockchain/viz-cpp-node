@@ -5575,7 +5575,19 @@ namespace graphene { namespace chain {
             if (!(skip & (skip_transaction_signatures | skip_authority_check))) {
                 const chain_id_type &chain_id = CHAIN_ID;
 
+                // HF15 agent access. A principal may delegate listed operations to an agent, which
+                // then signs with its OWN active key. The decision lives in the chain layer (it needs
+                // the permission objects); the signatures are still checked by the ordinary
+                // sign_state path below, which is why substituting the getter is enough — nothing
+                // here approves anything on its own. The map is empty below HF15 and for every
+                // transaction master/regular touches, so the pre-fork behaviour is bit-for-bit.
+                const auto delegated = delegated_active_authorities(*this, trx, chain_id);
+
                 auto get_active = [&](const account_name_type& name) {
+                    const auto itr = delegated.find(name);
+                    if (itr != delegated.end()) {
+                        return authority(get<account_authority_object, by_account>(itr->second).active);
+                    }
                     return authority(get<account_authority_object, by_account>(name).active);
                 };
 
