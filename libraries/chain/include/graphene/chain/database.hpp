@@ -466,6 +466,11 @@ namespace graphene { namespace chain {
 
             void update_master_authority(const account_object &account, const authority &master_authority);
 
+            /// HF15 agent access: drop every agent `name` has issued. Called in the same step as any
+            /// change of the account's master/active authority, recovery and sale, so an agent key
+            /// never survives the owner keys it was issued under. No-op below HF15.
+            void wipe_agent_permissions(const account_name_type &name);
+
             asset get_balance(const account_object &a, asset_symbol_type symbol) const;
 
             asset get_balance(const string &aname, asset_symbol_type symbol) const {

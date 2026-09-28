@@ -394,6 +394,18 @@ Returns account namespace registrations available for sale (subaccount creation 
 
 ---
 
+### `get_agent_permissions(account)`
+
+Returns the agents of a principal (HF15 [agent access](../protocol/operations/agent-access.md)), ordered by agent name. At most 16 rows, no paging. Expired rows are returned with `expired: true`: they grant nothing and are removed on the principal's next grant.
+
+```json
+{ "method": "database_api.get_agent_permissions", "params": ["alice"] }
+```
+
+**Returns:** Array of `agent_permission_api_object` — `account`, `agent_name`, `agent_key`, `operations`, `expiration`, `addons`, `expired`.
+
+---
+
 ## Error Codes
 
 | Code | Meaning |

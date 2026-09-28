@@ -42,6 +42,7 @@ interface SidebarLabels {
   virtualOperations: string;
   operations: string;
   accounts: string;
+  agentAccess: string;
   transfersVesting: string;
   validators: string;
   content: string;
@@ -127,6 +128,7 @@ const en: SidebarLabels = {
   virtualOperations: 'Virtual Operations',
   operations: 'Operations',
   accounts: 'Accounts',
+  agentAccess: 'Agent Access',
   transfersVesting: 'Transfers & Vesting',
   validators: 'Validators',
   content: 'Content',
@@ -212,6 +214,7 @@ const ru: SidebarLabels = {
   virtualOperations: 'Виртуальные операции',
   operations: 'Операции',
   accounts: 'Аккаунты',
+  agentAccess: 'Агент-доступ',
   transfersVesting: 'Переводы и вестинг',
   validators: 'Валидаторы',
   content: 'Контент',
@@ -297,6 +300,7 @@ const zhCN: SidebarLabels = {
   virtualOperations: '虚拟操作',
   operations: '操作',
   accounts: '账户',
+  agentAccess: 'Agent Access',
   transfersVesting: '转账与质押',
   validators: '验证人',
   content: '内容',
@@ -439,6 +443,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
             { text: t.awards, link: p('/protocol/operations/awards') },
             { text: t.subscriptions, link: p('/protocol/operations/subscriptions') },
             { text: t.accountMarket, link: p('/protocol/operations/account-market') },
+            { text: t.agentAccess, link: p('/protocol/operations/agent-access') },
             { text: t.predictionMarkets, link: p('/protocol/operations/prediction-markets') },
             { text: t.proposals, link: p('/protocol/operations/proposals') },
           ],

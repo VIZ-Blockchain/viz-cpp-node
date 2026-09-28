@@ -71,6 +71,7 @@ set(SCENARIO_SOURCES
 # The single-validator fixture reaches quorum only with testnet constants.
 if(BUILD_TESTNET)
     list(APPEND SCENARIO_SOURCES scenarios/test_pm_audit_fixes.cpp)
+    list(APPEND SCENARIO_SOURCES scenarios/test_agent_access.cpp)
 else()
     message(STATUS "PM audit consensus regressions require BUILD_TESTNET=ON")
 endif()

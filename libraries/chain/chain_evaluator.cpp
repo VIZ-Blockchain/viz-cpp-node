@@ -196,6 +196,12 @@ namespace graphene { namespace chain {
                     }
                 });
             }
+            // Active change: the delegation dies with the keys (master changes wipe inside
+            // update_master_authority). A regular-only change leaves it alone — agents sign with
+            // active, so regular keys never stood behind a grant.
+            if (o.active) {
+                _db.wipe_agent_permissions(o.account);
+            }
 
         }
 
@@ -2224,6 +2230,8 @@ namespace graphene { namespace chain {
                                     auth.regular = auth.active;
                                     auth.last_master_update = _db.head_block_time();
                                 });
+                                // Sold: agent keys must not follow the account to its buyer.
+                                _db.wipe_agent_permissions(account.name);
                                 _db.push_virtual_operation(
                                     account_sale_operation(op.account,op.account_offer_price,op.buyer,account_seller.name));
                             }
@@ -2284,6 +2292,8 @@ namespace graphene { namespace chain {
                             auth.regular = auth.active;
                             auth.last_master_update = _db.head_block_time();
                         });
+                        // Sold: agent keys must not follow the account to its buyer.
+                        _db.wipe_agent_permissions(account.name);
                         _db.push_virtual_operation(
                             account_sale_operation(op.account,op.account_offer_price,op.buyer,account_seller.name));
                     }

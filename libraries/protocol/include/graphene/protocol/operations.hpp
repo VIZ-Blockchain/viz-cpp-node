@@ -6,6 +6,7 @@
 #include <graphene/protocol/chain_virtual_operations.hpp>
 #include <graphene/protocol/pm_operations.hpp>
 #include <graphene/protocol/pm_virtual_operations.hpp>
+#include <graphene/protocol/agent_operations.hpp>
 
 namespace graphene { namespace protocol {
 
@@ -154,7 +155,9 @@ namespace graphene { namespace protocol {
                 // F1/#300 early-exit deferred claim paid at settlement (virtual)
                 pm_early_exit_claim_paid_operation,
                 // #442/#681=D: LP income paid at settlement -> LP's own history (virtual)
-                pm_lp_payout_operation
+                pm_lp_payout_operation,
+                // HF15 agent access (Onix): account-level delegation of an explicit operation list
+                set_agent_permission_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,
@@ -167,6 +170,15 @@ namespace graphene { namespace protocol {
 
         bool is_virtual_operation(const operation &op);
         bool is_data_operation(const operation &op);
+
+        /// Wire/JSON name of an operation — the first element of its broadcast array
+        /// (`transfer`, `pm_place_bet`). Derived from the type name, same as the wire format uses.
+        std::string operation_wire_name(const operation &op);
+
+        /// True if `name` is the canonical wire name of an operation that can be broadcast.
+        /// Unknown names and virtual operations are not: `set_agent_permission` refuses them so a
+        /// typo cannot become a silently dead permission.
+        bool is_broadcastable_operation_wire_name(const std::string &name);
 
         struct operation_wrapper {
             operation_wrapper(const operation& op = operation()) : op(op) {}
