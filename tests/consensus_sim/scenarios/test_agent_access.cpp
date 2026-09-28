@@ -2,7 +2,7 @@
 //
 // A principal issues agents: a label plus a public key, each allowed to sign a listed set of
 // operations on the principal's behalf. The agent is not an account. tests/pm/agent_access_test.cpp covers the protocol half (operation
-// validation, the never-delegable list, the packed name list); it links the protocol library only
+// validation and the packed name list); it links the protocol library only
 // and has no chain state, so it cannot reach the part where the delegation actually takes effect.
 // That is what this file exercises: the transaction is pushed into a real database and accepted or
 // rejected by the ordinary sign_state path.
@@ -20,6 +20,7 @@
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/agent_objects.hpp>
 #include <graphene/chain/key_history_objects.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/agent_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -464,6 +465,33 @@ BOOST_AUTO_TEST_CASE(agent_access_management_requires_explicit_scope) {
     f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
     produce(f.node, f.gp, f.when);
     BOOST_CHECK(has_row(f.node, f.principal, f.bot));
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_rpc_authority_core_uses_same_rules_as_chain) {
+    agent_fixture f(0xAA9E34, "aa-rpc-parity");
+    f.issue({"transfer", "account_metadata"});
+    auto transfer = sign_ops({f.pay(1000)}, f.agent_key, f.node);
+    fc::flat_set<public_key_type> used;
+    verify_agent_transaction(f.node.db(), transfer,
+                             transfer.get_signature_keys(f.node.chain_id()), false, &used);
+    BOOST_CHECK(used.count(f.agent_key.get_public_key()));
+    // get_required_signatures passes the available keys without a signature; the same core
+    // decides which direct principal key is consumed. get_potential_signatures enumerates rows.
+    signed_transaction unsigned_transfer;
+    unsigned_transfer.operations.push_back(f.pay(1000));
+    const fc::flat_set<public_key_type> candidates{f.agent_key.get_public_key()};
+    verify_agent_transaction(f.node.db(), unsigned_transfer, candidates, true, &used);
+    BOOST_CHECK(used.count(f.agent_key.get_public_key()));
+    account_metadata_operation metadata;
+    metadata.account = f.principal;
+    metadata.json_metadata = "{}";
+    signed_transaction unsigned_regular;
+    unsigned_regular.operations.push_back(metadata);
+    verify_agent_transaction(f.node.db(), unsigned_regular, candidates, true, &used);
+    BOOST_CHECK(used.count(f.agent_key.get_public_key()));
+    const fc::flat_set<public_key_type> empty;
+    BOOST_CHECK_THROW(verify_agent_transaction(f.node.db(), unsigned_regular, empty, true, &used),
+                      tx_missing_regular_auth);
 }
 
 // Multiple labels may share a key; replacement of one label does not mutate the other.
