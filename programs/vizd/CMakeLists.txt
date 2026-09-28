@@ -28,6 +28,7 @@ target_link_libraries(
         graphene::account_by_key
         graphene::account_history
         graphene::raw_block
+        graphene::block_archive
         graphene::block_info
         graphene::json_rpc
         graphene::committee_api
