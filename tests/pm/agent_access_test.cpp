@@ -66,7 +66,7 @@ BOOST_AUTO_TEST_CASE(validate_accepts_plain_grants) {
     BOOST_CHECK(accepts(grant({"transfer"})));
     BOOST_CHECK(accepts(grant({"transfer", "pm_place_bet", "pm_resolve_market"})));
     BOOST_CHECK(accepts(grant({})));                     // empty list = revoke
-    BOOST_CHECK(accepts(grant({"account_update"})));     // broad but explicit: the principal's call
+    BOOST_CHECK(accepts(grant({"transfer_to_vesting"}))); // money-moving, but explicit and active-only
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_escalation_and_wrappers) {
@@ -74,6 +74,19 @@ BOOST_AUTO_TEST_CASE(validate_refuses_escalation_and_wrappers) {
     BOOST_CHECK(!accepts(grant({"proposal_create"})));       // wraps arbitrary ops: bypasses the list
     BOOST_CHECK(!accepts(grant({"proposal_update"})));
     BOOST_CHECK(!accepts(grant({"proposal_delete"})));
+    // An active-signed account_update without the master field may rewrite the ACTIVE authority,
+    // i.e. rotate it to a key the agent controls: one granted op would be ownership itself.
+    BOOST_CHECK(!accepts(grant({"account_update"})));
+}
+
+BOOST_AUTO_TEST_CASE(validate_refuses_master_only_operations) {
+    // Not reachable through a delegation (the hook never substitutes master), so granting one
+    // would be a permission that can never succeed.
+    BOOST_CHECK(!accepts(grant({"recover_account"})));
+    BOOST_CHECK(!accepts(grant({"change_recovery_account"})));
+    BOOST_CHECK(!accepts(grant({"set_account_price"})));
+    BOOST_CHECK(!accepts(grant({"set_subaccount_price"})));
+    BOOST_CHECK(!accepts(grant({"target_account_sale"})));
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_dead_permissions) {

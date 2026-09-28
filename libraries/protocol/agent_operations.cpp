@@ -8,21 +8,34 @@ namespace graphene { namespace protocol {
         /// a semantic limit (the list itself is what a delegation is).
         static const size_t AGENT_MAX_OPERATION_NAME_LEN = 64;
 
-        /// Names that must never appear in a delegation list.
-        ///  - `set_agent_permission`: an agent must not be able to mint itself further rights — the
-        ///    grant is signed with the principal's active authority, and an agent holding active
-        ///    could otherwise re-delegate. Escalation chains are refused structurally.
-        ///  - the proposal wrappers: a proposal carries arbitrary operations whose authorities are
-        ///    collected at EXECUTION time from the wrapped ops, so delegating `proposal_create`
-        ///    would not mean "may create a proposal" but "may execute anything the principal can".
-        ///    That silently defeats the explicit list, so the wrappers are refused outright.
-        static const flat_set<string>& never_delegable_operation_names() {
+        const flat_set<string>& never_delegable_operation_names() {
             static const flat_set<string> names = []() {
                 flat_set<string> s;
+                // An agent must not mint itself further rights: the grant is signed with the
+                // principal's active authority, so an agent holding active could otherwise
+                // re-delegate. Escalation chains are refused structurally.
                 s.insert("set_agent_permission");
+                // Proposal wrappers carry arbitrary operations whose authorities are collected at
+                // EXECUTION time from the wrapped ops. Delegating `proposal_create` would therefore
+                // not mean "may create a proposal" but "may execute anything the principal can" —
+                // the explicit list would be bypassed while looking narrow.
                 s.insert("proposal_create");
                 s.insert("proposal_update");
                 s.insert("proposal_delete");
+                // Authority rotation. `account_update` is the sharp one: an op without the `master`
+                // field is satisfied by the ACTIVE authority (see account_update_operation::
+                // get_required_active_authorities) and may carry a new `active` authority — so an
+                // agent granted account_update for "metadata edits" could simply rotate the
+                // principal's active key to one it controls and own the account outright.
+                s.insert("account_update");
+                // Operations that always demand the principal's MASTER authority are structurally
+                // out of reach for an agent (the hook never substitutes master). Granting one would
+                // create a permission that can never succeed: a silent no-op, refused on principle.
+                s.insert("recover_account");
+                s.insert("change_recovery_account");
+                s.insert("set_account_price");
+                s.insert("set_subaccount_price");
+                s.insert("target_account_sale");
                 return s;
             }();
             return names;

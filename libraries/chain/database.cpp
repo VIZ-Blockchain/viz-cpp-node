@@ -21,6 +21,8 @@
 #include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/committee_objects.hpp>
 #include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/agent_objects.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/pm_evaluator.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
@@ -5130,6 +5132,7 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<pm_leverage_convert_evaluator>();
             _my->_evaluator_registry.register_evaluator<pm_dispute_oracle_respond_evaluator>();
             _my->_evaluator_registry.register_evaluator<pm_unban_evaluator>();
+            _my->_evaluator_registry.register_evaluator<set_agent_permission_evaluator>();   // HF15
         }
 
         void database::set_custom_operation_interpreter(const std::string &id, std::shared_ptr<custom_operation_interpreter> registry) {
@@ -5196,6 +5199,7 @@ namespace graphene { namespace chain {
             add_core_index<pm_lazy_withdraw_request_index>(*this);
             add_core_index<pm_deferred_claim_index>(*this);
             add_core_index<pm_settlement_index>(*this);
+            add_core_index<agent_permission_index>(*this);   // HF15 agent access
 
             _plugin_index_signal();
         }

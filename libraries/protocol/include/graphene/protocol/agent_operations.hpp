@@ -15,6 +15,11 @@ namespace graphene { namespace protocol {
         // Op-id NOTE: appended to the single `operation` static_variant (see operations.hpp); the
         // variant index IS the consensus op-id.
 
+        /// Names that must never appear in a delegation list. Single source of truth: the grant
+        /// operation refuses them in validate(), and the chain-side authority hook refuses them
+        /// again at execution time — the rule must not live in one place only.
+        const flat_set<string>& never_delegable_operation_names();
+
         /// Grant (or revoke) the right for `agent` to perform the listed operations on behalf of
         /// `account`, signing with the agent's OWN active key.
         ///
@@ -23,8 +28,9 @@ namespace graphene { namespace protocol {
         ///  - nothing that requires master authority is reachable through a delegation: the hook
         ///    checks every permitted operation against the principal's required authorities, and
         ///    master is never delegable;
-        ///  - an agent cannot mint itself new rights: `set_agent_permission` is not a delegable
-        ///    name (no escalation chains);
+        ///  - an agent cannot mint itself new rights: `set_agent_permission`, the proposal
+        ///    wrappers and authority-rotating operations are not delegable names
+        ///    (see never_delegable_operation_names());
         ///  - a name that does not exist, or is virtual (hence never broadcast), is refused — a
         ///    typo must not become a silently dead permission;
         ///  - an empty `operations` = revoke: the row is deleted;
