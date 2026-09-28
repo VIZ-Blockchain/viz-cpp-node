@@ -449,10 +449,20 @@ void produce_past_sale_window(agent_fixture& f) {
 }
 } // anonymous namespace
 
-// The auction-close path (database::account_on_auction_expiration) also wipes, but it cannot be
-// tested here yet: a bid extends the auction by the node's WALL CLOCK (buy_account_evaluator), so
-// under the virtual clock the auction closes months after the simulation ends. Fixed separately in
-// branch fix-auction-wallclock (HF15); add the auction case once that lands in pm.
+// Auction close (database::account_on_auction_expiration). Needs the HF15 fix that measures the bid
+// extension from head_block_time(): with the legacy wall-clock read the auction would close months
+// after the virtual clock of this harness ends.
+BOOST_AUTO_TEST_CASE(agent_access_auction_close_wipes) {
+    agent_fixture f(0xAA9E20, "aa-wipe-auction");
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+    put_on_sale(f);
+    buy(f);   // inside the window: a bid
+    BOOST_REQUIRE_MESSAGE(!sold_to_buyer(f), "expected a bid, got an immediate sale");
+    BOOST_CHECK_MESSAGE(has_row(f.node, f.principal, f.agent), "a mere bid already wiped the row");
+    for (int i = 0; i < 400 && !sold_to_buyer(f); ++i) produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE_MESSAGE(sold_to_buyer(f), "auction did not close — the wipe check would be vacuous");
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "account sold at auction kept its delegation");
+}
 
 BOOST_AUTO_TEST_CASE(agent_access_direct_sale_wipes) {
     agent_fixture f(0xAA9E21, "aa-wipe-sale");
