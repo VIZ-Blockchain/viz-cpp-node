@@ -63,6 +63,7 @@ add_library(graphene_chain ${VIZ_LIBRARY_TYPE}
             pm/parimutuel.cpp
             pm/leverage.cpp
             pm_evaluator.cpp
+            agent_evaluator.cpp
             pm_process_markets.cpp
 
             include/graphene/chain/pm/lmsr_q96.hpp

@@ -2,7 +2,12 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-#define CHAIN_VERSION                         (version(4, 0, 0))
+// HF15 (PM audit fixes) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION is
+// version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
+// current_hardfork_version < CHAIN_HARDFORK_VERSION. A new fork therefore has to move THAT field,
+// not the revision; 4.1.0 here must stay byte-equal to CHAIN_HARDFORK_15_VERSION in hardfork.d/15.hf,
+// which database_hardfork.cpp asserts. See docs/prediction-markets/pm-audit-fix-upgrade.md.
+#define CHAIN_VERSION                         (version(4, 1, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"
@@ -129,6 +134,9 @@
 
 #define CHAIN_ACCOUNT_AUCTION_MIN_STEP        (CHAIN_100_PERCENT/10) // 10%
 #define CHAIN_ACCOUNT_AUCTION_EXTENSION_TIME  fc::minutes(5)
+
+/// HF15 agent access: live delegations one principal may hold (owner decision 2026-09-28).
+#define CHAIN_AGENT_MAX_PER_ACCOUNT           16
 
 #define COMMITTEE_MIN_DURATION                (60*60*24*5)
 #define COMMITTEE_MAX_DURATION                (60*60*24*30)

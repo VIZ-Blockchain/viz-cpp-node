@@ -411,6 +411,18 @@ json_rpc::plugin, chain::plugin
 
 ---
 
+### `get_agent_permissions(account)`
+
+Возвращает агентов принципала (HF15, [агент-доступ](../protocol/operations/agent-access.md)), по порядку имён. Не больше 16 строк, без пагинации. Истёкшие строки отдаются с `expired: true`: они ничего не дают и удаляются при следующей выдаче принципала.
+
+```json
+{ "method": "database_api.get_agent_permissions", "params": ["alice"] }
+```
+
+**Возвращает:** массив `agent_permission_api_object` — `account`, `agent_name`, `agent_key`, `operations`, `expiration`, `addons`, `expired`.
+
+---
+
 ## Коды ошибок
 
 | Код | Значение |

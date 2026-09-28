@@ -127,7 +127,7 @@ flowchart TD
 | `outcome_index` | `int16_t` | Мульти: 0..N-1; binary: -1 |
 | `amount` | `asset` (VIZ) | Стейк (`> 0`) |
 | `min_tokens` | `share_type` | Порог проскальзывания (0 = нет) |
-| `mode` | `uint8_t` | 0 instant, 1 batch |
+| `mode` | `uint8_t` | 0 instant, 1 batch. На рынке с `allow_instant_bet = false` единственный допустимый путь — `pm_commit_bet` → `pm_reveal_bet`: после `CHAIN_PM_AUDIT_FIX_HARDFORK` прямой `mode = 1` отклоняется (до форка он молча уходил в мгновенное исполнение, обходя гейт, который рынок выбрал). |
 
 ### `pm_commit_bet_operation` (ID 71)
 **Auth:** `active` аккаунта `account`

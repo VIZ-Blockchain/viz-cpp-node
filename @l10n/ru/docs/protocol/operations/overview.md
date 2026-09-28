@@ -77,7 +77,7 @@
 | 98 | `pm_dispute_oracle_respond_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
 | 99 | `pm_unban_operation` | active | [Прогнозные рынки](./prediction-markets.md) |
 
-> ID — это фиксированный индекс в едином `operation`-варианте цепи (только добавление). Пропуски в этой таблице — **виртуальные** операции (ниже), чередующиеся по ID — например, 62–63, 65, 84–90, 94–97, 100.
+> ID — это фиксированный индекс в едином `operation`-варианте цепи (только добавление). Пропуски в этой таблице — **виртуальные** операции (ниже), чередующиеся по ID — например, 62–63, 65, 84–90, 94–97, 100–104.
 
 ---
 
@@ -122,6 +122,10 @@
 | 96 | `pm_market_accepted_operation` | Рынок запущен (оракул принял / self / авто) | [Прогнозные рынки](./prediction-markets.md) |
 | 97 | `pm_payout_operation` | Паримутюэль-выплата на беттера | [Прогнозные рынки](./prediction-markets.md) |
 | 100 | `pm_ban_expired_operation` | Истёк временный бан оракула/создателя | [Прогнозные рынки](./prediction-markets.md) |
+| 101 | `pm_market_expired_operation` | Рынок истёк без резолюции | [Прогнозные рынки](./prediction-markets.md) |
+| 102 | `pm_dispute_opened_operation` | Открыт спор (история оракула и спорщика) | [Прогнозные рынки](./prediction-markets.md) |
+| 103 | `pm_early_exit_claim_paid_operation` | Отложенная выплата досрочного выхода оплачена при расчёте | [Прогнозные рынки](./prediction-markets.md) |
+| 104 | `pm_lp_payout_operation` | Доход LP выплачен при расчёте | [Прогнозные рынки](./prediction-markets.md) |
 
 ---
 

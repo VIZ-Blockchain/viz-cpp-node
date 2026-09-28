@@ -12,6 +12,7 @@ row-бюджете (`pm_settle_rows_per_block`), либо ограничен э�
 поверхности.
 
 Соседние внутренние спеки: [early-exit-deferred-claim](./early-exit-deferred-claim.md),
+[pm-audit-fix-upgrade](./pm-audit-fix-upgrade.md) (чеклист HF15),
 [specification](./specification.md) §5 (crons).
 
 ## 1. Дыра

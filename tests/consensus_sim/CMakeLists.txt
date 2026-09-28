@@ -67,6 +67,15 @@ set(SCENARIO_SOURCES
     scenarios/test_routable_endpoint.cpp
 )
 
+# These scenarios require an actual HF14 activation and never soft-skip.
+# The single-validator fixture reaches quorum only with testnet constants.
+if(BUILD_TESTNET)
+    list(APPEND SCENARIO_SOURCES scenarios/test_pm_audit_fixes.cpp)
+    list(APPEND SCENARIO_SOURCES scenarios/test_agent_access.cpp)
+else()
+    message(STATUS "PM audit consensus regressions require BUILD_TESTNET=ON")
+endif()
+
 add_executable(consensus_sim_tests ${SCENARIO_SOURCES})
 
 target_link_libraries(consensus_sim_tests

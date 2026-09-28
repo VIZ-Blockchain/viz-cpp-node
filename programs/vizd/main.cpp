@@ -22,6 +22,7 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
 
 #include <graphene/plugins/validator_guard/validator_guard.hpp>
+#include <graphene/plugins/testnet_plugin/testnet_plugin.hpp>
 
 #include <fc/interprocess/signals.hpp>
 #include <fc/log/console_appender.hpp>
@@ -88,6 +89,7 @@ namespace graphene {
             appbase::app().register_plugin<graphene::plugins::custom_protocol_api::custom_protocol_api_plugin>();
             appbase::app().register_plugin<graphene::plugins::snapshot::snapshot_plugin>();
             appbase::app().register_plugin<graphene::plugins::validator_guard::validator_guard_plugin>();
+            appbase::app().register_plugin<graphene::plugins::testnet_plugin::testnet_plugin>();
             ///plugins
         };
     }

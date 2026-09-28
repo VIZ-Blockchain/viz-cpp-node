@@ -9,6 +9,7 @@
 #include <graphene/protocol/protocol.hpp>
 
 #include <fc/signals.hpp>
+#include <fc/optional.hpp>
 
 #include <fc/log/logger.hpp>
 
@@ -465,6 +466,11 @@ namespace graphene { namespace chain {
 
             void update_master_authority(const account_object &account, const authority &master_authority);
 
+            /// HF15 agent access: drop every agent `name` has issued. Called in the same step as any
+            /// change of the account's master/active authority, recovery and sale, so an agent key
+            /// never survives the owner keys it was issued under. No-op below HF15.
+            void wipe_agent_permissions(const account_name_type &name);
+
             asset get_balance(const account_object &a, asset_symbol_type symbol) const;
 
             asset get_balance(const string &aname, asset_symbol_type symbol) const {
@@ -581,6 +587,11 @@ namespace graphene { namespace chain {
             /* For testing and debugging only. Given a hardfork
                with id N, applies all hardforks with id <= N */
             void set_hardfork(uint32_t hardfork, bool process_now = true);
+
+            /* For testing and debugging only. Number of the hardfork whose version equals the
+               given one, so a caller can feed set_hardfork() a version like 4.1.0 instead of a
+               number. Empty when this binary knows no hardfork with that version. */
+            fc::optional<uint32_t> get_hardfork_number(const protocol::hardfork_version &v) const;
 
             void validate_invariants() const;
 

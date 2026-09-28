@@ -127,7 +127,7 @@ Places an instant bet on the live curve. `min_tokens` is the slippage floor. `we
 | `outcome_index` | `int16_t` | Multi: 0..N-1; binary: -1 |
 | `amount` | `asset` (VIZ) | Stake (`> 0`) |
 | `min_tokens` | `share_type` | Slippage floor (0 = none) |
-| `mode` | `uint8_t` | 0 instant, 1 batch |
+| `mode` | `uint8_t` | 0 instant, 1 batch. On a market with `allow_instant_bet = false` the only accepted route is `pm_commit_bet` → `pm_reveal_bet`: after `CHAIN_PM_AUDIT_FIX_HARDFORK` a direct `mode = 1` is refused (pre-fork it silently took the instant fill, bypassing the gate the market opted into). |
 
 ### `pm_commit_bet_operation` (ID 71)
 **Auth:** `active` of `account`

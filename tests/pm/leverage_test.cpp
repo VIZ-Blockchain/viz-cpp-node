@@ -59,6 +59,20 @@ BOOST_AUTO_TEST_CASE(opposing_bet_lowers_value) {
     BOOST_CHECK_EQUAL(m, RA / 10);                   // min(ra,rb) × 10% × 100%
 }
 
+// Regression: a feasible upper endpoint must not be rounded down by the search.
+// With the mainnet minimum loan as the cap, returning 99.999 instead of
+// 100.000 VIZ produces a quote that the evaluator cannot accept.
+BOOST_AUTO_TEST_CASE(max_leverage_includes_feasible_cap) {
+    const int64_t reserve = 2500000;
+    const auto k = fc::uint128_t(uint64_t(reserve)) * fc::uint128_t(uint64_t(reserve));
+    for (int outcome : {0, 1}) {
+        for (int64_t cap : {int64_t(0), int64_t(1), int64_t(2), int64_t(100000)}) {
+            BOOST_CHECK_EQUAL(max_leverage_loan(reserve, reserve, k, 150000,
+                outcome, cap, 10, 1, 10, 50), cap);
+        }
+    }
+}
+
 // §4.6 Constraint 2 — max leverage binary search returns a bounded loan whose
 // worst-case cancel value satisfies the safety threshold after the bet is placed.
 BOOST_AUTO_TEST_CASE(max_leverage_constraint) {

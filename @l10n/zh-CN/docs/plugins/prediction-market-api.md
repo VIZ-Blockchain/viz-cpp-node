@@ -68,7 +68,7 @@
 | `get_leverage_close_preview` | `position_id` | `pm_leverage_close_preview`（计算型） |
 | `get_leverage_convert_preview` | `position_id` | `pm_leverage_convert_preview`（计算型） |
 
-`get_leverage_quote` 镜像 `pm_leverage_open`：返回最大偿付贷款与由此得到的最大杠杆、池/头寸上限、至多 12 个滑块档位（每档含代币、阈值、当前及最坏情形取消价值），且——当无法杠杆时——返回 `available = false` 并附 `failed_constraints[]` 列表。`get_leverage_close_preview` / `get_leverage_convert_preview` 在当前储备下镜像 `pm_leverage_close` / `pm_leverage_convert`（取消价值、池义务、下注者所得、是否可平仓/可转换，以及按当前中位数 `pm_conversion_profit_cost_percent` 的转换费）。
+`get_leverage_quote` 镜像 `pm_leverage_open`：返回最大偿付贷款与由此得到的最大杠杆、池/头寸上限、至多 12 个滑块档位（每档含代币、阈值、当前及最坏情形取消价值），且——当无法杠杆时——返回 `available = false` 并附 `failed_constraints[]` 列表。阻断性约束绝不会与 `available = true` 同时出现：若求解器找到的最佳可行贷款低于 `pm_min_liquidity`（`pm_leverage_open` 强制要求），报价会以 `loan_floor_above_cap` 失败，而不是宣称可以开仓。`get_leverage_close_preview` / `get_leverage_convert_preview` 在当前储备下镜像 `pm_leverage_close` / `pm_leverage_convert`（取消价值、池义务、下注者所得、是否可平仓/可转换，以及按当前中位数 `pm_conversion_profit_cost_percent` 的转换费）。
 
 ### 争议、懒惰池、治理
 

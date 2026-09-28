@@ -35,6 +35,7 @@ list(APPEND ${CURRENT_TARGET}_SOURCES
         sign_state.cpp
         chain_operations.cpp
         pm_operations.cpp
+        agent_operations.cpp
         transaction.cpp
         types.cpp
         version.cpp

@@ -21,6 +21,8 @@
 #include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/committee_objects.hpp>
 #include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/agent_objects.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/pm_evaluator.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
@@ -4095,6 +4097,19 @@ namespace graphene { namespace chain {
                 auth.master = master_authority;
                 auth.last_master_update = head_block_time();
             });
+            // Master change (account_update, recover_account): the agents die with the keys.
+            wipe_agent_permissions(account.name);
+        }
+
+        void database::wipe_agent_permissions(const account_name_type &name) {
+            if (!has_hardfork(CHAIN_HARDFORK_15))
+                return;
+            const auto &by_principal = get_index<agent_permission_index>().indices().get<by_permission_account>();
+            for (auto it = by_principal.lower_bound(boost::make_tuple(name));
+                 it != by_principal.end() && it->account == name;) {
+                const auto &row = *it++;   // advance before remove: remove invalidates `it`
+                remove(row);
+            }
         }
 
         void database::process_vesting_withdrawals() {
@@ -4878,6 +4893,8 @@ namespace graphene { namespace chain {
                                                 auth.regular = auth.active;
                                                 auth.last_master_update = head_block_time();
                                             });
+                                            // Auction closed: the account has a new owner.
+                                            wipe_agent_permissions(account.name);
 
                                             account.account_seller = "";
                                             account.account_on_sale=false;
@@ -5001,6 +5018,8 @@ namespace graphene { namespace chain {
                                                     auth.regular = auth.active;
                                                     auth.last_master_update = head_block_time();
                                                 });
+                                                // Auction closed: the account has a new owner.
+                                                wipe_agent_permissions(account.name);
 
                                                 account.account_seller = "";
                                                 account.account_on_sale=false;
@@ -5165,6 +5184,7 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<pm_leverage_convert_evaluator>();
             _my->_evaluator_registry.register_evaluator<pm_dispute_oracle_respond_evaluator>();
             _my->_evaluator_registry.register_evaluator<pm_unban_evaluator>();
+            _my->_evaluator_registry.register_evaluator<set_agent_permission_evaluator>();   // HF15
         }
 
         void database::set_custom_operation_interpreter(const std::string &id, std::shared_ptr<custom_operation_interpreter> registry) {
@@ -5231,6 +5251,7 @@ namespace graphene { namespace chain {
             add_core_index<pm_lazy_withdraw_request_index>(*this);
             add_core_index<pm_deferred_claim_index>(*this);
             add_core_index<pm_settlement_index>(*this);
+            add_core_index<agent_permission_index>(*this);   // HF15 agent access
 
             _plugin_index_signal();
         }
@@ -5606,7 +5627,22 @@ namespace graphene { namespace chain {
             if (!(skip & (skip_transaction_signatures | skip_authority_check))) {
                 const chain_id_type &chain_id = CHAIN_ID;
 
+                // HF15 agent access. A principal may issue agent keys, each allowed to sign a listed
+                // set of operations for it. The decision lives in the chain layer (it needs
+                // the permission objects); the signatures are still checked by the ordinary
+                // sign_state path below, which is why substituting the getter is enough — nothing
+                // here approves anything on its own. The map is empty below HF15 and for every
+                // transaction master/regular touches, so the pre-fork behaviour is bit-for-bit.
+                const auto delegated = delegated_active_authorities(*this, trx, chain_id);
+
                 auto get_active = [&](const account_name_type& name) {
+                    const auto itr = delegated.find(name);
+                    if (itr != delegated.end()) {
+                        authority a;
+                        a.weight_threshold = 1;
+                        a.key_auths[itr->second] = 1;
+                        return a;
+                    }
                     return authority(get<account_authority_object, by_account>(name).active);
                 };
 

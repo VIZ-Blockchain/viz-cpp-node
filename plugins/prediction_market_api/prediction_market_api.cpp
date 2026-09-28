@@ -1804,7 +1804,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const int64_t pos_room = pos_cap - collateral; // loan headroom vs market-size cap
             if (pos_room <= 0) fail("position_size", "Collateral already at/above market position cap");
             // Per-position cap vs loan floor: if pool is too small, max loan < pm_min_liquidity → no valid loan exists.
-            // The evaluator enforces loan >= pm_min_liquidity (anti-Sybil, pm_evaluator.cpp:1439), so quote must
+            // The evaluator enforces loan >= pm_min_liquidity (anti-Sybil, pm_evaluator.cpp:1504), so quote must
             // surface this impossibility rather than returning available:true for loans that will fail at apply.
             if (per_pos_cap < mp.pm_min_liquidity.amount)
                 fail("loan_floor_above_cap", "Per-position cap below minimum loan (pool too small for leverage)");
@@ -1821,10 +1821,17 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     mp.pm_leverage_pool_profit_percent, mp.pm_leverage_safety_margin_percent,
                     mp.pm_leverage_max_slippage_percent, mp.pm_leverage_m_factor_percent);
                 if (max_loan <= 0) fail("solvency", "No loan size passes the worst-case solvency check");
+                // The cap check above only proves that a NOMINAL room exists. The search can still come
+                // back with a positive loan below the evaluator's loan floor whenever free_amount/pos_room
+                // (not the per-position cap) is what binds, so the same impossibility has to be surfaced
+                // here — otherwise the quote advertises available:true for a loan that apply() rejects.
+                else if (max_loan < mp.pm_min_liquidity.amount.value)
+                    fail("loan_floor_above_cap", "Best feasible loan is below the minimum loan (pm_min_liquidity)");
             }
 
             out.max_loan  = share_type(max_loan);
-            out.available = (max_loan > 0);
+            // A blocking constraint means "no loan can be opened" — never report availability next to one.
+            out.available = (max_loan > 0 && out.failed_constraints.empty());
             out.max_leverage_x100 = (collateral > 0)
                 ? (uint32_t)(((int64_t)(collateral + max_loan) * 100) / collateral) : 100;
 
