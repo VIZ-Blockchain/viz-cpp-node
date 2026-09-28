@@ -6,6 +6,7 @@
 #include <graphene/chain/block_log.hpp>
 #include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/hardfork.hpp>
+#include <graphene/chain/key_history_objects.hpp>
 #include <graphene/protocol/protocol.hpp>
 
 #include <fc/signals.hpp>
@@ -470,6 +471,18 @@ namespace graphene { namespace chain {
             /// change of the account's master/active authority, recovery and sale, so an agent key
             /// never survives the owner keys it was issued under. No-op below HF15.
             void wipe_agent_permissions(const account_name_type &name);
+
+            /// HF15 key history: the keys an account holds right now, to compare after a change.
+            account_keys_snapshot capture_account_keys(const account_name_type &name) const;
+
+            /// HF15 key history: for every role that differs from `before`, write one key_history row
+            /// per member of the OLD authority (and one for the old memo key), valid until the current
+            /// block. Unchanged roles write nothing. No-op below HF15.
+            void record_key_changes(const account_name_type &name, const account_keys_snapshot &before);
+
+            /// HF15 key history: time of the last recorded change of `role` for `name`
+            /// (time_point_sec::min() when there is none). Backs the once-an-hour limit.
+            time_point_sec last_key_change(const account_name_type &name, uint8_t role) const;
 
             asset get_balance(const account_object &a, asset_symbol_type symbol) const;
 

@@ -152,6 +152,24 @@ namespace graphene { namespace chain {
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
             //    FC_ASSERT(!account.valid, "Account flagged as invalid");
             const auto &account_auth = _db.get<account_authority_object, by_account>(o.account);
+            const account_keys_snapshot keys_before = _db.capture_account_keys(o.account);
+
+            // HF15: active/regular/memo may change at most once an hour, like master — every change
+            // writes permanent key_history rows, so the rate bounds that growth. Only a REAL change
+            // counts (re-sending the same authority writes nothing and is not limited).
+            if (_db.has_hardfork(CHAIN_HARDFORK_15)) {
+                const auto now = _db.head_block_time();
+                auto check_limit = [&](uint8_t role, const char *what) {
+                    FC_ASSERT(now - _db.last_key_change(o.account, role) > CHAIN_MASTER_UPDATE_LIMIT,
+                              "${w} can only be changed once an hour.", ("w", what));
+                };
+                if (o.active && !(account_auth.active == *o.active))
+                    check_limit(key_role_active, "Active authority");
+                if (o.regular && !(account_auth.regular == *o.regular))
+                    check_limit(key_role_regular, "Regular authority");
+                if (o.memo_key != public_key_type() && o.memo_key != account.memo_key)
+                    check_limit(key_role_memo, "Memo key");
+            }
 
             if (o.master) {
                 FC_ASSERT(_db.head_block_time() -
@@ -202,6 +220,7 @@ namespace graphene { namespace chain {
             if (o.active) {
                 _db.wipe_agent_permissions(o.account);
             }
+            _db.record_key_changes(o.account, keys_before);
 
         }
 
@@ -1650,7 +1669,9 @@ namespace graphene { namespace chain {
             FC_ASSERT(found, "Recent authority not found in authority history.");
 
             _db.remove(*request); // Remove first, update_master_authority may invalidate iterator
+            const account_keys_snapshot keys_before = _db.capture_account_keys(account.name);
             _db.update_master_authority(account, o.new_master_authority);
+            _db.record_key_changes(account.name, keys_before);
             _db.modify(account, [&](account_object &a) {
                 a.last_account_recovery = _db.head_block_time();
                 if(_db.has_hardfork(CHAIN_HARDFORK_9)){
@@ -2206,6 +2227,8 @@ namespace graphene { namespace chain {
 
                                 public_key_type account_authorities_key(op.account_authorities_key);
 
+                                const account_keys_snapshot keys_before = _db.capture_account_keys(account.name);
+
                                 _db.modify(account, [&](account_object &a) {
                                     a.account_seller = "";
                                     a.account_offer_price = asset(0, TOKEN_SYMBOL);
@@ -2232,6 +2255,7 @@ namespace graphene { namespace chain {
                                 });
                                 // Sold: agent keys must not follow the account to its buyer.
                                 _db.wipe_agent_permissions(account.name);
+                                _db.record_key_changes(account.name, keys_before);
                                 _db.push_virtual_operation(
                                     account_sale_operation(op.account,op.account_offer_price,op.buyer,account_seller.name));
                             }
@@ -2268,6 +2292,8 @@ namespace graphene { namespace chain {
 
                         public_key_type account_authorities_key(op.account_authorities_key);
 
+                        const account_keys_snapshot keys_before = _db.capture_account_keys(account.name);
+
                         _db.modify(account, [&](account_object &a) {
                             a.account_seller = "";
                             a.account_offer_price = asset(0, TOKEN_SYMBOL);
@@ -2294,6 +2320,7 @@ namespace graphene { namespace chain {
                         });
                         // Sold: agent keys must not follow the account to its buyer.
                         _db.wipe_agent_permissions(account.name);
+                        _db.record_key_changes(account.name, keys_before);
                         _db.push_virtual_operation(
                             account_sale_operation(op.account,op.account_offer_price,op.buyer,account_seller.name));
                     }

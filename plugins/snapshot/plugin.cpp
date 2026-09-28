@@ -19,6 +19,7 @@
 #include <graphene/chain/paid_subscription_objects.hpp>
 #include <graphene/chain/pm_objects.hpp>
 #include <graphene/chain/agent_objects.hpp>
+#include <graphene/chain/key_history_objects.hpp>
 #include <graphene/chain/pm_meta_object.hpp>
 #include <graphene/chain/hardfork.hpp>
 
@@ -1436,6 +1437,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(pm_dispute_index,        pm_dispute_object,        "pm_dispute")
     EXPORT_INDEX(pm_dispute_vote_index,   pm_dispute_vote_object,   "pm_dispute_vote")
     EXPORT_INDEX(agent_permission_index,  agent_permission_object,  "agent_permission")
+    EXPORT_INDEX(key_history_index,       key_history_object,       "key_history")
     EXPORT_INDEX(pm_lazy_pool_index,      pm_lazy_pool_object,      "pm_lazy_pool")
     EXPORT_INDEX(pm_lazy_deposit_index,   pm_lazy_deposit_object,   "pm_lazy_deposit")
     EXPORT_INDEX(pm_lazy_allocation_index,pm_lazy_allocation_object,"pm_lazy_allocation")
@@ -2111,6 +2113,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("agent_permission")) {
             auto n = detail::import_agent_permissions(db, state["agent_permission"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} agent_permission objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("key_history")) {   // HF15: permanent key history, never pruned
+            auto n = detail::import_simple_objects<key_history_object, key_history_index>(db, state["key_history"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} key_history objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("pm_dispute_vote")) {
             auto n = detail::import_simple_objects<pm_dispute_vote_object, pm_dispute_vote_index>(db, state["pm_dispute_vote"].get_array());

@@ -933,6 +933,47 @@ DEFINE_API(plugin, get_agent_permissions) {
     });
 }
 
+// HF15 key history, oldest first. args: account, from (row id to start at, 0 = first), limit (<= 1000).
+DEFINE_API(plugin, get_key_history) {
+    CHECK_ARG_SIZE(3);
+    auto account = account_name_type(args.args->at(0).as<string>());
+    auto from = args.args->at(1).as<uint64_t>();
+    auto limit = args.args->at(2).as<uint32_t>();
+    FC_ASSERT(limit <= 1000, "limit must be <= 1000");
+
+    return my->database().with_weak_read_lock([&]() {
+        std::vector<key_history_api_object> result;
+        const auto& db = my->database();
+        // by_account_role orders by (account, role, id); callers want one timeline, so collect the
+        // account's rows (bounded: every change is rate-limited) and sort by id.
+        const auto& idx = db.get_index<key_history_index>().indices().get<by_account_role>();
+        std::vector<const key_history_object*> rows;
+        for (auto itr = idx.lower_bound(boost::make_tuple(account)); itr != idx.end() && itr->account == account; ++itr) {
+            if (itr->id._id >= int64_t(from)) rows.push_back(&*itr);
+        }
+        std::sort(rows.begin(), rows.end(), [](auto a, auto b) { return a->id < b->id; });
+        for (size_t i = 0; i < rows.size() && result.size() < limit; ++i) result.emplace_back(*rows[i]);
+        return result;
+    });
+}
+
+// HF15 key history: who held `key` and until when. args: key, limit (<= 1000).
+DEFINE_API(plugin, get_key_history_by_key) {
+    CHECK_ARG_SIZE(2);
+    auto key = args.args->at(0).as<public_key_type>();
+    auto limit = args.args->at(1).as<uint32_t>();
+    FC_ASSERT(limit <= 1000, "limit must be <= 1000");
+
+    return my->database().with_weak_read_lock([&]() {
+        std::vector<key_history_api_object> result;
+        const auto& idx = my->database().get_index<key_history_index>().indices().get<by_key>();
+        for (auto itr = idx.lower_bound(boost::make_tuple(key)); itr != idx.end() && itr->key == key && result.size() < limit; ++itr) {
+            result.emplace_back(*itr);
+        }
+        return result;
+    });
+}
+
 void plugin::plugin_initialize(const boost::program_options::variables_map &options) {
     ilog("database_api plugin: plugin_initialize() begin");
     my = std::make_unique<api_impl>();

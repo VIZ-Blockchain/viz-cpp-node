@@ -92,7 +92,8 @@ namespace graphene { namespace chain {
             pm_lazy_withdraw_request_object_type,
             pm_deferred_claim_object_type,
             pm_settlement_object_type,
-            agent_permission_object_type   // HF15 agent access
+            agent_permission_object_type,   // HF15 agent access
+            key_history_object_type         // HF15 key history
         };
 
         class dynamic_global_property_object;
@@ -147,6 +148,7 @@ namespace graphene { namespace chain {
         class pm_deferred_claim_object;
         class pm_settlement_object;
         class agent_permission_object;   // HF15 agent access
+        class key_history_object;        // HF15 key history
 
         typedef object_id<dynamic_global_property_object> dynamic_global_property_id_type;
         typedef object_id<account_object> account_id_type;
@@ -199,6 +201,7 @@ namespace graphene { namespace chain {
         typedef object_id<pm_deferred_claim_object> pm_deferred_claim_id_type;
         typedef object_id<pm_settlement_object> pm_settlement_id_type;
         typedef object_id<agent_permission_object> agent_permission_id_type;   // HF15
+        typedef object_id<key_history_object> key_history_id_type;             // HF15
 
 } } //graphene::chain
 
@@ -313,6 +316,7 @@ FC_REFLECT_ENUM(graphene::chain::object_type,
                 (pm_deferred_claim_object_type)
                 (pm_settlement_object_type)
                 (agent_permission_object_type)
+                (key_history_object_type)
 )
 
 FC_REFLECT_TYPENAME((graphene::chain::shared_string))

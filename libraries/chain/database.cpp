@@ -4066,6 +4066,78 @@ namespace graphene { namespace chain {
             wipe_agent_permissions(account.name);
         }
 
+        account_keys_snapshot database::capture_account_keys(const account_name_type &name) const {
+            const auto &auth = get<account_authority_object, by_account>(name);
+            account_keys_snapshot k;
+            k.master = auth.master;
+            k.active = auth.active;
+            k.regular = auth.regular;
+            k.memo = get_account(name).memo_key;
+            return k;
+        }
+
+        void database::record_key_changes(const account_name_type &name, const account_keys_snapshot &before) {
+            if (!has_hardfork(CHAIN_HARDFORK_15))
+                return;
+            const account_keys_snapshot now = capture_account_keys(name);
+            // The last block in which the old keys still held, and its time. While a block is being
+            // applied the head is still the previous block, so this pair is deterministic and
+            // consistent (number and time of the same block); the change itself lands in the next one.
+            const uint32_t until_block = head_block_num();
+            const time_point_sec until_time = head_block_time();
+
+            auto write_authority = [&](uint8_t role, const authority &old_auth, const authority &new_auth) {
+                if (old_auth == new_auth)
+                    return;
+                for (const auto &k : old_auth.key_auths) {
+                    create<key_history_object>([&](key_history_object &h) {
+                        h.account = name;
+                        h.role = role;
+                        h.key = k.first;
+                        h.weight = k.second;
+                        h.weight_threshold = old_auth.weight_threshold;
+                        h.valid_until_block = until_block;
+                        h.valid_until_time = until_time;
+                    });
+                }
+                for (const auto &a : old_auth.account_auths) {
+                    create<key_history_object>([&](key_history_object &h) {
+                        h.account = name;
+                        h.role = role;
+                        h.auth_account = a.first;
+                        h.weight = a.second;
+                        h.weight_threshold = old_auth.weight_threshold;
+                        h.valid_until_block = until_block;
+                        h.valid_until_time = until_time;
+                    });
+                }
+            };
+            write_authority(key_role_master, before.master, now.master);
+            write_authority(key_role_active, before.active, now.active);
+            write_authority(key_role_regular, before.regular, now.regular);
+            if (before.memo != now.memo) {
+                create<key_history_object>([&](key_history_object &h) {
+                    h.account = name;
+                    h.role = key_role_memo;
+                    h.key = before.memo;
+                    h.valid_until_block = until_block;
+                    h.valid_until_time = until_time;
+                });
+            }
+        }
+
+        time_point_sec database::last_key_change(const account_name_type &name, uint8_t role) const {
+            const auto &idx = get_index<key_history_index>().indices().get<by_account_role>();
+            // Rows of (name, role) are ordered by id = creation order; the last one is the latest change.
+            auto itr = idx.upper_bound(boost::make_tuple(name, role));
+            if (itr == idx.begin())
+                return time_point_sec::min();
+            --itr;
+            if (itr->account != name || itr->role != role)
+                return time_point_sec::min();
+            return itr->valid_until_time;
+        }
+
         void database::wipe_agent_permissions(const account_name_type &name) {
             if (!has_hardfork(CHAIN_HARDFORK_15))
                 return;
@@ -4849,6 +4921,8 @@ namespace graphene { namespace chain {
 
                                             public_key_type account_authorities_key(account.current_bidder_key);
 
+                                            const account_keys_snapshot keys_before = capture_account_keys(account.name);
+
                                             const auto& account_auth = get<account_authority_object, by_account>(account.name);
                                             modify(account_auth, [&](account_authority_object &auth) {
                                                 auth.master.clear();
@@ -4879,6 +4953,8 @@ namespace graphene { namespace chain {
                                             account.memo_key = account_authorities_key;
                                             account.recovery_account = account_bidder.name;
                                             account.last_account_update = head_block_time();
+
+                                            record_key_changes(account.name, keys_before);   // HF15 key history (memo just changed in place)
                                         }
                                     }
                                     else{//imposible condition
@@ -4974,6 +5050,8 @@ namespace graphene { namespace chain {
 
                                                 public_key_type account_authorities_key(account.current_bidder_key);
 
+                                                const account_keys_snapshot keys_before = capture_account_keys(account.name);
+
                                                 const auto& account_auth = get<account_authority_object, by_account>(account.name);
                                                 modify(account_auth, [&](account_authority_object &auth) {
                                                     auth.master.clear();
@@ -5006,6 +5084,8 @@ namespace graphene { namespace chain {
                                                 account.memo_key = account_authorities_key;
                                                 account.recovery_account = account_bidder.name;
                                                 account.last_account_update = head_block_time();
+
+                                                record_key_changes(account.name, keys_before);   // HF15 key history (memo just changed in place)
                                             }
                                         }
                                         else{//imposible condition
@@ -5217,6 +5297,7 @@ namespace graphene { namespace chain {
             add_core_index<pm_deferred_claim_index>(*this);
             add_core_index<pm_settlement_index>(*this);
             add_core_index<agent_permission_index>(*this);   // HF15 agent access
+            add_core_index<key_history_index>(*this);        // HF15 key history
 
             _plugin_index_signal();
         }
