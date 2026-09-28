@@ -463,3 +463,44 @@ BOOST_AUTO_TEST_CASE(agent_access_direct_sale_wipes) {
     BOOST_REQUIRE_MESSAGE(sold_to_buyer(f), "direct sale did not go through — the wipe check would be vacuous");
     BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "directly sold account kept its delegation");
 }
+
+// recover_account rewrites master through update_master_authority → the delegation goes. To make
+// recovery possible the principal first rotates its master (history needs a "recent" master), and
+// only then grants — so the row the recovery must wipe really exists at that moment.
+BOOST_AUTO_TEST_CASE(agent_access_recovery_wipes) {
+    agent_fixture f(0xAA9E22, "aa-wipe-recover");
+    const auto stolen = derive_key("principal-master-stolen");
+    const auto restored = derive_key("principal-master-restored");
+
+    account_update_operation au;   // the "attacker" swaps master; active stays principal_key
+    au.account = f.principal;
+    au.master = single_key_auth(stolen.get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.agent));
+
+    request_account_recovery_operation rq;
+    rq.recovery_account = f.node.db().get_account(f.principal).recovery_account;
+    rq.account_to_recover = f.principal;
+    rq.new_master_authority = single_key_auth(restored.get_public_key());
+    const auto& ra = rq.recovery_account;
+    BOOST_REQUIRE_MESSAGE(ra == f.gp.initiator_name, "fixture assumes the creator is the recovery account");
+    f.node.push_pending_transaction(sign_ops({rq}, f.gp.initiator_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    recover_account_operation rc;
+    rc.account_to_recover = f.principal;
+    rc.new_master_authority = single_key_auth(restored.get_public_key());
+    rc.recent_master_authority = single_key_auth(f.principal_key.get_public_key());
+    signed_transaction tx = sign_ops({rc}, restored, f.node);
+    tx.sign(f.principal_key, f.node.chain_id());
+    f.node.push_pending_transaction(tx);
+    produce(f.node, f.gp, f.when);
+
+    const bool recovered = f.node.db().get<account_authority_object, by_account>(f.principal).master ==
+                           single_key_auth(restored.get_public_key());
+    BOOST_REQUIRE_MESSAGE(recovered, "recovery did not go through — the wipe check would be vacuous");
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "recovered account kept its delegation");
+}
