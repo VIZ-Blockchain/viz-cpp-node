@@ -3,6 +3,7 @@ set(CURRENT_TARGET database_api)
 list(APPEND ${CURRENT_TARGET}_HEADERS
      include/graphene/plugins/database_api/state.hpp
      include/graphene/plugins/database_api/plugin.hpp
+     include/graphene/plugins/database_api/signature_discovery.hpp
 
      include/graphene/plugins/database_api/api_objects/account_recovery_request_api_object.hpp
      include/graphene/plugins/database_api/forward.hpp
@@ -14,6 +15,7 @@ list(APPEND ${CURRENT_TARGET}_HEADERS
 
 list(APPEND ${CURRENT_TARGET}_SOURCES
      api.cpp
+     signature_discovery.cpp
      proposal_api_object.cpp
 )
 

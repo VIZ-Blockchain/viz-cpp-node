@@ -80,6 +80,7 @@ add_executable(consensus_sim_tests ${SCENARIO_SOURCES})
 
 target_link_libraries(consensus_sim_tests
     PRIVATE consensus_sim_harness
+            graphene::database_api    # RPC signature-discovery implementation
             graphene::network         # test_wedge_predicate.cpp: dlt_p2p_node::is_wedged
                                       # test_routable_endpoint.cpp: is_routable_endpoint
             Boost::unit_test_framework

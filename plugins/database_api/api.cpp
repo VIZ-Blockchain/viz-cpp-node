@@ -1,4 +1,5 @@
 #include <graphene/plugins/database_api/plugin.hpp>
+#include <graphene/plugins/database_api/signature_discovery.hpp>
 #include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/agent_objects.hpp>
 
@@ -793,33 +794,7 @@ std::set<public_key_type> plugin::api_impl::get_required_signatures(
     const signed_transaction &trx,
     const flat_set<public_key_type> &available_keys
 ) const {
-    if (database().has_hardfork(CHAIN_HARDFORK_15)) {
-        flat_set<public_key_type> candidate = available_keys;
-        const auto signed_keys = trx.get_signature_keys(CHAIN_ID);
-        candidate.insert(signed_keys.begin(), signed_keys.end());
-        flat_set<public_key_type> used;
-        graphene::chain::verify_agent_transaction(database(), trx, candidate, true, &used);
-        std::set<public_key_type> result;
-        for (const auto& key : used)
-            if (available_keys.count(key)) result.insert(key);
-        return result;
-    }
-    //   wdump((trx)(available_keys));
-    auto result = trx.get_required_signatures(
-        CHAIN_ID, available_keys,
-        [&](std::string account_name) {
-            return authority(database().get<account_authority_object, by_account>(account_name).active);
-        },
-        [&](std::string account_name) {
-            return authority(database().get<account_authority_object, by_account>(account_name).master);
-        },
-        [&](std::string account_name) {
-            return authority(database().get<account_authority_object, by_account>(account_name).regular);
-        },
-        CHAIN_MAX_SIG_CHECK_DEPTH
-    );
-    //   wdump((result));
-    return result;
+    return get_required_signatures_for_api(database(), trx, available_keys);
 }
 
 DEFINE_API(plugin, get_potential_signatures) {

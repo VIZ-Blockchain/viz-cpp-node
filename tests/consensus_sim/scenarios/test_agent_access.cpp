@@ -26,6 +26,7 @@
 #include <graphene/protocol/proposal_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
 #include <graphene/protocol/config.hpp>
+#include <graphene/plugins/database_api/signature_discovery.hpp>
 #include <fc/crypto/sha256.hpp>
 
 #include <string>
@@ -590,6 +591,33 @@ BOOST_AUTO_TEST_CASE(agent_access_failed_regular_branch_does_not_consume_partial
     expect_rejected(f.node, surplus, "partial regular signature survived active fallback");
     f.node.push_pending_transaction(sign_ops({metadata}, f.principal_key, f.node, 1));
     produce(f.node, f.gp, f.when);
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_rpc_signature_discovery_returns_partial_multisig_keys) {
+    agent_fixture f(0xAA9E40, "aa-rpc-partial");
+    const auto first = derive_key("rpc-first");
+    const auto second = derive_key("rpc-second");
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    authority two;
+    two.weight_threshold = 2;
+    two.key_auths[first.get_public_key()] = 1;
+    two.key_auths[second.get_public_key()] = 1;
+    rotate.active = two;
+    f.node.push_pending_transaction(sign_ops({rotate}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    signed_transaction unsigned_tx;
+    unsigned_tx.operations.push_back(f.pay(1000));
+    const auto partial = graphene::plugins::database_api::get_required_signatures_for_api(
+        f.node.db(), unsigned_tx, {first.get_public_key()});
+    BOOST_CHECK_EQUAL(partial.size(), 1u);
+    BOOST_CHECK(partial.count(first.get_public_key()) == 1);
+    const auto sufficient = graphene::plugins::database_api::get_required_signatures_for_api(
+        f.node.db(), unsigned_tx, {first.get_public_key(), second.get_public_key()});
+    BOOST_CHECK_EQUAL(sufficient.size(), 2u);
+    BOOST_CHECK(sufficient.count(first.get_public_key()) == 1);
+    BOOST_CHECK(sufficient.count(second.get_public_key()) == 1);
 }
 
 BOOST_AUTO_TEST_CASE(agent_access_rpc_authority_core_uses_same_rules_as_chain) {
