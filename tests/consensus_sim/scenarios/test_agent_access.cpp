@@ -414,3 +414,52 @@ BOOST_AUTO_TEST_CASE(agent_access_agent_master_change_wipes) {
                     sign_ops({transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node),
                     "agent acted after its own master rotation");
 }
+
+// Account sales. A price set on testnet opens a 10-minute auction window
+// (CHAIN_ACCOUNT_ON_SALE_DELAY): a buy inside the window is a BID and the account changes hands when
+// the auction closes (database::account_on_auction_expiration); a buy after the window is a direct
+// sale (buy_account_evaluator). Two separate code paths rewrite the authorities, so both are tested.
+namespace {
+void put_on_sale(agent_fixture& f) {
+    set_account_price_operation sp;
+    sp.account = f.principal;
+    sp.account_seller = f.principal;
+    sp.account_offer_price = asset(10000, TOKEN_SYMBOL);
+    sp.account_on_sale = true;
+    f.node.push_pending_transaction(sign_ops({sp}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+}
+void buy(agent_fixture& f) {
+    buy_account_operation bo;
+    bo.buyer = f.gp.initiator_name;
+    bo.account = f.principal;
+    bo.account_offer_price = asset(10000, TOKEN_SYMBOL);
+    bo.account_authorities_key = derive_key("buyer-key").get_public_key();
+    bo.tokens_to_shares = f.node.db().get_validator_schedule_object().median_props.account_creation_fee;
+    f.node.push_pending_transaction(sign_ops({bo}, f.gp.initiator_key, f.node));
+    produce(f.node, f.gp, f.when);
+}
+bool sold_to_buyer(agent_fixture& f) {
+    return f.node.db().get<account_authority_object, by_account>(f.principal).active ==
+           single_key_auth(derive_key("buyer-key").get_public_key());
+}
+void produce_past_sale_window(agent_fixture& f) {
+    const auto until = f.node.db().get_account(f.principal).account_on_sale_start_time;
+    for (int i = 0; i < 400 && f.node.head_block_time() <= until; ++i) produce(f.node, f.gp, f.when);
+}
+} // anonymous namespace
+
+// The auction-close path (database::account_on_auction_expiration) also wipes, but it cannot be
+// tested here yet: a bid extends the auction by the node's WALL CLOCK (buy_account_evaluator), so
+// under the virtual clock the auction closes months after the simulation ends. Fixed separately in
+// branch fix-auction-wallclock (HF15); add the auction case once that lands in pm.
+
+BOOST_AUTO_TEST_CASE(agent_access_direct_sale_wipes) {
+    agent_fixture f(0xAA9E21, "aa-wipe-sale");
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+    put_on_sale(f);
+    produce_past_sale_window(f);
+    buy(f);   // after the window: direct sale
+    BOOST_REQUIRE_MESSAGE(sold_to_buyer(f), "direct sale did not go through — the wipe check would be vacuous");
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "directly sold account kept its delegation");
+}
