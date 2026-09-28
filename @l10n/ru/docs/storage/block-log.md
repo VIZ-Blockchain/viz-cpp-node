@@ -151,15 +151,40 @@ DLT-лог хранит только недавнее окно блоков; б�
 
 ## Просмотрщик block log
 
-В инструментарии включён терминальный просмотрщик block log (`block-log-viewer.js`):
+Терминальный просмотрщик block log лежит в `programs/util/block-log/` (Node.js, без зависимостей):
 
 ```
-node block-log-viewer.js <path> [--dlt]
+node programs/util/block-log/block-log-viewer.cjs <path> [--dlt]
 ```
 
 Основные команды: `f` — первый, `l` — последний, `n`/`p` — следующий/предыдущий, `g <N>` — перейти к блоку N, `o` — показать операции, `s <type>` — поиск по типу операции, `S <str>` — поиск по содержимому, `scan` — построить битовую маску для быстрой навигации.
 
 Команда `scan` создаёт файл битовой маски (`block_log.bitmask`), отмечающий блоки с непустыми операциями, что позволяет мгновенно перемещаться по `N`/`P`.
+
+---
+
+## Архив блоков
+
+`dlt_block_log` хранит только скользящее окно. Чтобы сохранять все необратимые блоки, включите неконсенсусный плагин `block_archive`:
+
+```
+plugin = block_archive
+block-archive-dir = block-archive     # относительно data dir
+block-archive-range = 10000           # блоков в файле
+```
+
+Плагин пишет `<dir>/blocks-<first>-<last>.log` (+ `.log.index`, формат `dlt_block_log`), по файлу на диапазон. Недописанный диапазон лежит в `<dir>/partial/` и переносится наверх, когда его последний блок стал необратимым, поэтому файлы в корне папки полные и больше не меняются. У ноды, запущенной со снапшота, первый файл короче: `<first>` — первый реально сохранённый блок. Ошибка останавливает архив с записью в лог и никогда не влияет на обработку блоков.
+
+`block-archive.cjs` читает всю папку (или один `dlt_block_log`):
+
+```
+node programs/util/block-log/block-archive.cjs info   <dir>
+node programs/util/block-log/block-archive.cjs get    <dir> <block>
+node programs/util/block-log/block-archive.cjs search <dir> --op=pm_place_bet --account=alice --from=N --to=N
+node programs/util/block-log/block-archive.cjs export <dir> --from=N --to=N [--blocks] --out=ops.jsonl
+```
+
+`search` и `export` выводят по JSON-строке на операцию (`block`, `timestamp`, `tx`, `op_in_tx`, `type`, `data`); `--blocks` экспортирует блоки целиком. `--account` совпадает с любым строковым полем, равным имени, `--text` — с подстрокой JSON операции. Операции 64+ разбираются по `op-layouts.json`; после добавления операции в ноду и viz-js-lib перегенерируйте его через `gen-op-layouts.cjs`.
 
 ---
 
