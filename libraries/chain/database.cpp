@@ -4062,7 +4062,7 @@ namespace graphene { namespace chain {
                 auth.master = master_authority;
                 auth.last_master_update = head_block_time();
             });
-            // Master change (account_update, recover_account): the delegation dies with the keys.
+            // Master change (account_update, recover_account): the agents die with the keys.
             wipe_agent_permissions(account.name);
         }
 
@@ -4073,11 +4073,6 @@ namespace graphene { namespace chain {
             for (auto it = by_principal.lower_bound(boost::make_tuple(name));
                  it != by_principal.end() && it->account == name;) {
                 const auto &row = *it++;   // advance before remove: remove invalidates `it`
-                remove(row);
-            }
-            const auto &by_agent = get_index<agent_permission_index>().indices().get<by_permission_agent>();
-            for (auto it = by_agent.lower_bound(name); it != by_agent.end() && it->agent == name;) {
-                const auto &row = *it++;
                 remove(row);
             }
         }
@@ -5597,8 +5592,8 @@ namespace graphene { namespace chain {
             if (!(skip & (skip_transaction_signatures | skip_authority_check))) {
                 const chain_id_type &chain_id = CHAIN_ID;
 
-                // HF15 agent access. A principal may delegate listed operations to an agent, which
-                // then signs with its OWN active key. The decision lives in the chain layer (it needs
+                // HF15 agent access. A principal may issue agent keys, each allowed to sign a listed
+                // set of operations for it. The decision lives in the chain layer (it needs
                 // the permission objects); the signatures are still checked by the ordinary
                 // sign_state path below, which is why substituting the getter is enough — nothing
                 // here approves anything on its own. The map is empty below HF15 and for every
@@ -5608,7 +5603,10 @@ namespace graphene { namespace chain {
                 auto get_active = [&](const account_name_type& name) {
                     const auto itr = delegated.find(name);
                     if (itr != delegated.end()) {
-                        return authority(get<account_authority_object, by_account>(itr->second).active);
+                        authority a;
+                        a.weight_threshold = 1;
+                        a.key_auths[itr->second] = 1;
+                        return a;
                     }
                     return authority(get<account_authority_object, by_account>(name).active);
                 };

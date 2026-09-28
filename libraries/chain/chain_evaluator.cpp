@@ -2230,7 +2230,7 @@ namespace graphene { namespace chain {
                                     auth.regular = auth.active;
                                     auth.last_master_update = _db.head_block_time();
                                 });
-                                // Sold: delegations must not follow the account to its buyer.
+                                // Sold: agent keys must not follow the account to its buyer.
                                 _db.wipe_agent_permissions(account.name);
                                 _db.push_virtual_operation(
                                     account_sale_operation(op.account,op.account_offer_price,op.buyer,account_seller.name));
@@ -2292,7 +2292,7 @@ namespace graphene { namespace chain {
                             auth.regular = auth.active;
                             auth.last_master_update = _db.head_block_time();
                         });
-                        // Sold: delegations must not follow the account to its buyer.
+                        // Sold: agent keys must not follow the account to its buyer.
                         _db.wipe_agent_permissions(account.name);
                         _db.push_virtual_operation(
                             account_sale_operation(op.account,op.account_offer_price,op.buyer,account_seller.name));

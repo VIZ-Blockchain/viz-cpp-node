@@ -979,7 +979,8 @@ inline uint32_t import_agent_permissions(graphene::chain::database& db, const fc
         mutable_idx.set_next_id(agent_permission_id_type(v["id"].as_int64()));
         db.create<agent_permission_object>([&](agent_permission_object& obj) {
             obj.account    = v["account"].as<account_name_type>();
-            obj.agent      = v["agent"].as<account_name_type>();
+            obj.agent_name = v["agent_name"].as<account_name_type>();
+            obj.agent_key  = v["agent_key"].as<public_key_type>();
             set_shared_string(obj.operations, v["operations"]);
             obj.expiration = v["expiration"].as<fc::time_point_sec>();
         });

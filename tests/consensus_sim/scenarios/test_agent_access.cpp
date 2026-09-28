@@ -1,7 +1,7 @@
 // HF15 agent access — chain-level tests for the authority hook in database.cpp.
 //
-// A principal may authorise an agent to broadcast a listed set of operations, and the agent signs
-// with its OWN active key. tests/pm/agent_access_test.cpp covers the protocol half (operation
+// A principal issues agents: a label plus a public key, each allowed to sign a listed set of
+// operations on the principal's behalf. The agent is not an account. tests/pm/agent_access_test.cpp covers the protocol half (operation
 // validation, the never-delegable list, the packed name list); it links the protocol library only
 // and has no chain state, so it cannot reach the part where the delegation actually takes effect.
 // That is what this file exercises: the transaction is pushed into a real database and accepted or
@@ -141,11 +141,12 @@ void vest(simulated_node& node, const genesis_params& gp, fc::time_point_sec& wh
 
 void grant(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
            const account_name_type& principal, const fc::ecc::private_key& pkey,
-           const account_name_type& agent, const std::vector<std::string>& ops,
+           const account_name_type& name, const public_key_type& key, const std::vector<std::string>& ops,
            fc::time_point_sec expiration = fc::time_point_sec()) {
     set_agent_permission_operation op;
     op.account = principal;
-    op.agent = agent;
+    op.agent_name = name;
+    op.agent_key = key;
     op.expiration = expiration;
     for (const auto& s : ops) op.operations.insert(s);
     node.push_pending_transaction(sign_ops({op}, pkey, node));
@@ -169,7 +170,7 @@ int64_t liquid(const simulated_node& n, const account_name_type& who) {
     return n.db().get_account(who).balance.amount.value;
 }
 
-bool has_row(simulated_node& n, const account_name_type& p, const account_name_type& a) {
+bool has_row(simulated_node& n, const account_name_type& p, const account_name_type& a) {   // a = agent name
     const auto& idx = n.db().get_index<agent_permission_index>().indices().get<by_permission_account>();
     return idx.find(boost::make_tuple(p, a)) != idx.end();
 }
@@ -183,10 +184,9 @@ transfer_operation transfer_op(const account_name_type& from, const account_name
     return t;
 }
 
-// One node per case: HF14, then the HF15 marker, then two ordinary accounts with independent keys
-// — a principal and its agent. Ordinary accounts rather than the genesis initiator, so the
-// authority path under test is the one a real user has (the initiator's key is wired into all
-// three of its authorities, which would hide a mis-substitution).
+// One node per case: HF14, then the HF15 marker, then one ordinary account (the principal) and an
+// agent key that belongs to no account. An ordinary account rather than the genesis initiator, so
+// the authority path under test is the one a real user has.
 struct agent_fixture {
     genesis_params gp;
     virtual_clock clk;
@@ -194,7 +194,7 @@ struct agent_fixture {
     fc::time_point_sec when;
 
     account_name_type principal = "principal";
-    account_name_type agent = "agent";
+    account_name_type bot = "trading-bot";
     fc::ecc::private_key principal_key = derive_key("principal-key");
     fc::ecc::private_key agent_key = derive_key("agent-key");
 
@@ -206,220 +206,20 @@ struct agent_fixture {
                               "harness could not reach HF14 (needs BUILD_TESTNET)");
         enable_hf15(node);
         create_account(node, gp, when, principal, principal_key, 100000);
-        create_account(node, gp, when, agent, agent_key, 100000);
         vest(node, gp, when, principal, principal_key, 50000);
-        vest(node, gp, when, agent, agent_key, 50000);
+    }
+
+    void issue(const std::vector<std::string>& ops, fc::time_point_sec exp = fc::time_point_sec()) {
+        grant(node, gp, when, principal, principal_key, bot, agent_key.get_public_key(), ops, exp);
+    }
+    transfer_operation pay(share_type amount) {
+        return transfer_op(principal, gp.initiator_name, amount, TOKEN_SYMBOL);
     }
 };
 
-} // anonymous namespace
-
-// The plain positive: an agent signs, with its OWN key, an operation the principal granted it.
-BOOST_AUTO_TEST_CASE(agent_access_agent_signs_granted_operation) {
-    agent_fixture f(0xAA9E17, "aa-granted");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-
-    const auto before = liquid(f.node, f.gp.initiator_name);
-    f.node.push_pending_transaction(
-        sign_ops({transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node));
-    produce(f.node, f.gp, f.when);
-
-    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
-}
-
-// The regression the hook's first rule exists for: a delegation row must not break the principal's
-// own transactions. Substituting unconditionally would do exactly that, the moment any row existed.
-BOOST_AUTO_TEST_CASE(agent_access_principal_still_signs_for_itself) {
-    agent_fixture f(0xAA9E18, "aa-principal");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-
-    const auto before = liquid(f.node, f.gp.initiator_name);
-    f.node.push_pending_transaction(
-        sign_ops({transfer_op(f.principal, f.gp.initiator_name, 2000, TOKEN_SYMBOL)}, f.principal_key, f.node));
-    produce(f.node, f.gp, f.when);
-
-    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 2000);
-}
-
-// A grant is a list, not a blank cheque: the agent may only act in transactions where EVERY
-// authority-requiring operation is on the list.
-BOOST_AUTO_TEST_CASE(agent_access_requires_full_coverage_of_the_transaction) {
-    agent_fixture f(0xAA9E19, "aa-coverage");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-
-    transfer_operation t = transfer_op(f.principal, f.gp.initiator_name, 3000, TOKEN_SYMBOL);
-    transfer_to_vesting_operation tv;
-    tv.from = f.principal; tv.to = f.principal;
-    tv.amount = asset(3000, TOKEN_SYMBOL);
-
-    // `transfer` is granted, `transfer_to_vesting` is not, and both require the principal's active
-    // authority — so the pair is outside the grant even though the first half looks covered.
-    expect_rejected(f.node, sign_ops({t, tv}, f.agent_key, f.node),
-                    "agent acted outside its grant: one operation of the transaction was not listed");
-
-    // Control: the principal signing the same two operations is accepted. Without this the case
-    // above would also pass if the batch itself were invalid for some unrelated reason.
-    const auto before = liquid(f.node, f.gp.initiator_name);
-    f.node.push_pending_transaction(sign_ops({t, tv}, f.principal_key, f.node, 1));
-    produce(f.node, f.gp, f.when);
-    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 3000);
-}
-
-// Master authority is structurally out of reach. Every master-only operation is on the
-// never-delegable list, so it cannot be granted in the first place; the case that remains is a
-// transaction that MIXES a granted active operation of the principal with a master requirement the
-// agent really does hold (its own). The hook refuses to substitute anything in such a transaction,
-// so the principal's half stays unsatisfied. (Coverage alone would also refuse this pair, because
-// the master operation is not on the list — the master rule is the second, structural wall; it
-// cannot be isolated in a test precisely because the deny-list makes it unreachable.)
-BOOST_AUTO_TEST_CASE(agent_access_never_reaches_master_authority) {
-    agent_fixture f(0xAA9E1A, "aa-master");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-
-    change_recovery_account_operation cr;   // the agent's OWN master requirement
-    cr.account_to_recover = f.agent;
-    cr.new_recovery_account = f.gp.initiator_name;
-    const auto t = transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL);
-
-    expect_rejected(f.node, sign_ops({t, cr}, f.agent_key, f.node),
-                    "agent acted for the principal inside a master-authority transaction");
-
-    // Control: both parties signing the same pair is accepted, so the rejection above is about the
-    // delegation and not about the operations themselves.
-    signed_transaction both = sign_ops({t, cr}, f.agent_key, f.node, 1);
-    both.sign(f.principal_key, f.node.chain_id());
-    const auto before = liquid(f.node, f.gp.initiator_name);
-    f.node.push_pending_transaction(both);
-    produce(f.node, f.gp, f.when);
-    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
-}
-
-// Row validity: the hook trusts rows, so each way a row can be a lie has to be refused.
-BOOST_AUTO_TEST_CASE(agent_access_invalid_rows_grant_nothing) {
-    agent_fixture f(0xAA9E1B, "aa-rows");
-    transfer_operation t = transfer_op(f.principal, f.gp.initiator_name, 4000, TOKEN_SYMBOL);
-
-    // 1) No row at all — the agent is just an unrelated account.
-    expect_rejected(f.node, sign_ops({t}, f.agent_key, f.node),
-                    "agent acted with no delegation row");
-
-    // 2) A row that is already dead when it lands: an expiration in the past revokes rather than
-    // errors (set_agent_permission_evaluator), so the grant must leave no row behind.
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"},
-          fc::time_point_sec(f.node.db().head_block_time() - fc::seconds(60)));
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent),
-                        "an expired grant left a usable row behind");
-    expect_rejected(f.node, sign_ops({t}, f.agent_key, f.node),
-                    "agent acted on an expired grant");
-
-    // 3) A never-delegable name is refused at grant time, not at use time.
-    set_agent_permission_operation bad;
-    bad.account = f.principal;
-    bad.agent = f.agent;
-    bad.operations.insert("account_update");
-    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node),
-                    "granting account_update was accepted");
-
-    // 4) Unknown name — a silently dead permission is refused too.
-    bad.operations.clear();
-    bad.operations.insert("no_such_operation");
-    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node, 1),
-                    "granting an unknown operation name was accepted");
-}
-
-// The anti-escalation property that a shorter hook would miss. "second" has an ACTIVE authority
-// made of an account_auth to the principal, so the principal's key satisfies it through the
-// ordinary nested resolution — while the principal's AGENT must not inherit that reach: the agent
-// stands in for the principal only in transactions that name the principal, never wherever the
-// principal's authority happens to be nested.
-BOOST_AUTO_TEST_CASE(agent_access_does_not_leak_through_nested_authorities) {
-    agent_fixture f(0xAA9E1C, "aa-nested");
-
-    const account_name_type second = "second";
-    fc::ecc::private_key second_key = derive_key("second-key");
-    create_account(f.node, f.gp, f.when, second, second_key, 100000);
-
-    authority nested;   // active = "the principal may act for second"
-    nested.weight_threshold = 1;
-    nested.account_auths[f.principal] = 1;
-    account_update_operation au;
-    au.account = second;
-    au.master = single_key_auth(second_key.get_public_key());
-    au.active = nested;
-    f.node.push_pending_transaction(sign_ops({au}, second_key, f.node));
-    produce(f.node, f.gp, f.when);
-
-    // Control: the principal's own key reaches second's authority by nesting → accepted.
-    const auto before = liquid(f.node, f.gp.initiator_name);
-    f.node.push_pending_transaction(
-        sign_ops({transfer_op(second, f.gp.initiator_name, 5000, TOKEN_SYMBOL)}, f.principal_key, f.node));
-    produce(f.node, f.gp, f.when);
-    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 5000);
-
-    // And now the delegation for the principal exists — the agent must still not be able to act
-    // for "second", which never named the principal in its required authorities.
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-    expect_rejected(f.node,
-                    sign_ops({transfer_op(second, f.gp.initiator_name, 6000, TOKEN_SYMBOL)}, f.agent_key, f.node),
-                    "the principal's agent inherited the principal's nested authority elsewhere");
-}
-
-// Wipe rules: a delegation must not outlive the keys it was granted under — on either side.
-// Principal rotates its ACTIVE key → the row goes and the agent can no longer act.
-BOOST_AUTO_TEST_CASE(agent_access_principal_active_change_wipes) {
-    agent_fixture f(0xAA9E1D, "aa-wipe-principal");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-    BOOST_REQUIRE(has_row(f.node, f.principal, f.agent));
-
-    account_update_operation au;
-    au.account = f.principal;
-    au.active = single_key_auth(derive_key("principal-key-2").get_public_key());
-    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
-    produce(f.node, f.gp, f.when);
-
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "principal's active change left the row");
-    expect_rejected(f.node,
-                    sign_ops({transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node),
-                    "agent acted after the principal rotated its active key");
-}
-
-// Principal changes only REGULAR → the grant is untouched (agents sign with active).
-BOOST_AUTO_TEST_CASE(agent_access_regular_change_keeps_row) {
-    agent_fixture f(0xAA9E1E, "aa-keep-regular");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-
-    account_update_operation au;
-    au.account = f.principal;
-    au.regular = single_key_auth(derive_key("principal-regular-2").get_public_key());
-    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
-    produce(f.node, f.gp, f.when);
-
-    BOOST_CHECK(has_row(f.node, f.principal, f.agent));
-}
-
-// The AGENT rotates its master key (the sale path rewrites master too) → rows where it is the
-// agent go as well, so a delegation never passes to whoever controls the agent account next.
-BOOST_AUTO_TEST_CASE(agent_access_agent_master_change_wipes) {
-    agent_fixture f(0xAA9E1F, "aa-wipe-agent");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-
-    account_update_operation au;
-    au.account = f.agent;
-    au.master = single_key_auth(derive_key("agent-master-2").get_public_key());
-    f.node.push_pending_transaction(sign_ops({au}, f.agent_key, f.node));
-    produce(f.node, f.gp, f.when);
-
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "agent's master change left the row");
-    expect_rejected(f.node,
-                    sign_ops({transfer_op(f.principal, f.gp.initiator_name, 1000, TOKEN_SYMBOL)}, f.agent_key, f.node),
-                    "agent acted after its own master rotation");
-}
-
 // Account sales. A price set on testnet opens a 10-minute auction window
 // (CHAIN_ACCOUNT_ON_SALE_DELAY): a buy inside the window is a BID and the account changes hands when
-// the auction closes (database::account_on_auction_expiration); a buy after the window is a direct
-// sale (buy_account_evaluator). Two separate code paths rewrite the authorities, so both are tested.
-namespace {
+// the auction closes; a buy after the window is a direct sale. Two code paths, both tested.
 void put_on_sale(agent_fixture& f) {
     set_account_price_operation sp;
     sp.account = f.principal;
@@ -443,60 +243,243 @@ bool sold_to_buyer(agent_fixture& f) {
     return f.node.db().get<account_authority_object, by_account>(f.principal).active ==
            single_key_auth(derive_key("buyer-key").get_public_key());
 }
-void produce_past_sale_window(agent_fixture& f) {
-    const auto until = f.node.db().get_account(f.principal).account_on_sale_start_time;
-    for (int i = 0; i < 400 && f.node.head_block_time() <= until; ++i) produce(f.node, f.gp, f.when);
-}
+
 } // anonymous namespace
 
-// Auction close (database::account_on_auction_expiration). Needs the HF15 fix that measures the bid
-// extension from head_block_time(): with the legacy wall-clock read the auction would close months
-// after the virtual clock of this harness ends.
-BOOST_AUTO_TEST_CASE(agent_access_auction_close_wipes) {
-    agent_fixture f(0xAA9E20, "aa-wipe-auction");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-    put_on_sale(f);
-    buy(f);   // inside the window: a bid
-    BOOST_REQUIRE_MESSAGE(!sold_to_buyer(f), "expected a bid, got an immediate sale");
-    BOOST_CHECK_MESSAGE(has_row(f.node, f.principal, f.agent), "a mere bid already wiped the row");
-    for (int i = 0; i < 400 && !sold_to_buyer(f); ++i) produce(f.node, f.gp, f.when);
-    BOOST_REQUIRE_MESSAGE(sold_to_buyer(f), "auction did not close — the wipe check would be vacuous");
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "account sold at auction kept its delegation");
+// The plain positive: a transaction signed ONLY by the agent key passes for the principal.
+BOOST_AUTO_TEST_CASE(agent_access_agent_key_signs_granted_operation) {
+    agent_fixture f(0xAA9E17, "aa-granted");
+    f.issue({"transfer"});
+
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
+// Issuing an agent must not break the principal's own transactions.
+BOOST_AUTO_TEST_CASE(agent_access_principal_still_signs_for_itself) {
+    agent_fixture f(0xAA9E18, "aa-principal");
+    f.issue({"transfer"});
+
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(2000)}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 2000);
+}
+
+// A key that was never issued — or was issued by someone else — grants nothing.
+BOOST_AUTO_TEST_CASE(agent_access_unknown_key_grants_nothing) {
+    agent_fixture f(0xAA9E24, "aa-unknown-key");
+    f.issue({"transfer"});
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, derive_key("stranger"), f.node),
+                    "a key that is not an agent of the principal signed for it");
+}
+
+// An agent's list is not a blank cheque: EVERY authority-requiring operation must be on it.
+BOOST_AUTO_TEST_CASE(agent_access_requires_full_coverage_of_the_transaction) {
+    agent_fixture f(0xAA9E19, "aa-coverage");
+    f.issue({"transfer"});
+
+    transfer_to_vesting_operation tv;
+    tv.from = f.principal; tv.to = f.principal;
+    tv.amount = asset(3000, TOKEN_SYMBOL);
+    expect_rejected(f.node, sign_ops({f.pay(3000), tv}, f.agent_key, f.node),
+                    "agent acted outside its list: one operation of the transaction was not listed");
+
+    // Control: the principal signing the same pair is accepted.
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(3000), tv}, f.principal_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 3000);
+}
+
+// A transaction that needs master authority is never answered by an agent key, even when the rest
+// of it is on the list. (Master-only operations are also on the deny-list, so this is the second,
+// structural wall.)
+BOOST_AUTO_TEST_CASE(agent_access_never_reaches_master_authority) {
+    agent_fixture f(0xAA9E1A, "aa-master");
+    f.issue({"transfer"});
+
+    change_recovery_account_operation cr;
+    cr.account_to_recover = f.principal;
+    cr.new_recovery_account = f.gp.initiator_name;
+    expect_rejected(f.node, sign_ops({f.pay(1000), cr}, f.agent_key, f.node),
+                    "agent key answered inside a master-authority transaction");
+}
+
+// Row validity: each way a row can be dead or illegal grants nothing.
+BOOST_AUTO_TEST_CASE(agent_access_invalid_rows_grant_nothing) {
+    agent_fixture f(0xAA9E1B, "aa-rows");
+
+    // 1) No row at all.
+    expect_rejected(f.node, sign_ops({f.pay(4000)}, f.agent_key, f.node), "agent key acted with no row");
+
+    // 2) An expiration in the past revokes rather than errors, so no row is left behind.
+    f.issue({"transfer"}, fc::time_point_sec(f.node.db().head_block_time() - fc::seconds(60)));
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "an expired grant left a row behind");
+
+    // 3) A never-delegable name is refused at grant time.
+    set_agent_permission_operation bad;
+    bad.account = f.principal;
+    bad.agent_name = f.bot;
+    bad.agent_key = f.agent_key.get_public_key();
+    bad.operations.insert("account_update");
+    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node), "granting account_update was accepted");
+
+    // 4) Unknown name.
+    bad.operations.clear();
+    bad.operations.insert("no_such_operation");
+    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node, 1), "granting an unknown name was accepted");
+
+    // 5) Revoke by name: a live agent, then an empty list removes it and its key stops working.
+    f.issue({"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.bot));
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.bot, public_key_type(), {});
+    BOOST_CHECK(!has_row(f.node, f.principal, f.bot));
+    expect_rejected(f.node, sign_ops({f.pay(4000)}, f.agent_key, f.node, 2), "revoked agent key still signs");
+}
+
+// The agent key stands in for the principal only where the principal is required — never wherever
+// the principal's authority happens to be nested in another account.
+BOOST_AUTO_TEST_CASE(agent_access_does_not_leak_through_nested_authorities) {
+    agent_fixture f(0xAA9E1C, "aa-nested");
+
+    const account_name_type second = "second";
+    fc::ecc::private_key second_key = derive_key("second-key");
+    create_account(f.node, f.gp, f.when, second, second_key, 100000);
+
+    authority nested;
+    nested.weight_threshold = 1;
+    nested.account_auths[f.principal] = 1;
+    account_update_operation au;
+    au.account = second;
+    au.master = single_key_auth(second_key.get_public_key());
+    au.active = nested;
+    f.node.push_pending_transaction(sign_ops({au}, second_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    // Control: the principal's own key reaches second's authority by nesting.
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(
+        sign_ops({transfer_op(second, f.gp.initiator_name, 5000, TOKEN_SYMBOL)}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 5000);
+
+    f.issue({"transfer"});
+    expect_rejected(f.node,
+                    sign_ops({transfer_op(second, f.gp.initiator_name, 6000, TOKEN_SYMBOL)}, f.agent_key, f.node),
+                    "the principal's agent key reached an account that only nests the principal");
+}
+
+// One key, one agent: the same key under a second name is refused.
+BOOST_AUTO_TEST_CASE(agent_access_key_is_unique_per_principal) {
+    agent_fixture f(0xAA9E25, "aa-key-unique");
+    f.issue({"transfer"});
+
+    set_agent_permission_operation dup;
+    dup.account = f.principal;
+    dup.agent_name = "other-bot";
+    dup.agent_key = f.agent_key.get_public_key();
+    dup.operations.insert("award");
+    expect_rejected(f.node, sign_ops({dup}, f.principal_key, f.node), "one key accepted for two agents");
+
+    // Re-issuing the SAME name with a new key replaces the key: the old one stops working.
+    const auto new_key = derive_key("agent-key-2");
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.bot, new_key.get_public_key(), {"transfer"});
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node), "replaced key still signs");
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, new_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
+// Wipes: the agents never outlive the owner keys they were issued under.
+BOOST_AUTO_TEST_CASE(agent_access_active_change_wipes) {
+    agent_fixture f(0xAA9E1D, "aa-wipe-active");
+    f.issue({"transfer"});
+
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(derive_key("principal-key-2").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "active change left the agent");
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node), "agent key signed after active change");
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_master_change_wipes) {
+    agent_fixture f(0xAA9E1F, "aa-wipe-master");
+    f.issue({"transfer"});
+
+    account_update_operation au;
+    au.account = f.principal;
+    au.master = single_key_auth(derive_key("principal-master-2").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "master change left the agent");
+}
+
+// A regular-only change keeps the agents: they never stood on regular keys.
+BOOST_AUTO_TEST_CASE(agent_access_regular_change_keeps_agents) {
+    agent_fixture f(0xAA9E1E, "aa-keep-regular");
+    f.issue({"transfer"});
+
+    account_update_operation au;
+    au.account = f.principal;
+    au.regular = single_key_auth(derive_key("principal-regular-2").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK(has_row(f.node, f.principal, f.bot));
 }
 
 BOOST_AUTO_TEST_CASE(agent_access_direct_sale_wipes) {
     agent_fixture f(0xAA9E21, "aa-wipe-sale");
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
+    f.issue({"transfer"});
     put_on_sale(f);
-    produce_past_sale_window(f);
-    buy(f);   // after the window: direct sale
+    const auto until = f.node.db().get_account(f.principal).account_on_sale_start_time;
+    for (int i = 0; i < 400 && f.node.head_block_time() <= until; ++i) produce(f.node, f.gp, f.when);
+    buy(f);
     BOOST_REQUIRE_MESSAGE(sold_to_buyer(f), "direct sale did not go through — the wipe check would be vacuous");
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "directly sold account kept its delegation");
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "sold account kept its agent");
 }
 
-// recover_account rewrites master through update_master_authority → the delegation goes. To make
-// recovery possible the principal first rotates its master (history needs a "recent" master), and
-// only then grants — so the row the recovery must wipe really exists at that moment.
+BOOST_AUTO_TEST_CASE(agent_access_auction_close_wipes) {
+    agent_fixture f(0xAA9E20, "aa-wipe-auction");
+    f.issue({"transfer"});
+    put_on_sale(f);
+    buy(f);   // inside the window: a bid
+    BOOST_REQUIRE_MESSAGE(!sold_to_buyer(f), "expected a bid, got an immediate sale");
+    BOOST_CHECK_MESSAGE(has_row(f.node, f.principal, f.bot), "a mere bid already wiped the agent");
+    for (int i = 0; i < 400 && !sold_to_buyer(f); ++i) produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE_MESSAGE(sold_to_buyer(f), "auction did not close — the wipe check would be vacuous");
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "account sold at auction kept its agent");
+}
+
+// Recovery: the principal first rotates master (recovery needs a "recent" master to point at), then
+// issues the agent, then recovers — so the row the recovery must wipe really exists at that moment.
 BOOST_AUTO_TEST_CASE(agent_access_recovery_wipes) {
     agent_fixture f(0xAA9E22, "aa-wipe-recover");
     const auto stolen = derive_key("principal-master-stolen");
     const auto restored = derive_key("principal-master-restored");
 
-    account_update_operation au;   // the "attacker" swaps master; active stays principal_key
+    account_update_operation au;
     au.account = f.principal;
     au.master = single_key_auth(stolen.get_public_key());
     f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
     produce(f.node, f.gp, f.when);
 
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.agent, {"transfer"});
-    BOOST_REQUIRE(has_row(f.node, f.principal, f.agent));
+    f.issue({"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.bot));
 
     request_account_recovery_operation rq;
     rq.recovery_account = f.node.db().get_account(f.principal).recovery_account;
     rq.account_to_recover = f.principal;
     rq.new_master_authority = single_key_auth(restored.get_public_key());
-    const auto& ra = rq.recovery_account;
-    BOOST_REQUIRE_MESSAGE(ra == f.gp.initiator_name, "fixture assumes the creator is the recovery account");
+    BOOST_REQUIRE_MESSAGE(rq.recovery_account == f.gp.initiator_name, "fixture assumes the creator recovers");
     f.node.push_pending_transaction(sign_ops({rq}, f.gp.initiator_key, f.node));
     produce(f.node, f.gp, f.when);
 
@@ -512,48 +495,40 @@ BOOST_AUTO_TEST_CASE(agent_access_recovery_wipes) {
     const bool recovered = f.node.db().get<account_authority_object, by_account>(f.principal).master ==
                            single_key_auth(restored.get_public_key());
     BOOST_REQUIRE_MESSAGE(recovered, "recovery did not go through — the wipe check would be vacuous");
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.agent), "recovered account kept its delegation");
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "recovered account kept its agent");
 }
 
-// Cap: a principal holds at most CHAIN_AGENT_MAX_PER_ACCOUNT live delegations; re-granting an
-// existing pair is an overwrite and does not count as a new slot. An expired row is swept on the
-// principal's next grant and frees its slot.
+// Cap: at most CHAIN_AGENT_MAX_PER_ACCOUNT live agents; re-issuing a name is an overwrite; an
+// expired agent is swept on the principal's next grant and frees its slot.
 BOOST_AUTO_TEST_CASE(agent_access_cap_and_expired_sweep) {
     agent_fixture f(0xAA9E23, "aa-cap");
-    std::vector<account_name_type> agents;
-    for (int i = 0; i < CHAIN_AGENT_MAX_PER_ACCOUNT + 1; ++i) {
-        const std::string n = "agentx" + std::string(1, char('a' + i));
-        create_account(f.node, f.gp, f.when, n, derive_key(n), 1000);
-        agents.push_back(n);
-    }
-    // Fill the cap with perpetual grants.
-    for (int i = 0; i < CHAIN_AGENT_MAX_PER_ACCOUNT; ++i)
-        grant(f.node, f.gp, f.when, f.principal, f.principal_key, agents[i], {"transfer"});
-    BOOST_REQUIRE(has_row(f.node, f.principal, agents[CHAIN_AGENT_MAX_PER_ACCOUNT - 1]));
+    auto name = [](int i) { return account_name_type("bot-" + std::to_string(i)); };
+    auto key = [](int i) { return derive_key("bot-key-" + std::to_string(i)).get_public_key(); };
 
-    // The 17th distinct agent is refused.
+    for (int i = 0; i < CHAIN_AGENT_MAX_PER_ACCOUNT; ++i)
+        grant(f.node, f.gp, f.when, f.principal, f.principal_key, name(i), key(i), {"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, name(CHAIN_AGENT_MAX_PER_ACCOUNT - 1)));
+
     set_agent_permission_operation op;
-    op.account = f.principal; op.agent = agents[CHAIN_AGENT_MAX_PER_ACCOUNT];
+    op.account = f.principal;
+    op.agent_name = name(CHAIN_AGENT_MAX_PER_ACCOUNT);
+    op.agent_key = key(CHAIN_AGENT_MAX_PER_ACCOUNT);
     op.operations.insert("transfer");
     expect_rejected(f.node, sign_ops({op}, f.principal_key, f.node), "17th agent accepted over the cap");
 
-    // Re-granting an existing pair at the cap is an overwrite, not a new slot: here it shortens
-    // agents[0]'s grant to a few blocks.
-    grant(f.node, f.gp, f.when, f.principal, f.principal_key, agents[0], {"transfer"},
+    // Re-issuing an existing name at the cap is an overwrite: here it shortens bot-0 to a few blocks.
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, name(0), key(0), {"transfer"},
           fc::time_point_sec(f.node.head_block_time() + fc::seconds(CHAIN_BLOCK_INTERVAL * 2)));
-    BOOST_REQUIRE(has_row(f.node, f.principal, agents[0]));
+    BOOST_REQUIRE(has_row(f.node, f.principal, name(0)));
 
-    // Once it has expired, the next grant sweeps it and takes the freed slot.
     for (int i = 0; i < 4; ++i) produce(f.node, f.gp, f.when);
-    BOOST_REQUIRE_MESSAGE(has_row(f.node, f.principal, agents[0]), "expired row vanished before any grant touched it");
+    BOOST_REQUIRE_MESSAGE(has_row(f.node, f.principal, name(0)), "expired row vanished before any grant");
     f.node.push_pending_transaction(sign_ops({op}, f.principal_key, f.node, 1));
     produce(f.node, f.gp, f.when);
-    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, agents[0]), "expired row not swept on the next grant");
-    BOOST_CHECK(has_row(f.node, f.principal, agents[CHAIN_AGENT_MAX_PER_ACCOUNT]));
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, name(0)), "expired agent not swept on the next grant");
+    BOOST_CHECK(has_row(f.node, f.principal, name(CHAIN_AGENT_MAX_PER_ACCOUNT)));
 
-    // Now the cap is full again with live rows only: one more distinct agent is refused.
-    const std::string extra = "agentextra";
-    create_account(f.node, f.gp, f.when, extra, derive_key(extra), 1000);
-    op.agent = extra;
+    op.agent_name = "bot-extra";
+    op.agent_key = derive_key("bot-key-extra").get_public_key();
     expect_rejected(f.node, sign_ops({op}, f.principal_key, f.node, 2), "agent over the cap accepted");
 }

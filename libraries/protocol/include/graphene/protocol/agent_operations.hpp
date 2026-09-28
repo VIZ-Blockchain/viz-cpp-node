@@ -20,32 +20,29 @@ namespace graphene { namespace protocol {
         /// again at execution time — the rule must not live in one place only.
         const flat_set<string>& never_delegable_operation_names();
 
-        /// Grant (or revoke) the right for `agent` to perform the listed operations on behalf of
-        /// `account`, signing with the agent's OWN active key.
+        /// Issue, replace or revoke an agent of `account`. An agent is not an account: it is a
+        /// label (`agent_name`, unique per principal) and a public key (`agent_key`) that may sign the
+        /// listed operations on the principal's behalf. The principal may hold up to
+        /// CHAIN_AGENT_MAX_PER_ACCOUNT live agents.
         ///
         /// Rules enforced here and in the evaluator:
-        ///  - the grant itself is signed by the principal's ACTIVE authority (`account`);
-        ///  - nothing that requires master authority is reachable through a delegation: the hook
-        ///    checks every permitted operation against the principal's required authorities, and
-        ///    master is never delegable;
-        ///  - an agent cannot mint itself new rights: `set_agent_permission`, the proposal
-        ///    wrappers and authority-rotating operations are not delegable names
-        ///    (see never_delegable_operation_names());
-        ///  - a name that does not exist, or is virtual (hence never broadcast), is refused — a
-        ///    typo must not become a silently dead permission;
-        ///  - an empty `operations` = revoke: the row is deleted;
-        ///  - `expiration` == fc::time_point_sec() (the epoch) = perpetual;
-        ///  - changing the principal's master/active authority (account_update / recover_account)
-        ///    or selling the account wipes every row of that account.
+        ///  - signed by the principal's ACTIVE authority;
+        ///  - a transaction signed by an agent key passes only if every authority-requiring operation
+        ///    in it is on that agent's list and nothing in it needs master or regular authority;
+        ///  - never-delegable names are refused (see never_delegable_operation_names()); unknown
+        ///    or virtual names are refused too — a typo must not become a dead permission;
+        ///  - one key per agent, and a key may belong to one agent of the principal only;
+        ///  - empty `operations` = revoke the named agent; `expiration` in the past = revoke;
+        ///    epoch (default) = perpetual;
+        ///  - any change of the principal's master or active authority, recovery or sale wipes all
+        ///    of the principal's agents.
         ///
-        /// Names are the wire names of operations, exactly as they appear as the first element of
-        /// a broadcast operation array (`transfer`, `pm_place_bet`, ...): a client can copy them
-        /// verbatim from a transaction it already builds. Stored normalized through
-        /// fc::resolve_operation_name, so a legacy alias cannot produce a second row for the same
-        /// operation.
+        /// Operation names are the wire names (`transfer`, `pm_place_bet`, ...), stored normalized
+        /// through fc::resolve_operation_name.
         struct set_agent_permission_operation : public base_operation {
             account_name_type account;     ///< principal granting the access
-            account_name_type agent;       ///< account receiving it
+            account_name_type agent_name;  ///< label, unique per principal; [a-z0-9_-], 1..32
+            public_key_type   agent_key;   ///< key the agent signs with; ignored on revoke
             flat_set<string>  operations;  ///< wire names; empty = revoke
             time_point_sec    expiration;  ///< epoch (default) = perpetual
 
@@ -58,4 +55,4 @@ namespace graphene { namespace protocol {
 } } // graphene::protocol
 
 FC_REFLECT((graphene::protocol::set_agent_permission_operation),
-    (account)(agent)(operations)(expiration)(extensions))
+    (account)(agent_name)(agent_key)(operations)(expiration)(extensions))

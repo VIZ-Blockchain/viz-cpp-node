@@ -38,10 +38,10 @@ authority_getter plain_active_authority_getter(const database& db) {
 
 } // anonymous namespace
 
-fc::flat_map<account_name_type, account_name_type>
+fc::flat_map<account_name_type, public_key_type>
 delegated_active_authorities(const database& db, const signed_transaction& trx,
                              const chain_id_type& chain_id) {
-    fc::flat_map<account_name_type, account_name_type> delegated;
+    fc::flat_map<account_name_type, public_key_type> delegated;
 
     if (!db.has_hardfork(CHAIN_HARDFORK_15))
         return delegated;
@@ -53,7 +53,7 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
     if (required_active.empty())
         return delegated;
 
-    // Master and regular are out of scope for a delegation, and rather than argue about the nested
+    // Master and regular are out of scope for an agent, and rather than argue about the nested
     // paths that reach them (sign_state resolves nested account authorities through ACTIVE), we
     // simply do not delegate in such a transaction.
     if (!required_master.empty() || !required_regular.empty())
@@ -62,7 +62,7 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
     flat_set<public_key_type> sigs;
     bool sigs_ready = false;
     // Signature recovery is the expensive part of validation, and verify_authority performs it
-    // again right after us. So it is deferred until a delegation row actually exists for some
+    // again right after us. So it is deferred until an agent row actually exists for some
     // principal: with no rows the hook must add no work at all to the ordinary path.
     auto ensure_signatures = [&]() -> bool {
         if (!sigs_ready) {
@@ -87,8 +87,7 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
     const flat_set<string>& denied = never_delegable_operation_names();
 
     for (const account_name_type& principal : required_active) {
-        // Rows of this principal only — prefix scan of the (principal, agent) index, agent-ordered,
-        // so the outcome does not depend on the order grants were made. No row, no work.
+        // This principal's agents only — at most CHAIN_AGENT_MAX_PER_ACCOUNT rows. No row, no work.
         auto it = pidx.lower_bound(boost::make_tuple(principal));
         if (it == pidx.end() || it->account != principal)
             continue;
@@ -97,7 +96,7 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
             return delegated;
 
         // The principal's own authority always wins: substituting unconditionally would break valid
-        // transactions the moment a delegation row exists for the account.
+        // transactions the moment the account issues its first agent.
         {
             sign_state principal_signs(sigs, get_active, no_extra_keys);
             if (principal_signs.check_authority(principal))
@@ -107,8 +106,11 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
         for (; it != pidx.end() && it->account == principal; ++it) {
             const agent_permission_object& row = *it;
 
-            // Expiration: epoch means perpetual; a past date means the row is already dead. An
-            // expired row is an ordinary refusal, not an error.
+            // The agent's key must actually have signed.
+            if (!sigs.count(row.agent_key))
+                continue;
+
+            // Expiration: epoch means perpetual; a past date means the row is already dead.
             if (row.expiration != time_point_sec() && row.expiration <= now)
                 continue;
 
@@ -132,13 +134,7 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
             if (!usable)
                 continue;
 
-            // The agent signs with its OWN active key. The check consumes that signature in the real
-            // sign_state below, so it does not show up as an unused signature.
-            sign_state agent_signs(sigs, get_active, no_extra_keys);
-            if (!agent_signs.check_authority(row.agent))
-                continue;
-
-            delegated[principal] = row.agent;
+            delegated[principal] = row.agent_key;
             break;
         }
     }
@@ -147,10 +143,9 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
 }
 
 // ─── set_agent_permission ────────────────────────────────────────────────────
-// Grant, re-grant or revoke an agent's right to broadcast listed operations for a principal.
-// The authority itself is checked by the single hook in database.cpp (the op requires the
-// PRINCIPAL's active authority, and an agent acting under a delegation signs with its own active
-// key, which the hook recognizes). Here we only maintain the object and re-check the list.
+// Issue, replace or revoke an agent (label + key) of a principal. The op requires the principal's
+// active authority; the single hook in database.cpp recognizes agent keys on later transactions.
+// Here we only maintain the object and re-check the list.
 //
 // The list is re-validated here, not only in the protocol's validate(): the hook consults these
 // rows on every transaction, so a row that somehow holds a name it must not hold would be a live
@@ -161,10 +156,9 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
 
     const auto& aidx = db.get_index<account_index>().indices().get<by_name>();
     FC_ASSERT(aidx.find(o.account) != aidx.end(), "Principal account ${a} does not exist", ("a", o.account));
-    FC_ASSERT(aidx.find(o.agent) != aidx.end(), "Agent account ${a} does not exist", ("a", o.agent));
 
     auto& pidx = db.get_index<agent_permission_index>().indices().get<by_permission_account>();
-    auto existing = pidx.find(boost::make_tuple(o.account, o.agent));
+    auto existing = pidx.find(boost::make_tuple(o.account, o.agent_name));
     const auto now = db.head_block_time();
 
     // Empty list = revoke.
@@ -199,13 +193,20 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
         const auto& row = *it++;   // advance before a possible remove
         if (row.expiration != time_point_sec() && row.expiration <= now)
             db.remove(row);
-        else if (row.agent != o.agent)
+        else if (row.agent_name != o.agent_name) {
             ++live_others;
+            // One key, one agent: otherwise a signature could not be attributed to a single list,
+            // and revoking one agent would leave its key alive under another name.
+            FC_ASSERT(row.agent_key != o.agent_key,
+                      "Key ${k} already belongs to agent ${n} of ${a}",
+                      ("k", o.agent_key)("n", row.agent_name)("a", o.account));
+        }
     }
-    existing = pidx.find(boost::make_tuple(o.account, o.agent));   // the sweep may have removed it
+    existing = pidx.find(boost::make_tuple(o.account, o.agent_name));   // the sweep may have removed it
     const string packed = join_operation_names(o.operations);
     if (existing != pidx.end()) {
         db.modify(*existing, [&](agent_permission_object& p) {
+            p.agent_key = o.agent_key;
             from_string(p.operations, packed);
             p.expiration = o.expiration;
         });
@@ -217,7 +218,8 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
                   ("a", o.account)("n", live_others)("m", CHAIN_AGENT_MAX_PER_ACCOUNT));
         db.create<agent_permission_object>([&](agent_permission_object& p) {
             p.account  = o.account;
-            p.agent    = o.agent;
+            p.agent_name = o.agent_name;
+            p.agent_key  = o.agent_key;
             from_string(p.operations, packed);
             p.expiration = o.expiration;
         });

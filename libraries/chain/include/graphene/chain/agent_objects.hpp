@@ -6,8 +6,9 @@
 
 // HF15 agent access (Onix) — consensus object behind set_agent_permission_operation.
 //
-// One row per (principal, agent) pair: the agent may broadcast the listed operations on behalf of
-// the principal until `expiration` (epoch = perpetual). The list is what a delegation IS, so it is
+// One row per (principal, agent name): a key the principal issued may sign the listed operations on
+// the principal's behalf until `expiration` (epoch = perpetual). The agent is NOT an account — it is a
+// label plus a public key stored on the principal's side. The list is what a delegation IS, so it is
 // stored explicitly — never as a role, a level or a prefix mask: a mask would silently widen the
 // grant the day a new operation is appended to the chain.
 
@@ -55,34 +56,26 @@ namespace graphene { namespace chain {
 
             id_type           id;
             account_name_type account;      ///< principal that granted the access
-            account_name_type agent;        ///< account allowed to act for the principal
+            account_name_type agent_name;   ///< label, unique per principal (not an account)
+            public_key_type   agent_key;    ///< key that signs for the principal; unique per principal
             shared_string     operations;   ///< canonical `,`-joined wire names; never empty
             time_point_sec    expiration;   ///< epoch = perpetual; past = no longer valid
         };
 
         struct by_permission_account;
-        struct by_permission_agent;
         typedef multi_index_container<
             agent_permission_object,
             indexed_by<
                 ordered_unique<tag<by_id>,
                     member<agent_permission_object, agent_permission_id_type, &agent_permission_object::id>>,
-                // (principal, agent): one row per pair, so re-granting replaces instead of piling up,
-                // and the authority hook walks exactly one principal's rows by prefix.
+                // (principal, agent name): one row per name, so re-granting replaces instead of piling
+                // up, and the authority hook walks exactly one principal's rows by prefix.
                 ordered_unique<tag<by_permission_account>,
                     composite_key<agent_permission_object,
                         member<agent_permission_object, account_name_type, &agent_permission_object::account>,
-                        member<agent_permission_object, account_name_type, &agent_permission_object::agent>
+                        member<agent_permission_object, account_name_type, &agent_permission_object::agent_name>
                     >,
                     composite_key_compare<string_less, string_less>
-                >,
-                // The agent side exists for the wipe rules: when the AGENT's own authority changes
-                // (or its account is sold), the row must go too — otherwise the delegation would
-                // follow the account to whoever bought it, and a new owner would inherit rights the
-                // principal never gave them.
-                ordered_non_unique<tag<by_permission_agent>,
-                    member<agent_permission_object, account_name_type, &agent_permission_object::agent>,
-                    string_less
                 >
             >,
             allocator<agent_permission_object>
@@ -90,5 +83,5 @@ namespace graphene { namespace chain {
 
 } } // graphene::chain
 
-FC_REFLECT((graphene::chain::agent_permission_object), (id)(account)(agent)(operations)(expiration))
+FC_REFLECT((graphene::chain::agent_permission_object), (id)(account)(agent_name)(agent_key)(operations)(expiration))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::agent_permission_object, graphene::chain::agent_permission_index)

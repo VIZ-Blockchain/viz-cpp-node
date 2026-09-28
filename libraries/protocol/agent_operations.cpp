@@ -43,8 +43,12 @@ namespace graphene { namespace protocol {
 
         void set_agent_permission_operation::validate() const {
             FC_ASSERT(is_valid_account_name(account), "Account name ${n} is invalid", ("n", account));
-            FC_ASSERT(is_valid_account_name(agent), "Account name ${n} is invalid", ("n", agent));
-            FC_ASSERT(account != agent, "account ${n} cannot be its own agent", ("n", account));
+            const string label = agent_name;
+            FC_ASSERT(!label.empty(), "agent_name is empty");
+            FC_ASSERT(label.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") == string::npos,
+                      "agent_name ${n} must be lower-case ascii, digits, '_' or '-'", ("n", label));
+            if (!operations.empty())
+                FC_ASSERT(agent_key != public_key_type(), "agent_key is required when granting");
 
             for (const string& raw : operations) {
                 FC_ASSERT(!raw.empty(), "empty operation name in the permission list");

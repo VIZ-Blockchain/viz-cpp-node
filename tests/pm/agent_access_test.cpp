@@ -14,6 +14,8 @@
 
 #include <graphene/protocol/operations.hpp>
 #include <graphene/protocol/agent_operations.hpp>
+#include <fc/crypto/sha256.hpp>
+#include <fc/crypto/elliptic.hpp>
 
 using namespace graphene::protocol;
 
@@ -22,7 +24,8 @@ namespace {
 set_agent_permission_operation grant(std::initializer_list<const char*> ops) {
     set_agent_permission_operation g;
     g.account = "alice";
-    g.agent = "bob";
+    g.agent_name = "trading-bot";
+    g.agent_key = fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("agent"))).get_public_key();
     for (const char* o : ops) g.operations.insert(o);
     g.expiration = fc::time_point_sec();   // epoch = perpetual
     return g;
@@ -98,17 +101,27 @@ BOOST_AUTO_TEST_CASE(validate_refuses_dead_permissions) {
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_malformed_participants) {
-    auto self = grant({"transfer"});
-    self.agent = "alice";
-    BOOST_CHECK(!accepts(self));
-
     auto bad_principal = grant({"transfer"});
     bad_principal.account = "Alice";
     BOOST_CHECK(!accepts(bad_principal));
 
-    auto bad_agent = grant({"transfer"});
-    bad_agent.agent = "bob!";
-    BOOST_CHECK(!accepts(bad_agent));
+    auto bad_name = grant({"transfer"});
+    bad_name.agent_name = "Bot!";
+    BOOST_CHECK(!accepts(bad_name));
+
+    auto empty_name = grant({"transfer"});
+    empty_name.agent_name = "";
+    BOOST_CHECK(!accepts(empty_name));
+
+    // A grant without a key could never sign anything.
+    auto no_key = grant({"transfer"});
+    no_key.agent_key = public_key_type();
+    BOOST_CHECK(!accepts(no_key));
+
+    // ...but a revoke needs only the name.
+    auto revoke = grant({});
+    revoke.agent_key = public_key_type();
+    BOOST_CHECK(accepts(revoke));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
