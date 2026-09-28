@@ -554,6 +554,19 @@ BOOST_AUTO_TEST_CASE(agent_access_failed_active_branch_does_not_consume_partial_
     BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
 }
 
+BOOST_AUTO_TEST_CASE(agent_access_ordinary_rotation_then_active_operation_keeps_entry_authority) {
+    agent_fixture f(0xAA9E38, "aa-ordinary-rotation");
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    rotate.active = single_key_auth(derive_key("new-ordinary-active").get_public_key());
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({rotate, f.pay(1000)}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+    BOOST_CHECK((f.node.db().get<account_authority_object, by_account>(f.principal).active ==
+                 *rotate.active));
+}
+
 BOOST_AUTO_TEST_CASE(agent_access_failed_regular_branch_does_not_consume_partial_signature) {
     agent_fixture f(0xAA9E39, "aa-regular-fallback");
     const auto partial = derive_key("partial-regular");

@@ -6059,21 +6059,44 @@ namespace graphene { namespace chain {
 
                 //Finally process the operations
                 _current_op_in_trx = 0;
-                // Validate the complete transaction against entry state above. Recheck each
-                // operation at application time so an earlier revoke/rotation cannot be bypassed
-                // by a later operation using the same agent signature.
+                // Validate the complete transaction against entry state above. Only operations
+                // that actually need agent authority are rechecked after earlier state changes;
+                // ordinary signatures retain the legacy transaction-entry semantics across
+                // a same-transaction active-key rotation.
                 const auto agent_sigs = (!(skip & (skip_transaction_signatures | skip_authority_check)) &&
                                          has_hardfork(CHAIN_HARDFORK_15))
                     ? trx.get_signature_keys(CHAIN_ID) : flat_set<public_key_type>();
+                vector<bool> agent_dependent;
+                if (!agent_sigs.empty()) {
+                    const auto get_auth = [&](const account_name_type& name, int role) {
+                        const auto& a = get<account_authority_object, by_account>(name);
+                        return authority(role == 0 ? a.active : role == 1 ? a.master : a.regular);
+                    };
+                    for (const auto& op : trx.operations) {
+                        bool ordinary = true;
+                        try {
+                            graphene::protocol::verify_authority_with_agents({op}, agent_sigs,
+                                [&](const account_name_type& n) { return get_auth(n, 0); },
+                                [&](const account_name_type& n) { return get_auth(n, 1); },
+                                [&](const account_name_type& n) { return get_auth(n, 2); },
+                                [](const operation&, const account_name_type&, bool, sign_state&) { return false; },
+                                CHAIN_MAX_SIG_CHECK_DEPTH, true);
+                        } catch (const tx_missing_active_auth&) { ordinary = false; }
+                          catch (const tx_missing_regular_auth&) { ordinary = false; }
+                        agent_dependent.push_back(!ordinary);
+                    }
+                }
+                size_t op_index = 0;
                 for (const auto &op : trx.operations) {
                     try {
-                        if (!agent_sigs.empty()) {
+                        if (!agent_sigs.empty() && agent_dependent[op_index]) {
                             signed_transaction one;
                             one.operations.push_back(op);
                             verify_agent_transaction(*this, one, agent_sigs, true);
                         }
                         apply_operation(op);
                         ++_current_op_in_trx;
+                        ++op_index;
                     } FC_CAPTURE_AND_RETHROW((op));
                 }
                 _current_trx_id = transaction_id_type();
