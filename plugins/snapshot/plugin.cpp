@@ -520,8 +520,6 @@ inline uint32_t import_transactions(
             }
             obj.trx_id = v["trx_id"].as<transaction_id_type>();
             obj.expiration = v["expiration"].as<fc::time_point_sec>();
-            if (v.contains("addons"))
-                set_shared_string(obj.addons, v["addons"]);
         });
         ++count;
     }
@@ -985,6 +983,8 @@ inline uint32_t import_agent_permissions(graphene::chain::database& db, const fc
             obj.agent_key  = v["agent_key"].as<public_key_type>();
             set_shared_string(obj.operations, v["operations"]);
             obj.expiration = v["expiration"].as<fc::time_point_sec>();
+            if (v.get_object().contains("addons"))
+                set_shared_string(obj.addons, v["addons"]);
         });
         ++count;
     }
