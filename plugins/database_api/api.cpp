@@ -916,6 +916,23 @@ DEFINE_API(plugin, get_proposed_transactions) {
     });
 }
 
+DEFINE_API(plugin, get_agent_permissions) {
+    CHECK_ARG_SIZE(1);
+    auto account = args.args->at(0).as<string>();
+
+    return my->database().with_weak_read_lock([&]() {
+        std::vector<agent_permission_api_object> result;
+        const auto& db = my->database();
+        const auto now = db.head_block_time();
+        // At most CHAIN_AGENT_MAX_PER_ACCOUNT rows per principal (the cap is consensus), so no paging.
+        const auto& idx = db.get_index<agent_permission_index>().indices().get<by_permission_account>();
+        for (auto itr = idx.lower_bound(boost::make_tuple(account_name_type(account))); itr != idx.end() && itr->account == account; ++itr) {
+            result.emplace_back(*itr, now);
+        }
+        return result;
+    });
+}
+
 void plugin::plugin_initialize(const boost::program_options::variables_map &options) {
     ilog("database_api plugin: plugin_initialize() begin");
     my = std::make_unique<api_impl>();
