@@ -27,9 +27,10 @@
 // (database.cpp _generate_block injects hardfork_version_vote while current_hardfork_version <
 // CHAIN_HARDFORK_VERSION); the fork then applies on the first block at or after this time.
 //
-// PROVISIONAL (owner decision pending): re-set this date when the HF14+HF15 release is actually
-// scheduled. Keep it in the FUTURE — with a past date the fork activates in whatever block the
-// 17th validator happens to upgrade in, with no announceable moment (same warning as 14.hf).
+// CONFIRMED by the owner (2026-09-27, question #1642): 2026-10-05 00:00:00 UTC is the announced
+// mainnet date, and this is the value the validator announcement names. It must stay in the FUTURE
+// for the announced moment to exist at all — with a past date the fork activates in whatever block
+// the 17th validator happens to upgrade in, with no announceable moment (same warning as 14.hf).
 // Note that HF14's own mainnet date (1787875200) has already passed, so on mainnet the pair will
 // activate together in one block whenever quorum is reached; only the testnet, whose snapshot
 // carries HF14 already processed, can exercise HF15 on its own.
