@@ -94,12 +94,12 @@ BOOST_AUTO_TEST_CASE(validate_bounds_addons_only) {
     g.agent_key = public_key_type();
     BOOST_CHECK(!accepts(g));                              // addon-only still needs a key
 }
-BOOST_AUTO_TEST_CASE(validate_accepts_explicit_management_and_wrappers) {
+BOOST_AUTO_TEST_CASE(validate_refuses_authority_wrappers_and_rotation) {
     BOOST_CHECK(accepts(grant({"set_agent_permission"})));
-    BOOST_CHECK(accepts(grant({"proposal_create"})));
-    BOOST_CHECK(accepts(grant({"proposal_update"})));
-    BOOST_CHECK(accepts(grant({"proposal_delete"})));
-    BOOST_CHECK(accepts(grant({"account_update"})));
+    BOOST_CHECK(!accepts(grant({"proposal_create"})));
+    BOOST_CHECK(!accepts(grant({"proposal_update"})));
+    BOOST_CHECK(!accepts(grant({"proposal_delete"})));
+    BOOST_CHECK(!accepts(grant({"account_update"})));
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_master_only_operations) {
@@ -113,7 +113,7 @@ BOOST_AUTO_TEST_CASE(validate_refuses_master_only_operations) {
     BOOST_CHECK(!accepts(grant({"target_account_sale"})));
 }
 
-BOOST_AUTO_TEST_CASE(all_default_direct_active_regular_names_are_grantable) {
+BOOST_AUTO_TEST_CASE(all_safe_default_direct_active_regular_names_are_grantable) {
     for (int id = 0; id < operation::count(); ++id) {
         operation op;
         op.set_which(id);
@@ -122,7 +122,8 @@ BOOST_AUTO_TEST_CASE(all_default_direct_active_regular_names_are_grantable) {
         fc::flat_set<account_name_type> active, master, regular;
         std::vector<authority> other;
         operation_get_required_authorities(op, active, master, regular, other);
-        if ((!active.empty() || !regular.empty()) && master.empty())
+        if ((!active.empty() || !regular.empty()) && master.empty() &&
+            !never_delegable_operation_names().count(name))
             BOOST_CHECK_MESSAGE(accepts(grant({name.c_str()})), name << " must be grantable");
     }
 }

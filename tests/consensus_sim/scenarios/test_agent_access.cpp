@@ -23,6 +23,7 @@
 #include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/agent_operations.hpp>
+#include <graphene/protocol/proposal_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
 #include <graphene/protocol/config.hpp>
 #include <fc/crypto/sha256.hpp>
@@ -467,9 +468,51 @@ BOOST_AUTO_TEST_CASE(agent_access_management_requires_explicit_scope) {
     BOOST_CHECK(has_row(f.node, f.principal, f.bot));
 }
 
-BOOST_AUTO_TEST_CASE(agent_access_account_update_active_but_not_master) {
+BOOST_AUTO_TEST_CASE(agent_access_proposal_update_cannot_approve_unscoped_transfer) {
+    agent_fixture f(0xAA9E36, "aa-proposal-escape");
+    const auto author_key = derive_key("proposal-author");
+    create_account(f.node, f.gp, f.when, "author", author_key, 100000);
+    vest(f.node, f.gp, f.when, "author", author_key, 50000);
+    proposal_create_operation create;
+    create.author = "author";
+    create.title = "principal-transfer";
+    create.expiration_time = f.node.head_block_time() + fc::seconds(600);
+    create.proposed_operations.push_back(operation_wrapper(f.pay(1000)));
+    f.node.push_pending_transaction(sign_ops({create}, author_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE(f.node.db().find_proposal("author", create.title) != nullptr);
+
+    // A previously issued proposal_update grant must not turn into an unrestricted
+    // active approval. Construct the row directly to exercise execution-time denial too.
+    f.node.db().create<agent_permission_object>([&](agent_permission_object& row) {
+        row.account = f.principal;
+        row.agent_name = f.bot;
+        row.agent_key = f.agent_key.get_public_key();
+        from_string(row.operations, std::string("proposal_update"));
+    });
+    proposal_update_operation approve;
+    approve.author = create.author;
+    approve.title = create.title;
+    approve.active_approvals_to_add.insert(f.principal);
+    const auto before = liquid(f.node, f.principal);
+    expect_rejected(f.node, sign_ops({approve}, f.agent_key, f.node),
+                    "proposal_update-only agent approved an unscoped transfer");
+    BOOST_CHECK_EQUAL(liquid(f.node, f.principal), before);
+    // Ordinary owner approval still executes the proposed transfer.
+    f.node.push_pending_transaction(sign_ops({approve}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(before - liquid(f.node, f.principal), 1000);
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_account_update_is_not_delegable) {
     agent_fixture f(0xAA9E35, "aa-account-update-roles");
-    f.issue({"account_update"});
+    set_agent_permission_operation bad;
+    bad.account = f.principal;
+    bad.agent_name = f.bot;
+    bad.agent_key = f.agent_key.get_public_key();
+    bad.operations.insert("account_update");
+    expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node),
+                    "account_update grant rotated active authority");
     account_update_operation master_change;
     master_change.account = f.principal;
     master_change.master = single_key_auth(derive_key("new-master").get_public_key());
@@ -478,9 +521,12 @@ BOOST_AUTO_TEST_CASE(agent_access_account_update_active_but_not_master) {
     account_update_operation active_change;
     active_change.account = f.principal;
     active_change.active = single_key_auth(derive_key("new-active").get_public_key());
-    f.node.push_pending_transaction(sign_ops({active_change}, f.agent_key, f.node));
+    expect_rejected(f.node, sign_ops({active_change}, f.agent_key, f.node),
+                    "agent rotated active authority without grant");
+    f.node.push_pending_transaction(sign_ops({active_change}, f.principal_key, f.node));
     produce(f.node, f.gp, f.when);
-    BOOST_CHECK(!has_row(f.node, f.principal, f.bot)); // PR167 rotation policy
+    BOOST_CHECK((f.node.db().get<account_authority_object, by_account>(f.principal).active ==
+                 *active_change.active));
 }
 
 BOOST_AUTO_TEST_CASE(agent_access_rpc_authority_core_uses_same_rules_as_chain) {

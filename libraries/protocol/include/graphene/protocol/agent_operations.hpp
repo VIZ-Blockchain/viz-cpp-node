@@ -27,12 +27,12 @@ namespace graphene { namespace protocol {
         ///
         /// Rules enforced here and in the evaluator:
         ///  - signed by the principal's ACTIVE authority;
-        ///  - a transaction signed by an agent key passes only if every authority-requiring operation
-        ///    in it is on that agent's list and nothing in it needs master or regular authority;
+        ///  - agent authority covers direct active or regular requirements per operation;
+        ///    unrelated requirements need their own signatures, and master is never delegated;
         ///  - never-delegable names are refused (see never_delegable_operation_names()); unknown
         ///    or virtual names are refused too — a typo must not become a dead permission;
-        ///  - one key per agent, and a key may belong to one agent of the principal only;
-        ///  - empty `operations` = revoke the named agent; `expiration` in the past = revoke;
+        ///  - multiple named agents may share a key; their live scopes combine;
+        ///  - empty `operations` and `addons` = revoke; `expiration` in the past = revoke;
         ///    epoch (default) = perpetual;
         ///  - any change of the principal's master or active authority, recovery or sale wipes all
         ///    of the principal's agents.

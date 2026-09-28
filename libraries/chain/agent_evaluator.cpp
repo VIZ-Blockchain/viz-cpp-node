@@ -33,6 +33,7 @@ void verify_agent_transaction(const database& db, const signed_transaction& trx,
     const agent_authority_checker agent = [&](const operation& op, const account_name_type& name,
                                               bool /* regular */, sign_state& s) {
         const string wire = fc::resolve_operation_name(operation_wire_name(op));
+        if (never_delegable_operation_names().count(wire)) return false;
         for (auto it = idx.lower_bound(boost::make_tuple(name));
              it != idx.end() && it->account == name; ++it) {
             if (it->expiration != time_point_sec() && it->expiration <= now) continue;

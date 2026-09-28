@@ -13,9 +13,12 @@ namespace graphene { namespace protocol {
         const flat_set<string>& never_delegable_operation_names() {
             static const flat_set<string> names = []() {
                 flat_set<string> s;
-                // These operations have no active/regular payload variant. Conditional master
-                // operations (notably account_update) remain grantable, but master requirements
-                // themselves can never be satisfied by an agent permission.
+                // Proposal approvals can execute arbitrary proposed operations later, bypassing
+                // the agent's scope. Account updates can rotate the active authority outright.
+                s.insert("proposal_create");
+                s.insert("proposal_update");
+                s.insert("proposal_delete");
+                s.insert("account_update");
                 s.insert("recover_account");
                 s.insert("change_recovery_account");
                 s.insert("set_account_price");
