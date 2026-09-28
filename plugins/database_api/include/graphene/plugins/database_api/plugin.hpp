@@ -15,6 +15,7 @@
 #include <graphene/plugins/database_api/api_objects/proposal_api_object.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/chain/agent_objects.hpp>
+#include <graphene/chain/key_history_objects.hpp>
 
 #include <graphene/api/chain_api_properties.hpp>
 
@@ -153,6 +154,30 @@ struct agent_permission_api_object {
     }
 };
 
+/// HF15 key history row: `account` held `key` (or `auth_account`) in `role` with `weight` out of
+/// `weight_threshold` until `valid_until_block` / `valid_until_time`.
+struct key_history_api_object {
+    uint64_t id = 0;
+    std::string account;
+    std::string role;                   ///< master | active | regular | memo
+    public_key_type key;                ///< null key when the member was an account
+    std::string auth_account;           ///< member account (account_auths); empty for a key
+    uint16_t weight = 0;
+    uint32_t weight_threshold = 0;
+    uint32_t valid_until_block = 0;
+    time_point_sec valid_until_time;
+
+    key_history_api_object(const graphene::chain::key_history_object& o)
+    :   id(o.id._id), account(o.account), key(o.key), auth_account(o.auth_account), weight(o.weight),
+        weight_threshold(o.weight_threshold), valid_until_block(o.valid_until_block), valid_until_time(o.valid_until_time) {
+        static const char* names[] = {"master", "active", "regular", "memo"};
+        role = o.role < 4 ? names[o.role] : "unknown";
+    }
+
+    key_history_api_object() {
+    }
+};
+
 using block_applied_callback = std::function<void(const variant &block_header)>;
 
 ///               API,                                    args,                return
@@ -190,6 +215,8 @@ DEFINE_API_ARGS(get_accounts_on_sale,             msg_pack, std::vector<account_
 DEFINE_API_ARGS(get_accounts_on_auction,          msg_pack, std::vector<account_on_sale_api_object>)
 DEFINE_API_ARGS(get_subaccounts_on_sale,          msg_pack, std::vector<subaccount_on_sale_api_object>)
 DEFINE_API_ARGS(get_agent_permissions,            msg_pack, std::vector<agent_permission_api_object>)
+DEFINE_API_ARGS(get_key_history,                  msg_pack, std::vector<key_history_api_object>)
+DEFINE_API_ARGS(get_key_history_by_key,           msg_pack, std::vector<key_history_api_object>)
 
 
 /**
@@ -425,6 +452,8 @@ public:
          * @return All rows, expired ones flagged `expired` (they grant nothing and are swept on the next grant)
          */
         (get_agent_permissions)
+        (get_key_history)
+        (get_key_history_by_key)
     )
 
 private:
@@ -457,3 +486,4 @@ FC_REFLECT((graphene::plugins::database_api::database_info), (total_size)(free_s
 FC_REFLECT((graphene::plugins::database_api::account_on_sale_api_object), (account)(account_seller)(account_offer_price)(account_on_sale_start_time)(target_buyer)(current_bid)(current_bidder)(current_bidder_key)(last_bid))
 FC_REFLECT((graphene::plugins::database_api::subaccount_on_sale_api_object), (account)(subaccount_seller)(subaccount_offer_price))
 FC_REFLECT((graphene::plugins::database_api::agent_permission_api_object), (account)(agent_name)(agent_key)(operations)(expiration)(addons)(expired))
+FC_REFLECT((graphene::plugins::database_api::key_history_api_object), (id)(account)(role)(key)(auth_account)(weight)(weight_threshold)(valid_until_block)(valid_until_time))

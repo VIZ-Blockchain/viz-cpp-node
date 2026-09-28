@@ -19,6 +19,7 @@
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/agent_objects.hpp>
+#include <graphene/chain/key_history_objects.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/agent_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -199,13 +200,13 @@ struct agent_fixture {
     fc::ecc::private_key principal_key = derive_key("principal-key");
     fc::ecc::private_key agent_key = derive_key("agent-key");
 
-    agent_fixture(uint64_t seed, const char* label)
+    agent_fixture(uint64_t seed, const char* label, bool hf15 = true)
             : gp(make_genesis_params(seed, 1)), clk(sim_start()), node(label, gp, clk),
               when(clk.now() - fc::seconds(CHAIN_BLOCK_INTERVAL)) {
         bring_to_hf14(node, gp, when);
         BOOST_REQUIRE_MESSAGE(node.db().has_hardfork(CHAIN_HARDFORK_14),
                               "harness could not reach HF14 (needs BUILD_TESTNET)");
-        enable_hf15(node);
+        if (hf15) enable_hf15(node);
         create_account(node, gp, when, principal, principal_key, 100000);
         vest(node, gp, when, principal, principal_key, 50000);
     }
@@ -561,4 +562,204 @@ BOOST_AUTO_TEST_CASE(agent_access_cap_and_expired_sweep) {
     op.agent_name = "bot-extra";
     op.agent_key = derive_key("bot-key-extra").get_public_key();
     expect_rejected(f.node, sign_ops({op}, f.principal_key, f.node, 2), "agent over the cap accepted");
+}
+
+// ───────────────────────── HF15 key history ─────────────────────────
+// Every key an account stops standing behind is kept forever: a DLT node has no past blocks, so
+// without these rows nobody could prove which key an account held when it signed something.
+
+namespace {
+
+std::vector<key_history_object> history(simulated_node& n, const account_name_type& who) {
+    std::vector<key_history_object> rows;
+    const auto& idx = n.db().get_index<key_history_index>().indices().get<by_id>();
+    for (const auto& r : idx) if (r.account == who) rows.push_back(r);
+    return rows;
+}
+
+size_t rows_of(simulated_node& n, const account_name_type& who, uint8_t role) {
+    size_t c = 0;
+    for (const auto& r : history(n, who)) if (r.role == role) ++c;
+    return c;
+}
+
+void update(agent_fixture& f, const account_update_operation& au, uint32_t nonce = 0) {
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node, nonce));
+    produce(f.node, f.gp, f.when);
+}
+
+void advance(agent_fixture& f, fc::microseconds d) {
+    const auto until = f.node.head_block_time() + d;
+    while (f.node.head_block_time() <= until) produce(f.node, f.gp, f.when);
+}
+
+} // anonymous namespace
+
+// The shape of a row: old key, weight, threshold, the block and time it stopped being valid.
+BOOST_AUTO_TEST_CASE(key_history_active_change_records_old_key) {
+    agent_fixture f(0xAB0001, "kh-active");
+    const auto old_pub = f.principal_key.get_public_key();
+    BOOST_REQUIRE(history(f.node, f.principal).empty());
+
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(derive_key("principal-active-2").get_public_key());
+    update(f, au);
+
+    const auto rows = history(f.node, f.principal);
+    BOOST_REQUIRE_EQUAL(rows.size(), 1u);
+    BOOST_CHECK_EQUAL(rows[0].role, key_role_active);
+    BOOST_CHECK(rows[0].key == old_pub);
+    BOOST_CHECK(rows[0].auth_account == account_name_type());
+    BOOST_CHECK_EQUAL(rows[0].weight, 1);
+    BOOST_CHECK_EQUAL(rows[0].weight_threshold, 1u);
+    // The change landed in the head block; the old key held through the block before it.
+    BOOST_CHECK_EQUAL(rows[0].valid_until_block, f.node.db().head_block_num() - 1);
+    BOOST_CHECK(rows[0].valid_until_time == f.node.head_block_time() - fc::seconds(CHAIN_BLOCK_INTERVAL));
+}
+
+// Master, regular and memo each land under their own role; nothing is written for an unchanged role.
+BOOST_AUTO_TEST_CASE(key_history_each_role_recorded_separately) {
+    agent_fixture f(0xAB0002, "kh-roles");
+    account_update_operation au;
+    au.account = f.principal;
+    au.master = single_key_auth(derive_key("m2").get_public_key());
+    au.regular = single_key_auth(derive_key("r2").get_public_key());
+    au.memo_key = derive_key("memo2").get_public_key();
+    update(f, au);
+
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_master), 1u);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_regular), 1u);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_memo), 1u);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_active), 0u);
+    for (const auto& r : history(f.node, f.principal)) {
+        BOOST_CHECK(r.key == f.principal_key.get_public_key());
+        if (r.role == key_role_memo) { BOOST_CHECK_EQUAL(r.weight, 0); BOOST_CHECK_EQUAL(r.weight_threshold, 0u); }
+    }
+}
+
+// A multi-member authority: one row per member, keys and accounts alike, each with its own weight.
+BOOST_AUTO_TEST_CASE(key_history_multi_member_authority) {
+    agent_fixture f(0xAB0003, "kh-multi");
+    authority multi;
+    multi.weight_threshold = 3;
+    multi.key_auths[f.principal_key.get_public_key()] = 2;
+    multi.key_auths[derive_key("second").get_public_key()] = 1;
+    multi.account_auths[f.gp.initiator_name] = 1;
+    account_update_operation au;
+    au.account = f.principal;
+    au.regular = multi;
+    update(f, au);
+    BOOST_REQUIRE_EQUAL(rows_of(f.node, f.principal, key_role_regular), 1u);   // the old single key
+
+    advance(f, CHAIN_MASTER_UPDATE_LIMIT);
+    au.regular = single_key_auth(derive_key("r3").get_public_key());
+    update(f, au, 1);
+
+    size_t keys = 0, accounts = 0;
+    for (const auto& r : history(f.node, f.principal)) {
+        if (r.role != key_role_regular || r.id == history(f.node, f.principal)[0].id) continue;
+        BOOST_CHECK_EQUAL(r.weight_threshold, 3u);
+        if (r.auth_account == f.gp.initiator_name) { ++accounts; BOOST_CHECK_EQUAL(r.weight, 1); }
+        else if (r.key == f.principal_key.get_public_key()) { ++keys; BOOST_CHECK_EQUAL(r.weight, 2); }
+        else { ++keys; BOOST_CHECK_EQUAL(r.weight, 1); }
+    }
+    BOOST_CHECK_EQUAL(keys, 2u);
+    BOOST_CHECK_EQUAL(accounts, 1u);
+}
+
+// Re-sending the current authority is not a change: no row, and no limit either.
+BOOST_AUTO_TEST_CASE(key_history_same_authority_writes_nothing) {
+    agent_fixture f(0xAB0004, "kh-same");
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(f.principal_key.get_public_key());
+    au.memo_key = f.principal_key.get_public_key();
+    update(f, au);
+    update(f, au, 1);
+    BOOST_CHECK(history(f.node, f.principal).empty());
+}
+
+// Once an hour per role: a second real change of the same role is refused inside the hour, another
+// role is not blocked by it, and the same role goes through once the hour is over.
+BOOST_AUTO_TEST_CASE(key_history_hourly_limit_per_role) {
+    agent_fixture f(0xAB0005, "kh-limit");
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(derive_key("a2").get_public_key());
+    update(f, au);
+    const auto active2 = derive_key("a2");
+
+    account_update_operation again;
+    again.account = f.principal;
+    again.active = single_key_auth(derive_key("a3").get_public_key());
+    expect_rejected(f.node, sign_ops({again}, active2, f.node), "second active change inside the hour");
+
+    account_update_operation memo;
+    memo.account = f.principal;
+    memo.memo_key = derive_key("memo2").get_public_key();
+    f.node.push_pending_transaction(sign_ops({memo}, active2, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_memo), 1u);
+
+    account_update_operation memo3 = memo;
+    memo3.memo_key = derive_key("memo3").get_public_key();
+    expect_rejected(f.node, sign_ops({memo3}, active2, f.node, 1), "second memo change inside the hour");
+    advance(f, CHAIN_MASTER_UPDATE_LIMIT);
+    f.node.push_pending_transaction(sign_ops({again}, active2, f.node, 2));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_active), 2u);
+}
+
+// Recovery and sale change keys outside account_update — they must leave history too, and are not
+// subject to the hourly limit.
+BOOST_AUTO_TEST_CASE(key_history_direct_sale_records_all_roles) {
+    agent_fixture f(0xAB0006, "kh-sale");
+    put_on_sale(f);
+    const auto until = f.node.db().get_account(f.principal).account_on_sale_start_time;
+    for (int i = 0; i < 400 && f.node.head_block_time() <= until; ++i) produce(f.node, f.gp, f.when);
+    buy(f);
+    BOOST_REQUIRE(sold_to_buyer(f));
+    for (uint8_t role : {key_role_master, key_role_active, key_role_regular, key_role_memo})
+        BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, role), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(key_history_auction_close_records_all_roles) {
+    agent_fixture f(0xAB0007, "kh-auction");
+    put_on_sale(f);
+    buy(f);
+    BOOST_REQUIRE(!sold_to_buyer(f));
+    BOOST_CHECK(history(f.node, f.principal).empty());
+    for (int i = 0; i < 400 && !sold_to_buyer(f); ++i) produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE(sold_to_buyer(f));
+    for (uint8_t role : {key_role_master, key_role_active, key_role_regular, key_role_memo})
+        BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, role), 1u);
+}
+
+// Lookup by key finds the owner and the block the key stopped being valid.
+BOOST_AUTO_TEST_CASE(key_history_lookup_by_key) {
+    agent_fixture f(0xAB0008, "kh-by-key");
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(derive_key("a2").get_public_key());
+    update(f, au);
+    const auto& idx = f.node.db().get_index<key_history_index>().indices().get<by_key>();
+    auto itr = idx.lower_bound(boost::make_tuple(public_key_type(f.principal_key.get_public_key())));
+    BOOST_REQUIRE(itr != idx.end());
+    BOOST_CHECK(itr->account == f.principal);
+    BOOST_CHECK_EQUAL(itr->valid_until_block, f.node.db().head_block_num() - 1);
+}
+
+// Before HF15 nothing is written and the hourly limit does not exist.
+BOOST_AUTO_TEST_CASE(key_history_inactive_before_hf15) {
+    agent_fixture f(0xAB0009, "kh-pre", false);
+    BOOST_REQUIRE(!f.node.db().has_hardfork(CHAIN_HARDFORK_15));
+    account_update_operation au;
+    au.account = f.principal;
+    au.active = single_key_auth(derive_key("a2").get_public_key());
+    update(f, au);
+    au.active = single_key_auth(derive_key("a3").get_public_key());
+    f.node.push_pending_transaction(sign_ops({au}, derive_key("a2"), f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(history(f.node, f.principal).empty());
 }

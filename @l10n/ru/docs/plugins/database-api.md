@@ -423,6 +423,30 @@ json_rpc::plugin, chain::plugin
 
 ---
 
+### `get_key_history(account, from, limit)`
+
+HF15 [история ключей](../protocol/key-history.md) одного аккаунта, от старых к новым: каждый ключ, который перестал действовать, с ролью, весом, порогом и блоком/временем, до которого он действовал. `from` — `id` строки, с которой начать (`0` — с первой); для следующей страницы передавать последний `id` + 1. `limit` ≤ 1000.
+
+```json
+{ "method": "database_api.get_key_history", "params": ["alice", 0, 100] }
+```
+
+**Возвращает:** массив `key_history_api_object` — `id`, `account`, `role` (`master`/`active`/`regular`/`memo`), `key`, `auth_account`, `weight`, `weight_threshold`, `valid_until_block`, `valid_until_time`.
+
+---
+
+### `get_key_history_by_key(key, limit)`
+
+У кого был `key` в прошлом и до какого момента (HF15 [история ключей](../protocol/key-history.md)). `limit` ≤ 1000. Действующих ключей здесь нет — они в самих аккаунтах (`account_by_key.get_key_references`).
+
+```json
+{ "method": "database_api.get_key_history_by_key", "params": ["VIZ5...", 100] }
+```
+
+**Возвращает:** массив `key_history_api_object`.
+
+---
+
 ## Коды ошибок
 
 | Код | Значение |
