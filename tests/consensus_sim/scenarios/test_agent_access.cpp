@@ -529,6 +529,56 @@ BOOST_AUTO_TEST_CASE(agent_access_account_update_is_not_delegable) {
                  *active_change.active));
 }
 
+BOOST_AUTO_TEST_CASE(agent_access_failed_active_branch_does_not_consume_partial_signature) {
+    agent_fixture f(0xAA9E37, "aa-fallback-keys");
+    const auto partial = derive_key("partial-active");
+    const auto second = derive_key("second-active");
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    authority two;
+    two.weight_threshold = 2;
+    two.key_auths[partial.get_public_key()] = 1;
+    two.key_auths[second.get_public_key()] = 1;
+    rotate.active = two;
+    f.node.push_pending_transaction(sign_ops({rotate}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    auto surplus = sign_ops({f.pay(1000)}, partial, f.node);
+    surplus.sign(f.principal_key, f.node.chain_id()); // unchanged master, sufficient alone
+    BOOST_CHECK_THROW(verify_agent_transaction(f.node.db(), surplus,
+                        surplus.get_signature_keys(f.node.chain_id())), tx_irrelevant_sig);
+    expect_rejected(f.node, surplus, "partial active signature survived master fallback");
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.principal_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_failed_regular_branch_does_not_consume_partial_signature) {
+    agent_fixture f(0xAA9E39, "aa-regular-fallback");
+    const auto partial = derive_key("partial-regular");
+    const auto second = derive_key("second-regular");
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    authority two;
+    two.weight_threshold = 2;
+    two.key_auths[partial.get_public_key()] = 1;
+    two.key_auths[second.get_public_key()] = 1;
+    rotate.regular = two;
+    f.node.push_pending_transaction(sign_ops({rotate}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    account_metadata_operation metadata;
+    metadata.account = f.principal;
+    metadata.json_metadata = "{}";
+    auto surplus = sign_ops({metadata}, partial, f.node);
+    surplus.sign(f.principal_key, f.node.chain_id());
+    BOOST_CHECK_THROW(verify_agent_transaction(f.node.db(), surplus,
+                        surplus.get_signature_keys(f.node.chain_id())), tx_irrelevant_sig);
+    expect_rejected(f.node, surplus, "partial regular signature survived active fallback");
+    f.node.push_pending_transaction(sign_ops({metadata}, f.principal_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+}
+
 BOOST_AUTO_TEST_CASE(agent_access_rpc_authority_core_uses_same_rules_as_chain) {
     agent_fixture f(0xAA9E34, "aa-rpc-parity");
     f.issue({"transfer", "account_metadata"});
