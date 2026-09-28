@@ -364,10 +364,10 @@ function showBlock(block) {
   console.log(`  Block #${num}`);
   console.log('='.repeat(72));
   console.log(`  Timestamp : ${formatTimestamp(block.timestamp)}`);
-  console.log(`  Witness   : ${block.witness}`);
+  console.log(`  Validator : ${block.validator}`);
   console.log(`  Previous  : ${shortenHex(hashHex(block.previous))}`);
   console.log(`  Tx Merkle : ${shortenHex(hashHex(block.transaction_merkle_root))}`);
-  console.log(`  Signature : ${shortenHex(hashHex(block.witness_signature))}`);
+  console.log(`  Signature : ${shortenHex(hashHex(block.validator_signature))}`);
   console.log(`  Tx count  : ${block.transactions.length}`);
   if (block.extensions && block.extensions.length > 0) {
     for (const ext of block.extensions) {
@@ -475,10 +475,10 @@ function showBlockHeaderOnly(header, blockNum, errorMsg) {
   console.log('='.repeat(72));
   if (header) {
     console.log(`  Timestamp : ${formatTimestamp(header.timestamp)}`);
-    console.log(`  Witness   : ${header.witness}`);
+    console.log(`  Validator : ${header.validator}`);
     console.log(`  Previous  : ${shortenHex(hashHex(header.previous))}`);
     console.log(`  Tx Merkle : ${shortenHex(hashHex(header.transaction_merkle_root))}`);
-    console.log(`  Signature : ${shortenHex(hashHex(header.witness_signature))}`);
+    console.log(`  Signature : ${shortenHex(hashHex(header.validator_signature))}`);
     console.log(`  Block Num : ${header._blockNum} (from previous)`);
     console.log(`  File Pos  : ${header._position}`);
   } else {
@@ -1010,7 +1010,7 @@ function searchExport(str, exact) {
             const record = {
               block: num,
               timestamp: formatTimestamp(block.timestamp),
-              witness: block.witness,
+              validator: block.validator,
               typeId: op.typeId,
               typeName: op.typeName,
               isVirtual: op.isVirtual,

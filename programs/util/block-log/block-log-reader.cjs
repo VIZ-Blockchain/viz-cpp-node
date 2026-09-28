@@ -350,7 +350,7 @@ function readBlockHeader(reader) {
   return {
     previous: readRipemd160(reader),
     timestamp: readTimePointSec(reader),
-    witness: reader.readString(),
+    validator: reader.readString(),
     transaction_merkle_root: readRipemd160(reader),
     extensions: reader.readVector(readBlockHeaderExtension)
   };
@@ -363,7 +363,7 @@ function readSignedBlockHeader(reader) {
   const header = readBlockHeader(reader);
   return {
     ...header,
-    witness_signature: readCompactSignature(reader)
+    validator_signature: readCompactSignature(reader)
   };
 }
 
