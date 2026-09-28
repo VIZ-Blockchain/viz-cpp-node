@@ -70,6 +70,7 @@ Updates an account's keys and metadata.
 - If `master` is present → sign with current **master** key.
 - If `master` is absent → sign with current **active** key.
 - `memo_key` is always required.
+- From HF15 an actual change of `active`, `regular` or `memo_key` is allowed at most once an hour per role (as `master`); the old keys are kept forever in the [key history](../key-history.md).
 
 ---
 

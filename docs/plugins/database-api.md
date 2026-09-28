@@ -406,6 +406,30 @@ Returns the agents of a principal (HF15 [agent access](../protocol/operations/ag
 
 ---
 
+### `get_key_history(account, from, limit)`
+
+HF15 [key history](../protocol/key-history.md) of one account, oldest first: every key the account stopped standing behind, with role, weight, threshold and the block/time it stopped being valid. `from` is a row `id` to start at (`0` = from the first row); for the next page pass the last `id` + 1. `limit` ≤ 1000.
+
+```json
+{ "method": "database_api.get_key_history", "params": ["alice", 0, 100] }
+```
+
+**Returns:** Array of `key_history_api_object` — `id`, `account`, `role` (`master`/`active`/`regular`/`memo`), `key`, `auth_account`, `weight`, `weight_threshold`, `valid_until_block`, `valid_until_time`.
+
+---
+
+### `get_key_history_by_key(key, limit)`
+
+Who held `key` in the past and until when (HF15 [key history](../protocol/key-history.md)). `limit` ≤ 1000. Keys currently in use are not here — they are in the accounts themselves (`account_by_key.get_key_references`).
+
+```json
+{ "method": "database_api.get_key_history_by_key", "params": ["VIZ5...", 100] }
+```
+
+**Returns:** Array of `key_history_api_object`.
+
+---
+
 ## Error Codes
 
 | Code | Meaning |
