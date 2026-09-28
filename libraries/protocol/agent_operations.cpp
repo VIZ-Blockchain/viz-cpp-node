@@ -24,6 +24,10 @@ namespace graphene { namespace protocol {
                 s.insert("set_account_price");
                 s.insert("set_subaccount_price");
                 s.insert("target_account_sale");
+                // HF4 retired these broadcastable wire operations; a grant could never use them.
+                s.insert("vote");
+                s.insert("content");
+                s.insert("delete_content");
                 return s;
             }();
             return names;

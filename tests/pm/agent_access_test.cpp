@@ -102,6 +102,16 @@ BOOST_AUTO_TEST_CASE(validate_refuses_authority_wrappers_and_rotation) {
     BOOST_CHECK(!accepts(grant({"account_update"})));
 }
 
+BOOST_AUTO_TEST_CASE(validate_refuses_hf4_deprecated_operations) {
+    // These remain broadcastable wire names, but their evaluators reject them after HF4.
+    // They must not appear in the grant-accepted catalog or permit a misleading grant.
+    for (const char* name : {"vote", "content", "delete_content"}) {
+        BOOST_CHECK_MESSAGE(is_broadcastable_operation_wire_name(name), name);
+        BOOST_CHECK_MESSAGE(never_delegable_operation_names().count(name), name);
+        BOOST_CHECK_MESSAGE(!accepts(grant({name})), name << " was grant-accepted");
+    }
+}
+
 BOOST_AUTO_TEST_CASE(validate_refuses_master_only_operations) {
     // Grant-time validation excludes master-only names, not conditional active names.
     // Not reachable through a delegation (the hook never substitutes master), so granting one

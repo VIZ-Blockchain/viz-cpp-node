@@ -61,6 +61,8 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
     }
     for (const string& raw : o.operations) {
         const string name = fc::resolve_operation_name(raw);
+        FC_ASSERT(!never_delegable_operation_names().count(name),
+                  "Operation ${n} is not delegable", ("n", name));
         FC_ASSERT(is_broadcastable_operation_wire_name(name),
                   "Unknown or non-broadcastable operation ${n}", ("n", name));
     }

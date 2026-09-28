@@ -360,6 +360,13 @@ BOOST_AUTO_TEST_CASE(agent_access_invalid_rows_grant_nothing) {
     bad.agent_key = f.agent_key.get_public_key();
     bad.operations.insert("recover_account");
     expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node), "granting master-only op was accepted");
+    for (const char* name : {"vote", "content", "delete_content"}) {
+        bad.operations.clear();
+        bad.operations.insert(name);
+        expect_rejected(f.node, sign_ops({bad}, f.principal_key, f.node, 3),
+                        "granting deprecated op was accepted");
+        BOOST_CHECK(!has_row(f.node, f.principal, f.bot));
+    }
 
     // 4) Unknown name.
     bad.operations.clear();
