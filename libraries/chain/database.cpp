@@ -6066,33 +6066,65 @@ namespace graphene { namespace chain {
                 const auto agent_sigs = (!(skip & (skip_transaction_signatures | skip_authority_check)) &&
                                          has_hardfork(CHAIN_HARDFORK_15))
                     ? trx.get_signature_keys(CHAIN_ID) : flat_set<public_key_type>();
-                vector<bool> agent_dependent;
+                using account_set = flat_set<account_name_type>;
+                vector<account_set> entry_active, entry_regular;
                 if (!agent_sigs.empty()) {
                     const auto get_auth = [&](const account_name_type& name, int role) {
                         const auto& a = get<account_authority_object, by_account>(name);
                         return authority(role == 0 ? a.active : role == 1 ? a.master : a.regular);
                     };
                     for (const auto& op : trx.operations) {
-                        bool ordinary = true;
-                        try {
-                            graphene::protocol::verify_authority_with_agents({op}, agent_sigs,
-                                [&](const account_name_type& n) { return get_auth(n, 0); },
-                                [&](const account_name_type& n) { return get_auth(n, 1); },
-                                [&](const account_name_type& n) { return get_auth(n, 2); },
-                                [](const operation&, const account_name_type&, bool, sign_state&) { return false; },
-                                CHAIN_MAX_SIG_CHECK_DEPTH, true);
-                        } catch (const tx_missing_active_auth&) { ordinary = false; }
-                          catch (const tx_missing_regular_auth&) { ordinary = false; }
-                        agent_dependent.push_back(!ordinary);
+                        account_set active, master, regular;
+                        vector<authority> other;
+                        operation_get_required_authorities(op, active, master, regular, other);
+                        account_set proved_active, proved_regular;
+                        // These checks use only ordinary getters, including nested account_auths.
+                        // A failed partial branch never counts as a proof for the direct account.
+                        const auto ordinary = [&](const account_name_type& name, bool is_regular) {
+                            const authority_getter active_getter = [&](const account_name_type& n) {
+                                return get_auth(n, is_regular ? 2 : 0);
+                            };
+                            const flat_set<public_key_type> no_keys;
+                            sign_state s(agent_sigs, active_getter, no_keys);
+                            s.max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH;
+                            if (s.check_authority(name)) return true;
+                            if (is_regular) {
+                                const authority_getter fallback_getter = [&](const account_name_type& n) {
+                                    return get_auth(n, 0);
+                                };
+                                sign_state fallback(agent_sigs, fallback_getter, no_keys);
+                                fallback.max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH;
+                                if (fallback.check_authority(get_auth(name, 0))) return true;
+                            }
+                            sign_state master_state(agent_sigs, active_getter, no_keys);
+                            master_state.max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH;
+                            return master_state.check_authority(get_auth(name, 1));
+                        };
+                        for (const auto& name : active)
+                            if (ordinary(name, false)) proved_active.insert(name);
+                        for (const auto& name : regular)
+                            if (ordinary(name, true)) proved_regular.insert(name);
+                        entry_active.push_back(std::move(proved_active));
+                        entry_regular.push_back(std::move(proved_regular));
                     }
                 }
                 size_t op_index = 0;
                 for (const auto &op : trx.operations) {
                     try {
-                        if (!agent_sigs.empty() && agent_dependent[op_index]) {
-                            signed_transaction one;
-                            one.operations.push_back(op);
-                            verify_agent_transaction(*this, one, agent_sigs, true);
+                        if (!agent_sigs.empty()) {
+                            account_set active, master, regular;
+                            vector<authority> other;
+                            operation_get_required_authorities(op, active, master, regular, other);
+                            for (const auto& name : active)
+                                if (!entry_active[op_index].count(name))
+                                    CHAIN_ASSERT(agent_requirement_allowed(*this, op, name, agent_sigs),
+                                                 tx_missing_active_auth,
+                                                 "Missing Active Authority ${id}", ("id", name));
+                            for (const auto& name : regular)
+                                if (!entry_regular[op_index].count(name))
+                                    CHAIN_ASSERT(agent_requirement_allowed(*this, op, name, agent_sigs),
+                                                 tx_missing_regular_auth,
+                                                 "Missing Regular Authority ${id}", ("id", name));
                         }
                         apply_operation(op);
                         ++_current_op_in_trx;

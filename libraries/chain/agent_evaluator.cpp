@@ -11,6 +11,21 @@
 namespace graphene { namespace chain {
 using namespace graphene::protocol;
 
+bool agent_requirement_allowed(const database& db, const operation& op,
+                               const account_name_type& name, const flat_set<public_key_type>& keys) {
+    if (!db.has_hardfork(CHAIN_HARDFORK_15)) return false;
+    const string wire = fc::resolve_operation_name(operation_wire_name(op));
+    if (never_delegable_operation_names().count(wire)) return false;
+    const auto& idx = db.get_index<agent_permission_index>().indices().get<by_permission_account>();
+    const auto now = db.head_block_time();
+    for (auto it = idx.lower_bound(boost::make_tuple(name));
+         it != idx.end() && it->account == name; ++it) {
+        if (it->expiration != time_point_sec() && it->expiration <= now) continue;
+        if (unpack_operation_names(it->operations).count(wire) && keys.count(it->agent_key)) return true;
+    }
+    return false;
+}
+
 void verify_agent_transaction(const database& db, const signed_transaction& trx,
                               const flat_set<public_key_type>& keys, bool allow_unused,
                               flat_set<public_key_type>* used) {

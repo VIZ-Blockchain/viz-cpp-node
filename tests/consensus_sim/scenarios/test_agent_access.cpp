@@ -575,6 +575,116 @@ BOOST_AUTO_TEST_CASE(agent_access_ordinary_rotation_then_active_operation_keeps_
                  *rotate.active));
 }
 
+BOOST_AUTO_TEST_CASE(agent_access_mixed_custom_keeps_entry_ordinary_proof_after_rotation) {
+    agent_fixture f(0xAA9E40, "aa-mixed-rotation");
+    const auto second_key = derive_key("mixed-second-owner");
+    const auto second_agent = derive_key("mixed-second-agent");
+    create_account(f.node, f.gp, f.when, "second", second_key, 100000);
+    vest(f.node, f.gp, f.when, "second", second_key, 50000);
+    grant(f.node, f.gp, f.when, "second", second_key, "bot-second",
+          second_agent.get_public_key(), {"custom"});
+    // Remove the ordinary key's master fallback; only its entry active proof remains.
+    account_update_operation change_master;
+    change_master.account = f.principal;
+    change_master.master = single_key_auth(derive_key("mixed-master").get_public_key());
+    f.node.push_pending_transaction(sign_ops({change_master}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    rotate.active = single_key_auth(derive_key("mixed-new-active").get_public_key());
+    custom_operation use;
+    use.required_active_auths.insert(f.principal);
+    use.required_active_auths.insert("second");
+    use.id = "agent-mixed";
+    use.json = "{}";
+    auto tx = sign_ops({rotate, use}, f.principal_key, f.node);
+    tx.sign(second_agent, f.node.chain_id());
+    f.node.push_pending_transaction(tx);
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK((f.node.db().get<account_authority_object, by_account>(f.principal).active ==
+                 *rotate.active));
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_mixed_custom_rechecks_revoked_agent_requirement) {
+    agent_fixture f(0xAA9E41, "aa-mixed-revoke");
+    const auto second_key = derive_key("mixed-revoke-owner");
+    const auto second_agent = derive_key("mixed-revoke-agent");
+    create_account(f.node, f.gp, f.when, "second", second_key, 100000);
+    vest(f.node, f.gp, f.when, "second", second_key, 50000);
+    grant(f.node, f.gp, f.when, "second", second_key, "bot-second",
+          second_agent.get_public_key(), {"custom", "set_agent_permission"});
+    set_agent_permission_operation revoke;
+    revoke.account = "second";
+    revoke.agent_name = "bot-second";
+    custom_operation use;
+    use.required_active_auths.insert(f.principal);
+    use.required_active_auths.insert("second");
+    use.id = "agent-mixed";
+    use.json = "{}";
+    auto tx = sign_ops({revoke, use}, f.principal_key, f.node);
+    tx.sign(second_agent, f.node.chain_id());
+    expect_rejected(f.node, tx, "revoked B grant authorized later mixed custom");
+    BOOST_CHECK(has_row(f.node, "second", "bot-second"));
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_mixed_custom_two_agents_and_no_nested_borrowing) {
+    agent_fixture f(0xAA9E42, "aa-mixed-agents");
+    const auto second_key = derive_key("mixed-two-second-owner");
+    const auto second_agent = derive_key("mixed-two-second-agent");
+    create_account(f.node, f.gp, f.when, "second", second_key, 100000);
+    vest(f.node, f.gp, f.when, "second", second_key, 50000);
+    f.issue({"custom"});
+    grant(f.node, f.gp, f.when, "second", second_key, "bot-second",
+          second_agent.get_public_key(), {"custom"});
+    custom_operation use;
+    use.required_active_auths.insert(f.principal);
+    use.required_active_auths.insert("second");
+    use.id = "agent-mixed";
+    use.json = "{}";
+    auto tx = sign_ops({use}, f.agent_key, f.node);
+    tx.sign(second_agent, f.node.chain_id());
+    f.node.push_pending_transaction(tx);
+    produce(f.node, f.gp, f.when);
+
+    // A's permission cannot be borrowed through second's nested account_auth.
+    authority nested;
+    nested.weight_threshold = 1;
+    nested.account_auths[f.principal] = 1;
+    account_update_operation update;
+    update.account = "second";
+    update.active = nested;
+    f.node.push_pending_transaction(sign_ops({update}, second_key, f.node));
+    produce(f.node, f.gp, f.when);
+    expect_rejected(f.node, sign_ops({use}, f.agent_key, f.node, 1),
+                    "A's agent bypassed second's missing direct proof through nested A");
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_same_transaction_grant_cannot_authorize_mixed_use) {
+    agent_fixture f(0xAA9E43, "aa-mixed-set-use");
+    const auto second_key = derive_key("mixed-set-second-owner");
+    const auto second_agent = derive_key("mixed-set-second-agent");
+    create_account(f.node, f.gp, f.when, "second", second_key, 100000);
+    vest(f.node, f.gp, f.when, "second", second_key, 50000);
+    grant(f.node, f.gp, f.when, "second", second_key, "bot-second",
+          second_agent.get_public_key(), {"set_agent_permission"});
+    set_agent_permission_operation set;
+    set.account = "second";
+    set.agent_name = "bot-second";
+    set.agent_key = second_agent.get_public_key();
+    set.operations.insert("custom");
+    custom_operation use;
+    use.required_active_auths.insert(f.principal);
+    use.required_active_auths.insert("second");
+    use.id = "agent-mixed";
+    use.json = "{}";
+    auto tx = sign_ops({set, use}, f.principal_key, f.node);
+    tx.sign(second_agent, f.node.chain_id());
+    expect_rejected(f.node, tx, "same-tx expanded B grant authorized mixed custom");
+    BOOST_CHECK(has_row(f.node, "second", "bot-second"));
+    expect_rejected(f.node, sign_ops({use}, second_agent, f.node, 1),
+                    "failed transaction leaked expanded B grant");
+}
+
 BOOST_AUTO_TEST_CASE(agent_access_failed_regular_branch_does_not_consume_partial_signature) {
     agent_fixture f(0xAA9E39, "aa-regular-fallback");
     const auto partial = derive_key("partial-regular");

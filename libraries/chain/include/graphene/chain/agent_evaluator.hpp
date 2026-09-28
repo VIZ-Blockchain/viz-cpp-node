@@ -16,4 +16,9 @@ void verify_agent_transaction(const database& db, const graphene::protocol::sign
                               const fc::flat_set<graphene::protocol::public_key_type>& keys,
                               bool allow_unused = false,
                               fc::flat_set<graphene::protocol::public_key_type>* used = nullptr);
+
+// Recheck only a direct requirement that needed an agent at transaction entry.
+bool agent_requirement_allowed(const database& db, const graphene::protocol::operation& op,
+                               const graphene::protocol::account_name_type& account,
+                               const fc::flat_set<graphene::protocol::public_key_type>& keys);
 } } // graphene::chain
