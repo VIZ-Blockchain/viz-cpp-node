@@ -27,7 +27,15 @@ constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_WINDOW_SEC;
 constexpr uint32_t dlt_peer_state::PENDING_BATCH_TIMEOUT_SEC;
 constexpr uint32_t dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
 constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
+constexpr size_t dlt_peer_state::SEND_QUEUE_MAX_DEPTH;
 
+constexpr uint32_t dlt_fork_resolution_state::CONFIRMATION_BLOCKS;
+
+constexpr uint32_t dlt_p2p_node::SYNC_STAGNATION_SEC;
+constexpr uint32_t dlt_p2p_node::SYNC_STAGNATION_MAX_RETRIES;
+constexpr uint32_t dlt_p2p_node::DLT_PRUNE_BATCH_SIZE;
+constexpr uint32_t dlt_p2p_node::KNOWN_PEER_STALE_HOURS;
+constexpr uint32_t dlt_p2p_node::BAN_DURATION_SEC;
 constexpr uint32_t dlt_p2p_node::GAP_FILL_MAX_BLOCKS;
 constexpr uint32_t dlt_p2p_node::GAP_FILL_COOLDOWN_SEC;
 constexpr uint32_t dlt_p2p_node::GAP_FILL_TIMEOUT_SEC;
