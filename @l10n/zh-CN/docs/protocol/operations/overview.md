@@ -77,7 +77,7 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 98 | `pm_dispute_oracle_respond_operation` | active | [预测市场](./prediction-markets.md) |
 | 99 | `pm_unban_operation` | active | [预测市场](./prediction-markets.md) |
 
-> ID 是链上单一 `operation` 变体中的固定索引（仅追加）。本表中的空缺为按 ID 交错的**虚拟**操作（见下文）—— 例如 62–63、65、84–90、94–97、100。
+> ID 是链上单一 `operation` 变体中的固定索引（仅追加）。本表中的空缺为按 ID 交错的**虚拟**操作（见下文）—— 例如 62–63、65、84–90、94–97、100–104。
 
 ---
 
@@ -122,6 +122,10 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 96 | `pm_market_accepted_operation` | 市场上线（预言机接受 / 自预言机 / 自动） | [预测市场](./prediction-markets.md) |
 | 97 | `pm_payout_operation` | 每下注者的同注分彩赔付 | [预测市场](./prediction-markets.md) |
 | 100 | `pm_ban_expired_operation` | 临时预言机/创建者封禁失效 | [预测市场](./prediction-markets.md) |
+| 101 | `pm_market_expired_operation` | 市场到期未裁定 | [预测市场](./prediction-markets.md) |
+| 102 | `pm_dispute_opened_operation` | 争议已提交（预言机与争议者历史） | [预测市场](./prediction-markets.md) |
+| 103 | `pm_early_exit_claim_paid_operation` | 提前退出的延迟索赔在结算时支付 | [预测市场](./prediction-markets.md) |
+| 104 | `pm_lp_payout_operation` | LP 收益在结算时支付 | [预测市场](./prediction-markets.md) |
 
 ---
 
