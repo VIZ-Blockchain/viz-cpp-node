@@ -73,6 +73,8 @@ node block-archive.cjs export /var/lib/vizd/block-archive --blocks --out=blocks.
 node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/var/lib/vizd/blockchain/dlt_block_log
 ```
 
+注意顺序：拼接后的日志至少要到达快照区块减一。若更早结束，导入快照时检测到缺口会重置日志（`plugins/snapshot/plugin.cpp`，"gap detected"）。若超过快照，节点会在 P2P 同步前在本地重放多出的区块。
+
 区间有缺口时拒绝执行（`GAP a-b, merge stopped`），且不会覆盖已有文件。
 
 ### 过滤条件

@@ -73,6 +73,8 @@ node block-archive.cjs export /var/lib/vizd/block-archive --blocks --out=blocks.
 node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/var/lib/vizd/blockchain/dlt_block_log
 ```
 
+Важен порядок: склеенный лог должен доходить как минимум до блока снапшота минус один. Если он кончается раньше, импорт снапшота видит дыру и сбрасывает лог (`plugins/snapshot/plugin.cpp`, "gap detected"). Если лог длиннее снапшота, нода локально доигрывает лишние блоки до P2P-синка.
+
 При дыре в диапазоне отказывается (`GAP a-b, merge stopped`) и не перезаписывает существующие файлы.
 
 ### Фильтры

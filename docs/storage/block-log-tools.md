@@ -73,6 +73,8 @@ Glues sealed range files into one `dlt_block_log` + `dlt_block_log.index` byte f
 node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/var/lib/vizd/blockchain/dlt_block_log
 ```
 
+Order matters: the merged log must reach at least the snapshot block minus one. If it ends earlier, snapshot import sees a gap and resets the log (`plugins/snapshot/plugin.cpp`, "gap detected"). If it ends after the snapshot, the node replays the extra blocks locally before P2P sync.
+
 It refuses gaps in the range (`GAP a-b, merge stopped`) and never overwrites existing files.
 
 ### Filters
