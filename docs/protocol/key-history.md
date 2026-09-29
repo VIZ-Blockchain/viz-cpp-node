@@ -17,7 +17,7 @@ When an account's keys change, the node writes one row per member of the **old**
 | `valid_until_block` | Last block in which the key still held (inclusive); the change is in the next block |
 | `valid_until_time` | Time of that block |
 
-The row says: account A held key B in role R with weight D out of threshold E until block F at time G. "Since when" is the block after the `valid_until_block` of the previous row of the same role (or unknown, for keys that were already in place when HF15 activated — there is no earlier history to take it from). The current keys are in the account itself.
+The row says: account A held key B in role R with weight D out of threshold E until block F at time G. An old authority with no members instead produces a marker with null key, empty `auth_account` and zero weight; it records the transition time for the cooldown, **not** a former signing key. "Since when" is the block after the `valid_until_block` of the previous row of the same role (or unknown, for keys that were already in place when HF15 activated — there is no earlier history to take it from). The current keys are in the account itself.
 
 Rows are written by every path that changes keys: `account_update`, account recovery, direct sale and auction close. A role whose authority did not change writes nothing — re-sending the same authority is not a change. Rows are never removed. This is separate from the master authority history used by [recovery](operations/recovery.md), which is kept for 30 days only.
 

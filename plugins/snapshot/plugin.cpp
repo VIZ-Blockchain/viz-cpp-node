@@ -1771,13 +1771,39 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     state_json.shrink_to_fit();
 
     const auto& state = snapshot["state"].get_object();
-    // A post-HF15 snapshot without this section would silently erase delegated rights.
-    // Legacy pre-HF15 snapshots have no rows and remain importable.
+    // HF15 exports always embed the signed head block. Without it, a recomputed
+    // payload checksum could make an unanchored post-HF15 state importable.
     if (state.contains("hardfork_property")) {
         const auto& hardforks = state["hardfork_property"].get_array();
         if (!hardforks.empty() && hardforks.front()["last_hardfork"].as_uint64() >= CHAIN_HARDFORK_15)
-            FC_ASSERT(state.contains("agent_permission"),
-                      "Post-HF15 snapshot lacks agent_permission section");
+            FC_ASSERT(state.contains("fork_db_head_block"),
+                      "Post-HF15 snapshot lacks signed head block anchor");
+    }
+    // The embedded signed head anchors fork_db and the DLT log. Check it against
+    // the header before a hot reload destroys existing indexes; a header-only
+    // rewrite cannot substitute a different block for this provenance anchor.
+    if (state.contains("fork_db_head_block")) {
+        auto head = state["fork_db_head_block"].as<signed_block>();
+        FC_ASSERT(head.id() == header.snapshot_block_id &&
+                  head.block_num() == header.snapshot_block_num &&
+                  head.timestamp == header.snapshot_block_time,
+                  "Snapshot embedded head block does not match header anchor");
+    }
+    // Validate both HF15 indexes before clearing a populated DB. A missing section,
+    // including one whose legitimate count is zero, is not an intact post-HF15 export.
+    // Legacy pre-HF15 snapshots remain importable without either section.
+    if (state.contains("hardfork_property")) {
+        const auto& hardforks = state["hardfork_property"].get_array();
+        if (!hardforks.empty() && hardforks.front()["last_hardfork"].as_uint64() >= CHAIN_HARDFORK_15) {
+            for (const char* section : {"agent_permission", "key_history"}) {
+                FC_ASSERT(state.contains(section) && state[section].is_array(),
+                          "Post-HF15 snapshot lacks ${s} section", ("s", section));
+                auto count = header.object_counts.find(section);
+                FC_ASSERT(count != header.object_counts.end() &&
+                          count->second == state[section].get_array().size(),
+                          "Post-HF15 snapshot ${s} count mismatch", ("s", section));
+            }
+        }
     }
 
     // Import objects in dependency order
@@ -1904,6 +1930,8 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             while (!pm_dvt_idx.empty())  { db.remove(*pm_dvt_idx.begin()); }
             const auto& agent_idx = db.get_index<agent_permission_index>().indices();
             while (!agent_idx.empty()) { db.remove(*agent_idx.begin()); }
+            const auto& history_idx = db.get_index<key_history_index>().indices();
+            while (!history_idx.empty()) { db.remove(*history_idx.begin()); }
             const auto& pm_lpl_idx  = db.get_index<pm_lazy_pool_index>().indices();
             while (!pm_lpl_idx.empty())  { db.remove(*pm_lpl_idx.begin()); }
             const auto& pm_ldp_idx  = db.get_index<pm_lazy_deposit_index>().indices();
@@ -2324,6 +2352,8 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             expect_count("master_authority_history", db.get_index<master_authority_history_index>().indices().size());
             expect_count("account_recovery_request", db.get_index<account_recovery_request_index>().indices().size());
             expect_count("change_recovery_account_request", db.get_index<change_recovery_account_request_index>().indices().size());
+            expect_count("agent_permission", db.get_index<agent_permission_index>().indices().size());
+            expect_count("key_history", db.get_index<key_history_index>().indices().size());
 
             // (2) Referential integrity: every account_authority must reference an
             // existing account.  This is the exact invariant the wedge incident

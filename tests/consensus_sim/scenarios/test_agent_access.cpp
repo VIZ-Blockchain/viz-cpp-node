@@ -1163,6 +1163,31 @@ BOOST_AUTO_TEST_CASE(key_history_hourly_limit_per_role) {
     BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_active), 2u);
 }
 
+// An empty authority has no old members. Re-populating it must nevertheless record the
+// transition so the next change cannot evade the per-role cooldown.
+BOOST_AUTO_TEST_CASE(key_history_empty_authority_repopulation_limits_rotation) {
+    agent_fixture f(0xAB0010, "kh-empty");
+    account_update_operation au;
+    au.account = f.principal;
+    au.regular = authority();
+    update(f, au);
+    advance(f, CHAIN_MASTER_UPDATE_LIMIT);
+    au.regular = single_key_auth(derive_key("regular-after-empty").get_public_key());
+    update(f, au, 1);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_regular), 2u);
+    const auto rows = history(f.node, f.principal);
+    BOOST_REQUIRE_EQUAL(rows.size(), 2u);
+    BOOST_CHECK(rows.back().key == public_key_type());
+    BOOST_CHECK(rows.back().auth_account == account_name_type());
+    BOOST_CHECK_EQUAL(rows.back().weight, 0);
+    BOOST_CHECK(f.node.db().last_key_change(f.principal, key_role_regular) == rows.back().valid_until_time);
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    rotate.regular = single_key_auth(derive_key("regular-too-soon").get_public_key());
+    expect_rejected(f.node, sign_ops({rotate}, f.principal_key, f.node, 2),
+                    "regular rotation immediately after empty authority repopulation");
+}
+
 // Recovery and sale change keys outside account_update — they must leave history too, and are not
 // subject to the hourly limit.
 BOOST_AUTO_TEST_CASE(key_history_direct_sale_records_all_roles) {

@@ -14,7 +14,9 @@
 // block F at time G. The current state lives in account_authority_object / account_object; together
 // they give the full timeline. "From when" is the valid_until of the previous row of the same role.
 //
-// Rows are never removed. master_authority_history_object (recovery, 30 days) is a separate thing.
+// An empty old authority produces one marker row (null key, empty auth_account, zero weight),
+// preserving the change time for the cooldown without claiming a former signer. Rows are never
+// removed. master_authority_history_object (recovery, 30 days) is a separate thing.
 
 namespace graphene { namespace chain {
 

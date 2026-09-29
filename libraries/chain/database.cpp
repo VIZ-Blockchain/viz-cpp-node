@@ -4146,6 +4146,18 @@ namespace graphene { namespace chain {
                         h.valid_until_time = until_time;
                     });
                 }
+                // No old members means the authority still changed, but there would be no
+                // history row for last_key_change() to find. Record an empty-authority marker:
+                // the null key and zero weight cannot be mistaken for a former signer.
+                if (old_auth.key_auths.empty() && old_auth.account_auths.empty()) {
+                    create<key_history_object>([&](key_history_object &h) {
+                        h.account = name;
+                        h.role = role;
+                        h.weight_threshold = old_auth.weight_threshold;
+                        h.valid_until_block = until_block;
+                        h.valid_until_time = until_time;
+                    });
+                }
             };
             write_authority(key_role_master, before.master, now.master);
             write_authority(key_role_active, before.active, now.active);

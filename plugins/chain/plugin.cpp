@@ -911,6 +911,11 @@ namespace chain {
             ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
         }
 
+        // A snapshot bypasses the normal db.open() path that writes this sidecar.
+        // Persist it only after import, hardfork initialization and any requested
+        // DLT replay complete; otherwise the next restart sees stored=0 and wipes
+        // the newly imported shared memory as if its object layout were obsolete.
+        write_schema_version(data_dir);
         // During auto-recovery, on_sync() must NOT fire again —
         // webserver/P2P plugins are already running and calling
         // start_webserver() twice destroys joinable threads (std::terminate).
