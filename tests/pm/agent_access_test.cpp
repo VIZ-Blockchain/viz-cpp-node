@@ -4,8 +4,7 @@
 //  1. the op is APPENDED to the operation static_variant: its index (the consensus op-id, 105)
 //     and the indices of its neighbours must not move, or old transactions re-interpret as new ops;
 //  2. validate() is the only gate against a delegation list that looks fine and does nothing
-//     (typo / virtual name) or does far more than it says (a proposal wrapper, which carries
-//     arbitrary operations whose authorities are collected at execution time).
+//     (typo / virtual name) or can bypass scope (proposal_update approvals and account_update rotation).
 //
 // Not a consensus test: it links the protocol library only, no chain.
 
@@ -94,12 +93,16 @@ BOOST_AUTO_TEST_CASE(validate_bounds_addons_only) {
     g.agent_key = public_key_type();
     BOOST_CHECK(!accepts(g));                              // addon-only still needs a key
 }
-BOOST_AUTO_TEST_CASE(validate_refuses_authority_wrappers_and_rotation) {
+BOOST_AUTO_TEST_CASE(validate_proposals_without_approval_or_rotation) {
     BOOST_CHECK(accepts(grant({"set_agent_permission"})));
-    BOOST_CHECK(!accepts(grant({"proposal_create"})));
+    BOOST_CHECK(accepts(grant({"proposal_create"})));
+    BOOST_CHECK(accepts(grant({"proposal_delete"})));
     BOOST_CHECK(!accepts(grant({"proposal_update"})));
-    BOOST_CHECK(!accepts(grant({"proposal_delete"})));
     BOOST_CHECK(!accepts(grant({"account_update"})));
+    BOOST_CHECK(!never_delegable_operation_names().count("proposal_create"));
+    BOOST_CHECK(!never_delegable_operation_names().count("proposal_delete"));
+    BOOST_CHECK(never_delegable_operation_names().count("proposal_update"));
+    BOOST_CHECK(never_delegable_operation_names().count("account_update"));
 }
 
 BOOST_AUTO_TEST_CASE(validate_refuses_hf4_deprecated_operations) {

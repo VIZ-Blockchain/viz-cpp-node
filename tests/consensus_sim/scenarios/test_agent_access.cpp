@@ -21,6 +21,7 @@
 #include <graphene/chain/agent_objects.hpp>
 #include <graphene/chain/key_history_objects.hpp>
 #include <graphene/chain/agent_evaluator.hpp>
+#include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/agent_operations.hpp>
 #include <graphene/protocol/proposal_operations.hpp>
@@ -476,6 +477,85 @@ BOOST_AUTO_TEST_CASE(agent_access_management_requires_explicit_scope) {
     BOOST_CHECK(has_row(f.node, f.principal, f.bot));
 }
 
+BOOST_AUTO_TEST_CASE(agent_access_proposal_create_does_not_transfer_or_approve) {
+    agent_fixture f(0xAA9E39, "aa-proposal-create");
+    f.issue({"proposal_create"}); // no transfer or proposal_update grant
+    proposal_create_operation create;
+    create.author = f.principal;
+    create.title = "unapproved-transfer";
+    create.expiration_time = f.node.head_block_time() + fc::seconds(600);
+    create.proposed_operations.push_back(operation_wrapper(f.pay(1000)));
+    const auto before = liquid(f.node, f.principal);
+    f.node.push_pending_transaction(sign_ops({create}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    const auto* p = f.node.db().find_proposal(f.principal, create.title);
+    BOOST_REQUIRE(p != nullptr);
+    BOOST_CHECK(p->available_active_approvals.empty());
+    BOOST_CHECK_EQUAL(liquid(f.node, f.principal), before);
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node),
+                    "proposal_create key transferred directly without transfer grant");
+    proposal_update_operation approve;
+    approve.author = create.author;
+    approve.title = create.title;
+    approve.active_approvals_to_add.insert(f.principal);
+    expect_rejected(f.node, sign_ops({approve}, f.agent_key, f.node),
+                    "proposal_create key gave itself principal approval");
+    BOOST_CHECK_EQUAL(liquid(f.node, f.principal), before);
+    BOOST_CHECK(f.node.db().find_proposal(f.principal, create.title) != nullptr);
+    f.node.push_pending_transaction(sign_ops({approve}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(before - liquid(f.node, f.principal), 1000);
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_proposal_delete_obeys_requester_authority) {
+    agent_fixture f(0xAA9E3A, "aa-proposal-delete");
+    const auto author_key = derive_key("proposal-delete-author");
+    create_account(f.node, f.gp, f.when, "author", author_key, 100000);
+    vest(f.node, f.gp, f.when, "author", author_key, 50000);
+    f.issue({"proposal_create", "proposal_delete"});
+    proposal_create_operation own;
+    own.author = f.principal;
+    own.title = "own-proposal";
+    own.expiration_time = f.node.head_block_time() + fc::seconds(600);
+    own.proposed_operations.push_back(operation_wrapper(f.pay(1000)));
+    f.node.push_pending_transaction(sign_ops({own}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE(f.node.db().find_proposal(f.principal, own.title) != nullptr);
+    proposal_delete_operation del;
+    del.author = own.author;
+    del.title = own.title;
+    del.requester = f.principal;
+    f.node.push_pending_transaction(sign_ops({del}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(f.node.db().find_proposal(f.principal, own.title) == nullptr);
+
+    proposal_create_operation required;
+    required.author = "author";
+    required.title = "required-principal";
+    required.expiration_time = f.node.head_block_time() + fc::seconds(600);
+    required.proposed_operations.push_back(operation_wrapper(f.pay(1000)));
+    f.node.push_pending_transaction(sign_ops({required}, author_key, f.node));
+    produce(f.node, f.gp, f.when);
+    del.author = required.author;
+    del.title = required.title;
+    f.node.push_pending_transaction(sign_ops({del}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(f.node.db().find_proposal(required.author, required.title) == nullptr);
+
+    proposal_create_operation unrelated;
+    unrelated.author = "author";
+    unrelated.title = "unrelated-proposal";
+    unrelated.expiration_time = f.node.head_block_time() + fc::seconds(600);
+    unrelated.proposed_operations.push_back(operation_wrapper(
+        transfer_op("author", f.gp.initiator_name, 1000, TOKEN_SYMBOL)));
+    f.node.push_pending_transaction(sign_ops({unrelated}, author_key, f.node));
+    produce(f.node, f.gp, f.when);
+    del.title = unrelated.title; // principal is neither author nor required authority
+    expect_rejected(f.node, sign_ops({del}, f.agent_key, f.node),
+                    "agent deleted an unrelated proposal");
+    BOOST_CHECK(f.node.db().find_proposal(unrelated.author, unrelated.title) != nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(agent_access_proposal_update_cannot_approve_unscoped_transfer) {
     agent_fixture f(0xAA9E36, "aa-proposal-escape");
     const auto author_key = derive_key("proposal-author");
@@ -531,6 +611,15 @@ BOOST_AUTO_TEST_CASE(agent_access_account_update_is_not_delegable) {
     active_change.active = single_key_auth(derive_key("new-active").get_public_key());
     expect_rejected(f.node, sign_ops({active_change}, f.agent_key, f.node),
                     "agent rotated active authority without grant");
+    // Legacy/corrupt row cannot bypass the execution-time denylist either.
+    f.node.db().create<agent_permission_object>([&](agent_permission_object& row) {
+        row.account = f.principal;
+        row.agent_name = f.bot;
+        row.agent_key = f.agent_key.get_public_key();
+        from_string(row.operations, std::string("account_update"));
+    });
+    expect_rejected(f.node, sign_ops({active_change}, f.agent_key, f.node, 1),
+                    "stale account_update grant rotated active authority");
     f.node.push_pending_transaction(sign_ops({active_change}, f.principal_key, f.node));
     produce(f.node, f.gp, f.when);
     BOOST_CHECK((f.node.db().get<account_authority_object, by_account>(f.principal).active ==

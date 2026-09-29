@@ -13,11 +13,10 @@ namespace graphene { namespace protocol {
         const flat_set<string>& never_delegable_operation_names() {
             static const flat_set<string> names = []() {
                 flat_set<string> s;
-                // Proposal approvals can execute arbitrary proposed operations later, bypassing
-                // the agent's scope. Account updates can rotate the active authority outright.
-                s.insert("proposal_create");
+                // Approval updates can execute operations outside the agent's scope later;
+                // account updates can rotate the active authority outright. Proposal creation
+                // merely records requested operations; deletion still checks requester authority.
                 s.insert("proposal_update");
-                s.insert("proposal_delete");
                 s.insert("account_update");
                 s.insert("recover_account");
                 s.insert("change_recovery_account");
