@@ -217,7 +217,7 @@
 ///               added vote_created_block to witness_vote_object
 ///   14 — HF14: prediction-market chainbase objects (pm_oracle, pm_market, pm_outcome,
 ///               pm_bet, pm_liquidity, pm_commit, pm_dispute, pm_dispute_vote, pm_lazy_*)
-///   15 — HF15: persistent agent_permission_object and its index
+///   15 — HF15: persistent agent_permission_object and key_history_object with indices
 #define CHAIN_SCHEMA_VERSION                  uint32_t(15)
 
 // HF14 prediction-market byte-length caps for variable-length on-chain strings.
