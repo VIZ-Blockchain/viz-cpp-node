@@ -33,6 +33,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | `webserver` | Required for API | `json_rpc` | — |
 | `p2p` | Required for network | `chain` | — |
 | `snapshot` | Recommended | `chain` | — |
+| `block_archive` | Optional | `chain` | — |
 | `validator_guard` | Recommended for validators | `chain`, `p2p` | — |
 
 ### API
@@ -157,6 +158,14 @@ See [P2P Overview](../p2p/overview.md) for the full P2P architecture.
 Snapshot creation, loading, and P2P snapshot sync for fast bootstrap and crash recovery.
 
 See [Snapshot](../node/snapshot.md) and [Plugin: Snapshot](./snapshot.md) for details.
+
+---
+
+### `block_archive`
+
+Optional, non-consensus. Keeps every irreversible block in fixed-size range files beyond the `dlt_block_log` window, for offline search and export.
+
+See [Plugin: Block Archive](./block-archive.md) and [Block Log Tools](../storage/block-log-tools.md).
 
 ---
 

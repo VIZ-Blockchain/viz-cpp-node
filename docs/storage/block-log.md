@@ -149,42 +149,10 @@ The DLT log keeps only a recent window of blocks; older blocks are pruned. It st
 
 ---
 
-## Block Log Viewer
+## Tools and Archive
 
-A terminal block log viewer lives in `programs/util/block-log/` (Node.js, no dependencies):
-
-```
-node programs/util/block-log/block-log-viewer.cjs <path> [--dlt]
-```
-
-Key commands: `f` first, `l` last, `n`/`p` next/prev, `g <N>` go to block N, `o` show operations, `s <type>` search by operation type, `S <str>` search by content, `scan` build fast-navigation bitmask.
-
-The `scan` command builds a bitmask file (`block_log.bitmask`) that marks which blocks contain non-empty operations, enabling instant `N`/`P` jumps.
-
----
-
-## Block Archive
-
-`dlt_block_log` keeps only a rolling window. To keep every irreversible block, enable the non-consensus `block_archive` plugin:
-
-```
-plugin = block_archive
-block-archive-dir = block-archive     # relative to the data dir
-block-archive-range = 10000           # blocks per file
-```
-
-The plugin writes `<dir>/blocks-<first>-<last>.log` (+ `.log.index`, the `dlt_block_log` layout), one file per range. The range in progress stays in `<dir>/partial/` and is moved up once its last block is irreversible, so files in the top directory are complete and never change. The first file of a node started from a snapshot is shorter: `<first>` is the first block actually stored. Errors stop archiving with an error in the log and never affect block processing.
-
-`block-archive.cjs` reads the whole directory (or a single `dlt_block_log`):
-
-```
-node programs/util/block-log/block-archive.cjs info   <dir>
-node programs/util/block-log/block-archive.cjs get    <dir> <block>
-node programs/util/block-log/block-archive.cjs search <dir> --op=pm_place_bet --account=alice --from=N --to=N
-node programs/util/block-log/block-archive.cjs export <dir> --from=N --to=N [--blocks] --out=ops.jsonl
-```
-
-`search` and `export` print one JSON line per operation (`block`, `timestamp`, `tx`, `op_in_tx`, `type`, `data`); `--blocks` exports whole blocks. `--account` matches any string field equal to the name, `--text` any substring of the operation JSON. Operations 64+ are decoded from `op-layouts.json`; after adding an operation to the node and viz-js-lib, regenerate it with `gen-op-layouts.cjs`.
+- [Block Log Tools](./block-log-tools.md) — offline viewer, search and export (`programs/util/block-log/`).
+- [Block Archive Plugin](../plugins/block-archive.md) — optional plugin that keeps every irreversible block in range files, beyond the `dlt_block_log` window.
 
 ---
 

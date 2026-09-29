@@ -122,8 +122,9 @@ struct plugin::plugin_impl {
                 auto b = db.fetch_block_by_number(n);
                 if (!b) {
                     if (archived) {
-                        // A hole would make the archive silently incomplete. Stop and say so;
-                        // after a restart the archive resumes from the first readable block.
+                        // A hole would make the archive silently incomplete. Stop and say so; it stays
+                        // stopped after a restart too (the cursor is on disk): fill the gap or start a
+                        // new archive directory.
                         elog("block_archive: block ${n} is not readable, archiving stopped", ("n", n));
                         stalled = true;
                         return;
