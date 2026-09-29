@@ -33,6 +33,7 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 | `webserver` | API 必需 | `json_rpc` | — |
 | `p2p` | 网络必需 | `chain` | — |
 | `snapshot` | 推荐 | `chain` | — |
+| `block_archive` | 可选 | `chain` | — |
 | `validator_guard` | 验证者推荐 | `chain`, `p2p` | — |
 
 ### API
@@ -157,6 +158,14 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 快照创建、加载和 P2P 快照同步，用于快速引导和崩溃恢复。
 
 详情参见[快照](../node/snapshot.md)和[插件：快照](./snapshot.md)。
+
+---
+
+### `block_archive`
+
+可选的非共识插件。将所有不可逆区块按固定大小的区间文件永久保存，超出 `dlt_block_log` 的滚动窗口，用于离线搜索和导出。
+
+详见 [插件：区块归档](./block-archive.md) 和 [区块日志工具](../storage/block-log-tools.md)。
 
 ---
 

@@ -67,6 +67,8 @@ interface SidebarLabels {
   storage: string;
   sharedMemory: string;
   blockLog: string;
+  blockArchive: string;
+  blockLogTools: string;
   snapshotsStorage: string;
   governance: string;
   chainProperties: string;
@@ -153,6 +155,8 @@ const en: SidebarLabels = {
   storage: 'Storage',
   sharedMemory: 'Shared Memory',
   blockLog: 'Block Log',
+  blockArchive: 'Block Archive',
+  blockLogTools: 'Block Log Tools',
   snapshotsStorage: 'Snapshots',
   governance: 'Governance',
   chainProperties: 'Chain Properties',
@@ -239,6 +243,8 @@ const ru: SidebarLabels = {
   storage: 'Хранилище',
   sharedMemory: 'Разделяемая память',
   blockLog: 'Лог блоков',
+  blockArchive: 'Архив блоков',
+  blockLogTools: 'Инструменты лога блоков',
   snapshotsStorage: 'Снимки',
   governance: 'Управление',
   chainProperties: 'Параметры цепи',
@@ -325,6 +331,8 @@ const zhCN: SidebarLabels = {
   storage: '存储',
   sharedMemory: '共享内存',
   blockLog: '区块日志',
+  blockArchive: '区块归档',
+  blockLogTools: '区块日志工具',
   snapshotsStorage: '快照',
   governance: '治理',
   chainProperties: '链参数',
@@ -416,6 +424,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.overview, link: p('/plugins/overview') },
         { text: t.validator, link: p('/plugins/validator') },
         { text: t.snapshot, link: p('/plugins/snapshot') },
+        { text: t.blockArchive, link: p('/plugins/block-archive') },
         { text: t.chain, link: p('/plugins/chain') },
         { text: t.databaseApi, link: p('/plugins/database-api') },
         { text: t.predictionMarketApi, link: p('/plugins/prediction-market-api') },
@@ -455,6 +464,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
       items: [
         { text: t.sharedMemory, link: p('/storage/shared-memory') },
         { text: t.blockLog, link: p('/storage/block-log') },
+        { text: t.blockLogTools, link: p('/storage/block-log-tools') },
         { text: t.snapshotsStorage, link: p('/storage/snapshots') },
       ],
     },
