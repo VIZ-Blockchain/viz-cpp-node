@@ -7,6 +7,11 @@
  *   node block-archive.cjs get    <dir> <block>
  *   node block-archive.cjs search <dir> [filters]   one JSON line per matching operation
  *   node block-archive.cjs export <dir> [filters] [--blocks] [--out=file.jsonl]
+ *   node block-archive.cjs merge  <dir> --out=<data>/blockchain/dlt_block_log [--from=N] [--to=N]
+ *
+ * merge glues range files into one dlt_block_log (<out> + <out>.index, the names vizd opens) byte for byte,
+ * rebasing offsets, so a stopped node can serve the history to peers. Refuses gaps and
+ * existing output files. It does not rebuild state: that still comes from a snapshot/seeds.
  *
  * Filters: --from=N --to=N --op=pm_place_bet[,transfer] --account=alice --text=substring
  * --account matches any string field equal to the name (account, from, to, author, ...).
@@ -95,6 +100,52 @@ function matcher(o) {
     && (!o.text || json(op.data).includes(o.text));
 }
 
+function u64(n) {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
+}
+
+function merge(files, from, to, out) {
+  if (!out) { console.error('merge needs --out=<data>/blockchain/dlt_block_log'); process.exit(2); }
+  const logPath = out, idxPath = out + '.index';
+  for (const p of [logPath, idxPath]) {
+    if (fs.existsSync(p)) { console.error(p + ' exists, refusing to overwrite'); process.exit(1); }
+  }
+  const sel = files.filter(f => f.last >= from && f.first <= to);
+  let next = from;
+  for (const f of sel) {
+    if (f.first > next) { console.error(`GAP ${next}-${f.first - 1}, merge stopped`); process.exit(1); }
+    next = Math.min(to, f.last) + 1;
+  }
+  if (!sel.length || next <= to) { console.error(`archive does not cover ${from}-${to}`); process.exit(1); }
+  const log = fs.openSync(logPath, 'wx'), idx = fs.openSync(idxPath, 'wx');
+  fs.writeSync(idx, u64(from));
+  let pos = 0, count = 0;
+  for (const f of sel) {
+    const src = fs.openSync(f.path, 'r');
+    const ix = fs.readFileSync(f.path + '.index');
+    const size = fs.fstatSync(src).size;
+    const a = Math.max(from, f.first), z = Math.min(to, f.last);
+    for (let n = a; n <= z; n++) {
+      const i = 8 + (n - f.first) * 8;
+      const start = Number(ix.readBigUInt64LE(i));
+      const end = i + 8 < ix.length ? Number(ix.readBigUInt64LE(i + 8)) : size;
+      const buf = Buffer.alloc(end - start - 8);
+      fs.readSync(src, buf, 0, buf.length, start);
+      fs.writeSync(log, buf);
+      fs.writeSync(log, u64(pos));
+      fs.writeSync(idx, u64(pos));
+      pos += buf.length + 8;
+      count++;
+    }
+    fs.closeSync(src);
+  }
+  fs.closeSync(log);
+  fs.closeSync(idx);
+  console.error(`merged ${count} blocks ${from}-${to} into ${logPath}`);
+}
+
 function main() {
   process.stdout.on('error', e => process.exit(e.code === 'EPIPE' ? 0 : 1));
   const o = args(process.argv.slice(2));
@@ -127,6 +178,7 @@ function main() {
     console.error(`block ${n} is not in the archive`);
     process.exit(1);
   }
+  if (cmd === 'merge') return merge(files, from, to, o.out);
   if (cmd === 'search' || cmd === 'export') {
     const match = matcher(o);
     const out = o.out ? fs.createWriteStream(o.out) : process.stdout;

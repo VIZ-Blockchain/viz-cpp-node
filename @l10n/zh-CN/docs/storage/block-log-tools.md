@@ -65,6 +65,16 @@ node block-archive.cjs export /var/lib/vizd/block-archive --blocks --out=blocks.
 
 写入的记录数输出到 stderr，stdout 保持干净，便于管道处理。
 
+### `merge`
+
+将已封存的区间文件逐字节拼接为一个 `dlt_block_log` + `dlt_block_log.index`，并重算偏移量。用于节点区块日志损坏或丢失时：停止节点，放入拼接后的日志，照常恢复 state（快照 / 种子节点），节点即可重新向对等节点提供归档历史。merge 不重建 state。
+
+```bash
+node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/var/lib/vizd/blockchain/dlt_block_log
+```
+
+区间有缺口时拒绝执行（`GAP a-b, merge stopped`），且不会覆盖已有文件。
+
 ### 过滤条件
 
 | 选项 | 含义 |

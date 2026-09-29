@@ -4,7 +4,7 @@ Node.js scripts in `programs/util/block-log/` read block files offline: the full
 
 | File | Purpose |
 |------|---------|
-| `block-archive.cjs` | CLI: archive summary, single block, search, export to JSONL |
+| `block-archive.cjs` | CLI: archive summary, single block, search, export to JSONL, merge into dlt_block_log |
 | `block-log-viewer.cjs` | Interactive terminal viewer of one block file |
 | `block-log-reader.cjs` | Parser library used by both (`BlockLogReader`, `DltBlockLogReader`, `readSignedBlock`) |
 | `op-layouts.json` | Field layouts of operations 64+ |
@@ -64,6 +64,16 @@ node block-archive.cjs export /var/lib/vizd/block-archive --blocks --out=blocks.
 ```
 
 The number of written records goes to stderr, so stdout stays clean for pipes.
+
+### `merge`
+
+Glues sealed range files into one `dlt_block_log` + `dlt_block_log.index` byte for byte, rebasing offsets. Use it when the node's block log is damaged or lost: stop the node, put the merged log in place, restore state as usual (snapshot / seeds) — the node then serves the archived history to peers again. merge does not rebuild state.
+
+```bash
+node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/var/lib/vizd/blockchain/dlt_block_log
+```
+
+It refuses gaps in the range (`GAP a-b, merge stopped`) and never overwrites existing files.
 
 ### Filters
 

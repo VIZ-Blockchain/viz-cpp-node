@@ -65,6 +65,16 @@ node block-archive.cjs export /var/lib/vizd/block-archive --blocks --out=blocks.
 
 Число записанных записей уходит в stderr, так что stdout остаётся чистым для пайпов.
 
+### `merge`
+
+Склеивает запечатанные файлы диапазонов в один `dlt_block_log` + `dlt_block_log.index` байт в байт, пересчитывая смещения. Нужен, когда block log ноды повреждён или потерян: останавливаем ноду, кладём склеенный лог на место, state восстанавливаем как обычно (снапшот / сиды) — и нода снова отдаёт пирам историю из архива. State merge не восстанавливает.
+
+```bash
+node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/var/lib/vizd/blockchain/dlt_block_log
+```
+
+При дыре в диапазоне отказывается (`GAP a-b, merge stopped`) и не перезаписывает существующие файлы.
+
 ### Фильтры
 
 | Опция | Значение |
