@@ -10,7 +10,13 @@
 #define CHAIN_VERSION                         (version(4, 1, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
+// Disposable, explicitly flagged mainnet-state fork. Never enabled by production defaults;
+// the name is bound to agentkeys-live/manifest.json and its snapshot chain_id.
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+#define CHAIN_NAME                            "VIZ-DREAM-AGENTKEYS-c625c5489bb1f2e4"
+#else
 #define CHAIN_NAME                            "VIZ"
+#endif
 #define CHAIN_ID                              (fc::sha256::hash(CHAIN_NAME))
 #define CHAIN_ADDRESS_PREFIX                  "VIZ"
 
@@ -115,7 +121,14 @@
 
 /// Emergency consensus mode: activates when no block has been produced for
 /// this many seconds since the last irreversible block.
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+// A verified historical snapshot can be hours old before this disposable node
+// starts. Preserve its signed head and give the single-operator validator set
+// time to resume rather than forcing the hardcoded production emergency key.
+#define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    (24 * 60 * 60)
+#else
 #define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    1200  // 20 minutes
+#endif
 
 /// The witness account name that produces blocks during emergency mode
 #define CHAIN_EMERGENCY_VALIDATOR_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"

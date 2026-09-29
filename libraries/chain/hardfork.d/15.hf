@@ -12,7 +12,12 @@
 #ifndef CHAIN_PM_AUDIT_FIX_HARDFORK
 #define CHAIN_PM_AUDIT_FIX_HARDFORK 15
 #endif
-#ifdef BUILD_TESTNET
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+// Disposable mainnet-derived fork only: preserve production governance parameters
+// and identity separation, but permit HF15 to activate after the source HF14 anchor.
+#define CHAIN_HARDFORK_15_TIME 1790498000
+#define CHAIN_HARDFORK_15_VERSION hardfork_version( version(4, 1, 0) )
+#elif defined(BUILD_TESTNET)
 // Testnet-config activation (CHAIN_NAME "VIZTEST"). Testnet has a single validator
 // (CHAIN_HARDFORK_REQUIRED_VALIDATORS=1), so this timestamp IS the whole coordination: the
 // validator's auto-vote in _generate_block reaches quorum by itself and the fork applies on the
