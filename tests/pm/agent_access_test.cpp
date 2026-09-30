@@ -14,6 +14,8 @@
 
 #include <graphene/protocol/operations.hpp>
 #include <graphene/protocol/agent_operations.hpp>
+#include <graphene/protocol/transaction.hpp>
+#include <graphene/protocol/exceptions.hpp>
 #include <fc/crypto/sha256.hpp>
 #include <fc/crypto/elliptic.hpp>
 
@@ -143,6 +145,71 @@ BOOST_AUTO_TEST_CASE(validate_refuses_malformed_participants) {
     auto revoke = grant({});
     revoke.agent_key = public_key_type();
     BOOST_CHECK(accepts(revoke));
+}
+
+BOOST_AUTO_TEST_CASE(ordinary_regular_discovery_reports_used_keys) {
+    const public_key_type regular = fc::ecc::private_key::regenerate(
+        fc::sha256::hash(std::string("regular-discovery"))).get_public_key();
+    const public_key_type extra = fc::ecc::private_key::regenerate(
+        fc::sha256::hash(std::string("extra-discovery"))).get_public_key();
+    authority auth;
+    auth.weight_threshold = 1;
+    auth.key_auths[regular] = 1;
+    const auto getter = [&](const account_name_type&) { return auth; };
+    custom_operation op;
+    op.required_regular_auths.insert("alice");
+    op.id = "regular-discovery";
+    op.json = "{}";
+    fc::flat_set<public_key_type> used;
+    verify_authority({operation(op)}, {regular}, getter, getter, getter,
+        CHAIN_MAX_SIG_CHECK_DEPTH, false, {}, {}, {}, {}, true, &used);
+    BOOST_CHECK_EQUAL(used.size(), 1u);
+    BOOST_CHECK(used.count(regular));
+    BOOST_CHECK_NO_THROW(verify_authority({operation(op)}, {regular, extra},
+        getter, getter, getter, CHAIN_MAX_SIG_CHECK_DEPTH,
+        false, {}, {}, {}, {}, true, &used));
+    BOOST_CHECK_EQUAL(used.size(), 1u);
+    BOOST_CHECK(!used.count(extra));
+    // Broadcast still rejects unrelated co-signatures; only discovery permits
+    // unused candidate keys.
+    BOOST_CHECK_THROW(verify_authority({operation(op)}, {regular, extra},
+        getter, getter, getter), tx_irrelevant_sig);
+}
+
+BOOST_AUTO_TEST_CASE(ordinary_partial_active_then_master_keeps_legacy_acceptance) {
+    const auto key = [](const char* seed) {
+        return public_key_type(fc::ecc::private_key::regenerate(
+            fc::sha256::hash(std::string(seed))).get_public_key());
+    };
+    const public_key_type partial = key("legacy-partial-active");
+    const public_key_type unavailable = key("legacy-missing-active");
+    const public_key_type master_key = key("legacy-master");
+    authority active;
+    active.weight_threshold = 2;
+    active.key_auths[partial] = 1;
+    active.key_auths[unavailable] = 1;
+    authority master;
+    master.weight_threshold = 1;
+    master.key_auths[master_key] = 1;
+    const auto get_active = [&](const account_name_type&) { return active; };
+    const auto get_master = [&](const account_name_type&) { return master; };
+    transfer_operation op;
+    op.from = "alice";
+    op.to = "bob";
+    op.amount = asset(1, TOKEN_SYMBOL);
+    // Existing consensus marks the partial active signature used before the
+    // successful master fallback. Agent isolation must not tighten that path.
+    BOOST_CHECK_NO_THROW(verify_authority({operation(op)}, {partial, master_key},
+        get_active, get_master, get_master));
+    BOOST_CHECK_NO_THROW(verify_authority({operation(op)}, {partial, master_key},
+        get_active, get_master, get_master, CHAIN_MAX_SIG_CHECK_DEPTH,
+        false, {}, {}, {}, [](const account_name_type&, sign_state&) { return false; }));
+    const public_key_type agent = key("direct-agent-extra-partial");
+    BOOST_CHECK_THROW(verify_authority({operation(op)}, {partial, agent},
+        get_active, get_master, get_master, CHAIN_MAX_SIG_CHECK_DEPTH,
+        false, {}, {}, {}, [&](const account_name_type&, sign_state& state) {
+            return state.signed_by(agent);
+        }), tx_irrelevant_sig);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
