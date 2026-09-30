@@ -12,6 +12,7 @@
 #include <graphene/plugins/account_history/plugin.hpp>
 #include <graphene/plugins/account_by_key/account_by_key_plugin.hpp>
 #include <graphene/plugins/raw_block/plugin.hpp>
+#include <graphene/plugins/block_archive/plugin.hpp>
 #include <graphene/plugins/block_info/plugin.hpp>
 #include <graphene/plugins/validator_api/plugin.hpp>
 #include <graphene/plugins/committee_api/committee_api.hpp>
@@ -81,6 +82,7 @@ namespace graphene {
             appbase::app().register_plugin<graphene::plugins::account_history::plugin>();
             appbase::app().register_plugin<graphene::plugins::account_by_key::account_by_key_plugin>();
             appbase::app().register_plugin<graphene::plugins::raw_block::plugin>();
+            appbase::app().register_plugin<graphene::plugins::block_archive::plugin>();
             appbase::app().register_plugin<graphene::plugins::block_info::plugin>();
             appbase::app().register_plugin<graphene::plugins::committee_api::committee_api>();
             appbase::app().register_plugin<graphene::plugins::invite_api::invite_api>();

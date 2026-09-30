@@ -67,7 +67,7 @@ Re-issuing by the same name replaces the key, operations, addons and expiration 
 - **Shared keys:** multiple names for one principal may use the same public key; their effective operation lists are combined while each row remains live. Revoking one name does not revoke another.
 - **At most 16 agents** per principal. A grant first removes the principal's expired agents.
 - **When an agent signature counts:** only a direct active/regular requirement for the principal and the named operation is covered. Every operation in a transaction is checked independently; unrelated requirements still need their own signatures. The agent never grants authority through nested `account_auths` or `other` authorities. A revoke or rotation earlier in the same transaction takes effect before later operations.
-- **Wipes:** all agents of the principal are removed on master change, active change, account recovery, direct sale and auction close. A regular-only change keeps them. "Change" means the field is **present** in `account_update`: sending `master` or `active` wipes the agents even if the key is the same, so a client that only edits regular or memo must leave `master`/`active` out of the operation (viz-php-lib `build_account_update` always sends all three — it wipes).
+- **Wipes:** all agents of the principal are removed on master change, active change, account recovery, direct sale and auction close. A regular-only change keeps them. "Change" means the field is **present** in `account_update`: sending `master` or `active` wipes the agents even if the key is the same, so a client that only edits regular or memo must leave `master`/`active` out of the operation (in viz-php-lib `build_account_update` pass `null` for a role to leave it out).
 
 ## Snapshot round-trip gate (isolated testnet)
 
@@ -87,3 +87,11 @@ mainnet data or reuse source shared memory for the import.
 ## Reading agents
 
 `database_api.get_agent_permissions(account)` — see [database_api](../../plugins/database-api.md#get-agent-permissions-account).
+
+## In wallets
+
+**Granting (principal).** WebVIZWallet → *Agents*: agent name, public key (the *Generate* button creates a fresh pair — save the private key, it is shown once), tick the allowed operations, expiration (*perpetual* or a date), addons as a comma-separated list. The page lists current agents with a *Revoke* button. The grant is signed by the principal's **active** key. Vizonator exposes the same operation to sites through `window.vizonator`, always behind a confirmation window that shows the key, operations, expiration and addons.
+
+**Signing in as an agent.** WebVIZWallet and Vizonator have a separate *agent sign-in*: principal account + agent private key. The client checks the key against `get_agent_permissions` and refuses a key that is not granted or has expired. An agent session is marked 🤖 and shows the allowed operations and the time left; actions outside the list are disabled. An agent key cannot pass passwordless site auth or `sign_data` — it only signs the granted operations.
+
+**When agents disappear.** Changing master or active (including sending the same key), recovery and account sale wipe all agents — grant them again afterwards.

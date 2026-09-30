@@ -1,0 +1,1160 @@
+{
+ "64": {
+  "name": "set_reward_sharing",
+  "fields": [
+   [
+    "owner",
+    "string"
+   ],
+   [
+    "sharing_rate",
+    "uint16"
+   ]
+  ]
+ },
+ "65": {
+  "name": "stakeholder_reward",
+  "fields": [
+   [
+    "validator",
+    "string"
+   ],
+   [
+    "stakeholder",
+    "string"
+   ],
+   [
+    "shares",
+    "asset"
+   ]
+  ]
+ },
+ "66": {
+  "name": "pm_oracle_register",
+  "fields": [
+   [
+    "owner",
+    "string"
+   ],
+   [
+    "insurance",
+    "asset"
+   ],
+   [
+    "fee_percent",
+    "uint16"
+   ],
+   [
+    "fixed_fee",
+    "asset"
+   ],
+   [
+    "rules_url",
+    "string"
+   ],
+   [
+    "auto_accept_creator",
+    "string"
+   ],
+   [
+    "auto_accept_resolver",
+    "string"
+   ],
+   [
+    "auto_accept",
+    "bool"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "67": {
+  "name": "pm_oracle_update",
+  "fields": [
+   [
+    "owner",
+    "string"
+   ],
+   [
+    "insurance_delta",
+    "optional(asset)"
+   ],
+   [
+    "fee_percent",
+    "optional(uint16)"
+   ],
+   [
+    "fixed_fee",
+    "optional(asset)"
+   ],
+   [
+    "rules_url",
+    "optional(string)"
+   ],
+   [
+    "auto_accept_creator",
+    "optional(string)"
+   ],
+   [
+    "auto_accept_resolver",
+    "optional(string)"
+   ],
+   [
+    "auto_accept",
+    "optional(bool)"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "68": {
+  "name": "pm_create_market",
+  "fields": [
+   [
+    "creator",
+    "string"
+   ],
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_type",
+    "uint8"
+   ],
+   [
+    "outcomes",
+    "array(string)"
+   ],
+   [
+    "url",
+    "string"
+   ],
+   [
+    "oracle_fee_percent",
+    "uint16"
+   ],
+   [
+    "oracle_fixed_fee",
+    "asset"
+   ],
+   [
+    "creator_fee_percent",
+    "uint16"
+   ],
+   [
+    "liquidity_fee_percent",
+    "uint16"
+   ],
+   [
+    "liquidity",
+    "asset"
+   ],
+   [
+    "lmsr_b",
+    "int64"
+   ],
+   [
+    "betting_expiration",
+    "time_point_sec"
+   ],
+   [
+    "result_expiration",
+    "time_point_sec"
+   ],
+   [
+    "time_penalty_type",
+    "uint8"
+   ],
+   [
+    "time_penalty_value",
+    "uint32"
+   ],
+   [
+    "penalty_curve_type",
+    "uint8"
+   ],
+   [
+    "allow_early_resolution",
+    "bool"
+   ],
+   [
+    "allow_cancellation",
+    "bool"
+   ],
+   [
+    "allow_batch",
+    "bool"
+   ],
+   [
+    "allow_instant_bet",
+    "bool"
+   ],
+   [
+    "endogeneity_tier",
+    "uint8"
+   ],
+   [
+    "dispute_mode",
+    "uint8"
+   ],
+   [
+    "dispute_resolver",
+    "string"
+   ],
+   [
+    "dispute_penalty_percent",
+    "int16"
+   ],
+   [
+    "metadata",
+    "string"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "69": {
+  "name": "pm_oracle_accept_market",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "accept",
+    "bool"
+   ],
+   [
+    "oracle_fee_percent",
+    "uint16"
+   ],
+   [
+    "oracle_fixed_fee",
+    "asset"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "70": {
+  "name": "pm_place_bet",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "side",
+    "int8"
+   ],
+   [
+    "outcome_index",
+    "int16"
+   ],
+   [
+    "amount",
+    "asset"
+   ],
+   [
+    "min_tokens",
+    "int64"
+   ],
+   [
+    "mode",
+    "uint8"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "71": {
+  "name": "pm_commit_bet",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "commitment",
+    "bytes(32)"
+   ],
+   [
+    "escrow_amount",
+    "asset"
+   ],
+   [
+    "no_reveal_fee_percent",
+    "uint16"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "72": {
+  "name": "pm_reveal_bet",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "commit_id",
+    "int64"
+   ],
+   [
+    "side",
+    "int8"
+   ],
+   [
+    "outcome_index",
+    "int16"
+   ],
+   [
+    "amount",
+    "asset"
+   ],
+   [
+    "salt",
+    "string"
+   ],
+   [
+    "min_tokens",
+    "int64"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "73": {
+  "name": "pm_cancel_bet",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "bet_id",
+    "int64"
+   ],
+   [
+    "min_return",
+    "int64"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "74": {
+  "name": "pm_add_liquidity",
+  "fields": [
+   [
+    "provider",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "amount",
+    "asset"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "75": {
+  "name": "pm_withdraw_liquidity",
+  "fields": [
+   [
+    "provider",
+    "string"
+   ],
+   [
+    "liquidity_id",
+    "int64"
+   ],
+   [
+    "amount",
+    "asset"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "76": {
+  "name": "pm_resolve_market",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "winning_outcome",
+    "int16"
+   ],
+   [
+    "decision_url",
+    "string"
+   ],
+   [
+    "decision_reason",
+    "string"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "77": {
+  "name": "pm_no_contest",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "reason",
+    "string"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "78": {
+  "name": "pm_dispute_create",
+  "fields": [
+   [
+    "disputer",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "proposed_outcome",
+    "int16"
+   ],
+   [
+    "reason",
+    "string"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "79": {
+  "name": "pm_dispute_vote",
+  "fields": [
+   [
+    "voter",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "vote_outcome",
+    "int16"
+   ],
+   [
+    "vote_percent",
+    "int16"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "80": {
+  "name": "pm_dispute_resolve",
+  "fields": [
+   [
+    "resolver",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "correct_outcome",
+    "int16"
+   ],
+   [
+    "penalty_amount",
+    "asset"
+   ],
+   [
+    "ban_oracle",
+    "bool"
+   ],
+   [
+    "ban_oracle_until",
+    "time_point_sec"
+   ],
+   [
+    "ban_creator",
+    "bool"
+   ],
+   [
+    "ban_creator_until",
+    "time_point_sec"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "81": {
+  "name": "pm_transfer_position",
+  "fields": [
+   [
+    "from",
+    "string"
+   ],
+   [
+    "bet_id",
+    "int64"
+   ],
+   [
+    "to",
+    "string"
+   ],
+   [
+    "amount",
+    "int64"
+   ],
+   [
+    "memo",
+    "string"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "82": {
+  "name": "pm_lazy_deposit",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "amount",
+    "asset"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "83": {
+  "name": "pm_lazy_withdraw",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "shares",
+    "int64"
+   ],
+   [
+    "emergency",
+    "bool"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "84": {
+  "name": "pm_batch_settle",
+  "fields": [
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "epoch",
+    "uint32"
+   ],
+   [
+    "settled_bets",
+    "uint32"
+   ]
+  ]
+ },
+ "85": {
+  "name": "pm_commit_forfeit",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "commit_id",
+    "int64"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "penalty",
+    "asset"
+   ],
+   [
+    "refund",
+    "asset"
+   ]
+  ]
+ },
+ "86": {
+  "name": "pm_auto_payout",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "bet_id",
+    "int64"
+   ],
+   [
+    "payout",
+    "asset"
+   ]
+  ]
+ },
+ "87": {
+  "name": "pm_dispute_finalize",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "winning_outcome",
+    "int16"
+   ],
+   [
+    "oracle_penalty",
+    "asset"
+   ]
+  ]
+ },
+ "88": {
+  "name": "pm_dispute_auto_close",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "oracle_penalty",
+    "asset"
+   ]
+  ]
+ },
+ "89": {
+  "name": "pm_oracle_missed_penalty",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "slashed",
+    "asset"
+   ]
+  ]
+ },
+ "90": {
+  "name": "pm_lazy_recall",
+  "fields": [
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "recalled",
+    "asset"
+   ]
+  ]
+ },
+ "91": {
+  "name": "pm_leverage_open",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "outcome_index",
+    "int16"
+   ],
+   [
+    "collateral",
+    "asset"
+   ],
+   [
+    "loan",
+    "asset"
+   ],
+   [
+    "min_tokens",
+    "int64"
+   ],
+   [
+    "max_slippage_percent",
+    "uint16"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "92": {
+  "name": "pm_leverage_close",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "position_id",
+    "int64"
+   ],
+   [
+    "min_return",
+    "int64"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "93": {
+  "name": "pm_leverage_convert",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "position_id",
+    "int64"
+   ],
+   [
+    "conversion_profit_cost",
+    "uint16"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "94": {
+  "name": "pm_leverage_liquidate",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "position_id",
+    "int64"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "cancel_value",
+    "asset"
+   ],
+   [
+    "pool_received",
+    "asset"
+   ],
+   [
+    "bettor_received",
+    "asset"
+   ],
+   [
+    "reason",
+    "uint8"
+   ]
+  ]
+ },
+ "95": {
+  "name": "pm_leverage_resolve",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "position_id",
+    "int64"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "won",
+    "bool"
+   ],
+   [
+    "pool_received",
+    "asset"
+   ],
+   [
+    "bettor_received",
+    "asset"
+   ],
+   [
+    "outcome_index",
+    "int16"
+   ],
+   [
+    "leverage",
+    "uint16"
+   ]
+  ]
+ },
+ "96": {
+  "name": "pm_market_accepted",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "creator",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "oracle_fee_percent",
+    "uint16"
+   ],
+   [
+    "oracle_fixed_fee",
+    "asset"
+   ],
+   [
+    "self_oracle",
+    "bool"
+   ]
+  ]
+ },
+ "97": {
+  "name": "pm_payout",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "bet_id",
+    "int64"
+   ],
+   [
+    "side",
+    "int8"
+   ],
+   [
+    "outcome_index",
+    "int16"
+   ],
+   [
+    "amount",
+    "asset"
+   ],
+   [
+    "payout",
+    "asset"
+   ]
+  ]
+ },
+ "98": {
+  "name": "pm_dispute_oracle_respond",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "response",
+    "string"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "99": {
+  "name": "pm_unban",
+  "fields": [
+   [
+    "resolver",
+    "string"
+   ],
+   [
+    "target",
+    "string"
+   ],
+   [
+    "unban_oracle",
+    "bool"
+   ],
+   [
+    "unban_creator",
+    "bool"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ },
+ "100": {
+  "name": "pm_ban_expired",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "oracle",
+    "bool"
+   ],
+   [
+    "creator",
+    "bool"
+   ]
+  ]
+ },
+ "101": {
+  "name": "pm_market_expired",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "creator",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "refunded_liquidity",
+    "asset"
+   ]
+  ]
+ },
+ "102": {
+  "name": "pm_dispute_opened",
+  "fields": [
+   [
+    "oracle",
+    "string"
+   ],
+   [
+    "disputer",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "proposed_outcome",
+    "int16"
+   ]
+  ]
+ },
+ "103": {
+  "name": "pm_early_exit_claim_paid",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "kind",
+    "uint8"
+   ],
+   [
+    "outcome_index",
+    "uint8"
+   ],
+   [
+    "claimed",
+    "asset"
+   ],
+   [
+    "paid",
+    "asset"
+   ]
+  ]
+ },
+ "104": {
+  "name": "pm_lp_payout",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "market_id",
+    "int64"
+   ],
+   [
+    "principal",
+    "asset"
+   ],
+   [
+    "income",
+    "asset"
+   ],
+   [
+    "charge",
+    "asset"
+   ]
+  ]
+ },
+ "105": {
+  "name": "set_agent_permission",
+  "fields": [
+   [
+    "account",
+    "string"
+   ],
+   [
+    "agent_name",
+    "string"
+   ],
+   [
+    "agent_key",
+    "public_key"
+   ],
+   [
+    "operations",
+    "set(string)"
+   ],
+   [
+    "expiration",
+    "time_point_sec"
+   ],
+   [
+    "addons",
+    "set(string)"
+   ],
+   [
+    "extensions",
+    "set(future_extensions)"
+   ]
+  ]
+ }
+}

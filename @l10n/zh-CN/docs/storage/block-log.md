@@ -149,17 +149,10 @@ DLT 日志仅保留最近的区块窗口；旧区块被修剪。从 `start_block
 
 ---
 
-## 区块日志查看器
+## 工具与归档
 
-工具集中包含一个终端区块日志查看器（`block-log-viewer.js`）：
-
-```
-node block-log-viewer.js <path> [--dlt]
-```
-
-主要命令：`f` 第一个，`l` 最后一个，`n`/`p` 下一个/上一个，`g <N>` 跳转到区块 N，`o` 显示操作，`s <type>` 按操作类型搜索，`S <str>` 按内容搜索，`scan` 构建快速导航位掩码。
-
-`scan` 命令构建位掩码文件（`block_log.bitmask`），标记包含非空操作的区块，实现即时 `N`/`P` 跳转。
+- [区块日志工具](./block-log-tools.md) — 离线查看、搜索和导出（`programs/util/block-log/`）。
+- [区块归档插件](../plugins/block-archive.md) — 可选插件，将所有不可逆区块保存为区间文件，超出 `dlt_block_log` 的滚动窗口。
 
 ---
 

@@ -149,17 +149,10 @@ The DLT log keeps only a recent window of blocks; older blocks are pruned. It st
 
 ---
 
-## Block Log Viewer
+## Tools and Archive
 
-A terminal block log viewer is included in the tooling (`block-log-viewer.js`):
-
-```
-node block-log-viewer.js <path> [--dlt]
-```
-
-Key commands: `f` first, `l` last, `n`/`p` next/prev, `g <N>` go to block N, `o` show operations, `s <type>` search by operation type, `S <str>` search by content, `scan` build fast-navigation bitmask.
-
-The `scan` command builds a bitmask file (`block_log.bitmask`) that marks which blocks contain non-empty operations, enabling instant `N`/`P` jumps.
+- [Block Log Tools](./block-log-tools.md) — offline viewer, search and export (`programs/util/block-log/`).
+- [Block Archive Plugin](../plugins/block-archive.md) — optional plugin that keeps every irreversible block in range files, beyond the `dlt_block_log` window.
 
 ---
 
