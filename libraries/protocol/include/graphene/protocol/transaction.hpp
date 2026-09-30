@@ -69,7 +69,8 @@ namespace graphene {
                     const authority_getter &get_active,
                     const authority_getter &get_master,
                     const authority_getter &get_regular,
-                    uint32_t max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH
+                    uint32_t max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH,
+                    const std::function<bool(const account_name_type&, sign_state&)>& direct_active = {}
             ) const;
 
             void verify_authority(
@@ -108,7 +109,10 @@ namespace graphene {
                 bool allow_committe = false,
                 const flat_set<account_name_type> &active_aprovals = flat_set<account_name_type>(),
                 const flat_set<account_name_type> &master_aprovals = flat_set<account_name_type>(),
-                const flat_set<account_name_type> &regular_approvals = flat_set<account_name_type>());
+                const flat_set<account_name_type> &regular_approvals = flat_set<account_name_type>(),
+                const std::function<bool(const account_name_type&, sign_state&)>& direct_active = {},
+                bool allow_unused = false,
+                flat_set<public_key_type>* used = nullptr);
 
 
         struct annotated_signed_transaction : public signed_transaction {

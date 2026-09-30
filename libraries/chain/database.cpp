@@ -4146,6 +4146,18 @@ namespace graphene { namespace chain {
                         h.valid_until_time = until_time;
                     });
                 }
+                // A change from an empty authority has no former signer to
+                // record. Keep a zero-weight marker so last_key_change still
+                // enforces the per-role cooldown on the next rotation.
+                if (old_auth.key_auths.empty() && old_auth.account_auths.empty()) {
+                    create<key_history_object>([&](key_history_object &h) {
+                        h.account = name;
+                        h.role = role;
+                        h.weight_threshold = old_auth.weight_threshold;
+                        h.valid_until_block = until_block;
+                        h.valid_until_time = until_time;
+                    });
+                }
             };
             write_authority(key_role_master, before.master, now.master);
             write_authority(key_role_active, before.active, now.active);
@@ -5708,22 +5720,12 @@ namespace graphene { namespace chain {
             if (!(skip & (skip_transaction_signatures | skip_authority_check))) {
                 const chain_id_type &chain_id = CHAIN_ID;
 
-                // HF15 agent access. A principal may issue agent keys, each allowed to sign a listed
-                // set of operations for it. The decision lives in the chain layer (it needs
-                // the permission objects); the signatures are still checked by the ordinary
-                // sign_state path below, which is why substituting the getter is enough — nothing
-                // here approves anything on its own. The map is empty below HF15 and for every
-                // transaction master/regular touches, so the pre-fork behaviour is bit-for-bit.
+                // HF15 agent access is a direct top-level active fallback. Nested
+                // account authorities continue to use the unmodified active getter;
+                // the permission map is empty before HF15 and for master/regular txs.
                 const auto delegated = delegated_active_authorities(*this, trx, chain_id);
 
                 auto get_active = [&](const account_name_type& name) {
-                    const auto itr = delegated.find(name);
-                    if (itr != delegated.end()) {
-                        authority a;
-                        a.weight_threshold = 1;
-                        a.key_auths[itr->second] = 1;
-                        return a;
-                    }
                     return authority(get<account_authority_object, by_account>(name).active);
                 };
 
@@ -5736,7 +5738,12 @@ namespace graphene { namespace chain {
                 };
 
                 try {
-                    trx.verify_authority(chain_id, get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH);
+                    protocol::verify_authority(trx.operations, trx.get_signature_keys(chain_id),
+                        get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH,
+                        false, {}, {}, {}, [&](const account_name_type& id, protocol::sign_state& state) {
+                            const auto it = delegated.find(id);
+                            return it != delegated.end() && state.signed_by(it->second);
+                        });
                 }
                 catch (protocol::tx_missing_active_auth &e) {
                     if (get_shared_db_merkle().find(head_block_num() + 1) == get_shared_db_merkle().end()) {
