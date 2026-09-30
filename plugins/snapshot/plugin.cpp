@@ -1771,14 +1771,23 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     state_json.shrink_to_fit();
 
     const auto& state = snapshot["state"].get_object();
+    // The singleton is mandatory even for pre-HF15 exports: without it a
+    // stripped post-HF15 export could masquerade as legacy and lose both indexes.
+    FC_ASSERT(state.contains("hardfork_property") && state["hardfork_property"].is_array() &&
+              state["hardfork_property"].get_array().size() == 1 &&
+              state["hardfork_property"].get_array().front().is_object() &&
+              state["hardfork_property"].get_array().front().get_object().contains("last_hardfork"),
+              "Snapshot requires exactly one valid hardfork_property marker");
+    const auto& hardforks = state["hardfork_property"].get_array();
+    const auto count = header.object_counts.find("hardfork_property");
+    FC_ASSERT(count != header.object_counts.end() && count->second == 1,
+              "Snapshot hardfork_property count mismatch");
+    const auto last_hardfork = hardforks.front()["last_hardfork"].as_uint64();
     // HF15 exports always embed the signed head block. Without it, a recomputed
     // payload checksum could make an unanchored post-HF15 state importable.
-    if (state.contains("hardfork_property")) {
-        const auto& hardforks = state["hardfork_property"].get_array();
-        if (!hardforks.empty() && hardforks.front()["last_hardfork"].as_uint64() >= CHAIN_HARDFORK_15)
-            FC_ASSERT(state.contains("fork_db_head_block"),
-                      "Post-HF15 snapshot lacks signed head block anchor");
-    }
+    if (last_hardfork >= CHAIN_HARDFORK_15)
+        FC_ASSERT(state.contains("fork_db_head_block"),
+                  "Post-HF15 snapshot lacks signed head block anchor");
     // The embedded signed head anchors fork_db and the DLT log. Check it against
     // the header before a hot reload destroys existing indexes; a header-only
     // rewrite cannot substitute a different block for this provenance anchor.
@@ -1792,17 +1801,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     // Validate both HF15 indexes before clearing a populated DB. A missing section,
     // including one whose legitimate count is zero, is not an intact post-HF15 export.
     // Legacy pre-HF15 snapshots remain importable without either section.
-    if (state.contains("hardfork_property")) {
-        const auto& hardforks = state["hardfork_property"].get_array();
-        if (!hardforks.empty() && hardforks.front()["last_hardfork"].as_uint64() >= CHAIN_HARDFORK_15) {
-            for (const char* section : {"agent_permission", "key_history"}) {
-                FC_ASSERT(state.contains(section) && state[section].is_array(),
-                          "Post-HF15 snapshot lacks ${s} section", ("s", section));
-                auto count = header.object_counts.find(section);
-                FC_ASSERT(count != header.object_counts.end() &&
-                          count->second == state[section].get_array().size(),
-                          "Post-HF15 snapshot ${s} count mismatch", ("s", section));
-            }
+    if (last_hardfork >= CHAIN_HARDFORK_15) {
+        for (const char* section : {"agent_permission", "key_history"}) {
+            FC_ASSERT(state.contains(section) && state[section].is_array(),
+                      "Post-HF15 snapshot lacks ${s} section", ("s", section));
+            auto section_count = header.object_counts.find(section);
+            FC_ASSERT(section_count != header.object_counts.end() &&
+                      section_count->second == state[section].get_array().size(),
+                      "Post-HF15 snapshot ${s} count mismatch", ("s", section));
         }
     }
 
@@ -5133,6 +5139,28 @@ void snapshot_plugin::plugin_startup() {
         my->test_all_trusted_peers();
         return;
     }
+
+    // Disposable fork-only acceptance probe: invoke the actual hot-reload path
+    // on an already populated DB, without peers or a production RPC surface.
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+    if (const char* probe = std::getenv("VIZ_DREAM_REJECT_HOT_SNAPSHOT")) {
+        const uint32_t before = my->db.head_block_num();
+        bool rejected = false;
+        try {
+            my->load_snapshot(fc::path(probe));
+        } catch (const fc::exception& e) {
+            rejected = true;
+            ilog("Dream hot snapshot rejected: ${e}", ("e", e.to_detail_string()));
+        } catch (const std::exception& e) {
+            rejected = true;
+            ilog("Dream hot snapshot rejected: ${e}", ("e", e.what()));
+        }
+        std::cerr << "DREAM_HOT_SNAPSHOT_PROBE rejected=" << rejected
+                  << " before=" << before << " after=" << my->db.head_block_num() << "\n";
+        appbase::app().quit();
+        return;
+    }
+#endif
 
     // Start snapshot TCP server if enabled
     if (my->allow_snapshot_serving) {

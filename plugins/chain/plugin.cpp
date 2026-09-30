@@ -12,6 +12,12 @@
 #include <graphene/protocol/types.hpp>
 #include <future>
 #include <atomic>
+#include <cerrno>
+#include <system_error>
+#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace graphene {
 namespace plugins {
@@ -176,8 +182,47 @@ namespace chain {
     }
 
     static void write_schema_version(const bfs::path& data_dir) {
-        std::ofstream f((data_dir / "schema_version").string());
+        const auto target = data_dir / "schema_version";
+#if defined(__unix__) || defined(__APPLE__)
+        // The snapshot is consumed only after this sidecar survives a crash.
+        // Atomic replacement also prevents a failed write truncating an old marker.
+        const auto temp = data_dir / ("schema_version.tmp." + std::to_string(::getpid()));
+        const auto fail = [](const char* action) {
+            throw std::system_error(errno, std::generic_category(), action);
+        };
+        int fd = ::open(temp.string().c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+        if (fd < 0) fail("open schema version temporary file");
+        try {
+            const std::string value = std::to_string(CHAIN_SCHEMA_VERSION);
+            if (::write(fd, value.data(), value.size()) != static_cast<ssize_t>(value.size()))
+                fail("write schema version");
+            if (::fsync(fd) != 0) fail("sync schema version");
+            if (::close(fd) != 0) { fd = -1; fail("close schema version"); }
+            fd = -1;
+            if (::rename(temp.string().c_str(), target.string().c_str()) != 0)
+                fail("rename schema version");
+            int dir_fd = ::open(data_dir.string().c_str(), O_RDONLY | O_DIRECTORY);
+            if (dir_fd < 0) fail("open schema version directory");
+            if (::fsync(dir_fd) != 0) {
+                int saved_errno = errno;
+                ::close(dir_fd);
+                errno = saved_errno;
+                fail("sync schema version directory");
+            }
+            if (::close(dir_fd) != 0) fail("close schema version directory");
+        } catch (...) {
+            if (fd >= 0) ::close(fd);
+            bfs::remove(temp);
+            throw;
+        }
+#else
+        std::ofstream f(target.string(), std::ios::trunc);
         f << CHAIN_SCHEMA_VERSION;
+        f.flush();
+        if (!f) throw std::runtime_error("Failed to write schema version");
+#endif
+        if (read_schema_version(data_dir) != CHAIN_SCHEMA_VERSION)
+            throw std::runtime_error("Schema version verification failed");
     }
 
     // ---------- /schema version helpers ----------
@@ -899,7 +944,9 @@ namespace chain {
 
             ilog("Recovery complete. Started on blockchain with ${n} blocks", ("n", my->db.head_block_num()));
         } else {
-            // Normal snapshot load: rename file to .used
+            // Persist and verify the sidecar before consuming the snapshot.
+            // A failed write leaves the original available for recovery.
+            write_schema_version(data_dir);
             try {
                 std::string used_path = my->snapshot_path + ".used";
                 boost::filesystem::rename(my->snapshot_path, used_path);
@@ -910,12 +957,8 @@ namespace chain {
 
             ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
         }
-
-        // A snapshot bypasses the normal db.open() path that writes this sidecar.
-        // Persist it only after import, hardfork initialization and any requested
-        // DLT replay complete; otherwise the next restart sees stored=0 and wipes
-        // the newly imported shared memory as if its object layout were obsolete.
-        write_schema_version(data_dir);
+        // Recovery does not consume the source, but needs the same marker.
+        if (is_recovery) write_schema_version(data_dir);
         // During auto-recovery, on_sync() must NOT fire again —
         // webserver/P2P plugins are already running and calling
         // start_webserver() twice destroys joinable threads (std::terminate).
