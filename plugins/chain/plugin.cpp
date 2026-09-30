@@ -188,7 +188,7 @@ namespace chain {
         const auto fail = [](const char* action) {
             throw std::system_error(errno, std::generic_category(), action);
         };
-        int fd = ::open(temp.string().c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+        int fd = ::open(temp.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) fail("open schema version temporary file");
         try {
             const std::string value = std::to_string(CHAIN_SCHEMA_VERSION);
