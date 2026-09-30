@@ -70,7 +70,8 @@ namespace graphene {
                     const authority_getter &get_master,
                     const authority_getter &get_regular,
                     uint32_t max_recursion = CHAIN_MAX_SIG_CHECK_DEPTH,
-                    const std::function<bool(const account_name_type&, sign_state&)>& direct_active = {}
+                    const std::function<bool(const account_name_type&, sign_state&)>& direct_active = {},
+                    const std::function<bool(const account_name_type&, sign_state&)>& direct_regular = {}
             ) const;
 
             void verify_authority(

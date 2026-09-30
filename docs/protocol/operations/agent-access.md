@@ -75,7 +75,7 @@ Re-issuing by the same name replaces the key, operations, addons and expiration 
 
 `database_api.get_agent_permissions(account)` — see [database_api](../../plugins/database-api.md#get-agent-permissions-account).
 
-`get_potential_signatures` returns candidate keys, including ordinary active/master fallback and directly granted agent keys; it is not an authorization decision. `get_required_signatures`, `verify_authority` and transaction application enforce the actual authority and grant scope.
+`get_potential_signatures` returns candidate keys, including ordinary active/master fallback and directly granted agent keys; it is not an authorization decision. `get_required_signatures` returns available contributions, even when an independent principal or explicit authority is still missing. It excludes keys already signed and only counts an agent when its grants cover every direct requirement of that principal; ordinary partial multisig contributions remain discoverable. Discovery is not acceptance: `verify_authority` and transaction application still require all authorities and enforce the actual grant scope.
 
 ## In wallets
 

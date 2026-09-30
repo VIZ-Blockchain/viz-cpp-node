@@ -296,7 +296,8 @@ namespace graphene {
                 const authority_getter &get_master,
                 const authority_getter &get_regular,
                 uint32_t max_recursion_depth,
-                const std::function<bool(const account_name_type&, sign_state&)>& direct_active) const {
+                const std::function<bool(const account_name_type&, sign_state&)>& direct_active,
+                const std::function<bool(const account_name_type&, sign_state&)>& direct_regular) const {
             flat_set<account_name_type> required_active;
             flat_set<account_name_type> required_master;
             flat_set<account_name_type> required_regular;
@@ -311,7 +312,25 @@ namespace graphene {
                 FC_ASSERT(!required_master.size());
                 FC_ASSERT(!required_active.size());
                 for (auto &regular : required_regular) {
-                    s.check_authority(regular);
+                    if (!direct_regular) {
+                        s.check_authority(regular);
+                        continue;
+                    }
+                    sign_state ordinary = s;
+                    if (ordinary.check_authority(regular) ||
+                        ordinary.check_authority(get_active(regular)) ||
+                        ordinary.check_authority(get_master(regular))) {
+                        s.provided_signatures = std::move(ordinary.provided_signatures);
+                        s.approved_by = std::move(ordinary.approved_by);
+                        continue;
+                    }
+                    sign_state delegated = s;
+                    if (direct_regular(regular, delegated)) {
+                        s.provided_signatures = std::move(delegated.provided_signatures);
+                    } else {
+                        s.provided_signatures = std::move(ordinary.provided_signatures);
+                        s.approved_by = std::move(ordinary.approved_by);
+                    }
                 }
 
                 s.remove_unused_signatures();
@@ -341,7 +360,7 @@ namespace graphene {
                     continue;
                 }
                 sign_state ordinary = s;
-                if (ordinary.check_authority(active)) {
+                if (ordinary.check_authority(active) || ordinary.check_authority(get_master(active))) {
                     s.provided_signatures = std::move(ordinary.provided_signatures);
                     s.approved_by = std::move(ordinary.approved_by);
                     continue;

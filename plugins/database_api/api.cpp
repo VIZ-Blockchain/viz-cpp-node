@@ -1,5 +1,6 @@
 #include <graphene/plugins/database_api/plugin.hpp>
 #include <graphene/chain/agent_evaluator.hpp>
+#include <graphene/protocol/sign_state.hpp>
 #include <graphene/chain/agent_objects.hpp>
 #include <graphene/protocol/operation_util_impl.hpp>
 
@@ -794,9 +795,7 @@ std::set<public_key_type> plugin::api_impl::get_required_signatures(
     const signed_transaction &trx,
     const flat_set<public_key_type> &available_keys
 ) const {
-    flat_set<public_key_type> candidate = available_keys;
     const auto signed_keys = trx.get_signature_keys(CHAIN_ID);
-    candidate.insert(signed_keys.begin(), signed_keys.end());
     const auto get_active = [&](const account_name_type& n) {
         return authority(database().get<account_authority_object, by_account>(n).active);
     };
@@ -806,22 +805,32 @@ std::set<public_key_type> plugin::api_impl::get_required_signatures(
     const auto get_regular = [&](const account_name_type& n) {
         return authority(database().get<account_authority_object, by_account>(n).regular);
     };
+    // Discovery is not transaction acceptance: independent missing authorities
+    // must not discard usable contributions. Agent checks remain top-level only.
+    const auto delegated = [&](const account_name_type& principal, bool regular, sign_state& state) {
+        for (const auto& op : trx.operations) {
+            flat_set<account_name_type> active, master, regular_auths;
+            std::vector<authority> other;
+            operation_get_required_authorities(op, active, master, regular_auths, other);
+            if (!(regular ? regular_auths : active).count(principal)) continue;
+            bool covered = false;
+            const auto& idx = database().get_index<agent_permission_index>().indices().get<by_permission_account>();
+            for (auto it = idx.lower_bound(boost::make_tuple(principal));
+                 it != idx.end() && it->account == principal; ++it)
+                if (graphene::chain::agent_operation_allowed(database(), op, principal, it->agent_key) &&
+                    state.signed_by(it->agent_key)) {
+                    covered = true;
+                    break;
+                }
+            if (!covered) return false;
+        }
+        return true;
+    };
     auto result = trx.get_required_signatures(CHAIN_ID, available_keys,
-                                               get_active, get_master, get_regular,
-                                               CHAIN_MAX_SIG_CHECK_DEPTH);
-    // Complete candidates can take ordinary master fallback. Return only used
-    // available keys, never a failed partial active branch or existing signature.
-    flat_set<public_key_type> used;
-    try {
-        graphene::chain::verify_agent_transaction(database(), trx, candidate, true, &used);
-        result.clear();
-        for (const auto& key : used)
-            if (available_keys.count(key)) result.insert(key);
-    } catch (const tx_missing_active_auth&) {
-    } catch (const tx_missing_master_auth&) {
-    } catch (const tx_missing_other_auth&) {
-    } catch (const tx_missing_regular_auth&) {
-    }
+        get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH,
+        [&](const account_name_type& n, sign_state& s) { return delegated(n, false, s); },
+        [&](const account_name_type& n, sign_state& s) { return delegated(n, true, s); });
+    for (const auto& key : signed_keys) result.erase(key);
     return result;
 }
 

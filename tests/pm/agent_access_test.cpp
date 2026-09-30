@@ -241,4 +241,37 @@ BOOST_AUTO_TEST_CASE(direct_regular_discards_failed_ordinary_keys) {
         get_regular, CHAIN_MAX_SIG_CHECK_DEPTH, false, {}, {}, {}, {}, false, nullptr, direct), tx_irrelevant_sig);
 }
 
+BOOST_AUTO_TEST_CASE(discovery_keeps_independent_agent_and_ordinary_partial_contributions) {
+    const auto key = [](const char* seed) {
+        return public_key_type(fc::ecc::private_key::regenerate(fc::sha256::hash(std::string(seed))).get_public_key());
+    };
+    const auto agent = key("discovery-agent");
+    const auto partial = key("discovery-partial");
+    const auto absent = key("discovery-absent");
+    authority auth;
+    auth.weight_threshold = 2;
+    auth.key_auths[partial] = 1;
+    auth.key_auths[absent] = 1;
+    const auto getter = [&](const account_name_type&) { return auth; };
+    const auto direct = [&](const account_name_type& n, sign_state& state) {
+        return n == "alice" && state.signed_by(agent);
+    };
+    signed_transaction tx;
+    custom_operation op;
+    op.required_active_auths = {"alice", "bob"};
+    op.id = "partial-discovery";
+    op.json = "{}";
+    tx.operations = {operation(op)};
+    const auto active = tx.get_required_signatures(CHAIN_ID, {agent, partial}, getter, getter, getter,
+        CHAIN_MAX_SIG_CHECK_DEPTH, direct);
+    BOOST_CHECK(active == std::set<public_key_type>({agent, partial}));
+    op.required_active_auths.clear();
+    op.required_regular_auths = {"alice", "bob"};
+    tx.operations = {operation(op)};
+    const auto regular = tx.get_required_signatures(CHAIN_ID, {agent, partial}, getter, getter, getter,
+        CHAIN_MAX_SIG_CHECK_DEPTH, {}, direct);
+    BOOST_CHECK(regular == std::set<public_key_type>({agent, partial}));
+    BOOST_CHECK_THROW(verify_authority(tx.operations, {agent, partial}, getter, getter, getter), tx_missing_regular_auth);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
