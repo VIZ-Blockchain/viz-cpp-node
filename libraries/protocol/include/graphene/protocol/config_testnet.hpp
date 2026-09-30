@@ -203,7 +203,7 @@
 #define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)
 
 /// Chainbase schema version — must match CHAIN_SCHEMA_VERSION in config.hpp.
-#define CHAIN_SCHEMA_VERSION                  uint32_t(14)
+#define CHAIN_SCHEMA_VERSION                  uint32_t(15)
 
 // HF14 prediction-market byte-length caps — IDENTICAL to config.hpp (consensus-mechanical,
 // see the note there). Only the HF14 activation TIME differs between mainnet/testnet.

@@ -40,7 +40,8 @@ authority_getter plain_active_authority_getter(const database& db) {
 
 fc::flat_map<account_name_type, public_key_type>
 delegated_active_authorities(const database& db, const signed_transaction& trx,
-                             const chain_id_type& chain_id) {
+                             const chain_id_type& chain_id,
+                             const flat_set<public_key_type>* candidate_keys) {
     fc::flat_map<account_name_type, public_key_type> delegated;
 
     if (!db.has_hardfork(CHAIN_HARDFORK_15))
@@ -68,7 +69,7 @@ delegated_active_authorities(const database& db, const signed_transaction& trx,
         if (!sigs_ready) {
             sigs_ready = true;
             try {
-                sigs = trx.get_signature_keys(chain_id);
+                sigs = candidate_keys ? *candidate_keys : trx.get_signature_keys(chain_id);
             } catch (...) {
                 // Unsigned or malformed: leave the verdict to verify_authority, which reports it.
                 sigs.clear();

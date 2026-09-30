@@ -10,7 +10,12 @@
 #define CHAIN_VERSION                         (version(4, 1, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+// Isolated historical snapshot fixture identity; never a production build default.
+#define CHAIN_NAME                            "VIZ-DREAM-AGENTKEYS-c625c5489bb1f2e4"
+#else
 #define CHAIN_NAME                            "VIZ"
+#endif
 #define CHAIN_ID                              (fc::sha256::hash(CHAIN_NAME))
 #define CHAIN_ADDRESS_PREFIX                  "VIZ"
 
@@ -115,7 +120,12 @@
 
 /// Emergency consensus mode: activates when no block has been produced for
 /// this many seconds since the last irreversible block.
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+// Historical isolated fixture resumes without triggering production emergency keys.
+#define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    (24 * 60 * 60)
+#else
 #define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    1200  // 20 minutes
+#endif
 
 /// The witness account name that produces blocks during emergency mode
 #define CHAIN_EMERGENCY_VALIDATOR_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
@@ -217,7 +227,8 @@
 ///               added vote_created_block to witness_vote_object
 ///   14 — HF14: prediction-market chainbase objects (pm_oracle, pm_market, pm_outcome,
 ///               pm_bet, pm_liquidity, pm_commit, pm_dispute, pm_dispute_vote, pm_lazy_*)
-#define CHAIN_SCHEMA_VERSION                  uint32_t(14)
+///   15 — HF15: persistent agent_permission and key_history chainbase indexes.
+#define CHAIN_SCHEMA_VERSION                  uint32_t(15)
 
 // HF14 prediction-market byte-length caps for variable-length on-chain strings.
 // These are CONSENSUS-MECHANICAL, not anti-spam (spec §7.12): without a hard cap two

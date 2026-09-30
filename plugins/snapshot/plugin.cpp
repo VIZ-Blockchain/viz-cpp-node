@@ -1771,6 +1771,34 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     state_json.shrink_to_fit();
 
     const auto& state = snapshot["state"].get_object();
+    // Reject incomplete HF15 exports before a hot reload destroys existing state.
+    FC_ASSERT(state.contains("hardfork_property") && state["hardfork_property"].is_array() &&
+              state["hardfork_property"].get_array().size() == 1 &&
+              state["hardfork_property"].get_array().front().is_object() &&
+              state["hardfork_property"].get_array().front().get_object().contains("last_hardfork"),
+              "Snapshot requires exactly one hardfork_property marker");
+    const auto marker = header.object_counts.find("hardfork_property");
+    FC_ASSERT(marker != header.object_counts.end() && marker->second == 1,
+              "Snapshot hardfork_property count mismatch");
+    if (state["hardfork_property"].get_array().front()["last_hardfork"].as_uint64() >= CHAIN_HARDFORK_15) {
+        for (const char* section : {"agent_permission", "key_history"}) {
+            FC_ASSERT(state.contains(section) && state[section].is_array(),
+                      "Post-HF15 snapshot lacks ${s} section", ("s", section));
+            const auto count = header.object_counts.find(section);
+            FC_ASSERT(count != header.object_counts.end() &&
+                      count->second == state[section].get_array().size(),
+                      "Post-HF15 snapshot ${s} count mismatch", ("s", section));
+        }
+        FC_ASSERT(state.contains("fork_db_head_block"),
+                  "Post-HF15 snapshot lacks signed head block anchor");
+    }
+    if (state.contains("fork_db_head_block")) {
+        const auto head = state["fork_db_head_block"].as<signed_block>();
+        FC_ASSERT(head.id() == header.snapshot_block_id &&
+                  head.block_num() == header.snapshot_block_num &&
+                  head.timestamp == header.snapshot_block_time,
+                  "Snapshot embedded head block does not match header anchor");
+    }
 
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
@@ -1894,6 +1922,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             while (!pm_dsp_idx.empty())  { db.remove(*pm_dsp_idx.begin()); }
             const auto& pm_dvt_idx  = db.get_index<pm_dispute_vote_index>().indices();
             while (!pm_dvt_idx.empty())  { db.remove(*pm_dvt_idx.begin()); }
+            const auto& agent_idx = db.get_index<agent_permission_index>().indices();
+            while (!agent_idx.empty()) { db.remove(*agent_idx.begin()); }
+            const auto& history_idx = db.get_index<key_history_index>().indices();
+            while (!history_idx.empty()) { db.remove(*history_idx.begin()); }
             const auto& pm_lpl_idx  = db.get_index<pm_lazy_pool_index>().indices();
             while (!pm_lpl_idx.empty())  { db.remove(*pm_lpl_idx.begin()); }
             const auto& pm_ldp_idx  = db.get_index<pm_lazy_deposit_index>().indices();
@@ -2314,6 +2346,8 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             expect_count("master_authority_history", db.get_index<master_authority_history_index>().indices().size());
             expect_count("account_recovery_request", db.get_index<account_recovery_request_index>().indices().size());
             expect_count("change_recovery_account_request", db.get_index<change_recovery_account_request_index>().indices().size());
+            expect_count("agent_permission", db.get_index<agent_permission_index>().indices().size());
+            expect_count("key_history", db.get_index<key_history_index>().indices().size());
 
             // (2) Referential integrity: every account_authority must reference an
             // existing account.  This is the exact invariant the wedge incident
@@ -5094,6 +5128,27 @@ void snapshot_plugin::plugin_startup() {
         return;
     }
 
+#ifdef CHAIN_AGENT_KEYS_DREAM_FORK
+    // Isolated importer regression: exercise the real populated hot-reload
+    // path, then exit before networking. Not compiled in production builds.
+    if (const char* probe = std::getenv("VIZ_DREAM_REJECT_HOT_SNAPSHOT")) {
+        const uint32_t before = my->db.head_block_num();
+        bool rejected = false;
+        try {
+            my->load_snapshot(fc::path(probe));
+        } catch (const fc::exception& e) {
+            rejected = true;
+            ilog("Dream hot snapshot rejected: ${e}", ("e", e.to_detail_string()));
+        } catch (const std::exception& e) {
+            rejected = true;
+            ilog("Dream hot snapshot rejected: ${e}", ("e", e.what()));
+        }
+        std::cerr << "DREAM_HOT_SNAPSHOT_PROBE rejected=" << rejected
+                  << " before=" << before << " after=" << my->db.head_block_num() << "\n";
+        appbase::app().quit();
+        return;
+    }
+#endif
     // Start snapshot TCP server if enabled
     if (my->allow_snapshot_serving) {
         my->start_server();

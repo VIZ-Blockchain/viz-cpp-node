@@ -403,6 +403,53 @@ BOOST_AUTO_TEST_CASE(agent_access_does_not_leak_through_nested_authorities) {
                     "the principal's agent key reached an account that only nests the principal");
 }
 
+// Even when A is a direct sender in the same transaction, its grant must not become
+// B's nested account_auth. Both transfers are covered by A's operation list.
+BOOST_AUTO_TEST_CASE(agent_access_direct_agent_cannot_satisfy_another_nested_sender) {
+    agent_fixture f(0xAA9E27, "aa-nested-direct");
+    const account_name_type second = "second";
+    const auto second_key = derive_key("second-direct-key");
+    create_account(f.node, f.gp, f.when, second, second_key, 100000);
+    authority nested;
+    nested.weight_threshold = 1;
+    nested.account_auths[f.principal] = 1;
+    account_update_operation au;
+    au.account = second;
+    au.active = nested;
+    f.node.push_pending_transaction(sign_ops({au}, second_key, f.node));
+    produce(f.node, f.gp, f.when);
+    f.issue({"transfer"});
+    auto a = f.pay(1000);
+    auto b = transfer_op(second, f.gp.initiator_name, 1000, TOKEN_SYMBOL);
+    expect_rejected(f.node, sign_ops({a, b}, f.agent_key, f.node),
+                    "direct A agent grant leaked into B's nested A authority");
+    auto ordinary = sign_ops({a, b}, f.principal_key, f.node, 1);
+    f.node.push_pending_transaction(ordinary);
+    produce(f.node, f.gp, f.when);
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_rejects_extra_signature_on_agent_fallback) {
+    agent_fixture f(0xAA9E28, "aa-extra-sig");
+    f.issue({"transfer"});
+    auto tx = sign_ops({f.pay(1000)}, f.agent_key, f.node);
+    tx.sign(derive_key("unrelated-extra-signer"), f.node.chain_id());
+    expect_rejected(f.node, tx, "irrelevant co-signature was accepted with agent fallback");
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_keeps_ordinary_master_fallback) {
+    agent_fixture f(0xAA9E29, "aa-master-fallback");
+    account_update_operation update_active;
+    update_active.account = f.principal;
+    update_active.active = single_key_auth(derive_key("different-active").get_public_key());
+    f.node.push_pending_transaction(sign_ops({update_active}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    f.issue({"transfer"}); // master can still grant through ordinary active fallback
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
 // One key, one agent: the same key under a second name is refused.
 BOOST_AUTO_TEST_CASE(agent_access_key_is_unique_per_principal) {
     agent_fixture f(0xAA9E25, "aa-key-unique");
@@ -709,6 +756,25 @@ BOOST_AUTO_TEST_CASE(key_history_hourly_limit_per_role) {
     f.node.push_pending_transaction(sign_ops({again}, active2, f.node, 2));
     produce(f.node, f.gp, f.when);
     BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_active), 2u);
+}
+
+// An empty old regular authority has no signer row, but its repopulation
+// must still start the hourly rotation cooldown.
+BOOST_AUTO_TEST_CASE(key_history_empty_regular_repopulation_starts_cooldown) {
+    agent_fixture f(0xAB0010, "kh-empty");
+    account_update_operation au;
+    au.account = f.principal;
+    au.regular = authority();
+    update(f, au);
+    advance(f, CHAIN_MASTER_UPDATE_LIMIT);
+    au.regular = single_key_auth(derive_key("regular-after-empty").get_public_key());
+    update(f, au, 1);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_regular), 2u);
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    rotate.regular = single_key_auth(derive_key("regular-too-soon").get_public_key());
+    expect_rejected(f.node, sign_ops({rotate}, f.principal_key, f.node, 2),
+                    "empty-to-populated regular rotation did not start cooldown");
 }
 
 // Recovery and sale change keys outside account_update — they must leave history too, and are not

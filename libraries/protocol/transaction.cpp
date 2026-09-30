@@ -101,7 +101,10 @@ namespace graphene {
             bool allow_committe,
             const flat_set<account_name_type>& active_aprovals,
             const flat_set<account_name_type>& master_approvals,
-            const flat_set<account_name_type>& regular_approvals
+            const flat_set<account_name_type>& regular_approvals,
+            const std::function<bool(const account_name_type&, sign_state&)>& direct_active,
+            bool allow_unused,
+            flat_set<public_key_type>* used
         ) { try {
             fc::flat_set<account_name_type> required_active;
             fc::flat_set<account_name_type> required_master;
@@ -153,7 +156,12 @@ namespace graphene {
                             CHAIN_ASSERT_MESSAGE("Missing Regular Authority ${id}", ("id", e.missing_accounts)));
                     });
 
-                assert_unused_approvals(s);
+                if (used) {
+                    used->clear();
+                    for (const auto& k : s.provided_signatures)
+                        if (k.second) used->insert(k.first);
+                }
+                if (!allow_unused) assert_unused_approvals(s);
                 return;
             }
 
@@ -183,9 +191,23 @@ namespace graphene {
 
             // fetch all of the top level authorities
             for (const auto& id: required_active) {
-                if (!s.check_authority(id) && !s.check_authority(get_master(id))) {
-                    missing_accounts.push_back(id);
+                // Preserve the ordinary active/master path, including legacy
+                // partial-active signature usage before a successful master check.
+                // Only an agent fallback must start without failed ordinary keys
+                // or nested-account approvals; it never replaces the getter.
+                sign_state ordinary = s;
+                if (ordinary.check_authority(id) || ordinary.check_authority(get_master(id))) {
+                    s.provided_signatures = std::move(ordinary.provided_signatures);
+                    s.approved_by = std::move(ordinary.approved_by);
+                    continue;
                 }
+                sign_state delegated = s;
+                if (direct_active && direct_active(id, delegated)) {
+                    s.provided_signatures = std::move(delegated.provided_signatures);
+                    s.approved_by = std::move(delegated.approved_by);
+                    continue;
+                }
+                missing_accounts.push_back(id);
             }
 
             CHAIN_CTOR_ASSERT(
@@ -218,7 +240,12 @@ namespace graphene {
                         CHAIN_ASSERT_MESSAGE("Missing Master Authority ${id}", ("id", e.missing_accounts)));
                 });
 
-            assert_unused_approvals(s);
+            if (used) {
+                used->clear();
+                for (const auto& k : s.provided_signatures)
+                    if (k.second) used->insert(k.first);
+            }
+            if (!allow_unused) assert_unused_approvals(s);
         } FC_CAPTURE_AND_RETHROW((ops)(sigs)) }
 
 
@@ -243,7 +270,8 @@ namespace graphene {
                 const authority_getter &get_active,
                 const authority_getter &get_master,
                 const authority_getter &get_regular,
-                uint32_t max_recursion_depth) const {
+                uint32_t max_recursion_depth,
+                const std::function<bool(const account_name_type&, sign_state&)>& direct_active) const {
             flat_set<account_name_type> required_active;
             flat_set<account_name_type> required_master;
             flat_set<account_name_type> required_regular;
@@ -283,7 +311,25 @@ namespace graphene {
                 s.check_authority(auth);
             }
             for (auto &active : required_active) {
-                s.check_authority(active);
+                if (!direct_active) {
+                    s.check_authority(active);
+                    continue;
+                }
+                sign_state ordinary = s;
+                if (ordinary.check_authority(active)) {
+                    s.provided_signatures = std::move(ordinary.provided_signatures);
+                    s.approved_by = std::move(ordinary.approved_by);
+                    continue;
+                }
+                sign_state delegated = s;
+                if (direct_active(active, delegated)) {
+                    s.provided_signatures = std::move(delegated.provided_signatures);
+                    s.approved_by = std::move(delegated.approved_by);
+                } else {
+                    // Discovery must retain partial ordinary multisig keys.
+                    s.provided_signatures = std::move(ordinary.provided_signatures);
+                    s.approved_by = std::move(ordinary.approved_by);
+                }
             }
 
             s.remove_unused_signatures();
