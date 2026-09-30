@@ -797,7 +797,6 @@ std::set<public_key_type> plugin::api_impl::get_required_signatures(
     flat_set<public_key_type> candidate = available_keys;
     const auto signed_keys = trx.get_signature_keys(CHAIN_ID);
     candidate.insert(signed_keys.begin(), signed_keys.end());
-    const auto delegated = graphene::chain::delegated_active_authorities(database(), trx, CHAIN_ID, &candidate);
     const auto get_active = [&](const account_name_type& n) {
         return authority(database().get<account_authority_object, by_account>(n).active);
     };
@@ -807,20 +806,14 @@ std::set<public_key_type> plugin::api_impl::get_required_signatures(
     const auto get_regular = [&](const account_name_type& n) {
         return authority(database().get<account_authority_object, by_account>(n).regular);
     };
-    const auto direct = [&](const account_name_type& n, sign_state& state) {
-        const auto it = delegated.find(n);
-        return it != delegated.end() && state.signed_by(it->second);
-    };
     auto result = trx.get_required_signatures(CHAIN_ID, available_keys,
                                                get_active, get_master, get_regular,
-                                               CHAIN_MAX_SIG_CHECK_DEPTH, direct);
+                                               CHAIN_MAX_SIG_CHECK_DEPTH);
     // Complete candidates can take ordinary master fallback. Return only used
     // available keys, never a failed partial active branch or existing signature.
     flat_set<public_key_type> used;
     try {
-        graphene::protocol::verify_authority(trx.operations, candidate,
-            get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH,
-            false, {}, {}, {}, direct, true, &used);
+        graphene::chain::verify_agent_transaction(database(), trx, candidate, true, &used);
         result.clear();
         for (const auto& key : used)
             if (available_keys.count(key)) result.insert(key);
@@ -842,58 +835,46 @@ DEFINE_API(plugin, get_potential_signatures) {
 std::set<public_key_type> plugin::api_impl::get_potential_signatures(const signed_transaction &trx) const {
     //   wdump((trx));
     std::set<public_key_type> result;
+    // Discovery must include ordinary active/master fallback for regular
+    // transactions, not just the first regular getter visited by the legacy helper.
+    const auto collect = [&](const account_name_type& account, int role) {
+        const auto& row = database().get<account_authority_object, by_account>(account);
+        const authority auth(role == 0 ? row.active : role == 1 ? row.master : row.regular);
+        for (const auto& key : auth.get_keys()) result.insert(key);
+        return auth;
+    };
+    flat_set<account_name_type> required_active, required_master, required_regular;
+    std::vector<authority> required_other;
+    trx.get_required_authorities(required_active, required_master, required_regular, required_other);
+    for (const auto& account : required_active) { collect(account, 0); collect(account, 1); }
+    for (const auto& account : required_master) collect(account, 1);
+    for (const auto& account : required_regular) {
+        collect(account, 2); collect(account, 0); collect(account, 1);
+    }
+    // Candidate discovery must keep walking ordinary nested authorities even
+    // when an independent explicit key authority is currently unsatisfied.
+    // The legacy discovery helper does not stop at missing-authority errors.
     trx.get_required_signatures(CHAIN_ID, flat_set<public_key_type>(),
-        [&](account_name_type account_name) {
-            const auto &auth = database().get<account_authority_object, by_account>(account_name).active;
-            for (const auto &k : auth.get_keys()) {
-                result.insert(k);
-            }
-            return authority(auth);
-        },
-        [&](account_name_type account_name) {
-            const auto &auth = database().get<account_authority_object, by_account>(account_name).master;
-            for (const auto &k : auth.get_keys()) {
-                result.insert(k);
-            }
-            return authority(auth);
-        },
-        [&](account_name_type account_name) {
-            const auto &auth = database().get<account_authority_object, by_account>(account_name).regular;
-            for (const auto &k : auth.get_keys()) {
-                result.insert(k);
-            }
-            return authority(auth);
-        },
-        CHAIN_MAX_SIG_CHECK_DEPTH
-    );
+        [&](const account_name_type& n) { return collect(n, 0); },
+        [&](const account_name_type& n) { return collect(n, 1); },
+        [&](const account_name_type& n) { return collect(n, 2); },
+        CHAIN_MAX_SIG_CHECK_DEPTH);
+    // Explicit key authorities do not invoke an account getter.
+    for (const auto& auth : required_other)
+        for (const auto& key : auth.get_keys()) result.insert(key);
 
     if (database().has_hardfork(CHAIN_HARDFORK_15)) {
-        flat_set<account_name_type> active, master, regular;
-        std::vector<authority> other;
-        trx.get_required_authorities(active, master, regular, other);
-        if (master.empty() && regular.empty()) {
-            flat_set<string> names;
-            for (const auto& op : trx.operations) {
-                flat_set<account_name_type> a, m, r;
-                std::vector<authority> o;
-                operation_get_required_authorities(op, a, m, r, o);
-                if (!a.empty() || !m.empty() || !r.empty() || !o.empty())
-                    names.insert(fc::resolve_operation_name(operation_wire_name(op)));
-            }
-            const auto& idx = database().get_index<agent_permission_index>().indices().get<by_permission_account>();
+        const auto& idx = database().get_index<agent_permission_index>().indices().get<by_permission_account>();
+        for (const auto& op : trx.operations) {
+            flat_set<account_name_type> active, master, regular;
+            std::vector<authority> other;
+            operation_get_required_authorities(op, active, master, regular, other);
+            active.insert(regular.begin(), regular.end());
             for (const auto& principal : active) {
                 for (auto it = idx.lower_bound(boost::make_tuple(principal));
-                     it != idx.end() && it->account == principal; ++it) {
-                    if (it->expiration != fc::time_point_sec() &&
-                        it->expiration <= database().head_block_time()) continue;
-                    const auto grants = unpack_operation_names(it->operations);
-                    bool allowed = !grants.empty();
-                    for (const auto& name : grants)
-                        if (never_delegable_operation_names().count(name)) allowed = false;
-                    for (const auto& name : names)
-                        if (!grants.count(name)) allowed = false;
-                    if (allowed) result.insert(it->agent_key);
-                }
+                     it != idx.end() && it->account == principal; ++it)
+                    if (graphene::chain::agent_operation_allowed(database(), op, principal, it->agent_key))
+                        result.insert(it->agent_key);
             }
         }
     }
@@ -908,22 +889,7 @@ DEFINE_API(plugin, verify_authority) {
 }
 
 bool plugin::api_impl::verify_authority(const signed_transaction &trx) const {
-    const auto get_active = [&](const account_name_type& n) {
-        return authority(database().get<account_authority_object, by_account>(n).active);
-    };
-    const auto get_master = [&](const account_name_type& n) {
-        return authority(database().get<account_authority_object, by_account>(n).master);
-    };
-    const auto get_regular = [&](const account_name_type& n) {
-        return authority(database().get<account_authority_object, by_account>(n).regular);
-    };
-    const auto delegated = graphene::chain::delegated_active_authorities(database(), trx, CHAIN_ID);
-    graphene::protocol::verify_authority(trx.operations, trx.get_signature_keys(CHAIN_ID),
-        get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH,
-        false, {}, {}, {}, [&](const account_name_type& n, sign_state& state) {
-            const auto it = delegated.find(n);
-            return it != delegated.end() && state.signed_by(it->second);
-        });
+    graphene::chain::verify_agent_transaction(database(), trx, trx.get_signature_keys(CHAIN_ID));
     return true;
 }
 

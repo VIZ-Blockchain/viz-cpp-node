@@ -5673,12 +5673,13 @@ namespace graphene { namespace chain {
                 skip_tapos_check;
 
             // in case of multi-thread application, it's allow to validate transaction in read-thread
+            agent_proofs proofs;
             if ((skip & validate_transaction_steps) != validate_transaction_steps) {
                 // this method can be used only for push_transaction(),
                 //  because such transactions only added to pending list,
                 //  and they will be rechecked on block generation
                 auto validate_action = [&]() {
-                    _validate_transaction(trx, skip);
+                    _validate_transaction(trx, skip, &proofs);
                 };
 
                 if (!(skip & skip_database_locking)) {
@@ -5693,7 +5694,7 @@ namespace graphene { namespace chain {
             if (!(skip & skip_apply_transaction)) {
                 auto apply_action = [&]() {
                     auto session = start_undo_session();
-                    _apply_transaction(trx, skip);
+                    _apply_transaction(trx, skip, &proofs);
                     session.undo();
                 };
 
@@ -5704,6 +5705,16 @@ namespace graphene { namespace chain {
                 }
             }
 
+            // The chain plugin validates with skip_apply_transaction, then pushes
+            // using these returned flags. Agent-dependent transactions must collect
+            // fresh entry proofs under the write lock, not inherit the signature skip.
+            // Keep the legacy fast path for every ordinary-only transaction.
+            for (const auto& operation_proofs : proofs.operations) {
+                if (!operation_proofs.empty()) {
+                    skip &= ~(skip_transaction_signatures | skip_authority_check);
+                    break;
+                }
+            }
             return skip;
         }
 
@@ -5712,7 +5723,7 @@ namespace graphene { namespace chain {
             return get_validator(name).signing_key;
         }
 
-        void database::_validate_transaction(const signed_transaction &trx, uint32_t skip) {
+        void database::_validate_transaction(const signed_transaction &trx, uint32_t skip, agent_proofs* proofs) {
             if (!(skip & skip_validate_operations)) {   /* issue #505 explains why this skip_flag is disabled */
                 trx.validate();
             }
@@ -5720,35 +5731,14 @@ namespace graphene { namespace chain {
             if (!(skip & (skip_transaction_signatures | skip_authority_check))) {
                 const chain_id_type &chain_id = CHAIN_ID;
 
-                // HF15 agent access is a direct top-level active fallback. Nested
-                // account authorities continue to use the unmodified active getter;
-                // the permission map is empty before HF15 and for master/regular txs.
-                const auto delegated = delegated_active_authorities(*this, trx, chain_id);
-
-                auto get_active = [&](const account_name_type& name) {
-                    return authority(get<account_authority_object, by_account>(name).active);
-                };
-
-                auto get_master = [&](const account_name_type& name) {
-                    return authority(get<account_authority_object, by_account>(name).master);
-                };
-
-                auto get_regular = [&](const account_name_type& name) {
-                    return authority(get<account_authority_object, by_account>(name).regular);
-                };
-
                 try {
-                    protocol::verify_authority(trx.operations, trx.get_signature_keys(chain_id),
-                        get_active, get_master, get_regular, CHAIN_MAX_SIG_CHECK_DEPTH,
-                        false, {}, {}, {}, [&](const account_name_type& id, protocol::sign_state& state) {
-                            const auto it = delegated.find(id);
-                            return it != delegated.end() && state.signed_by(it->second);
-                        });
+                    verify_agent_transaction(*this, trx, trx.get_signature_keys(chain_id), false, nullptr, proofs);
                 }
                 catch (protocol::tx_missing_active_auth &e) {
                     if (get_shared_db_merkle().find(head_block_num() + 1) == get_shared_db_merkle().end()) {
                         throw e;
                     }
+                    if (proofs) proofs->operations.clear();
                 }
             }
 
@@ -6047,7 +6037,7 @@ namespace graphene { namespace chain {
             notify_on_applied_transaction(trx);
         }
 
-        void database::_apply_transaction(const signed_transaction &trx, uint32_t skip) {
+        void database::_apply_transaction(const signed_transaction &trx, uint32_t skip, const agent_proofs* proofs) {
             try {
                 _current_trx_id = trx.id();
                 _current_virtual_op = 0;
@@ -6059,7 +6049,12 @@ namespace graphene { namespace chain {
                           trx_idx.indices().get<by_trx_id>().find(trx_id) == trx_idx.indices().get<by_trx_id>().end(),
                           "Duplicate transaction check failed", ("trx_ix", trx_id));
 
-                _validate_transaction(trx, skip);
+                // Retain entry-time proofs across the read-validation/dry-apply split.
+                // Full block application collects them in its existing validation pass;
+                // ordinary proofs are never rechecked after authority rotation.
+                agent_proofs entry_proofs;
+                _validate_transaction(trx, skip, &entry_proofs);
+                if (!proofs) proofs = &entry_proofs;
 
                 flat_set<account_name_type> required;
                 vector<authority> other;
@@ -6094,6 +6089,11 @@ namespace graphene { namespace chain {
                 _current_op_in_trx = 0;
                 for (const auto &op : trx.operations) {
                     try {
+                        if (!proofs->operations.empty()) {
+                            for (const auto& proof : proofs->operations[_current_op_in_trx])
+                                FC_ASSERT(agent_operation_allowed(*this, op, proof.first, proof.second),
+                                          "Agent permission revoked before operation", ("account", proof.first));
+                        }
                         apply_operation(op);
                         ++_current_op_in_trx;
                     } FC_CAPTURE_AND_RETHROW((op));

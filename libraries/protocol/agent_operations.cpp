@@ -17,13 +17,10 @@ namespace graphene { namespace protocol {
                 // principal's active authority, so an agent holding active could otherwise
                 // re-delegate. Escalation chains are refused structurally.
                 s.insert("set_agent_permission");
-                // Proposal wrappers carry arbitrary operations whose authorities are collected at
-                // EXECUTION time from the wrapped ops. Delegating `proposal_create` would therefore
-                // not mean "may create a proposal" but "may execute anything the principal can" —
-                // the explicit list would be bypassed while looking narrow.
-                s.insert("proposal_create");
+                // Creation stores proposed operations with EMPTY approvals; it cannot
+                // execute them. Deletion retains the evaluator's requester/veto checks.
+                // Updating can mint persistent account approvals, so it is never delegated.
                 s.insert("proposal_update");
-                s.insert("proposal_delete");
                 // Authority rotation. `account_update` is the sharp one: an op without the `master`
                 // field is satisfied by the ACTIVE authority (see account_update_operation::
                 // get_required_active_authorities) and may carry a new `active` authority — so an

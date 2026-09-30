@@ -4,8 +4,8 @@
 //  1. the op is APPENDED to the operation static_variant: its index (the consensus op-id, 105)
 //     and the indices of its neighbours must not move, or old transactions re-interpret as new ops;
 //  2. validate() is the only gate against a delegation list that looks fine and does nothing
-//     (typo / virtual name) or does far more than it says (a proposal wrapper, which carries
-//     arbitrary operations whose authorities are collected at execution time).
+//     (typo / virtual name) or grants account takeover/persistent proposal approvals.
+//     Proposal creation/deletion alone does not grant approval of the inner operations.
 //
 // Not a consensus test: it links the protocol library only, no chain.
 
@@ -95,11 +95,11 @@ BOOST_AUTO_TEST_CASE(validate_bounds_addons_only) {
     g.agent_key = public_key_type();
     BOOST_CHECK(!accepts(g));                              // addon-only still needs a key
 }
-BOOST_AUTO_TEST_CASE(validate_refuses_escalation_and_wrappers) {
+BOOST_AUTO_TEST_CASE(validate_refuses_escalation_but_accepts_safe_proposals) {
     BOOST_CHECK(!accepts(grant({"set_agent_permission"})));  // would let an agent re-delegate
-    BOOST_CHECK(!accepts(grant({"proposal_create"})));       // wraps arbitrary ops: bypasses the list
-    BOOST_CHECK(!accepts(grant({"proposal_update"})));
-    BOOST_CHECK(!accepts(grant({"proposal_delete"})));
+    BOOST_CHECK(accepts(grant({"proposal_create"}))); // creates no approval
+    BOOST_CHECK(!accepts(grant({"proposal_update"}))); // persistent approval is not delegated
+    BOOST_CHECK(accepts(grant({"proposal_delete"}))); // ordinary requester checks still apply
     // An active-signed account_update without the master field may rewrite the ACTIVE authority,
     // i.e. rotate it to a key the agent controls: one granted op would be ownership itself.
     BOOST_CHECK(!accepts(grant({"account_update"})));
@@ -210,6 +210,35 @@ BOOST_AUTO_TEST_CASE(ordinary_partial_active_then_master_keeps_legacy_acceptance
         false, {}, {}, {}, [&](const account_name_type&, sign_state& state) {
             return state.signed_by(agent);
         }), tx_irrelevant_sig);
+}
+
+BOOST_AUTO_TEST_CASE(direct_regular_discards_failed_ordinary_keys) {
+    const auto key = [](const char* seed) {
+        return public_key_type(fc::ecc::private_key::regenerate(fc::sha256::hash(std::string(seed))).get_public_key());
+    };
+    const auto partial = key("regular-partial");
+    const auto absent = key("regular-absent");
+    const auto agent = key("regular-agent");
+    authority regular;
+    regular.weight_threshold = 2;
+    regular.key_auths[partial] = 1;
+    regular.key_auths[absent] = 1;
+    authority ordinary;
+    ordinary.weight_threshold = 1;
+    ordinary.key_auths[absent] = 1;
+    const auto get_regular = [&](const account_name_type&) { return regular; };
+    const auto get_ordinary = [&](const account_name_type&) { return ordinary; };
+    custom_operation op;
+    op.required_regular_auths.insert("alice");
+    op.id = "regular-isolation";
+    op.json = "{}";
+    const auto direct = [&](const operation& operation, const account_name_type& principal, bool is_regular, sign_state& state) {
+        return operation_wire_name(operation) == "custom" && principal == "alice" && is_regular && state.signed_by(agent);
+    };
+    BOOST_CHECK_NO_THROW(verify_authority({operation(op)}, {agent}, get_ordinary, get_ordinary,
+        get_regular, CHAIN_MAX_SIG_CHECK_DEPTH, false, {}, {}, {}, {}, false, nullptr, direct));
+    BOOST_CHECK_THROW(verify_authority({operation(op)}, {partial, agent}, get_ordinary, get_ordinary,
+        get_regular, CHAIN_MAX_SIG_CHECK_DEPTH, false, {}, {}, {}, {}, false, nullptr, direct), tx_irrelevant_sig);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

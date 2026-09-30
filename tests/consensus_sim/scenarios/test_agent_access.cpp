@@ -19,6 +19,8 @@
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/agent_objects.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
+#include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/key_history_objects.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/agent_operations.hpp>
@@ -307,8 +309,8 @@ BOOST_AUTO_TEST_CASE(agent_access_unknown_key_grants_nothing) {
                     "a key that is not an agent of the principal signed for it");
 }
 
-// An agent's list is not a blank cheque: EVERY authority-requiring operation must be on it.
-BOOST_AUTO_TEST_CASE(agent_access_requires_full_coverage_of_the_transaction) {
+// An agent's list is not a blank cheque: every operation directly requiring its principal must be covered.
+BOOST_AUTO_TEST_CASE(agent_access_requires_full_coverage_of_principal_operations) {
     agent_fixture f(0xAA9E19, "aa-coverage");
     f.issue({"transfer"});
 
@@ -500,7 +502,7 @@ BOOST_AUTO_TEST_CASE(agent_access_master_change_wipes) {
     BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "master change left the agent");
 }
 
-// A regular-only change keeps the agents: they never stood on regular keys.
+// A regular-only change keeps explicitly granted agents: master/active still own delegation policy.
 BOOST_AUTO_TEST_CASE(agent_access_regular_change_keeps_agents) {
     agent_fixture f(0xAA9E1E, "aa-keep-regular");
     f.issue({"transfer"});
@@ -609,6 +611,119 @@ BOOST_AUTO_TEST_CASE(agent_access_cap_and_expired_sweep) {
     op.agent_name = "bot-extra";
     op.agent_key = derive_key("bot-key-extra").get_public_key();
     expect_rejected(f.node, sign_ops({op}, f.principal_key, f.node, 2), "agent over the cap accepted");
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_direct_regular_and_scope) {
+    agent_fixture f(0xAC0001, "aa-feature-regular");
+    f.issue({"custom", "account_metadata", "transfer"});
+    custom_operation op;
+    op.required_regular_auths.insert(f.principal);
+    op.id = "feature-regular";
+    op.json = "{}";
+    BOOST_CHECK_NO_THROW(f.node.push_pending_transaction(sign_ops({op}, f.agent_key, f.node)));
+    produce(f.node, f.gp, f.when);
+    // Another principal's ungranted operation has its own ordinary proof.
+    transfer_to_vesting_operation tv;
+    tv.from = f.gp.initiator_name;
+    tv.to = f.gp.initiator_name;
+    tv.amount = asset(1000, TOKEN_SYMBOL);
+    auto scoped = sign_ops({f.pay(1000), tv}, f.agent_key, f.node);
+    scoped.sign(f.gp.initiator_key, f.node.chain_id());
+    BOOST_CHECK_NO_THROW(f.node.push_pending_transaction(scoped));
+    produce(f.node, f.gp, f.when);
+    tv.from = f.principal;
+    tv.to = f.principal;
+    expect_rejected(f.node, sign_ops({f.pay(1000), tv}, f.agent_key, f.node, 1), "own uncovered op accepted");
+    expect_rejected(f.node, sign_ops({op, f.pay(1000)}, f.agent_key, f.node, 2), "mixed regular/active accepted");
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_regular_proof_never_approves_nested_accounts) {
+    agent_fixture f(0xAC0002, "aa-feature-regular-nested");
+    f.issue({"custom"});
+    const auto second_key = derive_key("feature-nested-owner");
+    create_account(f.node, f.gp, f.when, "second", second_key, 100000);
+    vest(f.node, f.gp, f.when, "second", second_key, 50000);
+    account_update_operation update;
+    update.account = "second";
+    authority nested;
+    nested.weight_threshold = 1;
+    nested.account_auths[f.principal] = 1;
+    update.regular = nested;
+    f.node.push_pending_transaction(sign_ops({update}, second_key, f.node));
+    produce(f.node, f.gp, f.when);
+    custom_operation op;
+    op.required_regular_auths = {f.principal, "second"};
+    op.id = "nested-regular";
+    op.json = "{}";
+    expect_rejected(f.node, sign_ops({op}, f.agent_key, f.node), "regular agent became nested approval");
+    BOOST_CHECK_NO_THROW(f.node.push_pending_transaction(sign_ops({op}, f.principal_key, f.node, 1)));
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_sale_wipe_invalidates_only_agent_proofs) {
+    agent_fixture f(0xAC0003, "aa-feature-apply-wipe");
+    f.issue({"transfer"});
+    put_on_sale(f);
+    // Past auction window: direct buy wipes all principal agents.
+    f.node.db().modify(f.node.db().get_account(f.principal), [&](account_object& a) {
+        a.account_on_sale_start_time = f.node.head_block_time() - fc::seconds(1);
+    });
+    buy_account_operation buy_op;
+    buy_op.buyer = f.gp.initiator_name;
+    buy_op.account = f.principal;
+    buy_op.account_offer_price = asset(10000, TOKEN_SYMBOL);
+    buy_op.account_authorities_key = derive_key("feature-new-owner").get_public_key();
+    buy_op.tokens_to_shares = f.node.db().get_validator_schedule_object().median_props.account_creation_fee;
+    auto agent_tx = sign_ops({buy_op, f.pay(1000)}, f.agent_key, f.node);
+    agent_tx.sign(f.gp.initiator_key, f.node.chain_id());
+    BOOST_CHECK_NO_THROW(verify_agent_transaction(f.node.db(), agent_tx,
+                                               agent_tx.get_signature_keys(f.node.chain_id())));
+    bool revoked = false;
+    const auto flags = f.node.db().validate_transaction(agent_tx, database::skip_apply_transaction);
+    // Exercise the actual chain-plugin read-validate -> returned flags -> write-push boundary.
+    try { f.node.db().push_transaction(agent_tx, flags); }
+    catch (const fc::exception& e) {
+        revoked = e.to_detail_string().find("Agent permission revoked before operation") != std::string::npos;
+    }
+    BOOST_CHECK_MESSAGE(revoked, "entry-time agent proof survived sale wipe or failed for an unrelated reason");
+    BOOST_CHECK(has_row(f.node, f.principal, f.bot)); // rejection rolled back the buy
+    auto ordinary = sign_ops({buy_op, f.pay(1000)}, f.principal_key, f.node, 1);
+    ordinary.sign(f.gp.initiator_key, f.node.chain_id());
+    const auto ordinary_flags = f.node.db().validate_transaction(ordinary, database::skip_apply_transaction);
+    BOOST_CHECK_NO_THROW(f.node.db().push_transaction(ordinary, ordinary_flags));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(!has_row(f.node, f.principal, f.bot));
+}
+
+BOOST_AUTO_TEST_CASE(agent_access_proposals_create_no_approval) {
+    agent_fixture f(0xAC0004, "aa-feature-proposals");
+    f.issue({"proposal_create", "proposal_delete"});
+    proposal_create_operation create;
+    create.author = f.principal;
+    create.title = "agent-proposal";
+    create.expiration_time = f.node.head_block_time() + fc::seconds(600);
+    create.proposed_operations.push_back(operation_wrapper{operation(f.pay(1000))});
+    const auto before = liquid(f.node, f.principal);
+    BOOST_CHECK_NO_THROW(f.node.push_pending_transaction(sign_ops({create}, f.agent_key, f.node)));
+    produce(f.node, f.gp, f.when);
+    const auto* proposal = f.node.db().find_proposal(f.principal, create.title);
+    BOOST_REQUIRE(proposal);
+    BOOST_CHECK(proposal->available_active_approvals.empty());
+    BOOST_CHECK(proposal->available_master_approvals.empty());
+    BOOST_CHECK(proposal->available_regular_approvals.empty());
+    BOOST_CHECK(proposal->available_key_approvals.empty());
+    BOOST_CHECK_EQUAL(liquid(f.node, f.principal), before);
+    proposal_update_operation update;
+    update.author = f.principal;
+    update.title = create.title;
+    update.active_approvals_to_add.insert(f.principal);
+    expect_rejected(f.node, sign_ops({update}, f.agent_key, f.node, 1), "agent approved ungranted inner transfer");
+    proposal_delete_operation remove;
+    remove.author = f.principal;
+    remove.title = create.title;
+    remove.requester = f.principal;
+    BOOST_CHECK_NO_THROW(f.node.push_pending_transaction(sign_ops({remove}, f.agent_key, f.node, 2)));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK(!f.node.db().find_proposal(f.principal, create.title));
 }
 
 // ───────────────────────── HF15 key history ─────────────────────────

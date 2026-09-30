@@ -21,6 +21,8 @@
 
 namespace graphene { namespace chain {
 
+        struct agent_proofs;
+
         /// Custom combiner for applied_block signal that logs per-slot timing.
         /// This allows diagnosing which plugin callback is slow without
         /// modifying each plugin individually.
@@ -673,9 +675,9 @@ namespace graphene { namespace chain {
 
             void _apply_block(const signed_block &next_block, uint32_t skip);
 
-            void _apply_transaction(const signed_transaction &trx, uint32_t skip);
+            void _apply_transaction(const signed_transaction &trx, uint32_t skip, const agent_proofs* proofs = nullptr);
 
-            void _validate_transaction(const signed_transaction& trx, uint32_t skip);
+            void _validate_transaction(const signed_transaction& trx, uint32_t skip, agent_proofs* proofs = nullptr);
 
             void apply_operation(const operation &op, bool is_virtual = false);
 

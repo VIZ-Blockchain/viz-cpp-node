@@ -112,7 +112,8 @@ namespace graphene {
                 const flat_set<account_name_type> &regular_approvals = flat_set<account_name_type>(),
                 const std::function<bool(const account_name_type&, sign_state&)>& direct_active = {},
                 bool allow_unused = false,
-                flat_set<public_key_type>* used = nullptr);
+                flat_set<public_key_type>* used = nullptr,
+                const std::function<bool(const operation&, const account_name_type&, bool, sign_state&)>& direct_operation = {});
 
 
         struct annotated_signed_transaction : public signed_transaction {
