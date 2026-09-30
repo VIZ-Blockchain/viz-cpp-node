@@ -1526,6 +1526,9 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path, 
             fc::variant block_var;
             fc::to_variant(*head_block, block_var);
             state["fork_db_head_block"] = std::move(block_var);
+        } else {
+            wlog("Snapshot: head block ${n} is not in block_log; the snapshot has no fork_db_head_block and a post-HF15 node will refuse to load it",
+                 ("n", snapshot_head_block_num));
         }
     }
 
