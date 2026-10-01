@@ -15,132 +15,58 @@ using namespace graphene::protocol;
 
 namespace {
 
-/// Wire names of the operations of `trx` that require SOME authority. An operation that requires
-/// nothing grants nothing, so it puts no coverage demand on a delegation.
-flat_set<string> authority_requiring_operation_names(const signed_transaction& trx) {
-    flat_set<string> names;
-    for (const auto& op : trx.operations) {
-        flat_set<account_name_type> active, master, regular;
-        std::vector<authority> other;
-        operation_get_required_authorities(op, active, master, regular, other);
-        if (active.empty() && master.empty() && regular.empty() && other.empty()) continue;
-        names.insert(fc::resolve_operation_name(operation_wire_name(op)));
-    }
-    return names;
-}
-
-/// The plain ACTIVE getter: what the chain has always used. Delegation is layered on top of it.
-authority_getter plain_active_authority_getter(const database& db) {
-    return [&db](const account_name_type& name) {
-        return authority(db.get<account_authority_object, by_account>(name).active);
-    };
+bool usable_agent_row(const database& db, const agent_permission_object& row, const string& wire) {
+    if (row.expiration != time_point_sec() && row.expiration <= db.head_block_time()) return false;
+    const auto grants = unpack_operation_names(row.operations);
+    if (!grants.count(wire)) return false;
+    for (const auto& name : grants)
+        if (never_delegable_operation_names().count(name)) return false;
+    return true;
 }
 
 } // anonymous namespace
 
-fc::flat_map<account_name_type, public_key_type>
-delegated_active_authorities(const database& db, const signed_transaction& trx,
-                             const chain_id_type& chain_id,
-                             const flat_set<public_key_type>* candidate_keys) {
-    fc::flat_map<account_name_type, public_key_type> delegated;
+bool agent_operation_allowed(const database& db, const operation& op,
+                             const account_name_type& principal, const public_key_type& key) {
+    if (!db.has_hardfork(CHAIN_HARDFORK_15)) return false;
+    const string wire = operation_wire_name(op);
+    if (never_delegable_operation_names().count(wire)) return false;
+    const auto& idx = db.get_index<agent_permission_index>().indices().get<by_permission_account>();
+    for (auto it = idx.lower_bound(boost::make_tuple(principal));
+         it != idx.end() && it->account == principal; ++it)
+        if (it->agent_key == key && usable_agent_row(db, *it, wire)) return true;
+    return false;
+}
 
-    if (!db.has_hardfork(CHAIN_HARDFORK_15))
-        return delegated;
-
-    flat_set<account_name_type> required_active, required_master, required_regular;
-    std::vector<authority> other;
-    trx.get_required_authorities(required_active, required_master, required_regular, other);
-
-    if (required_active.empty())
-        return delegated;
-
-    // Master and regular are out of scope for an agent, and rather than argue about the nested
-    // paths that reach them (sign_state resolves nested account authorities through ACTIVE), we
-    // simply do not delegate in such a transaction.
-    if (!required_master.empty() || !required_regular.empty())
-        return delegated;
-
-    flat_set<public_key_type> sigs;
-    bool sigs_ready = false;
-    // Signature recovery is the expensive part of validation, and verify_authority performs it
-    // again right after us. So it is deferred until an agent row actually exists for some
-    // principal: with no rows the hook must add no work at all to the ordinary path.
-    auto ensure_signatures = [&]() -> bool {
-        if (!sigs_ready) {
-            sigs_ready = true;
-            try {
-                sigs = candidate_keys ? *candidate_keys : trx.get_signature_keys(chain_id);
-            } catch (...) {
-                // Unsigned or malformed: leave the verdict to verify_authority, which reports it.
-                sigs.clear();
-                return false;
-            }
-        }
-        return true;
+void verify_agent_transaction(const database& db, const signed_transaction& trx,
+                              const flat_set<public_key_type>& keys, bool allow_unused,
+                              flat_set<public_key_type>* used, agent_proofs* proofs) {
+    const auto get_active = [&](const account_name_type& n) {
+        return authority(db.get<account_authority_object, by_account>(n).active);
     };
-
-    const flat_set<string> tx_ops = authority_requiring_operation_names(trx);
-    const authority_getter get_active = plain_active_authority_getter(db);
-    const flat_set<public_key_type> no_extra_keys;   // a validating node can produce no extra keys
-
-    const auto& pidx = db.get_index<agent_permission_index>().indices().get<by_permission_account>();
-    const time_point_sec now = db.head_block_time();
-    const flat_set<string>& denied = never_delegable_operation_names();
-
-    for (const account_name_type& principal : required_active) {
-        // This principal's agents only — at most CHAIN_AGENT_MAX_PER_ACCOUNT rows. No row, no work.
-        auto it = pidx.lower_bound(boost::make_tuple(principal));
-        if (it == pidx.end() || it->account != principal)
-            continue;
-
-        if (!ensure_signatures())
-            return delegated;
-
-        // The principal's own authority always wins: substituting unconditionally would break valid
-        // transactions the moment the account issues its first agent.
-        {
-            sign_state principal_signs(sigs, get_active, no_extra_keys);
-            if (principal_signs.check_authority(principal))
-                continue;
+    const auto get_master = [&](const account_name_type& n) {
+        return authority(db.get<account_authority_object, by_account>(n).master);
+    };
+    const auto get_regular = [&](const account_name_type& n) {
+        return authority(db.get<account_authority_object, by_account>(n).regular);
+    };
+    if (proofs) proofs->operations.assign(trx.operations.size(), {});
+    const auto direct = [&](const operation& op, const account_name_type& principal,
+                            bool /* regular */, sign_state& state) {
+        if (!db.has_hardfork(CHAIN_HARDFORK_15)) return false;
+        const string wire = operation_wire_name(op);
+        if (never_delegable_operation_names().count(wire)) return false;
+        const auto& idx = db.get_index<agent_permission_index>().indices().get<by_permission_account>();
+        for (auto it = idx.lower_bound(boost::make_tuple(principal));
+             it != idx.end() && it->account == principal; ++it) {
+            if (!usable_agent_row(db, *it, wire) || !state.signed_by(it->agent_key)) continue;
+            if (proofs) proofs->operations[&op - trx.operations.data()][principal] = it->agent_key;
+            return true;
         }
-
-        for (; it != pidx.end() && it->account == principal; ++it) {
-            const agent_permission_object& row = *it;
-
-            // The agent's key must actually have signed.
-            if (!sigs.count(row.agent_key))
-                continue;
-
-            // Expiration: epoch means perpetual; a past date means the row is already dead.
-            if (row.expiration != time_point_sec() && row.expiration <= now)
-                continue;
-
-            const flat_set<string> granted = unpack_operation_names(row.operations);
-            if (granted.empty())
-                continue;
-
-            // A row holding a non-delegable name is an invariant breach (the evaluator refuses
-            // those), and the hook trusts these rows — so fail closed instead of trusting it.
-            bool usable = true;
-            for (const string& name : granted) {
-                if (denied.count(name)) { usable = false; break; }
-            }
-            if (!usable)
-                continue;
-
-            // Full coverage of the transaction, per the header's contract.
-            for (const string& name : tx_ops) {
-                if (!granted.count(name)) { usable = false; break; }
-            }
-            if (!usable)
-                continue;
-
-            delegated[principal] = row.agent_key;
-            break;
-        }
-    }
-
-    return delegated;
+        return false;
+    };
+    protocol::verify_authority(trx.operations, keys, get_active, get_master, get_regular,
+        CHAIN_MAX_SIG_CHECK_DEPTH, false, {}, {}, {}, {}, allow_unused, used, direct);
 }
 
 // ─── set_agent_permission ────────────────────────────────────────────────────

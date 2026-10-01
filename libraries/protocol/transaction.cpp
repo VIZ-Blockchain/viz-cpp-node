@@ -104,7 +104,8 @@ namespace graphene {
             const flat_set<account_name_type>& regular_approvals,
             const std::function<bool(const account_name_type&, sign_state&)>& direct_active,
             bool allow_unused,
-            flat_set<public_key_type>* used
+            flat_set<public_key_type>* used,
+            const std::function<bool(const operation&, const account_name_type&, bool, sign_state&)>& direct_operation
         ) { try {
             fc::flat_set<account_name_type> required_active;
             fc::flat_set<account_name_type> required_master;
@@ -117,6 +118,21 @@ namespace graphene {
             for (const auto& op : ops) {
                 operation_get_required_authorities(op, required_active, required_master, required_regular, other);
             }
+
+            // Agent proofs cover only operations which directly require this principal.
+            // Keep them out of approved_by: nested account authorities and proposal
+            // approvals must continue to use ordinary account authority exclusively.
+            const auto check_delegated = [&](const account_name_type& id, bool regular, sign_state& state) {
+                if (!direct_operation) return false;
+                for (const auto& op : ops) {
+                    flat_set<account_name_type> a, m, r;
+                    std::vector<authority> o;
+                    operation_get_required_authorities(op, a, m, r, o);
+                    if ((regular ? r : a).count(id) && !direct_operation(op, id, regular, state))
+                        return false;
+                }
+                return true;
+            };
 
             /**
              *  Transactions with operations required regular authority cannot be combined
@@ -137,12 +153,20 @@ namespace graphene {
                 }
 
                 for (const auto& id: required_regular) {
-                    if (!s.check_authority(id) &&
-                        !s.check_authority(get_active(id)) &&
-                        !s.check_authority(get_master(id))
-                    ) {
-                        missing_accounts.push_back(id);
+                    sign_state ordinary = s;
+                    if (ordinary.check_authority(id) ||
+                        ordinary.check_authority(get_active(id)) ||
+                        ordinary.check_authority(get_master(id))) {
+                        s.provided_signatures = std::move(ordinary.provided_signatures);
+                        s.approved_by = std::move(ordinary.approved_by);
+                        continue;
                     }
+                    sign_state delegated = s;
+                    if (check_delegated(id, true, delegated)) {
+                        s.provided_signatures = std::move(delegated.provided_signatures);
+                        continue;
+                    }
+                    missing_accounts.push_back(id);
                 }
 
                 CHAIN_CTOR_ASSERT(
@@ -202,7 +226,8 @@ namespace graphene {
                     continue;
                 }
                 sign_state delegated = s;
-                if (direct_active && direct_active(id, delegated)) {
+                if ((direct_active && direct_active(id, delegated)) ||
+                    check_delegated(id, false, delegated)) {
                     s.provided_signatures = std::move(delegated.provided_signatures);
                     s.approved_by = std::move(delegated.approved_by);
                     continue;
@@ -271,7 +296,8 @@ namespace graphene {
                 const authority_getter &get_master,
                 const authority_getter &get_regular,
                 uint32_t max_recursion_depth,
-                const std::function<bool(const account_name_type&, sign_state&)>& direct_active) const {
+                const std::function<bool(const account_name_type&, sign_state&)>& direct_active,
+                const std::function<bool(const account_name_type&, sign_state&)>& direct_regular) const {
             flat_set<account_name_type> required_active;
             flat_set<account_name_type> required_master;
             flat_set<account_name_type> required_regular;
@@ -286,7 +312,25 @@ namespace graphene {
                 FC_ASSERT(!required_master.size());
                 FC_ASSERT(!required_active.size());
                 for (auto &regular : required_regular) {
-                    s.check_authority(regular);
+                    if (!direct_regular) {
+                        s.check_authority(regular);
+                        continue;
+                    }
+                    sign_state ordinary = s;
+                    if (ordinary.check_authority(regular) ||
+                        ordinary.check_authority(get_active(regular)) ||
+                        ordinary.check_authority(get_master(regular))) {
+                        s.provided_signatures = std::move(ordinary.provided_signatures);
+                        s.approved_by = std::move(ordinary.approved_by);
+                        continue;
+                    }
+                    sign_state delegated = s;
+                    if (direct_regular(regular, delegated)) {
+                        s.provided_signatures = std::move(delegated.provided_signatures);
+                    } else {
+                        s.provided_signatures = std::move(ordinary.provided_signatures);
+                        s.approved_by = std::move(ordinary.approved_by);
+                    }
                 }
 
                 s.remove_unused_signatures();
@@ -316,7 +360,7 @@ namespace graphene {
                     continue;
                 }
                 sign_state ordinary = s;
-                if (ordinary.check_authority(active)) {
+                if (ordinary.check_authority(active) || ordinary.check_authority(get_master(active))) {
                     s.provided_signatures = std::move(ordinary.provided_signatures);
                     s.approved_by = std::move(ordinary.approved_by);
                     continue;

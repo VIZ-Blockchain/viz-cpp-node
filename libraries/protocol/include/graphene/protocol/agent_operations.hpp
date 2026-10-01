@@ -27,8 +27,9 @@ namespace graphene { namespace protocol {
         ///
         /// Rules enforced here and in the evaluator:
         ///  - signed by the principal's ACTIVE authority;
-        ///  - a transaction signed by an agent key passes only if every authority-requiring operation
-        ///    in it is on that agent's list and nothing in it needs master or regular authority;
+        ///  - an agent answers direct active/regular requirements only for explicitly listed
+        ///    operations of its principal; master, other and nested authorities stay ordinary;
+        ///    agent-dependent proofs are rechecked before each operation is applied;
         ///  - never-delegable names are refused (see never_delegable_operation_names()); unknown
         ///    or virtual names are refused too — a typo must not become a dead permission;
         ///  - one key per agent, and a key may belong to one agent of the principal only;

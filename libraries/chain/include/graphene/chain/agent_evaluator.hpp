@@ -1,6 +1,7 @@
 #pragma once
 
 #include <graphene/chain/evaluator.hpp>
+#include <graphene/protocol/transaction.hpp>
 
 namespace graphene { namespace chain {
 
@@ -16,15 +17,22 @@ namespace graphene { namespace chain {
             void do_apply(const operation_type& o);
         };
 
-        /// HF15: eligible direct ACTIVE fallback keys for principals required by `trx`.
-        /// The ordinary active getter is never replaced, so nested account_auths cannot
-        /// inherit an agent's rights. Every authority-requiring operation must be covered.
-        /// `candidate_keys` supports unsigned RPC signature discovery; when null the
-        /// transaction's actual signatures are recovered and checked.
-        fc::flat_map<graphene::protocol::account_name_type, graphene::protocol::public_key_type>
-        delegated_active_authorities(const database& db,
-                                     const graphene::protocol::signed_transaction& trx,
-                                     const graphene::protocol::chain_id_type& chain_id,
-                                     const fc::flat_set<graphene::protocol::public_key_type>* candidate_keys = nullptr);
+        // Only direct agent-dependent requirements, indexed by operation. These are
+        // ephemeral validation proofs, never persistent or nested account approvals.
+        struct agent_proofs {
+            std::vector<fc::flat_map<graphene::protocol::account_name_type,
+                                    graphene::protocol::public_key_type>> operations;
+        };
+
+        bool agent_operation_allowed(const database& db, const graphene::protocol::operation& op,
+                                     const graphene::protocol::account_name_type& principal,
+                                     const graphene::protocol::public_key_type& key);
+
+        void verify_agent_transaction(const database& db,
+                                      const graphene::protocol::signed_transaction& trx,
+                                      const fc::flat_set<graphene::protocol::public_key_type>& keys,
+                                      bool allow_unused = false,
+                                      fc::flat_set<graphene::protocol::public_key_type>* used = nullptr,
+                                      agent_proofs* proofs = nullptr);
 
 } } // graphene::chain

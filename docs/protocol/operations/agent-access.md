@@ -62,15 +62,20 @@ Re-issuing by the same name replaces the key, operations, addons and expiration 
 
 ## Rules
 
-- **Never delegable:** `set_agent_permission`, `proposal_create`, `proposal_update`, `proposal_delete`, `account_update`, `recover_account`, `change_recovery_account`, `set_account_price`, `set_subaccount_price`, `target_account_sale`. Virtual operations and deprecated aliases (use `validator_update`, not `witness_update`) are rejected.
+- **Never delegable:** `set_agent_permission`, `proposal_update`, `account_update`, `recover_account`, `change_recovery_account`, `set_account_price`, `set_subaccount_price`, `target_account_sale`. Virtual operations and deprecated aliases (use `validator_update`, not `witness_update`) are rejected.
 - **One key, one agent:** a key already bound to another agent name of the same principal is rejected.
 - **At most 16 agents** per principal. A grant first removes the principal's expired agents.
-- **When an agent signature counts:** the transaction needs no master or regular authority, the principal's own keys do not already sign it, the agent is live (not expired, operation list non-empty), its list covers **every** operation of the transaction that needs a signature, and its key is among the signatures. No reach through nested `account_auths`.
+- **Optional capabilities, not correctness fixes:** explicit grants may satisfy direct top-level **active or regular** requirements. Coverage is per operation and principal: an Alice `transfer` grant need not cover Bob's separately signed `custom`, but Alice's own ungranted operation is still rejected. Ordinary authority is tried first, including master fallback; unused extra signatures remain invalid. Legacy prohibition on mixing regular with active/master operations remains.
+- **No authority escalation:** agents never satisfy master, arbitrary `other` authorities or nested `account_auths`. A successful agent proof is not an account approval and cannot authorize another account in the same transaction.
+- **Proposals:** explicit `proposal_create` permits storing a proposal, even with ungranted inner operations, but creates **no approvals** and executes nothing. Explicit `proposal_delete` permits a veto only when the unchanged evaluator accepts the requester. `proposal_update` remains denied: agent proofs never become persistent proposal approval, including account or key approvals.
+- **Apply-time revocation:** agent-dependent requirements are rechecked immediately before their operation. A preceding revoke, grant restriction, key replacement or authority wipe cannot leave an entry-time agent proof usable. Ordinary entry-time authority proofs are not rechecked; ordinary rotate-and-use behavior is unchanged.
 - **Wipes:** all agents of the principal are removed on master change, active change, account recovery, direct sale and auction close. A regular-only change keeps them. "Change" means the field is **present** in `account_update`: sending `master` or `active` wipes the agents even if the key is the same, so a client that only edits regular or memo must leave `master`/`active` out of the operation (in viz-php-lib `build_account_update` pass `null` for a role to leave it out).
 
 ## Reading agents
 
 `database_api.get_agent_permissions(account)` — see [database_api](../../plugins/database-api.md#get-agent-permissions-account).
+
+`get_potential_signatures` returns candidate keys, including ordinary active/master fallback and directly granted agent keys; it is not an authorization decision. `get_required_signatures` returns available contributions, even when an independent principal or explicit authority is still missing. It excludes keys already signed and only counts an agent when its grants cover every direct requirement of that principal; ordinary partial multisig contributions remain discoverable. Discovery is not acceptance: `verify_authority` and transaction application still require all authorities and enforce the actual grant scope.
 
 ## In wallets
 
