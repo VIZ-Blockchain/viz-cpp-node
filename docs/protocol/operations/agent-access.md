@@ -13,7 +13,7 @@ Typical uses: a trading bot that places prediction-market bets, a service that p
 | Field | Type | Description |
 |-------|------|-------------|
 | `account` | `account_name_type` | Principal |
-| `agent_name` | `string` | Agent name, unique per principal; `[a-z0-9_-]`, non-empty |
+| `agent_name` | `string` | Agent name, unique per principal; `[a-z0-9_-]`, 1–32 bytes. A longer name is **rejected** (not truncated): the name is an agent's identity, so silently shortening it would rename the agent — and a grant under a label sharing the first 32 bytes would replace that agent instead of adding one. 33+ bytes once passed through a fixed-width field and became a different name |
 | `agent_key` | `public_key_type` | Agent key; required when granting, ignored on revoke |
 | `operations` | `flat_set<string>` | Wire names of operations the key may sign (`transfer`, `pm_place_bet`, …) |
 | `expiration` | `time_point_sec` | `1970-01-01T00:00:00` = perpetual; a past time revokes |

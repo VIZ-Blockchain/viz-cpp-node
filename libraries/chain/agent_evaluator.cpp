@@ -121,7 +121,9 @@ void set_agent_permission_evaluator::do_apply(const set_agent_permission_operati
         const auto& row = *it++;   // advance before a possible remove
         if (row.expiration != time_point_sec() && row.expiration <= now)
             db.remove(row);
-        else if (row.agent_name != o.agent_name) {
+        // Compare through the string form: the fixed-width field would convert the label with its
+        // TRUNCATING constructor, so two names differing only past byte 32 could compare equal.
+        else if (std::string(row.agent_name) != o.agent_name) {
             ++live_others;
             // One key, one agent: otherwise a signature could not be attributed to a single list,
             // and revoking one agent would leave its key alive under another name.

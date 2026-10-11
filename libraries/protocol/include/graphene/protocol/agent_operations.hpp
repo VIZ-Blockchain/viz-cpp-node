@@ -42,7 +42,13 @@ namespace graphene { namespace protocol {
         /// through fc::resolve_operation_name.
         struct set_agent_permission_operation : public base_operation {
             account_name_type account;     ///< principal granting the access
-            account_name_type agent_name;  ///< label, unique per principal; [a-z0-9_-], 1..32
+            /// Label, unique per principal; `[a-z0-9_-]`, 1..CHAIN_MAX_ACCOUNT_NAME_LENGTH bytes.
+            /// A plain string, NOT `account_name_type`: the fixed-width type TRUNCATES silently on
+            /// assignment (`fc::fixed_string` memcpy's its first 32 bytes), so an over-long label
+            /// would quietly become a DIFFERENT, already-issued one — and the re-grant would then
+            /// replace that row (rotating its key and list) instead of adding an agent. validate()
+            /// refuses an over-long label loudly while the raw length is still visible.
+            string            agent_name;
             public_key_type   agent_key;   ///< key the agent signs with; ignored on revoke
             flat_set<string>  operations;  ///< wire names; empty with empty addons = revoke
             time_point_sec    expiration;  ///< epoch (default) = perpetual

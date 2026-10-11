@@ -46,6 +46,14 @@ namespace graphene { namespace protocol {
             FC_ASSERT(!label.empty(), "agent_name is empty");
             FC_ASSERT(label.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") == string::npos,
                       "agent_name ${n} must be lower-case ascii, digits, '_' or '-'", ("n", label));
+            // The label is stored in `agent_permission_object::agent_name`, an `account_name_type`
+            // (32 bytes) that TRUNCATES silently on assignment. The bound must be refused here, while
+            // the raw length is still visible: two labels sharing the first 32 bytes would otherwise
+            // collapse into one row, and the second grant would replace the first agent (rotating its
+            // key and operation list) instead of adding one.
+            FC_ASSERT(label.size() <= CHAIN_MAX_ACCOUNT_NAME_LENGTH,
+                      "agent_name ${n} is longer than ${c} bytes",
+                      ("n", label)("c", CHAIN_MAX_ACCOUNT_NAME_LENGTH));
             if (!operations.empty() || !addons.empty())
                 FC_ASSERT(agent_key != public_key_type(), "agent_key is required when granting");
 
