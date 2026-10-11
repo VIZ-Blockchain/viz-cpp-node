@@ -122,11 +122,13 @@ function merge(files, from, to, out) {
   const log = fs.openSync(logPath, 'wx'), idx = fs.openSync(idxPath, 'wx');
   fs.writeSync(idx, u64(from));
   let pos = 0, count = 0;
+  next = from;   // overlapping files (manual copies) must not write a block twice
   for (const f of sel) {
     const src = fs.openSync(f.path, 'r');
     const ix = fs.readFileSync(f.path + '.index');
     const size = fs.fstatSync(src).size;
-    const a = Math.max(from, f.first), z = Math.min(to, f.last);
+    const a = Math.max(next, f.first), z = Math.min(to, f.last);
+    next = z + 1;
     for (let n = a; n <= z; n++) {
       const i = 8 + (n - f.first) * 8;
       const start = Number(ix.readBigUInt64LE(i));

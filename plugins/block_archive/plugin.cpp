@@ -6,6 +6,7 @@
 #include <boost/program_options.hpp>
 
 #include <cstdio>
+#include <map>
 #include <regex>
 
 namespace graphene {
@@ -71,18 +72,23 @@ struct plugin::plugin_impl {
                 archived = std::max<uint32_t>(archived, std::stoul(m[2]));
             }
         }
+        // Directory order is filesystem-dependent, so pick the newest partial by range, not by
+        // whichever one the iterator yields first; everything else is stale.
         std::regex pre("blocks-(\\d{10})");
+        std::map<uint32_t, bfs::path> partials;
         for (bfs::directory_iterator it(dir / "partial"), end; it != end; ++it) {
             std::smatch m;
             std::string f = it->path().filename().string();
-            if (!std::regex_match(f, m, pre)) {
-                continue;
+            if (std::regex_match(f, m, pre)) {
+                partials[std::stoul(m[1]) / range] = it->path();
             }
-            uint32_t r = std::stoul(m[1]) / range;
+        }
+        for (auto it = partials.rbegin(); it != partials.rend(); ++it) {
+            uint32_t r = it->first;
             if (current.is_open() || (archived && r * range <= archived)) {
-                wlog("block_archive: dropping stale partial ${f}", ("f", f));
-                bfs::remove(it->path());
-                bfs::remove(it->path().string() + ".index");
+                wlog("block_archive: dropping stale partial ${f}", ("f", it->second.filename().string()));
+                bfs::remove(it->second);
+                bfs::remove(it->second.string() + ".index");
                 continue;
             }
             open_range(r);
