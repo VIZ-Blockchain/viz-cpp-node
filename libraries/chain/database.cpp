@@ -2277,9 +2277,14 @@ namespace graphene { namespace chain {
                                         apply_block((*ritr)->data, skip | skip_validator_schedule_check);
                                         session.push();
                                         schedule_was_relaxed = true;
+                                    } catch (const shared_memory_corruption_exception&) {
+                                        throw; // Recovery must reach the chain/P2P handler with its type intact.
                                     } catch (const fc::exception &e2) {
                                         except = e2;
                                     }
+                                }
+                                catch (const shared_memory_corruption_exception&) {
+                                    throw; // Do not roll back/reapply a fork on a damaged database.
                                 }
                                 catch (const fc::exception &e) {
                                     except = e;
@@ -2559,6 +2564,8 @@ namespace graphene { namespace chain {
                                      "skipping cascade apply (db_head=#${dh}, fork_db_head=#${fh})",
                                      ("dh", head_block_num())("fh", fb_head->data.block_num()));
                             }
+                        } catch (const shared_memory_corruption_exception&) {
+                            throw; // Snapshot recovery, rather than ordinary cascade rollback.
                         } catch (const fc::exception& e) {
                             wlog("P39: Failed to apply _push_next cascade blocks: ${e}",
                                  ("e", e.what()));
@@ -2800,6 +2807,9 @@ namespace graphene { namespace chain {
 
                         total_block_size += fc::raw::pack_size(tx);
                         pending_block.transactions.push_back(tx);
+                    }
+                    catch (const shared_memory_corruption_exception&) {
+                        throw; // Let the validator trigger recovery instead of dropping the transaction.
                     }
                     catch (const fc::exception &e) {
                         // Transaction will not be re-applied. Log why so silently-dropped
@@ -6065,20 +6075,20 @@ namespace graphene { namespace chain {
                 const validator_schedule_object &consensus = get_validator_schedule_object();
 
                 for (const auto& auth : required) {
-                    // This path already holds the strong WRITE lock (push_block / push_transaction take
+                    // This path already holds an exclusive WRITE lock (push_block / push_transaction take
                     // it for the whole application), so a miss cannot be a racing P2P writer: it is
                     // either a block naming an account that does not exist, or a by_name index that
                     // lost a live object. A nested with_strong_read_lock cannot be used here —
                     // read_write_mutex is a non-recursive boost::shared_mutex, so taking it while
                     // holding the write lock would deadlock. The discriminating check is by_id:
-                    // by_id is a flat vector while by_name is the tree that breaks, so a live object
-                    // reachable only by id means index damage, and that must fail loudly (the p2p /
+                    // by_id is an independent ordered index, so a live object reachable only by id
+                    // proves an index inconsistency, and that must fail loudly (the p2p /
                     // chain / validator handlers turn this exception into attempt_auto_recovery())
                     // instead of the bare "unknown key" that leaves the node stuck behind head.
                     // Absent from BOTH indexes is not corruption: fall through to get_account(),
                     // which throws exactly what it always did and the block is rejected as before.
                     if (!find_account(auth)) {
-                        const auto& acct_idx = get_index<account_index>().indices();
+                        const auto& acct_idx = get_index<account_index>().indices().get<by_id>();
                         bool present_by_id = false;
                         for (const auto& a : acct_idx) {
                             if (a.name == auth) {

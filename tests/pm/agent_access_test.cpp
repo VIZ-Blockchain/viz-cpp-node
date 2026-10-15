@@ -56,6 +56,19 @@ BOOST_AUTO_TEST_CASE(op_id_is_appended_never_renumbered) {
                       "set_agent_permission");
 }
 
+BOOST_AUTO_TEST_CASE(agent_name_wire_preserves_length_and_legacy_valid_bytes) {
+    for (const size_t length : {size_t(1), size_t(CHAIN_MAX_ACCOUNT_NAME_LENGTH)}) {
+        const std::string label(length, 'a');
+        // Changing the operation field to string must preserve every valid legacy encoding.
+        BOOST_CHECK(fc::raw::pack(label) == fc::raw::pack(account_name_type(label)));
+    }
+    auto g = grant({"transfer"});
+    g.agent_name = std::string(CHAIN_MAX_ACCOUNT_NAME_LENGTH + 1, 'a');
+    const auto decoded = fc::raw::unpack<set_agent_permission_operation>(fc::raw::pack(g));
+    BOOST_CHECK_EQUAL(decoded.agent_name, g.agent_name);
+    BOOST_CHECK(!accepts(decoded)); // Wire input must be rejected, never truncated into a valid label.
+}
+
 BOOST_AUTO_TEST_CASE(wire_names_exclude_virtual_operations) {
     // A delegation is meaningless for an operation the chain generates itself.
     BOOST_CHECK(is_broadcastable_operation_wire_name("transfer"));
