@@ -987,13 +987,17 @@ namespace chain {
             return my->accept_block(block, currently_syncing, skip);
         } catch (const graphene::chain::shared_memory_corruption_exception& e) {
             elog("Shared memory corruption detected during block processing: ${e}", ("e", e.to_detail_string()));
-            if (my->auto_recover_from_snapshot) {
-                attempt_auto_recovery();
-            } else {
-                elog("Auto-recovery disabled. Restart with --replay-from-snapshot --snapshot-auto-latest");
-                appbase::app().quit();
-            }
+            handle_shared_memory_corruption();
             return false;
+        }
+    }
+
+    void plugin::handle_shared_memory_corruption() {
+        if (my->auto_recover_from_snapshot) {
+            attempt_auto_recovery();
+        } else {
+            elog("Auto-recovery disabled. Restart with --replay-from-snapshot --snapshot-auto-latest");
+            appbase::app().quit();
         }
     }
 
@@ -1140,12 +1144,7 @@ namespace chain {
             my->accept_transaction(trx);
         } catch (const graphene::chain::shared_memory_corruption_exception& e) {
             elog("Shared memory corruption detected during transaction validation: ${e}", ("e", e.to_detail_string()));
-            if (my->auto_recover_from_snapshot) {
-                attempt_auto_recovery();
-            } else {
-                elog("Auto-recovery disabled. Restart with --replay-from-snapshot --snapshot-auto-latest");
-                appbase::app().quit();
-            }
+            handle_shared_memory_corruption();
             throw;
         }
     }
