@@ -223,6 +223,13 @@ public:
                         }
                     }
                     return dlt_block_accept_result::FORK_DB_ONLY;
+                } catch (const graphene::chain::shared_memory_corruption_exception& retry_e) {
+                    // Exceptions thrown in this retry do not reach sibling catches
+                    // of the outer try. Never turn corruption into ALREADY_KNOWN.
+                    wlog("Shared memory corruption retrying P2P block #${n}: ${e}",
+                         ("n", block.block_num())("e", retry_e.to_detail_string()));
+                    chain.handle_shared_memory_corruption();
+                    return dlt_block_accept_result::REJECTED;
                 } catch (const graphene::chain::block_too_old_exception&) {
                     // Still too old even after reset — shouldn't happen
                 } catch (const graphene::chain::unlinkable_block_exception&) {
@@ -295,7 +302,7 @@ public:
             // below, which simply returns REJECTED and the node stays stuck.
             wlog("Shared memory corruption in P2P accept_block #${n}: ${e}",
                  ("n", block.block_num())("e", e.to_detail_string()));
-            chain.attempt_auto_recovery();
+            chain.handle_shared_memory_corruption();
             return dlt_block_accept_result::REJECTED;
         } catch (const graphene::chain::deferred_resize_exception&) {
             // Transient out-of-memory — not a bad block, just needs retry.
@@ -310,8 +317,17 @@ public:
 
     bool accept_transaction(const signed_transaction& trx) override {
         try {
-            chain.db().push_transaction(trx);
+            // The chain entrypoint owns recovery/shutdown policy for corruption.
+            chain.accept_transaction(trx);
             return true;
+        } catch (const graphene::chain::shared_memory_corruption_exception& e) {
+            // The chain entrypoint has already applied the local recovery/shutdown
+            // policy. This transaction was not accepted, but the sending peer did
+            // not corrupt our storage: do not throw into on_message(), which
+            // would close its connection as a deserialization failure.
+            wlog("Local storage corruption while accepting P2P transaction: ${e}",
+                 ("e", e.to_detail_string()));
+            return false;
         } catch (const fc::exception& e) {
             // Extract just the error message without full stack trace for cleaner debug output
             std::string error_msg = e.what();
