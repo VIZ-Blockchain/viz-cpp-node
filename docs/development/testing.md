@@ -45,6 +45,37 @@ The unit test binary is built via CMake as part of the `libraries/chain` target.
 
 ---
 
+## Offline P2P corruption regression
+
+From the repository root, with Python 3 and a C++17 compiler installed:
+
+```bash
+python3 tests/p2p/test_corruption_recovery.py -v
+```
+
+The test compiles the current production P2P `accept_block` and
+`accept_transaction` method bodies, the network transaction handler, the chain
+transaction entrypoint, and its shared corruption-policy method against controlled
+storage/application fixtures.
+It does not copy the ingestion or recovery decisions into a second implementation.
+It covers transaction corruption with recovery enabled/disabled, corruption during
+the fork-db-reset retry, ordinary rejections, block result classification, and
+recovery failures escaping the retry catch. No node, peers, snapshots, or live
+database are used; this is not an end-to-end snapshot restoration test.
+
+P2P transactions use the chain transaction entrypoint so corruption invokes the
+chain's recovery policy and retains its type until the P2P delegate boundary.
+After policy handling, the delegate logs local storage corruption and returns
+`false`: the transaction was not accepted, but a handled local fault must not
+escape into the transport's deserialization-error catch and disconnect its peer.
+Both initial and retried P2P block corruption invoke the same
+policy and return `REJECTED`, never `ALREADY_KNOWN`. When auto-recovery is disabled,
+the policy requests application shutdown instead of loading a snapshot. Ordinary
+block/transaction outcomes and the existing `push_block` boolean interpretation
+are unchanged.
+
+---
+
 ## Code Coverage
 
 Enable coverage in a Debug build:

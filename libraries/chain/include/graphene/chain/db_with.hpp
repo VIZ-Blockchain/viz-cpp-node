@@ -1,16 +1,16 @@
 #pragma once
 
 #include <graphene/chain/database.hpp>
+#include <graphene/chain/database_exceptions.hpp>
+#include <exception>
 
 /*
  * This file provides with() functions which modify the database
  * temporarily, then restore it.  These functions are mostly internal
  * implementation detail of the database.
  *
- * Essentially, we want to be able to use "finally" to restore the
- * database regardless of whether an exception is thrown or not, but there
- * is no "finally" in C++.  Instead, C++ requires us to create a struct
- * and put the finally block in a destructor.  Aagh!
+ * Pending transaction restoration is explicit so database corruption can propagate
+ * safely. Lightweight, non-throwing state restoration still uses a destructor.
  */
 
 namespace graphene {
@@ -34,7 +34,7 @@ namespace graphene {
                     _db.clear_pending();
                 }
 
-                ~pending_transactions_restorer() {
+                void restore() {
                     auto start = fc::time_point::now();
                     bool apply_trxs = true;
                     uint32_t applied_txs = 0;
@@ -51,6 +51,8 @@ namespace graphene {
                                     _db._push_transaction( tx, _skip );
                                     applied_txs++;
                                 }
+                            } catch (const shared_memory_corruption_exception&) {
+                                throw;
                             } catch ( const fc::exception&  ) {}
                         }
                         else
@@ -71,6 +73,9 @@ namespace graphene {
                                     _db._push_transaction( tx, _skip );
                                     applied_txs++;
                                 }
+                            }
+                            catch (const shared_memory_corruption_exception&) {
+                                throw;
                             }
                             catch( const transaction_exception& e )
                             {
@@ -133,8 +138,20 @@ namespace graphene {
                 Lambda callback
             ) {
                 pending_transactions_restorer restorer(db, skip, std::move(pending_transactions));
-                callback();
-                return;
+                std::exception_ptr failure;
+                try {
+                    callback();
+                } catch (const shared_memory_corruption_exception&) {
+                    // Never reapply transactions on a database already known to be damaged.
+                    db._popped_tx.clear();
+                    throw;
+                } catch (...) {
+                    failure = std::current_exception();
+                }
+                // Restore explicitly: throwing corruption from a destructor would terminate
+                // the process. Ordinary callback failures still restore pending transactions.
+                restorer.restore();
+                if (failure) std::rethrow_exception(failure);
             }
 
             /**

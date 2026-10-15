@@ -56,6 +56,19 @@ BOOST_AUTO_TEST_CASE(op_id_is_appended_never_renumbered) {
                       "set_agent_permission");
 }
 
+BOOST_AUTO_TEST_CASE(agent_name_wire_preserves_length_and_legacy_valid_bytes) {
+    for (const size_t length : {size_t(1), size_t(CHAIN_MAX_ACCOUNT_NAME_LENGTH)}) {
+        const std::string label(length, 'a');
+        // Changing the operation field to string must preserve every valid legacy encoding.
+        BOOST_CHECK(fc::raw::pack(label) == fc::raw::pack(account_name_type(label)));
+    }
+    auto g = grant({"transfer"});
+    g.agent_name = std::string(CHAIN_MAX_ACCOUNT_NAME_LENGTH + 1, 'a');
+    const auto decoded = fc::raw::unpack<set_agent_permission_operation>(fc::raw::pack(g));
+    BOOST_CHECK_EQUAL(decoded.agent_name, g.agent_name);
+    BOOST_CHECK(!accepts(decoded)); // Wire input must be rejected, never truncated into a valid label.
+}
+
 BOOST_AUTO_TEST_CASE(wire_names_exclude_virtual_operations) {
     // A delegation is meaningless for an operation the chain generates itself.
     BOOST_CHECK(is_broadcastable_operation_wire_name("transfer"));
@@ -135,6 +148,18 @@ BOOST_AUTO_TEST_CASE(validate_refuses_malformed_participants) {
     auto empty_name = grant({"transfer"});
     empty_name.agent_name = "";
     BOOST_CHECK(!accepts(empty_name));
+
+    // The label is stored in a 32-byte field that truncates silently, so an over-long one must be
+    // REFUSED while the raw length is still visible: 33 bytes once became a different, 32-byte name
+    // — and a re-grant under a label sharing those 32 bytes would replace that agent instead of
+    // adding one. The boundary itself (32) stays legal.
+    auto long_name = grant({"transfer"});
+    long_name.agent_name = std::string(33, 'a');
+    BOOST_CHECK(!accepts(long_name));
+
+    auto max_name = grant({"transfer"});
+    max_name.agent_name = std::string(CHAIN_MAX_ACCOUNT_NAME_LENGTH, 'a');
+    BOOST_CHECK(accepts(max_name));
 
     // A grant without a key could never sign anything.
     auto no_key = grant({"transfer"});

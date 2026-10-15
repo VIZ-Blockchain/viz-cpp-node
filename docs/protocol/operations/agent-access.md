@@ -13,7 +13,7 @@ Typical uses: a trading bot that places prediction-market bets, a service that p
 | Field | Type | Description |
 |-------|------|-------------|
 | `account` | `account_name_type` | Principal |
-| `agent_name` | `string` | Agent name, unique per principal; `[a-z0-9_-]`, non-empty |
+| `agent_name` | `string` | Agent name, unique per principal; `[a-z0-9_-]`, 1–32 bytes. A longer name is **rejected** (not truncated): the name is an agent's identity, so silently shortening it would rename the agent — and a grant under a label sharing the first 32 bytes would replace that agent instead of adding one. 33+ bytes once passed through a fixed-width field and became a different name |
 | `agent_key` | `public_key_type` | Agent key; required when granting, ignored on revoke |
 | `operations` | `flat_set<string>` | Wire names of operations the key may sign (`transfer`, `pm_place_bet`, …) |
 | `expiration` | `time_point_sec` | `1970-01-01T00:00:00` = perpetual; a past time revokes |
@@ -81,6 +81,8 @@ Re-issuing by the same name replaces the key, operations, addons and expiration 
 
 **Granting (principal).** WebVIZWallet → *Agents*: agent name, public key (the *Generate* button creates a fresh pair — save the private key, it is shown once), tick the allowed operations, expiration (*perpetual* or a date), addons as a comma-separated list. The page lists current agents with a *Revoke* button. The grant is signed by the principal's **active** key. Vizonator exposes the same operation to sites through `window.vizonator`, always behind a confirmation window that shows the key, operations, expiration and addons.
 
-**Signing in as an agent.** WebVIZWallet and Vizonator have a separate *agent sign-in*: principal account + agent private key. The client checks the key against `get_agent_permissions` and refuses a key that is not granted or has expired. An agent session is marked 🤖 and shows the allowed operations and the time left; actions outside the list are disabled. An agent key cannot pass passwordless site auth or `sign_data` — it only signs the granted operations.
+**Signing in as an agent.** WebVIZWallet and Vizonator have a separate *agent sign-in*: principal account + agent private key. The client checks the key against `get_agent_permissions` and refuses a key that is not granted or has expired. An agent session is marked 🤖 and shows the allowed operations and the time left; actions outside the list are disabled.
+
+**Site sign-in is a separate flow.** A `domain:auth:account:regular:time:nonce` signature is not a chain operation, so consensus has no say in it: the wallet signs it with the account's **regular** key, and an agent session does not answer that request. Off-chain verification (`VIZ\Auth` in viz-php-lib, `viz.auth` in viz-js-lib) accepts an agent for such a signature only when the agent row carries the site's addon — there the addon, not the operation list, is the grant.
 
 **When agents disappear.** Changing master or active (including sending the same key), recovery and account sale wipe all agents — grant them again afterwards.

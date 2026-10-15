@@ -20,6 +20,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: P2P corruption recovery regression (offline)
+        run: python3 tests/p2p/test_corruption_recovery.py -v
+
       - name: Install build deps
         run: |
           set -euo pipefail

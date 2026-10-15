@@ -109,6 +109,18 @@ namespace graphene { namespace chain {
             return v;
         }
 
+        // Depth of block/transaction application on THIS thread. Only the thread that holds the
+        // exclusive write lock ever raises it, so a non-zero value means "no concurrent writer can
+        // be re-hanging an index under us" and a by_name miss can be tested against by_id without a
+        // race. thread_local on purpose: an API/P2P reader on another thread must keep seeing 0 and
+        // must never turn its own lockless miss into a corruption verdict (and a recovery).
+        static thread_local uint32_t apply_depth = 0;
+
+        struct apply_depth_guard {
+            apply_depth_guard() { ++apply_depth; }
+            ~apply_depth_guard() { --apply_depth; }
+        };
+
 #ifndef _WIN32
         class signal_guard {
             struct sigaction old_hup_action, old_int_action, old_term_action;
@@ -1490,6 +1502,28 @@ namespace graphene { namespace chain {
 
         const account_object &database::get_account(const account_name_type &name) const {
             try {
+                if (apply_depth > 0 && !find_account(name)) {
+                    // Every caller on the apply path (signers, transfer receivers, escrow agents,
+                    // award beneficiaries...) needs the account to exist. Under the write lock a
+                    // by_name miss is either a truly absent name (reject the op as before) or a
+                    // live object the by_name index lost. by_id is an independent index, so an
+                    // object reachable only by id proves index damage: fail with the typed
+                    // exception the chain/p2p/validator handlers turn into recovery, not with the
+                    // bare "unknown key" that leaves the node stuck behind head (incident 14.10).
+                    // The O(accounts) scan runs only on a miss, which already rejects the op.
+                    const auto& by_id_idx = get_index<account_index>().indices().get<by_id>();
+                    for (const auto& a : by_id_idx) {
+                        if (a.name == name) {
+                            elog("CRITICAL: Account ${a} is present in the id index but unreachable by name "
+                                 "(head=${h} trx=${t} account_index_size=${n})! Shared memory index damage.",
+                                 ("a", name)("h", head_block_num())("t", _current_trx_id)("n", by_id_idx.size()));
+                            FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                                      "CRITICAL: Account ${a} is present by id but missing from the by_name "
+                                      "index! Shared memory corruption suspected.",
+                                      ("a", name));
+                        }
+                    }
+                }
                 return get<account_object, by_name>(name);
             } FC_CAPTURE_AND_RETHROW((name))
         }
@@ -2277,9 +2311,14 @@ namespace graphene { namespace chain {
                                         apply_block((*ritr)->data, skip | skip_validator_schedule_check);
                                         session.push();
                                         schedule_was_relaxed = true;
+                                    } catch (const shared_memory_corruption_exception&) {
+                                        throw; // Recovery must reach the chain/P2P handler with its type intact.
                                     } catch (const fc::exception &e2) {
                                         except = e2;
                                     }
+                                }
+                                catch (const shared_memory_corruption_exception&) {
+                                    throw; // Do not roll back/reapply a fork on a damaged database.
                                 }
                                 catch (const fc::exception &e) {
                                     except = e;
@@ -2559,6 +2598,8 @@ namespace graphene { namespace chain {
                                      "skipping cascade apply (db_head=#${dh}, fork_db_head=#${fh})",
                                      ("dh", head_block_num())("fh", fb_head->data.block_num()));
                             }
+                        } catch (const shared_memory_corruption_exception&) {
+                            throw; // Snapshot recovery, rather than ordinary cascade rollback.
                         } catch (const fc::exception& e) {
                             wlog("P39: Failed to apply _push_next cascade blocks: ${e}",
                                  ("e", e.what()));
@@ -2800,6 +2841,9 @@ namespace graphene { namespace chain {
 
                         total_block_size += fc::raw::pack_size(tx);
                         pending_block.transactions.push_back(tx);
+                    }
+                    catch (const shared_memory_corruption_exception&) {
+                        throw; // Let the validator trigger recovery instead of dropping the transaction.
                     }
                     catch (const fc::exception &e) {
                         // Transaction will not be re-applied. Log why so silently-dropped
@@ -5862,6 +5906,7 @@ namespace graphene { namespace chain {
         }
 
         void database::_apply_block(const signed_block &next_block, uint32_t skip) {
+            apply_depth_guard depth_guard;
             try {
                 uint32_t next_block_num = next_block.block_num();
                 const auto &gprops = get_dynamic_global_properties();
@@ -6038,6 +6083,7 @@ namespace graphene { namespace chain {
         }
 
         void database::_apply_transaction(const signed_transaction &trx, uint32_t skip, const agent_proofs* proofs) {
+            apply_depth_guard depth_guard;
             try {
                 _current_trx_id = trx.id();
                 _current_virtual_op = 0;
@@ -6065,6 +6111,7 @@ namespace graphene { namespace chain {
                 const validator_schedule_object &consensus = get_validator_schedule_object();
 
                 for (const auto& auth : required) {
+                    // A by_name miss of a live account is reported as corruption inside get_account().
                     const auto& acnt = get_account(auth);
                     update_account_bandwidth(acnt, trx_size);
                     if(has_hardfork(CHAIN_HARDFORK_6)){
