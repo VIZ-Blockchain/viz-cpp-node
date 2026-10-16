@@ -37,6 +37,7 @@ docker pull vizblockchain/vizd:latest
 ```bash
 docker run -d \
   --name vizd \
+  --restart unless-stopped \
   -p 2001:2001 \
   -p 8090:8090 \
   -p 8091:8091 \
