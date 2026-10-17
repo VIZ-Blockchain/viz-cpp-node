@@ -916,6 +916,12 @@ function readChainPropertiesUpdateOperation(reader) {
  *   (bandwidth_reserve_percent)(bandwidth_reserve_below)(flag_energy_additional_cost)
  *   (vote_accounting_min_rshares)(committee_request_approve_min_percent)
  */
+// chain_properties percent fields are int16_t in C++; sign-extend like typeReader('int16') does.
+function readInt16(reader) {
+  const v = reader.readUint16LE();
+  return v > 32767 ? v - 65536 : v;
+}
+
 function readChainPropertiesInit(reader) {
   return {
     account_creation_fee: readAsset(reader),
@@ -923,18 +929,18 @@ function readChainPropertiesInit(reader) {
     create_account_delegation_ratio: reader.readUint32LE(),
     create_account_delegation_time: reader.readUint32LE(),
     min_delegation: readAsset(reader),
-    min_curation_percent: reader.readUint16LE() | 0,
-    max_curation_percent: reader.readUint16LE() | 0,
-    bandwidth_reserve_percent: reader.readUint16LE() | 0,
+    min_curation_percent: readInt16(reader),
+    max_curation_percent: readInt16(reader),
+    bandwidth_reserve_percent: readInt16(reader),
     bandwidth_reserve_below: readAsset(reader),
-    flag_energy_additional_cost: reader.readUint16LE() | 0,
+    flag_energy_additional_cost: readInt16(reader),
     vote_accounting_min_rshares: reader.readUint32LE(),
-    committee_request_approve_min_percent: reader.readUint16LE() | 0
+    committee_request_approve_min_percent: readInt16(reader)
   };
 }
 
 /**
- * Read versioned_chain_properties (static_variant of chain_properties_init/hf4/hf6/hf9)
+ * Read versioned_chain_properties (static_variant of chain_properties_init/hf4/hf6/hf9/hf13/pm)
  * Used by versioned_chain_properties_update_operation.
  * FC_REFLECT_DERIVED means each variant includes all base fields + its own.
  */
@@ -948,8 +954,8 @@ function readVersionedChainProperties(reader) {
   }
 
   // chain_properties_hf4 = init + 3 fields
-  init.inflation_witness_percent = reader.readUint16LE() | 0;
-  init.inflation_ratio_committee_vs_reward_fund = reader.readUint16LE() | 0;
+  init.inflation_witness_percent = readInt16(reader);
+  init.inflation_ratio_committee_vs_reward_fund = readInt16(reader);
   init.inflation_recalc_period = reader.readUint32LE();
 
   if (typeIndex === 1) {
@@ -958,7 +964,7 @@ function readVersionedChainProperties(reader) {
 
   // chain_properties_hf6 = hf4 + 3 fields
   init.data_operations_cost_additional_bandwidth = reader.readUint32LE();
-  init.witness_miss_penalty_percent = reader.readUint16LE() | 0;
+  init.witness_miss_penalty_percent = readInt16(reader);
   init.witness_miss_penalty_duration = reader.readUint32LE();
 
   if (typeIndex === 2) {
@@ -974,7 +980,77 @@ function readVersionedChainProperties(reader) {
   init.witness_declaration_fee = readAsset(reader);
   init.withdraw_intervals = reader.readUint16LE();
 
-  return { _type: 'chain_properties_hf9', ...init };
+  if (typeIndex === 3) {
+    return { _type: 'chain_properties_hf9', ...init };
+  }
+
+  // chain_properties_hf13 = hf9 + 1 field
+  init.distribution_epoch_length = reader.readUint32LE();
+
+  if (typeIndex === 4) {
+    return { _type: 'chain_properties_hf13', ...init };
+  }
+
+  // chain_properties_pm (index 5, HF14) = hf13 + the PM governance fields, in FC_REFLECT order
+  init.pm_oracle_registration_fee = readAsset(reader);
+  init.pm_min_oracle_insurance = readAsset(reader);
+  init.pm_market_creation_fee = readAsset(reader);
+  init.pm_min_liquidity = readAsset(reader);
+  init.pm_max_outcomes = reader.readUint8();
+  init.pm_max_market_duration = reader.readUint32LE();
+  init.pm_max_oracle_fee_percent = reader.readUint16LE();
+  init.pm_oracle_accept_window_sec = reader.readUint32LE();
+  init.pm_listing_min_coverage_percent = reader.readUint16LE();
+  init.pm_betting_min_coverage_percent = reader.readUint16LE();
+  init.pm_default_time_penalty_percent = reader.readUint16LE();
+  init.pm_max_time_penalty = reader.readUint32LE();
+  init.pm_dispute_fee = readAsset(reader);
+  init.pm_dispute_grace_sec = reader.readUint32LE();
+  init.pm_oracle_dispute_response_sec = reader.readUint32LE();
+  init.pm_dispute_auto_close_sec = reader.readUint32LE();
+  init.pm_dispute_vote_period_sec = reader.readUint32LE();
+  init.pm_dispute_approve_min_percent = reader.readUint16LE();
+  init.pm_oracle_penalty_percent = reader.readUint16LE();
+  init.pm_no_contest_penalty_percent = reader.readUint16LE();
+  init.pm_dispute_reward_multiplier = reader.readUint32LE();
+  init.pm_batch_epoch_blocks = reader.readUint32LE();
+  init.pm_reveal_window_blocks = reader.readUint32LE();
+  init.pm_commit_no_reveal_penalty_percent = reader.readUint16LE();
+  init.pm_min_batch_bet = readAsset(reader);
+  init.pm_commit_reveal_enabled = reader.readUint8() !== 0;
+  init.pm_processing_cap_per_block = reader.readUint32LE();
+  init.pm_lazy_pool_enabled = reader.readUint8() !== 0;
+  init.pm_lazy_alloc_percent = reader.readUint16LE();
+  init.pm_lazy_max_total_alloc_percent = reader.readUint16LE();
+  init.pm_lazy_lock_sec = reader.readUint32LE();
+  init.pm_lazy_recall_step_percent = reader.readUint16LE();
+  init.pm_lazy_emergency_penalty_percent = reader.readUint16LE();
+  init.pm_lazy_min_liquidity_fee_percent = reader.readUint16LE();
+  init.pm_leverage_enabled = reader.readUint8() !== 0;
+  init.pm_leverage_fund_percent = reader.readUint16LE();
+  init.pm_leverage_max_per_position_bp = reader.readUint16LE();
+  init.pm_leverage_pool_profit_percent = reader.readUint16LE();
+  init.pm_leverage_safety_margin_percent = reader.readUint16LE();
+  init.pm_leverage_max_slippage_percent = reader.readUint16LE();
+  init.pm_leverage_min_market_liquidity = readAsset(reader);
+  init.pm_leverage_max_position_ratio_percent = reader.readUint16LE();
+  init.pm_leverage_expiration_buffer_sec = reader.readUint32LE();
+  init.pm_leverage_m_factor_percent = reader.readUint16LE();
+  init.pm_leverage_funding_rate_ppm_per_day = reader.readUint32LE();
+  init.pm_conversion_profit_cost_percent = reader.readUint16LE();
+  init.pm_closed_market_retention_sec = reader.readUint32LE();
+  init.pm_early_exit_reward_cap_percent = reader.readUint16LE();
+  init.pm_min_bet = readAsset(reader);
+  init.pm_settle_rows_per_block = reader.readUint32LE();
+  init.committee_votes_per_request = reader.readUint32LE();
+  init.committee_vote_min_vesting = readAsset(reader);
+  init.pm_dispute_votes_per_market = reader.readUint32LE();
+  init.pm_dispute_vote_min_vesting = readAsset(reader);
+
+  if (typeIndex === 5) {
+    return { _type: 'chain_properties_pm', ...init };
+  }
+  throw new Error(`readVersionedChainProperties: unknown variant ${typeIndex}`);
 }
 
 // ---- Virtual operations (ID: 27-34, 38-41, 48-49, 52-53, 57, 59, 62-63) ----

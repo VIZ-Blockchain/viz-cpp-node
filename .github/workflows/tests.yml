@@ -49,7 +49,11 @@ jobs:
                 -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
                 -DBUILD_SHARED_LIBRARIES=FALSE \
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
+                -DBUILD_TESTNET=ON \
                 -DBUILD_CONSENSUS_TESTS=ON ..
+          # BUILD_TESTNET: the single-validator fixture only reaches HF14/HF15 quorum with testnet
+          # constants. Without it every chain-level PM scenario soft-skips and test_agent_access.cpp /
+          # test_pm_audit_fixes.cpp are not even compiled (see tests/consensus_sim/CMakeLists.txt).
           # Build exactly the binaries ctest will run, so a new add_test never shows up as "Not Run".
           TEST_BINS=$(grep -ho 'add_test(NAME [a-z_]* COMMAND [a-z_]*' \
             ../tests/pm/CMakeLists.txt ../tests/consensus_sim/CMakeLists.txt | awk '{print $NF}')
