@@ -706,6 +706,11 @@ It is plain HTML + vanilla JS — no build step, no external assets, no framewor
 allows only the page's own inline style/script and same-origin `fetch`; everything else is
 `'none'`.
 
+The page derives its JSON-RPC base from its own URL, so it also works when an operator
+publishes the listener behind a reverse-proxy prefix instead of the root: with nginx
+`location /admin/ { proxy_pass http://127.0.0.1:9099/; }` the page is at `/admin/ui/` and
+calls `/admin/`. At the root (`/ui/`) the base is `/`, as before.
+
 **Authentication.** The page holds no secret of its own. On first use the operator pastes a
 bearer token; it is kept in `sessionStorage` (per tab, cleared when the tab closes) and sent
 as `Authorization: Bearer …` on every JSON-RPC call back to the same listener. The page

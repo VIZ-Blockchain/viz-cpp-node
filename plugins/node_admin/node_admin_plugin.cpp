@@ -437,6 +437,10 @@ const char *ui_page() {
   var $ = function (id) { return document.getElementById(id); };
   var token = sessionStorage.getItem('vizAdminToken') || '';
   var timer = null;
+  // The page is served at "/ui/" when the listener is reached directly, but an operator
+  // may publish it behind an nginx prefix (e.g. "/admin/ui/"). JSON-RPC and snapshot
+  // downloads then live under that same prefix, so derive it from our own URL.
+  var base = location.pathname.replace(/\/ui\/?$/, '/');
 
   function say(msg, cls) {
     var el = $('log');
@@ -456,7 +460,7 @@ const char *ui_page() {
 
   function rpc(method, params) {
     if (!token) return Promise.reject(new Error('no token'));
-    return fetch('/', {
+    return fetch(base, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
       body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: method, params: params || {} })
@@ -567,7 +571,7 @@ const char *ui_page() {
   function downloadSnapshot(name) {
     if (!token) { say('enter a token first', 'bad'); return; }
     say('downloading ' + name + ' …');
-    fetch('/snapshot/' + encodeURIComponent(name), {
+    fetch(base + 'snapshot/' + encodeURIComponent(name), {
       headers: { 'Authorization': 'Bearer ' + token }
     }).then(function (res) {
       if (!res.ok) {
