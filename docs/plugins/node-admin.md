@@ -62,12 +62,21 @@ inside Docker need an appender that writes the same lines to disk, and that file
 `admin-log-file` names:
 
 ```ini
-log.file_appender.node.filename = /var/lib/vizd/logs/node.log
-logger.default.level = info
-logger.default.appenders = stderr,node
+[log.file_appender.node]
+filename = /var/lib/vizd/logs/node.log
+
+[logger.default]
+level = info
+appenders = stderr,node
 
 admin-log-file = node=/var/lib/vizd/logs/node.log
 ```
+
+Use the section form: flat `logger.default.*` keys are merged first and a later
+`[logger.default]` section wins, so a flat line added on top of an existing section is
+silently ignored. The file appender itself is bounded: vizd hard-codes `rotate = true`,
+a one-hour rotation interval and a one-day retention for every `[log.file_appender.*]`
+section, so the file does not grow without limit and needs no external logrotate.
 
 ### Tokens
 

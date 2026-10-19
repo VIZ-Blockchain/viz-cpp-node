@@ -64,12 +64,21 @@ admin-log-file = node=/var/log/vizd/vizd.log
 называется в `admin-log-file`:
 
 ```ini
-log.file_appender.node.filename = /var/lib/vizd/logs/node.log
-logger.default.level = info
-logger.default.appenders = stderr,node
+[log.file_appender.node]
+filename = /var/lib/vizd/logs/node.log
+
+[logger.default]
+level = info
+appenders = stderr,node
 
 admin-log-file = node=/var/lib/vizd/logs/node.log
 ```
+
+Пиши секциями: плоские ключи `logger.default.*` сливаются первыми, а секция
+`[logger.default]` ниже их перетирает — плоская строка поверх существующей секции молча
+игнорируется. Сам файловый аппендер ограничен: vizd жёстко задаёт `rotate = true`, интервал
+ротации в час и хранение в сутки для каждой секции `[log.file_appender.*]`, поэтому файл не
+растёт без предела и внешний logrotate не нужен.
 
 ### Токены
 
