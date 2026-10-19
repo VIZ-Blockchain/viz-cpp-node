@@ -837,16 +837,20 @@ from selection — then creates two more validators: `backup` carries the operat
 `cold` lets a batch plan name two different validators. Checks: list (`on_chain`, `enabled`,
 `active_authority`), disable/enable/set-key with a transaction id, the hold file surviving a node
 restart, a stale plan refused with `chain state changed` and nothing signed, a two-action plan
-applying both actions, and the contract corners (duplicate, unknown, bad key, no-op → `-32602`).
+applying both actions, the producing validator rotating its own signing key, and the contract
+corners (duplicate, unknown, bad key, no-op → `-32602`).
 
 Two staging decisions are load-bearing. Operator actions never target the only *scheduled*
 validator: the schedule is rebuilt only at the end of an applied block, so nulling its key leaves
-a stale schedule pointing at a keyless validator and bricks a one-slot chain. The producing
-validator's own key is never rotated: the producer selects the signing key from the session-visible
-validator object (`validator.cpp:1875`), so a pending `validator_update` that rotates the producing
-validator's key makes it sign the block with the new key, while `validate_block_header` checks the
-signature against the pre-block key; the block is rejected, the pending pool is cleared and the
-update is lost.
+a stale schedule pointing at a keyless validator and bricks a one-slot chain. The self-rotation
+section is a regression check for a fixed node bug: a block header is validated against the key
+committed at head, so the block that carries the update must be signed with the old key and the
+new key takes effect for the next block. The producer used to read the signing key from the
+session-visible validator object, so a pending `validator_update` that rotated the producing
+validator's key made it sign with the new key, `validate_block_header` rejected the block, the
+pending pool was cleared and the update was silently lost. The plugin now keeps a committed-key
+snapshot (seeded at startup, refreshed from applied block contents) and production signs with
+that key.
 
 `tests/node_admin/` is a CTest target (`node_admin_util`, Boost.Test) over the pure helpers:
 secret masking, token parsing, the config parser, the allow-list and normalization, and the

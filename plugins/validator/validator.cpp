@@ -153,6 +153,61 @@ namespace graphene {
                 std::map<public_key_type, fc::ecc::private_key> _private_keys;
                 std::set<string> _validators;
 
+                // Signing key of each configured validator as committed at the head
+                // block. chainbase's session-visible validator object may already
+                // contain a pending validator_update that changes the key, but a block
+                // header is validated against the pre-block (committed) key
+                // (validate_block_header). Production must therefore sign with the
+                // committed key, not with the session-visible one.
+                //
+                // Seeded at startup and refreshed from applied block CONTENTS: an
+                // applied_block callback runs after push_block() has re-applied the
+                // pending pool, so reading the DB there would see uncommitted state.
+                std::map<string, public_key_type> _committed_signing_keys;
+                uint64_t _committed_keys_block_num = 0;
+                std::mutex _committed_keys_mutex;
+
+                /** Key the next block header must be signed with (the key committed
+                 *  at head), given the session-visible value from the validator index. */
+                public_key_type effective_signing_key(const string &name, const public_key_type &visible) {
+                    if (visible == public_key_type())
+                        return visible; // blanked / disabled: production is skipped anyway
+                    public_key_type committed;
+                    uint64_t snapshot_block = 0;
+                    {
+                        std::lock_guard<std::mutex> lk(_committed_keys_mutex);
+                        auto it = _committed_signing_keys.find(name);
+                        if (it == _committed_signing_keys.end() || it->second == visible)
+                            return visible;
+                        committed = it->second;
+                        snapshot_block = _committed_keys_block_num;
+                    }
+                    // DB access outside the lock: a writer must never wait on it.
+                    if (snapshot_block != database().head_block_num())
+                        return visible; // snapshot behind head: trust the chain
+                    // Snapshot is for head and differs from the session-visible key:
+                    // the difference comes from a pending validator_update. Keep
+                    // producing with the committed key; the update lands in the next
+                    // block and takes effect for the one after it.
+                    return committed;
+                }
+
+                /** Record the signing keys committed by an applied block. */
+                void update_committed_signing_keys(const graphene::chain::signed_block &block) {
+                    std::lock_guard<std::mutex> lk(_committed_keys_mutex);
+                    _committed_keys_block_num = block.block_num();
+                    for (const auto &trx : block.transactions) {
+                        for (const auto &op : trx.operations) {
+                            if (op.which() != operation::tag<validator_update_operation>::value)
+                                continue;
+                            const auto &up = op.get<validator_update_operation>();
+                            auto it = _committed_signing_keys.find(up.owner);
+                            if (it != _committed_signing_keys.end())
+                                it->second = up.block_signing_key;
+                        }
+                    }
+                }
+
                 fc::time_point last_block_post_validation_time;
 
                 // Fork collision resolution state
@@ -388,6 +443,19 @@ namespace graphene {
                         ilog("  configured validator: ${w}", ("w", w));
                     }
 
+                    // Seed the committed signing-key snapshot from head state. At
+                    // startup there is no pending transaction session yet, so the
+                    // index read is committed state.
+                    for (const auto& w : pimpl->_validators) {
+                        try {
+                            pimpl->_committed_signing_keys[w] = d.get_validator(w).signing_key;
+                        } catch (const fc::exception& e) {
+                            wlog("Validator ${w} is not on chain yet; its committed signing key "
+                                 "will be learned from applied blocks", ("w", w));
+                        }
+                    }
+                    pimpl->_committed_keys_block_num = d.head_block_num();
+
                     if (!pimpl->_validators.empty()) {
                         ilog("Launching block production for ${n} validators.", ("n", pimpl->_validators.size()));
                         pimpl->p2p().set_block_production(true);
@@ -464,7 +532,8 @@ namespace graphene {
                             continue;
                         }
 
-                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        graphene::protocol::public_key_type scheduled_key =
+                                pimpl->effective_signing_key(scheduled_validator, itr->signing_key);
                         if (scheduled_key == graphene::protocol::public_key_type()) {
                             continue; // Disabled validator (zero key)
                         }
@@ -510,7 +579,8 @@ namespace graphene {
                             continue;
                         }
 
-                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        graphene::protocol::public_key_type scheduled_key =
+                                pimpl->effective_signing_key(scheduled_validator, itr->signing_key);
                         if (scheduled_key == graphene::protocol::public_key_type()) {
                             continue; // Disabled validator (zero key)
                         }
@@ -605,6 +675,10 @@ namespace graphene {
                     uint64_t block_num = block.block_num();
                     uint64_t prev_num = _last_applied_block_num;
                     _last_applied_block_num = block_num;
+
+                    // Keep the committed signing-key snapshot current from block
+                    // contents (a DB read here would also see re-applied pending txs).
+                    update_committed_signing_keys(block);
 
                     // === SLOT-HIJACK DETECTION (runs for every block) ===
                     // In DLT emergency mode, the emergency master may blank our validator's
@@ -1871,7 +1945,11 @@ namespace graphene {
                 if (db._debug_block_production) ilog("DEBUG_CRASH: validator found=${f}", ("f", itr != validator_by_name.end()));
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
-                graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                // The header of the next block is validated against the key committed
+                // at head; a pending validator_update may already be visible in this
+                // index, so do not take the session-visible key at face value.
+                graphene::protocol::public_key_type scheduled_key =
+                        effective_signing_key(scheduled_validator, itr->signing_key);
                 if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
 
                 // Skip production if the scheduled slot time is at or before

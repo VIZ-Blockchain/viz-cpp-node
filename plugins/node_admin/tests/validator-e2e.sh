@@ -25,12 +25,14 @@
 # `backup` is not scheduled while `viz` holds the top votes, so it can be disabled,
 # held across a restart and re-enabled without stopping production.
 #
-# Why `viz`'s own signing key is never rotated here: the producer picks the key from
-# the session-visible validator object (validator.cpp:1875), so a pending
-# validator_update that rotates the producing validator's key makes it sign the block
-# with the NEW key, while validate_block_header checks the signature against the
-# pre-block (old) key. The block is rejected, the pending pool is cleared and the
-# update is lost. Rotating a non-producing validator is unaffected.
+# Section 10 rotates the producing validator's OWN key — it is the regression check
+# for a node bug: the producer used to pick its signing key from the session-visible
+# validator object, so a pending validator_update that rotated the producing
+# validator's key made it sign the block with the NEW key, while
+# validate_block_header checks the signature against the pre-block (old) key. The
+# block was rejected, the pending pool cleared and the update lost. The fix signs
+# with the key committed at head (the plugin keeps a committed-key snapshot) and the
+# update takes effect for the block after the one that carries it.
 #
 # The chain is disposable; nothing outside the temp dir is touched.
 #
@@ -391,8 +393,8 @@ check "stale plan -> no hold" false "$(field result.validators.0.hold)"
 
 # ── 9. one plan, two validators ─────────────────────────────────────────────
 # Each action becomes its own signed transaction (one signing key per op), so the
-# plan reports two. The batch rotates `cold`, not the producing validator: see the
-# self-rotation limitation in the section 2 comment.
+# plan reports two. The batch rotates `cold`, not the producing validator; the
+# producing validator's own rotation is exercised by section 10.
 admin admin.validator.plan "{\"actions\":[{\"name\":\"backup\",\"action\":\"disable\"},{\"name\":\"cold\",\"action\":\"set_key\",\"signing_key\":\"$INITIATOR_PUB\"}]}"
 check "batch plan -> HTTP 200" 200 "$CODE"
 check "batch plan -> two transactions" 2 "$(field result.transactions)"
@@ -413,7 +415,39 @@ check "batch -> backup hold set" true "$(field result.validators.0.hold)"
 check "batch -> cold configured key untouched" "$COMMITTEE_PUB" "$(field result.validators.1.configured_key)"
 ok "chain keeps producing (head $H)"
 
-# ── 10. contract corners ────────────────────────────────────────────────────
+# ── 10. the producing validator rotates its own key ─────────────────────────
+# The header of the block that carries the update must still be signed with the
+# key committed at head; from the next block on the new key is in effect. Before
+# the fix this block was rejected (validate_signee) and the update silently lost.
+admin admin.validator.plan "{\"actions\":[{\"name\":\"viz\",\"action\":\"set_key\",\"signing_key\":\"$COMMITTEE_PUB\"}]}"
+check "self rotation -> plan one transaction" 1 "$(field result.transactions)"
+PLAN=$(field result.plan_id)
+admin admin.validator.apply "{\"plan_id\":\"$PLAN\"}"
+check "self rotation -> accepted" "applied" "$(field result.results.0.status)"
+H0=$(head_now)
+H=$(wait_head $((H0 + 3)) 40) || { bad "chain stopped after rotating the producing validator's key"; exit 1; }
+for _ in $(seq 1 40); do
+    [ "$(vfield viz signing_key)" = "$COMMITTEE_PUB" ] && break
+    sleep 0.5
+done
+check "self rotation -> key changed on chain" "$COMMITTEE_PUB" "$(vfield viz signing_key)"
+ok "chain keeps producing after self rotation (head $H)"
+admin admin.validator.list '{}'
+check "self rotation -> configured key untouched" "$INITIATOR_PUB" "$(field result.validators.2.configured_key)"
+
+# Rotate back so the remaining checks run with the original key.
+admin admin.validator.plan "{\"actions\":[{\"name\":\"viz\",\"action\":\"set_key\",\"signing_key\":\"$INITIATOR_PUB\"}]}"
+PLAN=$(field result.plan_id)
+admin admin.validator.apply "{\"plan_id\":\"$PLAN\"}"
+check "self rotation back -> accepted" "applied" "$(field result.results.0.status)"
+H=$(wait_head $((H + 3)) 40) || { bad "chain stopped after rotating the key back"; exit 1; }
+for _ in $(seq 1 40); do
+    [ "$(vfield viz signing_key)" = "$INITIATOR_PUB" ] && break
+    sleep 0.5
+done
+check "self rotation back -> key restored on chain" "$INITIATOR_PUB" "$(vfield viz signing_key)"
+
+# ── 11. contract corners ────────────────────────────────────────────────────
 admin admin.validator.plan '{"actions":[{"name":"backup","action":"disable"},{"name":"backup","action":"enable"}]}'
 check "duplicate names -> -32602" -32602 "$(field error.code)"
 admin admin.validator.plan '{"actions":[{"name":"nope","action":"disable"}]}'

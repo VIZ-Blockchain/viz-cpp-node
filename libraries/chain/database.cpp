@@ -2742,9 +2742,12 @@ namespace graphene { namespace chain {
 
                 const auto &validator_obj = get_validator(validator_owner);
 
-                if (!(skip & skip_validator_signature))
-                    FC_ASSERT(validator_obj.signing_key ==
-                              block_signing_private_key.get_public_key());
+                // NOTE: the signing-key check is deliberately NOT done here. At this point
+                // the session-visible validator object may already contain a pending
+                // validator_update that changes our own signing key, while the block header
+                // is validated against the pre-block (committed) key by
+                // validate_block_header(). The check is done below, after
+                // _pending_tx_session.reset() has restored committed head state.
 
                 // Lockless hint: does the validator account exist?
                 // op_guard coordinates with resize only — it does NOT exclude writers.
@@ -2797,6 +2800,9 @@ namespace graphene { namespace chain {
             size_t total_block_size = max_block_header_size;
 
             signed_block pending_block;
+            // Signing key of our validator as committed at the head block, captured
+            // while no pending session is active (see the assert below).
+            public_key_type committed_signing_key;
 
             with_strong_write_lock([&]() {
                 //
@@ -2857,6 +2863,12 @@ namespace graphene { namespace chain {
                 }
 
                 _pending_tx_session.reset();
+
+                // Committed head state is visible again. Capture the key here, under the
+                // same write lock: a concurrent push_transaction() after the lock is
+                // released could otherwise re-apply a pending key change and make the
+                // post-lock read see uncommitted state again.
+                committed_signing_key = get_validator(validator_owner).signing_key;
             });
 
             // We have temporarily broken the invariant that
@@ -2871,6 +2883,20 @@ namespace graphene { namespace chain {
             pending_block.validator = validator_owner;
 
             const auto &validator = get_validator(validator_owner);
+
+            // The header of THIS block is validated against the validator signing key
+            // committed at the previous (head) block — a pending validator_update that
+            // changes our own key takes effect only for the NEXT block. Verify against
+            // the committed object (visible again after the session reset above), not
+            // against the session-visible one used at the top of this function.
+            if (!(skip & skip_validator_signature))
+                FC_ASSERT(committed_signing_key == block_signing_private_key.get_public_key(),
+                          "Block signing key does not match the signing key committed at head "
+                          "(a pending validator_update must not change the key used to sign "
+                          "the current block)",
+                          ("validator", validator_owner)
+                          ("committed_key", committed_signing_key)
+                          ("signing_key", block_signing_private_key.get_public_key()));
 
             if (validator.running_version != CHAIN_VERSION) {
                 pending_block.extensions.insert(block_header_extensions(CHAIN_VERSION));
