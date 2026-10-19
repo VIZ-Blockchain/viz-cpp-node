@@ -59,6 +59,18 @@ admin-log-file = node=/var/log/vizd/vizd.log
 Плагин отказывается стартовать, если `admin-endpoint` задан, а токенов нет: админский
 порт без аутентификации не бывает допустимым состоянием.
 
+Вкладка Logs читает **файл**, а не stdout контейнера. Ноде, которая внутри Docker пишет
+только в stderr, нужен аппендер, кладущий те же строки на диск; именно этот файл и
+называется в `admin-log-file`:
+
+```ini
+log.file_appender.node.filename = /var/lib/vizd/logs/node.log
+logger.default.level = info
+logger.default.appenders = stderr,node
+
+admin-log-file = node=/var/lib/vizd/logs/node.log
+```
+
 ### Токены
 
 Токен — 32 случайных байта, например `openssl rand -hex 32`. В конфигурации хранится
@@ -138,6 +150,17 @@ admin-log-file = node=/var/log/vizd/vizd.log
 
 Проверка живости; базу цепи не трогает.
 
+### `admin.auth.me`
+
+Без параметров. Возвращает личность, которую несёт предъявленный токен: `label`, `scopes`
+и `expires` (unixtime, `null` — токен бессрочный). Сам токен и его хэш **не** возвращаются
+никогда. Встроенный UI по этому ответу скрывает действия, которые токену недоступны; агент
+может так же узнать свои права перед планированием вызова.
+
+```json
+{"label":"ui-read","scopes":["read"],"expires":null}
+```
+
 ### `admin.node_info`
 
 | Поле | Смысл |
@@ -147,6 +170,8 @@ admin-log-file = node=/var/log/vizd/vizd.log
 | `head_block_num`, `head_block_id`, `head_block_time` | Текущая голова |
 | `head_age_sec` | Возраст головы по стенным часам; `null` на пустой цепи (там время головы 1970 — «возраст» ничего не значит) |
 | `last_irreversible_block_num` | Последний необратимый блок |
+| `emergency_consensus_active`, `emergency_consensus_start_block` | Состояние аварийного консенсуса цепи и блок, с которого он начался (`0`, когда не активен) |
+| `emergency_key_configured` | В плагине validator загружен аварийный ключ |
 | `recovering` | Chain-плагин восстанавливает shared memory |
 | `uptime_sec` | Время с запуска админского слушателя |
 | `server_time` | Текущее UTC |
@@ -194,6 +219,16 @@ admin-log-file = node=/var/log/vizd/vizd.log
 {"path":"/etc/vizd/config.ini","exists":true,"sections":[
   {"name":"","entries":[{"key":"plugin","value":"chain"},
                         {"key":"private-key","value":"***"}]}]}
+```
+
+### `admin.logs.list`
+
+Без параметров. Перечисляет файлы, объявленные в `admin-log-file`: `name`, `path`, `exists`
+и `size` (`null`, если файла ещё нет). Настроенный, но пока пустой аппендер тоже виден:
+«пусто» и «не настроено» — разные факты.
+
+```json
+{"logs":[{"name":"node","path":"/var/lib/vizd/logs/node.log","exists":true,"size":1048576}]}
 ```
 
 ### `admin.logs.tail`
@@ -310,27 +345,32 @@ curl -s http://127.0.0.1:8099 -H "Authorization: Bearer $T" \
 
 ### `admin.snapshot.status`
 
-Без параметров. Нужен `read` и загруженный плагин `snapshot`. Перечисляет файлы снапшотов
-в настроенном `snapshot-dir` и сообщает, что делает плагин.
+Параметры: `{"offset":0,"limit":20}` — оба необязательны. Нужен `read` и загруженный
+плагин `snapshot`. Возвращает одну страницу файлов снапшотов из настроенного `snapshot-dir`
+(сначала наибольший номер блока) и сообщает, что делает плагин. `limit` ограничивается 200.
 
 | Поле | Смысл |
 |---|---|
 | `as_of` | UTC-метка замера |
 | `dir` | Используемый каталог снапшотов |
 | `head_block_num` | Текущая голова; `null`, пока восстановление перестраивает состояние |
-| `snapshot_count` | Число файлов в `snapshots[]` |
+| `snapshot_count` | Число файлов во всём каталоге |
+| `snapshot_total` | Тот же итог, названный явно для клиентов с пагинацией |
+| `offset`, `limit` | Выданная страница |
+| `has_more` | После этой страницы есть ещё файлы |
 | `in_progress`, `restoring`, `recovering` | Пишется снапшот, идёт восстановление, chain-плагин восстанавливается |
 | `latest_path`, `latest_name` | Самый свежий снапшот (наибольший номер блока); когда файлов нет — `latest_path` пустая строка, `latest_name` равен `null` |
 | `snapshots[]` | `name`, `path`, `block_num` (0, если имя не несёт блок), `size_bytes`, `modified` (unixtime), `modified_iso`, `latest` |
 
 ```json
-{"jsonrpc":"2.0","id":50,"method":"admin.snapshot.status"}
+{"jsonrpc":"2.0","id":50,"method":"admin.snapshot.status","params":{"offset":0,"limit":20}}
 ```
 
 ```json
 {"jsonrpc":"2.0","id":50,"result":{
   "as_of":"2026-10-19T15:30:00Z","dir":"/var/lib/vizd/snapshots",
-  "head_block_num":22164,"snapshot_count":1,"in_progress":false,
+  "head_block_num":22164,"snapshot_count":1,"snapshot_total":1,
+  "offset":0,"limit":20,"has_more":false,"in_progress":false,
   "restoring":false,"recovering":false,
   "latest_path":"/var/lib/vizd/snapshots/snapshot-block-22164.vizjson",
   "latest_name":"snapshot-block-22164.vizjson",
@@ -410,6 +450,21 @@ Guard должен быть загружен, запущен и содержат
 `admin.validator.list` показывает `guard.reason`. Настроенный валидатор обязан **существовать
 в цепи** до планирования; создание нового валидатора здесь не предлагается (оно списывает
 сбор за объявление валидатора и меняет набор производителей блоков).
+
+### `admin.validators.active`
+
+Без параметров, только `read`. Возвращает имена из текущего расписания валидаторов
+(дубликаты от коэффициента повтора схлопнуты), число слотов расписания, состояние аварийного
+консенсуса и запущен ли плагин validator в этом процессе. **Ключи не возвращаются** — это
+публичные данные цепи. Для валидаторов, которыми управляет эта нода, есть
+`admin.validator.list`.
+
+```json
+{"as_of":"2026-10-19T15:40:00Z","head_block_num":22164,"count":21,
+ "num_scheduled":21,"validators":["val1","val2"],
+ "emergency_consensus_active":false,"emergency_consensus_start_block":0,
+ "validator_plugin_loaded":true}
+```
 
 ### `admin.validator.list`
 
@@ -657,8 +712,9 @@ Protocol поверх HTTP — на хосте ничего дополнител
 | `tools/list` | Инструменты ниже с JSON-схемой `inputSchema`. |
 | `tools/call` | `{"name":"admin.node_info","arguments":{…}}` — выполняет соответствующий метод `admin.*`. |
 
-Инструменты 1:1 с методами admin: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
-`admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`,
+Инструменты 1:1 с методами admin: `admin.ping`, `admin.auth.me`, `admin.node_info`,
+`admin.diagnostics`, `admin.plugins.list`, `admin.config.get`, `admin.logs.list`,
+`admin.logs.tail`, `admin.audit.tail`, `admin.validators.active`,
 `admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
 `admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore`,
 `admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
@@ -667,7 +723,7 @@ Protocol поверх HTTP — на хосте ничего дополнител
 `admin.webserver.reload`, `admin.validator.list`, `admin.validator.plan`,
 `admin.validator.apply`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
 `admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
-(тридцать четыре).
+(тридцать семь).
 Действия над пирами дополнительно требуют скоупа `p2p`, действия над снапшотами — `snapshot`,
 действия над валидаторами — `chain` (и живого `validator_guard` с active-ключом), действия
 над webserver — `webserver`, правки конфига и плагинов — `config` или `plugins`,
@@ -725,19 +781,37 @@ http://127.0.0.1:8099/ui/
 
 **Что показывает**
 
-* статус ноды, статус форка, голова/LIB, диапазон блоков DLT, аптайм;
-* счётчики пиров, лучшая голова пира и наше отставание (отрицательное = мы позади),
-  сколько пиров впереди;
-* таблицу всех отслеживаемых пиров: направление, lifecycle, голова, отставание, статусы
-  ноды/форка, флаги (`trusted`, `exchange`, `aligned`), возраст соединения и примечание о
-  бане/повторе;
-* панель действий: добавить пира по `IP:port`, добавить его как доверенного, очистить
-  список забаненных;
-* панель снапшотов: состояние (idle / creating / restoring), каталог, число и самый свежий
-  файл; таблица файлов с блоком, размером, возрастом и кнопками **Download** / **Restore**
-  в каждой строке, плюс кнопки **Create snapshot** и **Restore latest**. Скачивание идёт
-  через авторизованный маршрут `/snapshot/<name>` и сохраняется браузером под именем файла;
-* панель лога с результатом каждого действия и ошибками статуса.
+Страница разбита на пять вкладок; последняя выбранная запоминается на сессию вкладки.
+
+* **Status** — состояние ноды, аварийный консенсус (`ACTIVE` с блоком начала или `normal`),
+  настроен ли аварийный ключ, голова/LIB, возраст головы, версия, аптайм, счётчики пиров,
+  лучшая голова пира и наше отставание, баны и флаги. Карточка состояния снапшотов прямо
+  расшифровывает `idle` («никакой задачи со снапшотом не выполняется»), `creating` и
+  `restoring`.
+* **Peers** — таблица всех отслеживаемых пиров: направление, lifecycle, голова, отставание,
+  статусы ноды/форка, флаги (`trusted`, `exchange`, `aligned`), возраст соединения,
+  примечание о бане/повторе. При скоупе `p2p` появляется панель действий: добавить пира по
+  `IP:port`, добавить как доверенного, очистить баны.
+* **Snapshots** — состояние, каталог, общее число и самый свежий файл; **20** новейших
+  файлов с кнопкой **Load more**, которая листает через `offset`/`limit`; блок, размер,
+  возраст и кнопки **Download** / **Restore** в строке, плюс **Create snapshot** и
+  **Restore latest**. На время скачивания кнопка блокируется и показывает радиальный
+  индикатор до прихода тела ответа, поэтому повторные клики не запускают параллельные
+  скачивания. Скачивание идёт через авторизованный маршрут `/snapshot/<name>` и
+  сохраняется браузером под именем файла.
+* **Logs** — выбор файла из записей `admin-log-file`, кнопка **Play/Pause** и прокручиваемая
+  панель. По умолчанию **пауза**: Play опрашивает `admin.logs.tail` каждые две секунды и
+  дописывает только новые строки внизу, раскрашивая их по важности. Если оператор прокрутил
+  вверх, автопрокрутка прекращается; возврат вниз её возобновляет.
+* **Validators** — имена из текущего расписания валидаторов (публичные данные цепи, без
+  ключей), размер расписания и аварийное состояние; ниже — валидаторы, которыми управляет
+  эта нода через `validator_guard`, если плагин жив.
+
+**Страницей управляют скоупы.** При загрузке страница вызывает `admin.auth.me` и скрывает
+каждое действие, которое токену недоступно: без `snapshot` пропадают кнопки Create/Restore
+и Restore в строках, без `p2p` — панель действий над пирами. Поэтому read-only токен видит
+дашборд только со списком и скачиванием, и страница говорит об этом прямо, вместо кнопок,
+на которые API ответил бы `-32002`.
 
 Статус обновляется каждые пять секунд, пока вкладка видима.
 

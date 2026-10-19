@@ -57,6 +57,18 @@ admin-log-file = node=/var/log/vizd/vizd.log
 The plugin refuses to start if `admin-endpoint` is set but no token is configured: an
 unauthenticated admin port is never a valid state.
 
+The Logs tab reads a **file**, not the container's stdout. Nodes that log only to stderr
+inside Docker need an appender that writes the same lines to disk, and that file is what
+`admin-log-file` names:
+
+```ini
+log.file_appender.node.filename = /var/lib/vizd/logs/node.log
+logger.default.level = info
+logger.default.appenders = stderr,node
+
+admin-log-file = node=/var/lib/vizd/logs/node.log
+```
+
 ### Tokens
 
 A token is 32 random bytes, for example `openssl rand -hex 32`. Only its SHA-256 is stored
@@ -135,6 +147,17 @@ answer `413` — copy those with `scp` instead.
 
 Liveness check; does not touch the chain database.
 
+### `admin.auth.me`
+
+No params. Returns the identity the presented token carries — its `label`, its `scopes` and
+its `expires` (unixtime, `null` when the token does not expire). The token and its hash are
+**never** returned. The built-in UI uses this to hide actions the token cannot perform; an
+agent can use it to discover its own permissions before planning a call.
+
+```json
+{"label":"ui-read","scopes":["read"],"expires":null}
+```
+
 ### `admin.node_info`
 
 | Field | Meaning |
@@ -144,6 +167,8 @@ Liveness check; does not touch the chain database.
 | `head_block_num`, `head_block_id`, `head_block_time` | Current head |
 | `head_age_sec` | Wall-clock age of the head block; `null` on an empty chain (head time there is 1970, so an "age" would be meaningless) |
 | `last_irreversible_block_num` | Last irreversible block |
+| `emergency_consensus_active`, `emergency_consensus_start_block` | Chain-wide emergency consensus state and the block that started it (`0` when inactive) |
+| `emergency_key_configured` | The validator plugin has an emergency key loaded |
 | `recovering` | Chain plugin is recovering shared memory |
 | `uptime_sec` | Time since the admin listener started |
 | `server_time` | UTC now |
@@ -192,6 +217,16 @@ anything containing `private-key`, `private_key`, `password`, `secret`, `token`,
 {"path":"/etc/vizd/config.ini","exists":true,"sections":[
   {"name":"","entries":[{"key":"plugin","value":"chain"},
                         {"key":"private-key","value":"***"}]}]}
+```
+
+### `admin.logs.list`
+
+No params. Lists the files declared by `admin-log-file`, each with `name`, `path`, `exists`
+and `size` (`null` when the file is missing). A configured appender that has not written yet
+is still listed: "empty" and "not configured" are different facts.
+
+```json
+{"logs":[{"name":"node","path":"/var/lib/vizd/logs/node.log","exists":true,"size":1048576}]}
 ```
 
 ### `admin.logs.tail`
@@ -306,27 +341,32 @@ curl -s http://127.0.0.1:8099 -H "Authorization: Bearer $T" \
 
 ### `admin.snapshot.status`
 
-No params. Requires `read` and the `snapshot` plugin to be loaded. Lists the snapshot files
-in the configured `snapshot-dir` and reports what the plugin is doing.
+Params: `{"offset":0,"limit":20}` — both optional. Requires `read` and the `snapshot` plugin
+to be loaded. Returns one page of the snapshot files in the configured `snapshot-dir`, newest
+block first, and reports what the plugin is doing. `limit` is clamped to 200.
 
 | Field | Meaning |
 |---|---|
 | `as_of` | UTC timestamp of the reading |
 | `dir` | Snapshot directory in use |
 | `head_block_num` | Current head; `null` while a restore is rebuilding state |
-| `snapshot_count` | Number of files in `snapshots[]` |
+| `snapshot_count` | Number of files in the whole directory |
+| `snapshot_total` | Same total, named explicitly for paging clients |
+| `offset`, `limit` | The page that was returned |
+| `has_more` | More files exist after this page |
 | `in_progress`, `restoring`, `recovering` | A snapshot is being written, a restore is running, the chain plugin is recovering |
 | `latest_path`, `latest_name` | Newest snapshot (highest block number); `latest_path` is an empty string and `latest_name` is `null` when there are none |
 | `snapshots[]` | `name`, `path`, `block_num` (0 when the name does not carry a block), `size_bytes`, `modified` (unixtime), `modified_iso`, `latest` |
 
 ```json
-{"jsonrpc":"2.0","id":50,"method":"admin.snapshot.status"}
+{"jsonrpc":"2.0","id":50,"method":"admin.snapshot.status","params":{"offset":0,"limit":20}}
 ```
 
 ```json
 {"jsonrpc":"2.0","id":50,"result":{
   "as_of":"2026-10-19T15:30:00Z","dir":"/var/lib/vizd/snapshots",
-  "head_block_num":22164,"snapshot_count":1,"in_progress":false,
+  "head_block_num":22164,"snapshot_count":1,"snapshot_total":1,
+  "offset":0,"limit":20,"has_more":false,"in_progress":false,
   "restoring":false,"recovering":false,
   "latest_path":"/var/lib/vizd/snapshots/snapshot-block-22164.vizjson",
   "latest_name":"snapshot-block-22164.vizjson",
@@ -406,6 +446,21 @@ mutating methods answer `-32002 forbidden / validator-guard is not configured`, 
 `admin.validator.list` reports `guard.reason`. A configured validator must exist **on chain**
 before it can be planned; creating a new validator is not offered here (it charges the
 validator declaration fee and changes the set of block producers).
+
+### `admin.validators.active`
+
+No params, `read` only. Returns the names in the current validator schedule (duplicates from
+the repeat factor are collapsed), the number of scheduled slots, the emergency consensus
+state and whether the validator plugin is running in this process. **No keys are returned** —
+this is public chain data. Use `admin.validator.list` for the validators this node actually
+operates.
+
+```json
+{"as_of":"2026-10-19T15:40:00Z","head_block_num":22164,"count":21,
+ "num_scheduled":21,"validators":["val1","val2"],
+ "emergency_consensus_active":false,"emergency_consensus_start_block":0,
+ "validator_plugin_loaded":true}
+```
 
 ### `admin.validator.list`
 
@@ -652,8 +707,9 @@ MCP requests are ordinary JSON-RPC 2.0 `POST`s to the admin endpoint:
 | `tools/list` | The tools below with JSON-Schema `inputSchema`. |
 | `tools/call` | `{"name":"admin.node_info","arguments":{…}}` — executes the matching `admin.*` method. |
 
-Tools are 1:1 with the admin methods: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
-`admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`,
+Tools are 1:1 with the admin methods: `admin.ping`, `admin.auth.me`, `admin.node_info`,
+`admin.diagnostics`, `admin.plugins.list`, `admin.config.get`, `admin.logs.list`,
+`admin.logs.tail`, `admin.audit.tail`, `admin.validators.active`,
 `admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
 `admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore`,
 `admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
@@ -662,7 +718,7 @@ Tools are 1:1 with the admin methods: `admin.ping`, `admin.node_info`, `admin.di
 `admin.webserver.reload`, `admin.validator.list`, `admin.validator.plan`,
 `admin.validator.apply`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
 `admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
-(thirty-four).
+(thirty-seven).
 The peer actions additionally require the `p2p` scope, the snapshot actions the `snapshot`
 scope, validator operations the `chain` scope (and a live `validator_guard` with an active
 key), the webserver actions the `webserver` scope, config/plugin edits the `config` or
@@ -720,16 +776,36 @@ the URL (that would land in history and access logs).
 
 **What it shows**
 
-* node status, fork status, head/LIB, DLT block range, uptime;
-* peer counts, best peer head and our lag behind it (negative = behind), peers ahead;
-* a table of every tracked peer: direction, lifecycle, head, lag, node/fork status, flags
-  (`trusted`, `exchange`, `aligned`), connection age, and ban/retry note;
-* an action panel: add a peer by `IP:port`, add it as trusted, clear the banned list;
-* a snapshot panel: state (idle / creating / restoring), directory, count and newest file;
-  a table of files with block, size, age and per-row **Download** / **Restore**, plus
-  **Create snapshot** and **Restore latest** buttons. Downloads use the authenticated
-  `/snapshot/<name>` route and are saved by the browser under the file's own name;
-* a log pane with the outcome of every action and status error.
+The page is organised as five tabs; the last one is remembered per tab session.
+
+* **Status** — node state, emergency consensus (`ACTIVE` with the starting block, or `normal`),
+  whether an emergency key is configured, head/LIB, head age, version, uptime, peer counts,
+  best peer head and our lag behind it, bans and flags. The snapshot tab's own state card
+  spells out `idle` ("no snapshot job is running") versus `creating` and `restoring`.
+* **Peers** — a table of every tracked peer: direction, lifecycle, head, lag, node/fork
+  status, flags (`trusted`, `exchange`, `aligned`), connection age, ban/retry note. With the
+  `p2p` scope an action panel adds a peer by `IP:port`, adds it as trusted, or clears bans.
+* **Snapshots** — state, directory, total count and the newest file; the newest **20** files
+  with **Load more** paging through `offset`/`limit`, block, size, age and per-row
+  **Download** / **Restore**, plus **Create snapshot** and **Restore latest**. A download
+  request disables its button and shows a radial progress spinner until the response body
+  arrives, so repeated clicks cannot start parallel downloads. Downloads use the
+  authenticated `/snapshot/<name>` route and are saved by the browser under the file's own
+  name.
+* **Logs** — a selector over `admin-log-file` entries, a **Play/Pause** control and a
+  scrolling pane. It starts **paused**: pressing Play polls `admin.logs.tail` every two
+  seconds and appends only the new lines at the bottom, colouring them by severity. When the
+  operator scrolls up, the pane stops auto-scrolling; scrolling back to the bottom resumes
+  it.
+* **Validators** — the names in the current validator schedule (public chain data, no keys),
+  the schedule size and the emergency state; below it, the validators this node operates via
+  `validator_guard`, when the plugin is live.
+
+**Scopes drive the page.** On load the page calls `admin.auth.me` and hides every action the
+token cannot perform: without `snapshot` the Create/Restore buttons and the per-row Restore
+disappear, without `p2p` the peer action panel disappears. A read-only token therefore sees a
+dashboard with listing and downloads only, and the page says so instead of offering buttons
+that would be refused with `-32002`.
 
 The status view refreshes every five seconds while the tab is visible.
 
