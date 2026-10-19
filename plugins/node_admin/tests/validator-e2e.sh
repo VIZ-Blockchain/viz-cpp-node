@@ -287,12 +287,9 @@ ok "chain passed HF9 and HF12 (head $H)"
 # steps are checked against chain state, not wallet output.
 #
 # `backup` carries disable/enable/set_key; `cold` exists only so that a batch plan
-# can name two different validators without touching the producing one. Rotating
-# the signing key of the validator that produces the next block does not land on a
-# single-slot chain: the producer selects the key from the pending-transaction
-# state (validator.cpp:1875 reads the session-visible validator object), signs the
-# block with the new key, and validate_block_header then rejects it against the
-# pre-block key; the pending pool is cleared and the update is lost.
+# can name two different validators that are both off the schedule, which keeps
+# section 9 about batch semantics alone. The producing validator's own rotation is
+# exercised separately by section 10.
 for name in backup cold; do
     wallet "unlock pw && import_key $COMMITTEE_WIF && create_account_with_keys \"viz\" \"1000.000 VIZ\" \"0.000000 SHARES\" \"$name\" \"{}\" $COMMITTEE_PUB $COMMITTEE_PUB $COMMITTEE_PUB $COMMITTEE_PUB true"
     sleep 1
