@@ -6,15 +6,18 @@ and AI agents holding a bearer token — not for end users, and not as a replace
 public API. The same listener also serves an **MCP** (Model Context Protocol) endpoint over
 HTTP and a small built-in web UI at `/ui/`.
 
-> **Mutating surface: P2P peers, snapshots, webserver policy, `config.ini` and the process.**
-> `admin.p2p.add_node`, `admin.p2p.add_trusted` and `admin.p2p.clear_banned` change whom the
-> node dials; `admin.snapshot.create` and `admin.snapshot.restore` write a snapshot file or
-> replace the node's in-memory state; `admin.webserver.*` mutating methods change rate limits,
-> the stats switch and the IP allow/deny lists; `admin.config.*` and `admin.plugins.*`
-> edit `config.ini` through a two-phase `plan`/`apply`; `admin.restart` asks the process to
-> exit. They require a token with the `p2p`, `snapshot`, `webserver`, `config`, `plugins` or
-> `process` scope respectively. Peer actions are serialized onto the P2P thread; webserver
-> policy changes apply to the very next request; config/plugin edits are read at startup and
+> **Mutating surface: P2P peers, snapshots, validator keys, webserver policy, `config.ini`
+> and the process.** `admin.p2p.add_node`, `admin.p2p.add_trusted` and
+> `admin.p2p.clear_banned` change whom the node dials; `admin.snapshot.create` and
+> `admin.snapshot.restore` write a snapshot file or replace the node's in-memory state;
+> `admin.validator.*` enable/disable validators and change their signing keys by signing
+> on-chain transactions; `admin.webserver.*` mutating methods change rate limits, the stats
+> switch and the IP allow/deny lists; `admin.config.*` and `admin.plugins.*` edit `config.ini`
+> through a two-phase `plan`/`apply`; `admin.restart` asks the process to exit. They require a
+> token with the `p2p`, `snapshot`, `chain`, `webserver`, `config`, `plugins` or `process`
+> scope respectively. Peer actions are serialized onto the P2P thread; validator actions are
+> signed by the `validator_guard` plugin and broadcast to the network; webserver policy
+> changes apply to the very next request; config/plugin edits are read at startup and
 > therefore need a restart.
 
 ---
@@ -70,8 +73,12 @@ in the configuration; comparison is constant-time. Scopes:
   keys). `admin.config.backups` needs only `read`.
 * `plugins` — `admin.plugins.plan` and `admin.plugins.apply` (editing the `plugin =` list).
 * `process` — `admin.restart`. It shuts the process down; a supervisor must start it again.
-* `chain` — reserved for the mutating chain stage; a token that carries only this cannot call
-  anything yet.
+* `chain` — `admin.validator.plan` and `admin.validator.apply` (enabling/disabling validators
+  and changing their signing keys). These calls are **only accepted while `validator_guard`
+  is loaded, started and configured with an active key** — that plugin holds the key that
+  signs the chain transaction, and it never exposes the key through this API. Without a live
+  guard, a `chain` token can call nothing: `admin.validator.list` stays readable with `read`
+  and reports why the mutating calls are unavailable.
 
 Revocation is editing the line and restarting. `expires-unixtime` (optional) makes the
 token invalid after that moment without a restart.
@@ -381,6 +388,81 @@ not pretend the restore succeeded.
 
 ---
 
+## Validator key methods (`chain` scope)
+
+Decision q#3051=D: the operator manages validators through `node_admin`, but the **active
+key never enters the admin API**. Transactions are built and signed inside the
+`validator_guard` plugin, which is configured with the signing and active WIFs of each
+validator:
+
+```ini
+plugin = validator_guard
+validator-guard-validator = ["val1", "5J…signing…", "5J…active…"]
+validator-guard-validator = ["val2", "5J…signing…", "5J…active…"]
+```
+
+The guard must be loaded, started and hold at least one configured validator; otherwise the
+mutating methods answer `-32002 forbidden / validator-guard is not configured`, and
+`admin.validator.list` reports `guard.reason`. A configured validator must exist **on chain**
+before it can be planned; creating a new validator is not offered here (it charges the
+validator declaration fee and changes the set of block producers).
+
+### `admin.validator.list`
+
+Scope `read`. No params. Returns:
+
+```json
+{"guard":{"loaded":true,"started":true,"available":true},
+ "validators":[{"name":"val1","on_chain":true,"enabled":true,"hold":false,
+                "active_authority":true,"scheduled_in":2,
+                "signing_key":"VIZ6…","configured_key":"VIZ6…"}]}
+```
+
+* `enabled` — the on-chain signing key is not null.
+* `hold` — the operator disabled this validator through this API; the guard's auto-restore
+  is suppressed for it until an `enable`/`set_key` succeeds (see below).
+* `active_authority` — the guard's active key is in the account's active authority. `false`
+  means a transaction signed by the guard will be rejected by the chain; the same warning is
+  logged at guard startup.
+* `scheduled_in` — position (1-based) of the next 3 scheduled slots this validator produces,
+  `null` when it is not in them.
+
+### `admin.validator.plan`
+
+Scope `chain`. Params: `{"actions":[{"name":"val1","action":"disable"},…]}`. `action` is
+`enable` (restore the guard's configured signing key), `disable` (null the signing key and
+set the operator hold) or `set_key` (requires `signing_key`, a base58 public key). Every name
+must be configured in the guard and exist on chain; duplicates are refused.
+
+The reply carries `plan_id`, `kind:"validators"`, `transactions` (how many chain
+transactions the plan would send) and a `diff` per action: `from`/`to` signing keys,
+`hold_from`/`hold_to`, `tx_needed`. An action that is already satisfied is omitted; a plan
+with no effective change is refused with `-32602 no changes`. **Nothing is signed or
+broadcast yet.** Plans are single-use, bound to the token label and expire after
+`admin-plan-ttl`, exactly like config plans. Capturing the current key in the plan is what
+makes a stale plan safe: if the chain moved in between, `apply` refuses that action instead
+of overwriting somebody else's update.
+
+### `admin.validator.apply`
+
+Scope `chain`. Params: `{"plan_id":"…"}`. Signs one `validator_update` per changed action with
+the guard's active key, puts it into the local pending pool and broadcasts it to peers. The
+reply lists per-action `status`: `applied` (with `tx_id`), `already` (the chain reached the
+desired state on its own) or `failed` (with `error`). `applied`, `unchanged` and `failed`
+counts are given too.
+
+**The operator hold follows the outcome, never the intent.** A successful `disable` writes
+the validator into `<data-dir>/validator-guard-holds.txt`; the guard's periodic auto-restore
+skips held validators, and the file is re-read at startup, so a restart does not silently
+re-enable it either (disable-on-shutdown does not create a hold — it is a normal shutdown
+action). A successful `enable` or `set_key` removes the hold. A failed disable leaves no
+latch: the validator stays as it was.
+
+Transactions are built under the chain's read lock and broadcast after it is released, the
+same rule as every other chain write from this plugin. No restart is needed.
+
+---
+
 ## Webserver policy methods
 
 These methods manage the public API plugin: per-IP request counters, the stats log, rate
@@ -577,11 +659,13 @@ Tools are 1:1 with the admin methods: `admin.ping`, `admin.node_info`, `admin.di
 `admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
 `admin.webserver.stats`, `admin.webserver.whitelist_add`, `admin.webserver.whitelist_remove`,
 `admin.webserver.blacklist_add`, `admin.webserver.blacklist_remove`, `admin.webserver.reset`,
-`admin.webserver.reload`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
+`admin.webserver.reload`, `admin.validator.list`, `admin.validator.plan`,
+`admin.validator.apply`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
 `admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
-(thirty-one).
+(thirty-four).
 The peer actions additionally require the `p2p` scope, the snapshot actions the `snapshot`
-scope, the webserver actions the `webserver` scope, config/plugin edits the `config` or
+scope, validator operations the `chain` scope (and a live `validator_guard` with an active
+key), the webserver actions the `webserver` scope, config/plugin edits the `config` or
 `plugins` scope and restart the `process` scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
 result (`"isError": true` with the message in `content[0].text`), as MCP expects; protocol
 errors (unknown tool, bad params, missing scope) remain JSON-RPC errors.
@@ -735,10 +819,20 @@ cases, and the `snapshot`-scope denial on create/restore), MCP
 `initialize`/`tools/list`/`tools/call`, webserver stats/limits (burst → `429`, whitelist
 bypass, blacklist `403`, hot limits change, persistence and reload), config/plugin
 plan-and-apply (allow-list, scope and token binding, single use, expiry, stale-hash refusal,
-backups, plugin protection), restart (`confirm` guard, scope guard, clean exit 0 and a
+backups, plugin protection), validator key operations (the list stays readable and names the
+missing plugin, `plan` is refused without `chain` and again without a live guard; after the
+restart the guard is loaded and started but has no active-key validator, so `plan` stays
+refused), restart (`confirm` guard, scope guard, clean exit 0 and a
 supervisor-style start that reads the edited config back), and the `/ui/` page. It
 starts the webserver plugin on a third port and needs a built `vizd` and three free ports,
 so it is not part of CTest.
+
+The signing path itself cannot run in that script: a fresh chain has no second validator, and
+the genesis `committee` account has an empty active authority. It is exercised separately on a
+scratch chain (`plugin = validator` with stale production, a `validator-guard-validator` entry,
+and `cli_wallet` to create a second account and register it as a validator): list shows
+`on_chain`/`enabled`/`active_authority`, disable/enable/set-key change the on-chain signing key
+and write a transaction id, and a disable survives a node restart through the hold file.
 
 `tests/node_admin/` is a CTest target (`node_admin_util`, Boost.Test) over the pure helpers:
 secret masking, token parsing, the config parser, the allow-list and normalization, and the

@@ -3,6 +3,7 @@
 
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
+#include <graphene/plugins/validator_guard/validator_guard.hpp>
 #include <graphene/plugins/webserver/webserver_plugin.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
@@ -839,6 +840,8 @@ struct node_admin_plugin::impl {
         std::map<std::string, std::string> set; // config
         std::vector<std::string> add;           // plugins
         std::vector<std::string> remove;        // plugins
+        // validators: [{name, action, signing_key, expected_key, hold_from}]
+        fc::variants actions;
         fc::variant diff;
     };
     std::mutex plans_mutex;
@@ -900,6 +903,15 @@ struct node_admin_plugin::impl {
     fc::variant h_webserver_list_remove(const fc::variant &params, bool whitelist);
     fc::variant h_webserver_reset(const fc::variant &params);
     fc::variant h_webserver_reload(const fc::variant &params);
+
+    // ── validator chain operations (delegate signed through validator_guard) ──────────────
+    // The plugin keeps both keys and never exposes them; node_admin only drives it and
+    // reports the outcome. The `chain` scope additionally requires a live guard.
+    graphene::plugins::validator_guard::validator_guard_plugin *guard_plugin() const;
+    bool guard_ready() const;
+    fc::variant h_validator_list(const fc::variant &params);
+    fc::variant h_validator_plan(const fc::variant &params, const token_info &token);
+    fc::variant h_validator_apply(const fc::variant &params, const token_info &token);
 
     // ── config/plugin editor and restart (plan/apply) ─────────────────────────────────────
     fc::variant h_config_plan(const fc::variant &params, const token_info &token);
@@ -1579,6 +1591,27 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
                             "restart needs a token with scopes 'read,process'"};
         }
         return h_restart(params);
+    }
+
+    // Validator chain operations are signed INSIDE validator_guard with its active keys
+    // (decision q#3051=D): node_admin never sees a key. Reads stay under `read`; plan/apply
+    // need `chain`, and that scope is usable only while a live guard holds an active key.
+    if (method == "admin.validator.list" || method == "admin.validator.status") {
+        return h_validator_list(params);
+    }
+    if (method == "admin.validator.plan" || method == "admin.validator.apply") {
+        if (token.scopes.find("chain") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'chain' scope",
+                            "validator operations need a token with scopes 'read,chain'"};
+        }
+        if (!guard_ready()) {
+            throw rpc_error{-32002, "forbidden", "validator-guard is not configured",
+                            "chain operations are signed by validator_guard; configure the "
+                            "plugin with validator-guard-validator = [name,signing_wif,active_wif]"};
+        }
+        if (method == "admin.validator.plan") return h_validator_plan(params, token);
+        return h_validator_apply(params, token);
     }
 
     // MCP Streamable HTTP on the same authenticated listener (decision q#3052=B: the MCP
@@ -2339,7 +2372,8 @@ node_admin_plugin::impl::pending_plan node_admin_plugin::impl::take_plan(
     const std::string &id, const token_info &token, const std::string &kind) {
     if (id.empty()) {
         throw rpc_error{-32602, "invalid params", "missing plan_id",
-                        "create a plan first: admin.config.plan or admin.plugins.plan"};
+                        "create a plan first: admin.config.plan, admin.plugins.plan or "
+                        "admin.validator.plan"};
     }
     std::lock_guard<std::mutex> lock(plans_mutex);
     auto it = plans.find(id);
@@ -2726,6 +2760,267 @@ fc::variant node_admin_plugin::impl::h_restart(const fc::variant &params) {
     return fc::variant(m);
 }
 
+// ── validator chain operations (validator_guard) ─────────────────────────────────────────
+// Decision q#3051=D: node_admin does not keep its own key. The guard already holds
+// signing+active keys per validator, signs validator_update inside its own plugin, and
+// exposes a plain status/action API here. `chain` is granted only while the guard is
+// live with an active key, which is what the dispatch check above enforces.
+
+graphene::plugins::validator_guard::validator_guard_plugin *
+node_admin_plugin::impl::guard_plugin() const {
+    return appbase::app().find_plugin<graphene::plugins::validator_guard::validator_guard_plugin>();
+}
+
+bool node_admin_plugin::impl::guard_ready() const {
+    auto *g = guard_plugin();
+    return g != nullptr &&
+           g->get_state() == appbase::abstract_plugin::started &&
+           g->chain_actions_available();
+}
+
+fc::variant node_admin_plugin::impl::h_validator_list(const fc::variant &) {
+    auto *g = guard_plugin();
+    const bool loaded = g != nullptr;
+    const bool started = loaded && g->get_state() == appbase::abstract_plugin::started;
+    const bool available = loaded && started && g->chain_actions_available();
+
+    fc::mutable_variant_object ginfo;
+    ginfo("loaded", loaded);
+    ginfo("started", started);
+    ginfo("available", available);
+    if (!loaded) {
+        ginfo("reason", "validator_guard is not loaded; add `plugin = validator_guard` to config.ini");
+    } else if (!started) {
+        ginfo("reason", "validator_guard has not finished starting");
+    } else if (!available) {
+        ginfo("reason", "no validator is configured with an active key "
+                        "(validator-guard-validator = [name,signing_wif,active_wif])");
+    }
+
+    fc::variants arr;
+    if (available) {
+        for (const auto &s : g->validators_status()) {
+            fc::mutable_variant_object m;
+            m("name", s.name);
+            m("on_chain", s.on_chain);
+            m("enabled", s.enabled);
+            m("hold", s.hold);
+            m("active_authority", s.active_authority);
+            m("scheduled_in", s.scheduled_in > 0 ? fc::variant(static_cast<int64_t>(s.scheduled_in))
+                                                 : fc::variant());
+            m("signing_key", s.signing_key.empty() ? fc::variant() : fc::variant(s.signing_key));
+            m("configured_key", s.configured_key.empty() ? fc::variant()
+                                                         : fc::variant(s.configured_key));
+            arr.push_back(fc::variant(m));
+        }
+    }
+
+    fc::mutable_variant_object m;
+    m("guard", ginfo);
+    m("validators", arr);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_validator_plan(const fc::variant &params,
+                                                      const token_info &token) {
+    namespace vg = graphene::plugins::validator_guard;
+
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {actions: [{name, action}]}", ""};
+    }
+    const fc::variant_object &o = params.get_object();
+    auto it = o.find("actions");
+    if (it == o.end() || !it->value().is_array() || it->value().get_array().empty()) {
+        throw rpc_error{-32602, "invalid params", "'actions' must be a non-empty array",
+                        "example: {\"actions\":[{\"name\":\"val1\",\"action\":\"disable\"}]}"};
+    }
+
+    auto *g = guard_plugin();
+    std::map<std::string, vg::validator_status> by_name;
+    for (const auto &s : g->validators_status()) by_name[s.name] = s;
+
+    fc::variants actions;
+    fc::variants diff;
+    std::set<std::string> seen;
+    std::size_t tx_count = 0;
+
+    for (const fc::variant &a : it->value().get_array()) {
+        if (!a.is_object()) {
+            throw rpc_error{-32602, "invalid params", "each action must be an object", ""};
+        }
+        const fc::variant_object &ao = a.get_object();
+        const std::string name = trim(param_str(ao, "name", ""));
+        if (name.empty()) {
+            throw rpc_error{-32602, "invalid params", "each action needs a 'name'", ""};
+        }
+        if (!seen.insert(name).second) {
+            throw rpc_error{-32602, "invalid params",
+                            "validator '" + name + "' appears twice in one plan", ""};
+        }
+        auto sit = by_name.find(name);
+        if (sit == by_name.end()) {
+            throw rpc_error{-32602, "invalid params",
+                            "validator '" + name + "' is not configured in validator-guard",
+                            "admin.validator.list shows the configured validators"};
+        }
+        if (!sit->second.on_chain) {
+            throw rpc_error{-32602, "invalid params",
+                            "validator '" + name + "' does not exist on chain", ""};
+        }
+
+        const std::string act = trim(param_str(ao, "action", ""));
+        vg::validator_action kind;
+        if (act == "enable") kind = vg::validator_action::enable;
+        else if (act == "disable") kind = vg::validator_action::disable;
+        else if (act == "set_key") kind = vg::validator_action::set_key;
+        else {
+            throw rpc_error{-32602, "invalid params",
+                            "action must be 'enable', 'disable' or 'set_key', got '" + act + "'", ""};
+        }
+
+        std::string key;
+        if (kind == vg::validator_action::set_key) {
+            key = trim(param_str(ao, "signing_key", ""));
+            if (key.empty()) {
+                throw rpc_error{-32602, "invalid params", "set_key requires 'signing_key'", ""};
+            }
+            try {
+                graphene::protocol::public_key_type parsed(key);
+            } catch (const fc::exception &e) {
+                throw rpc_error{-32602, "invalid params",
+                                "invalid signing_key: " + e.to_string(),
+                                "expected a base58 public key, e.g. VIZ8..."};
+            }
+        }
+
+        const std::string from = sit->second.signing_key;
+        std::string to;
+        if (kind == vg::validator_action::enable) to = sit->second.configured_key;
+        else if (kind == vg::validator_action::set_key) to = key;
+
+        const bool hold_to = (kind == vg::validator_action::disable);
+        const bool tx_needed = (from != to);
+        const bool hold_change = (sit->second.hold != hold_to);
+        if (!tx_needed && !hold_change) continue; // already in the requested state
+
+        fc::mutable_variant_object d;
+        d("name", name);
+        d("action", act);
+        d("from", from.empty() ? fc::variant() : fc::variant(from));
+        d("to", to.empty() ? fc::variant() : fc::variant(to));
+        d("hold_from", sit->second.hold);
+        d("hold_to", hold_to);
+        d("tx_needed", tx_needed);
+        diff.push_back(fc::variant(d));
+
+        fc::mutable_variant_object sa;
+        sa("name", name);
+        sa("action", act);
+        sa("signing_key", key);
+        sa("expected_key", from);
+        sa("hold_from", sit->second.hold);
+        actions.push_back(fc::variant(sa));
+        if (tx_needed) ++tx_count;
+    }
+
+    if (diff.empty()) {
+        throw rpc_error{-32602, "invalid params",
+                        "no changes: every validator is already in the requested state", ""};
+    }
+
+    pending_plan p;
+    p.id = random_plan_id();
+    p.label = token.label;
+    p.kind = "validators";
+    p.created = now_unixtime();
+    p.expires = p.created + plan_ttl_sec;
+    p.actions = std::move(actions);
+    p.diff = fc::variant(diff);
+    store_plan(p);
+
+    fc::mutable_variant_object m;
+    m("plan_id", p.id);
+    m("kind", "validators");
+    m("diff", diff);
+    m("transactions", static_cast<int64_t>(tx_count));
+    m("expires_at", unixtime_iso(p.expires));
+    m("hint", "nothing was signed or broadcast yet; apply with admin.validator.apply {plan_id}. "
+              "The plan is single-use, bound to this token, and each action is refused if the "
+              "on-chain signing key changed after this plan was made.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_validator_apply(const fc::variant &params,
+                                                       const token_info &token) {
+    namespace vg = graphene::plugins::validator_guard;
+
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {plan_id}", ""};
+    }
+    const pending_plan p =
+        take_plan(trim(param_str(params.get_object(), "plan_id", "")), token, "validators");
+
+    auto *g = guard_plugin();
+    if (g == nullptr || !g->chain_actions_available()) {
+        throw rpc_error{-32002, "forbidden", "validator-guard is no longer active",
+                        "the plan was consumed; configure the guard and create a new plan"};
+    }
+
+    std::vector<vg::validator_action_request> reqs;
+    reqs.reserve(p.actions.size());
+    for (const fc::variant &sv : p.actions) {
+        const fc::variant_object &so = sv.get_object();
+        vg::validator_action_request r;
+        r.name = param_str(so, "name", "");
+        const std::string act = param_str(so, "action", "");
+        if (act == "enable") r.action = vg::validator_action::enable;
+        else if (act == "disable") r.action = vg::validator_action::disable;
+        else r.action = vg::validator_action::set_key;
+        r.signing_key = param_str(so, "signing_key", "");
+        r.check_expected = true;
+        r.expected_key = param_str(so, "expected_key", "");
+        reqs.push_back(r);
+    }
+
+    const std::vector<vg::validator_action_result> res = g->apply_validator_actions(reqs);
+
+    fc::variants out;
+    int64_t applied = 0;
+    int64_t unchanged = 0;
+    int64_t failed = 0;
+    for (const auto &r : res) {
+        fc::mutable_variant_object m;
+        m("name", r.name);
+        m("action", r.action);
+        if (!r.ok) {
+            m("status", "failed");
+            m("error", r.error);
+            ++failed;
+        } else if (r.changed) {
+            m("status", "applied");
+            m("tx_id", r.tx_id);
+            ++applied;
+        } else {
+            m("status", "already");
+            ++unchanged;
+        }
+        if (r.ok) m("hold", r.action == "disable");
+        out.push_back(fc::variant(m));
+    }
+
+    fc::mutable_variant_object m;
+    m("plan_id", p.id);
+    m("kind", "validators");
+    m("applied", applied);
+    m("unchanged", unchanged);
+    m("failed", failed);
+    m("results", out);
+    m("hint", "signed transactions are in this node's pending pool and were broadcast to peers; "
+              "no restart is needed. A disable sets a persisted operator hold, so auto-restore "
+              "will not turn the validator back on after a restart either.");
+    return fc::variant(m);
+}
+
 // ── MCP (Streamable HTTP) ────────────────────────────────────────────────────────────────
 // The MCP endpoint is the same loopback listener and the same bearer tokens as admin.*.
 // Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
@@ -2936,6 +3231,29 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Ask appbase to quit so the supervisor (docker --restart / systemd "
                          "Restart=always) starts the node again. Needs the 'process' scope.",
                          schema(confirm_props, confirm_required)));
+
+    fc::variants validator_props;
+    validator_props.push_back(prop("array",
+        "Actions: [{name, action: 'enable'|'disable'|'set_key', signing_key?}]. One entry "
+        "per validator; duplicates are refused."));
+    fc::variants validator_required;
+    validator_required.push_back(fc::variant(std::string("actions")));
+
+    tools.push_back(tool("admin.validator.list",
+                         "Validators monitored by validator_guard: on-chain signing key, "
+                         "whether the operator hold is set, the guard's active authority and "
+                         "the next scheduled slot.",
+                         no_args));
+    tools.push_back(tool("admin.validator.plan",
+                         "Validate enable/disable/set_key for several validators and return "
+                         "the exact diff plus a single-use plan_id. Nothing is signed yet. "
+                         "Needs the 'chain' scope and a live validator-guard with an active key.",
+                         schema(validator_props, validator_required)));
+    tools.push_back(tool("admin.validator.apply",
+                         "Sign and broadcast the planned validator_update transactions "
+                         "through validator_guard, refusing any validator whose on-chain key "
+                         "changed since the plan. Needs the 'chain' scope.",
+                         schema(plan_id_props, plan_id_required)));
     return fc::variant(tools);
 }
 
@@ -2970,7 +3288,10 @@ fc::variant node_admin_plugin::impl::h_mcp_initialize(const fc::variant &params)
       "additionally need the 'snapshot' scope; the webserver policy tools "
       "(admin.webserver.limits / stats / whitelist_* / blacklist_* / reset / reload) "
       "additionally need the 'webserver' scope; admin.config.plan/apply need 'config', "
-      "admin.plugins.plan/apply need 'plugins', and admin.restart needs 'process'. Config and "
+      "admin.plugins.plan/apply need 'plugins', and admin.restart needs 'process'. Validator "
+      "operations (admin.validator.plan/apply) need 'chain' and are accepted only while "
+      "validator_guard is live with an active key; disable sets a persisted operator hold, so "
+      "the guard's auto-restore does not undo it (enable clears the hold). Config and "
       "plugin edits are two-phase: plan shows the exact diff and returns a single-use, "
       "token-bound plan_id; apply re-checks that config.ini did not change, writes it "
       "atomically and keeps a .bak copy. Both need a restart to take effect. Webserver changes "

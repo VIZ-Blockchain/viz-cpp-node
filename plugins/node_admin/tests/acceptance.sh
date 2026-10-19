@@ -24,6 +24,7 @@ SNAP=accept-snap-token
 WS=accept-webserver-token
 ADM=accept-admin-token
 ADM2=accept-admin2-token
+CHN=accept-chain-token
 EXPIRED=accept-expired-token
 sha() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
 
@@ -43,6 +44,8 @@ admin-token = snap:read,snapshot:$(sha "$SNAP")
 admin-token = ws:read,webserver:$(sha "$WS")
 admin-token = adm:read,config,plugins,process:$(sha "$ADM")
 admin-token = adm2:read,config,plugins,process:$(sha "$ADM2")
+# The chain scope alone does not buy validator operations: the guard must be live.
+admin-token = chn:read,chain:$(sha "$CHN")
 admin-token = old:read:$(sha "$EXPIRED"):1000000000
 # Short TTL so the expired-plan branch is reachable inside this script (a 4 s sleep).
 admin-plan-ttl = 3
@@ -566,12 +569,14 @@ check "plugins.plan -> chain cannot be removed" -32602 "$(field error.code)"
 auth "$ADM" '{"jsonrpc":"2.0","id":103,"method":"admin.plugins.plan","params":{"remove":["validator"]}}'
 check "plugins.plan -> removing an absent plugin refused" -32602 "$(field error.code)"
 check_contains "plugins.plan -> absence named" "not configured" "$(field error.data.reason)"
-auth "$ADM" '{"jsonrpc":"2.0","id":104,"method":"admin.plugins.plan","params":{"add":["block_info"],"remove":["snapshot"]}}'
+auth "$ADM" '{"jsonrpc":"2.0","id":104,"method":"admin.plugins.plan","params":{"add":["block_info","validator_guard"],"remove":["snapshot"]}}'
 check "plugins.plan -> HTTP 200" 200 "$CODE"
-check "plugins.plan -> two diff entries" 2 \
+check "plugins.plan -> three diff entries" 3 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["diff"]))' "$OUT")"
 check "plugins.plan -> adds block_info" true \
     "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["op"]=="add" and e["name"]=="block_info" for e in d)).lower())' "$OUT")"
+check "plugins.plan -> adds validator_guard" true \
+    "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["op"]=="add" and e["name"]=="validator_guard" for e in d)).lower())' "$OUT")"
 check "plugins.plan -> removes snapshot" true \
     "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["op"]=="remove" and e["name"]=="snapshot" for e in d)).lower())' "$OUT")"
 check_contains "plugins.plan -> nothing written" '^plugin = snapshot$' "$(grep -E '^plugin = ' "$CFG")"
@@ -590,7 +595,7 @@ if grep -qE '^plugin = snapshot$' "$CFG"; then
 else
     echo "ok   plugins.apply -> snapshot removed"
 fi
-check "plugins.apply -> still six plugin lines" 6 "$(grep -cE '^plugin = ' "$CFG")"
+check "plugins.apply -> seven plugin lines" 7 "$(grep -cE '^plugin = ' "$CFG")"
 auth "$GOOD" '{"jsonrpc":"2.0","id":107,"method":"admin.config.backups"}'
 check "plugins.apply -> wrote a second backup" 2 "$(field result.count)"
 
@@ -614,7 +619,7 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> thirty-one tools" 31 \
+check "MCP tools/list -> thirty-four tools" 34 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.node_info present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
@@ -634,6 +639,10 @@ check "MCP tools/list -> admin.config.plan present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.config.plan" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.restart present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.restart" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.validator.list present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.validator.list" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.validator.plan present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.validator.plan" for t in ts)).lower())' "$OUT")"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"admin.webserver.limits","arguments":{"per_minute":10}}}'
 check "MCP webserver.limits without 'webserver' scope -> isError" true "$(field result.isError)"
@@ -699,6 +708,25 @@ python3 -c 'print("{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"admin.ping\",\"pa
 CODE=$(curl -s -o "$OUT" -w '%{http_code}' -X POST "$BASE" \
     -H 'Content-Type: application/json' -H "Authorization: Bearer $GOOD" --data-binary @"$WORK/big.json")
 check "oversized body -> HTTP 413" 413 "$CODE"
+
+# ── validator operations need a live validator_guard ─────────────────────────────────────
+# The plugin is not in the initial config, so the read answers "loaded: false" and the
+# mutating methods are refused before any key is even considered. The happy path (signing
+# through the guard) needs real validators and is covered by a scratch chain, not here.
+auth "$GOOD" '{"jsonrpc":"2.0","id":120,"method":"admin.validator.list","params":{}}'
+check "validator.list without the guard -> HTTP 200" 200 "$CODE"
+check "validator.list -> guard not loaded" false "$(field result.guard.loaded)"
+check_contains "validator.list -> names the plugin to add" 'plugin = validator_guard' \
+    "$(field result.guard.reason)"
+check "validator.list -> no validators" 0 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["validators"]))' "$OUT")"
+auth "$GOOD" '{"jsonrpc":"2.0","id":121,"method":"admin.validator.plan","params":{"actions":[{"name":"v1","action":"disable"}]}}'
+check "validator.plan with only 'read' -> -32002" -32002 "$(field error.code)"
+check_contains "validator.plan -> chain scope named" "no 'chain' scope" "$(field error.data.reason)"
+auth "$CHN" '{"jsonrpc":"2.0","id":122,"method":"admin.validator.plan","params":{"actions":[{"name":"v1","action":"disable"}]}}'
+check "validator.plan with 'chain' but no guard -> -32002" -32002 "$(field error.code)"
+check_contains "validator.plan -> missing guard named" "validator-guard is not configured" \
+    "$(field error.data.reason)"
 
 # ── audit and rate limit (last: the burst trips the limiter on purpose) ───────────────────
 auth "$GOOD" '{"jsonrpc":"2.0","id":15,"method":"admin.audit.tail","params":{"lines":200}}'
@@ -776,6 +804,22 @@ check "restart -> block_info is configured now" true \
     "$(python3 -c 'import json,sys; ps=json.load(open(sys.argv[1]))["result"]["plugins"]; print(str(any(p["name"]=="block_info" for p in ps)).lower())' "$OUT")"
 check "restart -> snapshot is gone from the plugin list" true \
     "$(python3 -c 'import json,sys; ps=json.load(open(sys.argv[1]))["result"]["plugins"]; print(str(not any(p["name"]=="snapshot" for p in ps)).lower())' "$OUT")"
+
+# the restarted node loads validator_guard (added by the plan above) but has no validator
+# configured with an active key, so the mutating methods stay refused — the scope alone
+# never authorises a signature
+auth "$GOOD" '{"jsonrpc":"2.0","id":123,"method":"admin.validator.list","params":{}}'
+check "restart -> guard is loaded" true "$(field result.guard.loaded)"
+check "restart -> guard is started" true "$(field result.guard.started)"
+check "restart -> guard has no active-key validator" false "$(field result.guard.available)"
+check_contains "restart -> guard says what is missing" 'no validator is configured with an active key' \
+    "$(field result.guard.reason)"
+auth "$CHN" '{"jsonrpc":"2.0","id":124,"method":"admin.validator.plan","params":{"actions":[{"name":"v1","action":"disable"}]}}'
+check "restart -> validator.plan needs a live guard -> -32002" -32002 "$(field error.code)"
+auth "$CHN" '{"jsonrpc":"2.0","id":125,"method":"tools/call","params":{"name":"admin.validator.list","arguments":{}}}'
+check "restart -> MCP validator.list -> not an error" false "$(field result.isError)"
+check_contains "restart -> MCP validator.list returns the guard block" 'no validator is configured with an active key' \
+    "$(field 'result.content.0.text')"
 
 echo
 if [ "$FAIL" -eq 0 ]; then
