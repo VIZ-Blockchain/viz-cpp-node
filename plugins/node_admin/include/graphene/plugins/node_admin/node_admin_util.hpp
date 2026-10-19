@@ -8,6 +8,7 @@
 
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <regex>
@@ -123,6 +124,348 @@ inline std::vector<cfg_entry> parse_config_file(const std::string &path, bool *e
         }
     }
     return entries;
+}
+
+// ── config editor: allow-list ─────────────────────────────────────────────────────────────
+// config.ini is the file the next start depends on, so the admin API may rewrite only keys
+// from this table. Identity, keys, data locations, listener endpoints and startup modes are
+// deliberately absent: those are operator decisions made by hand (design §4.6). Everything
+// here is read in plugin_initialize(), so each change needs a restart; the flag stays explicit
+// because live-applied keys may be added later.
+enum class config_type { boolean, unsigned_int };
+
+struct config_spec {
+    const char *name;
+    config_type type;
+    uint64_t min_value;
+    uint64_t max_value;
+    bool needs_restart;
+};
+
+inline const std::vector<config_spec> &config_allowlist() {
+    static const std::vector<config_spec> specs = {
+        {"p2p-max-connections", config_type::unsigned_int, 1, 10000, true},
+        {"dlt-peer-max-disconnect-hours", config_type::unsigned_int, 1, 8760, true},
+        {"dlt-mempool-max-tx", config_type::unsigned_int, 1, 1000000, true},
+        {"dlt-mempool-max-bytes", config_type::unsigned_int, 1024, 1073741824ULL, true},
+        {"dlt-mempool-max-tx-size", config_type::unsigned_int, 256, 67108864, true},
+        {"dlt-mempool-max-expiration-hours", config_type::unsigned_int, 1, 720, true},
+        {"dlt-peer-exchange-max-per-reply", config_type::unsigned_int, 0, 1000, true},
+        {"dlt-peer-exchange-max-per-subnet", config_type::unsigned_int, 0, 1000, true},
+        {"dlt-peer-exchange-min-uptime-sec", config_type::unsigned_int, 0, 86400, true},
+        {"dlt-stats-interval-sec", config_type::unsigned_int, 10, 86400, true},
+        {"p2p-isolated-peers", config_type::boolean, 0, 0, true},
+        {"auto-resync-on-wedge", config_type::boolean, 0, 0, true},
+        {"webserver-thread-pool-size", config_type::unsigned_int, 1, 4096, true},
+        {"webserver-cache-enabled", config_type::boolean, 0, 0, true},
+        {"webserver-cache-size", config_type::unsigned_int, 0, 10000000, true},
+        {"webserver-stats-enabled", config_type::boolean, 0, 0, true},
+        {"webserver-limits-enabled", config_type::boolean, 0, 0, true},
+        {"webserver-limit-m", config_type::unsigned_int, 1, 100000000, true},
+        {"webserver-limit-h", config_type::unsigned_int, 1, 100000000, true},
+        {"webserver-limit-d", config_type::unsigned_int, 1, 100000000, true},
+        {"webserver-stats-log-max-size", config_type::unsigned_int, 1024, 1073741824ULL, true},
+        {"webserver-stats-log-keep", config_type::unsigned_int, 1, 1000, true},
+        {"webserver-stats-interval", config_type::unsigned_int, 1, 86400, true},
+        {"validator-guard-enabled", config_type::boolean, 0, 0, true},
+        {"validator-guard-interval", config_type::unsigned_int, 1, 3600, true},
+        {"validator-guard-disable", config_type::boolean, 0, 0, true},
+        {"validator-guard-disable-max", config_type::unsigned_int, 0, 1000, true},
+        {"validator-guard-disable-on-shutdown", config_type::boolean, 0, 0, true},
+        {"validator-guard-shutdown-grace", config_type::unsigned_int, 1, 3600, true}
+    };
+    return specs;
+}
+
+inline const config_spec *config_spec_for(const std::string &key) {
+    for (const config_spec &s : config_allowlist()) {
+        if (key == s.name) return &s;
+    }
+    return nullptr;
+}
+
+/// Validate and canonicalize a value. Unknown keys are refused here, so a caller cannot bypass
+/// the allow-list by skipping config_spec_for().
+inline bool normalize_config_value(const std::string &key, const std::string &raw,
+                                   std::string &normalized, std::string &why) {
+    const config_spec *spec = config_spec_for(key);
+    if (!spec) {
+        why = "key '" + key + "' is not in the admin allow-list";
+        return false;
+    }
+    const std::string value = trim(raw);
+    if (spec->type == config_type::boolean) {
+        const std::string v = to_lower(value);
+        if (v == "true" || v == "yes" || v == "on" || v == "1") {
+            normalized = "true";
+            return true;
+        }
+        if (v == "false" || v == "no" || v == "off" || v == "0") {
+            normalized = "false";
+            return true;
+        }
+        why = "'" + key + "' expects a boolean (true/false)";
+        return false;
+    }
+    if (value.empty() || value.size() > 19 ||
+        value.find_first_not_of("0123456789") != std::string::npos) {
+        why = "'" + key + "' expects a non-negative integer";
+        return false;
+    }
+    const uint64_t parsed = std::strtoull(value.c_str(), nullptr, 10);
+    if (parsed < spec->min_value || parsed > spec->max_value) {
+        why = "'" + key + "' must be between " + std::to_string(spec->min_value) + " and " +
+              std::to_string(spec->max_value);
+        return false;
+    }
+    normalized = std::to_string(parsed);
+    return true;
+}
+
+// ── config editor: plugin list ─────────────────────────────────────────────────────────────
+/// Plugin names registered by programs/vizd/main.cpp (including dependencies that
+/// register_dependencies() pulls in, such as json_rpc). A name absent here is refused even when
+/// it looks plausible: appbase would abort startup on an unknown plugin, and that is exactly the
+/// failure the plan/apply pair exists to prevent.
+inline const std::set<std::string> &known_plugins() {
+    static const std::set<std::string> names = {
+        "chain", "json_rpc", "database_api", "p2p", "webserver", "validator",
+        "validator_api", "validator_guard", "network_broadcast_api", "account_history",
+        "account_by_key", "raw_block", "block_archive", "block_info", "committee_api",
+        "invite_api", "paid_subscription_api", "prediction_market_api",
+        "custom_protocol_api", "snapshot", "testnet_plugin", "node_admin"
+    };
+    return names;
+}
+
+/// Plugins whose removal would either break the node's reason to exist or cut the admin API
+/// itself off; the API refuses to remove them.
+inline bool plugin_removal_forbidden(const std::string &name) {
+    return name == "chain" || name == "node_admin";
+}
+
+// ── config editor: raw-line transforms ────────────────────────────────────────────────────
+// Lines are edited in place so comments, ordering and unknown keys survive. The functions
+// below are pure: they take the current lines and return the new ones.
+
+struct cfg_line {
+    enum kind_t { other, header, entry } kind = other;
+    std::string section;  // section the entry belongs to (or the new section for a header)
+    std::string key;
+    std::string value;
+};
+
+/// Classify one raw line (without its '\n', possibly with a trailing '\r'). `current_section`
+/// is the section the line starts in; for a header, `section` is the section it opens.
+inline cfg_line classify_config_line(const std::string &raw, const std::string &current_section) {
+    cfg_line out;
+    out.section = current_section;
+    std::string line = raw;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const std::string t = trim(line);
+    if (t.empty() || t[0] == '#' || t[0] == ';') return out;
+    if (t[0] == '[' && t.back() == ']') {
+        out.kind = cfg_line::header;
+        out.section = trim(t.substr(1, t.size() - 2));
+        return out;
+    }
+    out.kind = cfg_line::entry;
+    const std::size_t eq = line.find('=');
+    if (eq == std::string::npos) {
+        out.key = t;
+    } else {
+        out.key = trim(line.substr(0, eq));
+        out.value = trim(line.substr(eq + 1));
+    }
+    return out;
+}
+
+inline std::vector<std::string> split_lines(const std::string &text) {
+    std::vector<std::string> out;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const std::size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos) {
+            out.push_back(text.substr(pos));
+            break;
+        }
+        out.push_back(text.substr(pos, nl - pos));
+        pos = nl + 1;
+    }
+    return out;
+}
+
+inline std::string join_lines(const std::vector<std::string> &lines, bool trailing_newline = true) {
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (i != 0) out += '\n';
+        out += lines[i];
+    }
+    if (trailing_newline && !lines.empty()) out += '\n';
+    return out;
+}
+
+inline bool text_uses_crlf(const std::vector<std::string> &lines) {
+    for (const std::string &line : lines) {
+        if (!line.empty() && line.back() == '\r') return true;
+    }
+    return false;
+}
+
+struct line_edit {
+    std::vector<std::string> lines;
+    std::size_t changed = 0;
+    std::string error;
+};
+
+/// Replace the value of a top-level `key = value` line, or insert the key before the first
+/// [section] (a key after a section header would belong to that section, not to the top level).
+inline line_edit set_config_value(std::vector<std::string> lines, const std::string &key,
+                                 const std::string &value) {
+    line_edit out{std::move(lines), 0, ""};
+    const bool crlf = text_uses_crlf(out.lines);
+    std::string section;
+    std::size_t first_header = std::string::npos;
+    for (std::size_t i = 0; i < out.lines.size(); ++i) {
+        const cfg_line l = classify_config_line(out.lines[i], section);
+        if (l.kind == cfg_line::header) {
+            section = l.section;
+            if (first_header == std::string::npos) first_header = i;
+            continue;
+        }
+        if (l.kind != cfg_line::entry || !l.section.empty() || l.key != key) continue;
+
+        std::string raw = out.lines[i];
+        const bool cr = !raw.empty() && raw.back() == '\r';
+        if (cr) raw.pop_back();
+        const std::size_t eq = raw.find('=');
+        if (eq == std::string::npos) {
+            std::size_t b = 0;
+            while (b < raw.size() && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
+            out.lines[i] = raw.substr(0, b) + key + " = " + value + (cr ? "\r" : "");
+        } else {
+            // Keep the original spacing around '=' so the diff is exactly the value.
+            std::size_t ws = eq + 1;
+            while (ws < raw.size() && (raw[ws] == ' ' || raw[ws] == '\t')) ++ws;
+            out.lines[i] = raw.substr(0, eq + 1) + raw.substr(eq + 1, ws - (eq + 1)) + value +
+                           (cr ? "\r" : "");
+        }
+        ++out.changed;
+    }
+    if (out.changed == 0) {
+        const std::string row = key + " = " + value + (crlf ? "\r" : "");
+        if (first_header == std::string::npos) {
+            out.lines.push_back(row);
+        } else {
+            out.lines.insert(out.lines.begin() + static_cast<std::ptrdiff_t>(first_header), row);
+        }
+        out.changed = 1;
+    }
+    return out;
+}
+
+/// Add and remove `plugin = <name>` lines. Validation is part of the transform: an unknown,
+/// duplicated, protected, absent or already-configured name yields `error` and the lines are
+/// not touched.
+inline line_edit edit_plugin_lines(std::vector<std::string> lines,
+                                   const std::vector<std::string> &add,
+                                   const std::vector<std::string> &remove) {
+    line_edit out{std::move(lines), 0, ""};
+    std::set<std::string> configured;
+    std::string section;
+    for (const std::string &raw : out.lines) {
+        const cfg_line l = classify_config_line(raw, section);
+        if (l.kind == cfg_line::header) {
+            section = l.section;
+        } else if (l.kind == cfg_line::entry && l.section.empty() && l.key == "plugin" &&
+                   !l.value.empty()) {
+            configured.insert(l.value);
+        }
+    }
+
+    std::set<std::string> add_set;
+    std::set<std::string> remove_set;
+    for (const std::string &raw : add) {
+        const std::string name = trim(raw);
+        if (!known_plugins().count(name)) {
+            out.error = "unknown plugin '" + name + "'";
+            return out;
+        }
+        if (!add_set.insert(name).second) {
+            out.error = "plugin '" + name + "' requested twice";
+            return out;
+        }
+        if (configured.count(name)) {
+            out.error = "plugin '" + name + "' is already configured";
+            return out;
+        }
+    }
+    for (const std::string &raw : remove) {
+        const std::string name = trim(raw);
+        if (!configured.count(name)) {
+            out.error = "plugin '" + name + "' is not configured";
+            return out;
+        }
+        if (!remove_set.insert(name).second) {
+            out.error = "plugin '" + name + "' requested for removal twice";
+            return out;
+        }
+        if (plugin_removal_forbidden(name)) {
+            out.error = "plugin '" + name + "' cannot be disabled through the admin API";
+            return out;
+        }
+        if (add_set.count(name)) {
+            out.error = "plugin '" + name + "' is both added and removed";
+            return out;
+        }
+    }
+    if (add_set.empty() && remove_set.empty()) {
+        out.error = "nothing to do";
+        return out;
+    }
+
+    std::vector<std::string> kept;
+    kept.reserve(out.lines.size() + add_set.size());
+    section.clear();
+    for (const std::string &raw : out.lines) {
+        const cfg_line l = classify_config_line(raw, section);
+        if (l.kind == cfg_line::header) section = l.section;
+        if (l.kind == cfg_line::entry && l.section.empty() && l.key == "plugin" &&
+            remove_set.count(l.value)) {
+            ++out.changed;
+            continue;
+        }
+        kept.push_back(raw);
+    }
+    out.lines = std::move(kept);
+
+    if (!add_set.empty()) {
+        const bool crlf = text_uses_crlf(out.lines);
+        std::size_t at = out.lines.size();
+        std::size_t first_header = std::string::npos;
+        bool have_plugin_line = false;
+        section.clear();
+        for (std::size_t i = 0; i < out.lines.size(); ++i) {
+            const cfg_line l = classify_config_line(out.lines[i], section);
+            if (l.kind == cfg_line::header) {
+                section = l.section;
+                if (first_header == std::string::npos) first_header = i;
+            } else if (l.kind == cfg_line::entry && l.section.empty() && l.key == "plugin") {
+                at = i + 1;
+                have_plugin_line = true;
+            }
+        }
+        if (!have_plugin_line && first_header != std::string::npos) at = first_header;
+        std::vector<std::string> rows;
+        rows.reserve(add_set.size());
+        for (const std::string &name : add_set) {
+            rows.push_back("plugin = " + name + (crlf ? "\r" : ""));
+        }
+        out.lines.insert(out.lines.begin() + static_cast<std::ptrdiff_t>(at), rows.begin(),
+                         rows.end());
+        out.changed += rows.size();
+    }
+    return out;
 }
 
 // ── tokens ─────────────────────────────────────────────────────────────────────────────────

@@ -6,15 +6,16 @@ and AI agents holding a bearer token — not for end users, and not as a replace
 public API. The same listener also serves an **MCP** (Model Context Protocol) endpoint over
 HTTP and a small built-in web UI at `/ui/`.
 
-> **Mutating surface: P2P peers, snapshots and webserver policy.** `admin.p2p.add_node`,
-> `admin.p2p.add_trusted` and `admin.p2p.clear_banned` change whom the node dials;
-> `admin.snapshot.create` and `admin.snapshot.restore` write a snapshot file or replace the
-> node's in-memory state; `admin.webserver.*` mutating methods change rate limits, the
-> stats switch and the IP allow/deny lists. They require a token with the `p2p`, `snapshot`
-> or `webserver` scope respectively. Peer actions are serialized onto the P2P thread;
-> webserver policy changes apply to the very next request. The remaining mutating operations
-> (config, plugins, process, chain) are a later stage and will follow the same
-> authentication/audit model with two-phase `plan`/`apply`.
+> **Mutating surface: P2P peers, snapshots, webserver policy, `config.ini` and the process.**
+> `admin.p2p.add_node`, `admin.p2p.add_trusted` and `admin.p2p.clear_banned` change whom the
+> node dials; `admin.snapshot.create` and `admin.snapshot.restore` write a snapshot file or
+> replace the node's in-memory state; `admin.webserver.*` mutating methods change rate limits,
+> the stats switch and the IP allow/deny lists; `admin.config.*` and `admin.plugins.*`
+> edit `config.ini` through a two-phase `plan`/`apply`; `admin.restart` asks the process to
+> exit. They require a token with the `p2p`, `snapshot`, `webserver`, `config`, `plugins` or
+> `process` scope respectively. Peer actions are serialized onto the P2P thread; webserver
+> policy changes apply to the very next request; config/plugin edits are read at startup and
+> therefore need a restart.
 
 ---
 
@@ -48,6 +49,7 @@ admin-log-file = node=/var/log/vizd/vizd.log
 | `admin-allow-remote` | `false` | Permit a non-loopback `admin-endpoint`. |
 | `admin-audit-log` | next to `config.ini` | Append-only audit log (0600, rotated at 16 MB). |
 | `admin-log-file` | — | `name=path` entries that `admin.logs.tail` may read. Repeatable. |
+| `admin-plan-ttl` | `120` | Seconds a `plan_id` stays valid before `apply` refuses it. |
 
 The plugin refuses to start if `admin-endpoint` is set but no token is configured: an
 unauthenticated admin port is never a valid state.
@@ -64,8 +66,12 @@ in the configuration; comparison is constant-time. Scopes:
   snapshots need only `read`.
 * `webserver` — the mutating `admin.webserver.*` methods (limits, stats switch, IP lists,
   reset, reload). `admin.webserver.status` and `admin.webserver.ips` need only `read`.
-* `plugins`, `config`, `process`, `chain` — reserved for the mutating stages; a token that
-  carries only these cannot call anything yet.
+* `config` — `admin.config.plan` and `admin.config.apply` (editing allow-listed `config.ini`
+  keys). `admin.config.backups` needs only `read`.
+* `plugins` — `admin.plugins.plan` and `admin.plugins.apply` (editing the `plugin =` list).
+* `process` — `admin.restart`. It shuts the process down; a supervisor must start it again.
+* `chain` — reserved for the mutating chain stage; a token that carries only this cannot call
+  anything yet.
 
 Revocation is editing the line and restarting. `expires-unixtime` (optional) makes the
 token invalid after that moment without a restart.
@@ -419,6 +425,135 @@ public webserver rejects blacklisted clients with `403` and rate-limited clients
 
 ---
 
+## Config and plugin editing (two-phase)
+
+`config.ini` is edited through a **plan** that returns the exact diff and writes nothing, and
+an **apply** that re-validates the file and replaces it atomically. This makes an agent's
+intent reviewable before it touches a production node and keeps a crash mid-apply from
+leaving a truncated file.
+
+### Plan semantics
+
+* `admin.config.plan {"set":{"key":value,…}}` validates every key against the **allow-list**
+  below, normalizes values (`yes/on/1` → `true`; integers are range-checked) and returns
+  `plan_id`, `kind:"config"`, `diff` (`[{key, from, to}]`), `config_path`, `needs_restart:true`
+  and `expires_at`. **Nothing is written.** A plan with no effective change is refused with
+  `-32602`.
+* `admin.plugins.plan {"add":[…],"remove":[…]}` validates plugin names against the set the
+  binary can load, refuses duplicates, absent names and removals of `chain` and `node_admin`,
+  and returns `diff` of `[{op:"add"|"remove", name}]`.
+* A plan is **single-use** (consumed on the first `apply`, successful or not),
+  **bound to the token label** that created it (`-32002` for any other token) and **expires**
+  after `admin-plan-ttl` seconds (`-32004 plan expired`). Up to 64 plans are kept; the
+  oldest is dropped when a new one arrives. `admin.plan.cancel` discards a plan explicitly.
+* `apply` recomputes the SHA-256 of `config.ini` and refuses with `-32000 config changed …
+  nothing was written` if the file moved after the plan was made. It then normalizes and
+  re-validates every value again — an apply never trusts the plan blindly.
+
+### Atomic write and backups
+
+Both appliers edit the file as **raw lines**, so comments, ordering, spacing and CRLF are
+preserved. A key that is absent is inserted before the first `[section]` (top-level); an
+existing top-level key is changed in place, and a key that only exists inside a section is
+not touched — a top-level one is added instead.
+
+Each successful apply writes one backup next to the config — `<config.ini>.bak-<unixtime>`
+(with a `-n` suffix on collision) — then a temp file in the same directory, `fsync`s it,
+applies the original file's permissions, `rename`s it over `config.ini` and `fsync`s the
+directory. A failed write leaves the original file untouched. Old backups are never pruned
+by the node; they contain secrets (tokens, keys), so manage them like the config itself.
+
+`admin.config.backups` (scope `read`) lists `<config.ini>.bak-*`, newest first, with size and
+mtime. Rolling back by hand is copying a backup back and restarting.
+
+### Allow-list
+
+The admin API edits only these keys. Everything else — identity, keys, data dir, endpoints,
+`plugin`, `shared-file-size` — is deliberately out of reach of a bearer token.
+
+| Keys | Type | Range |
+|---|---|---|
+| `p2p-max-connections` | uint | 1–10000 |
+| `dlt-peer-max-disconnect-hours` | uint | 1–8760 |
+| `dlt-mempool-max-tx` | uint | 1–1000000 |
+| `dlt-mempool-max-bytes` | uint | 1024–1073741824 |
+| `dlt-mempool-max-tx-size` | uint | 256–67108864 |
+| `dlt-mempool-max-expiration-hours` | uint | 1–720 |
+| `dlt-peer-exchange-max-per-reply` | uint | 0–1000 |
+| `dlt-peer-exchange-max-per-subnet` | uint | 0–1000 |
+| `dlt-peer-exchange-min-uptime-sec` | uint | 0–86400 |
+| `dlt-stats-interval-sec` | uint | 10–86400 |
+| `p2p-isolated-peers`, `auto-resync-on-wedge` | bool | — |
+| `webserver-thread-pool-size` | uint | 1–4096 |
+| `webserver-cache-enabled` | bool | — |
+| `webserver-cache-size` | uint | 0–10000000 |
+| `webserver-stats-enabled`, `webserver-limits-enabled` | bool | — |
+| `webserver-limit-m`, `webserver-limit-h`, `webserver-limit-d` | uint | 1–100000000 |
+| `webserver-stats-log-max-size` | uint | 1024–1073741824 |
+| `webserver-stats-log-keep` | uint | 1–1000 |
+| `webserver-stats-interval` | uint | 1–86400 |
+| `validator-guard-enabled`, `validator-guard-disable`, `validator-guard-disable-on-shutdown` | bool | — |
+| `validator-guard-interval`, `validator-guard-shutdown-grace` | uint | 1–3600 |
+| `validator-guard-disable-max` | uint | 0–1000 |
+
+### Example
+
+```json
+{"jsonrpc":"2.0","id":80,"method":"admin.config.plan",
+ "params":{"set":{"p2p-max-connections":200,"webserver-limit-m":600}}}
+
+{"jsonrpc":"2.0","id":80,"result":{
+  "plan_id":"9f2c41a0d3b54e8770c5f1a2b3c4d5e6","kind":"config",
+  "config_path":"/var/lib/vizd/config.ini","needs_restart":true,
+  "diff":[{"key":"p2p-max-connections","from":"64","to":"200"},
+          {"key":"webserver-limit-m","from":null,"to":"600"}],
+  "expires_at":"2026-10-19T14:42:00Z",
+  "hint":"nothing was written yet; apply with admin.config.apply {plan_id}…"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":81,"method":"admin.config.apply",
+ "params":{"plan_id":"9f2c41a0d3b54e8770c5f1a2b3c4d5e6"}}
+
+{"jsonrpc":"2.0","id":81,"result":{
+  "applied":true,"kind":"config",
+  "config_path":"/var/lib/vizd/config.ini",
+  "backup":"/var/lib/vizd/config.ini.bak-1760884860",
+  "needs_restart":true,
+  "restart_hint":"config.ini is read at startup: call admin.restart {confirm:\"restart\"}…"}}
+```
+
+Plugin example:
+
+```json
+{"jsonrpc":"2.0","method":"admin.plugins.plan",
+ "params":{"add":["block_info"],"remove":[]}}
+{"jsonrpc":"2.0","method":"admin.plugins.apply","params":{"plan_id":"…"}}
+```
+
+Both appliers answer `-32004 config unavailable` when `config.ini` cannot be read, and
+`-32000 write failed` when the atomic replace fails (the original file is left untouched).
+
+---
+
+## Restart and supervision
+
+`admin.restart {"confirm":"restart"}` (scope `process`) asks `appbase` to quit: the handler
+replies first, then a detached thread calls `quit()` after 300 ms so the HTTP response
+reaches the client. The process exits with code 0.
+
+**The plugin cannot start the node again.** That is the supervisor's job — the container's
+`--restart unless-stopped` or systemd `Restart=always`. With neither, the node simply stays
+down; the reply says so in `hint`, and that is deliberate: an admin endpoint that forks a new
+node process would be a privilege-escalation path out of the process's own lifecycle.
+
+Because `config.ini` and the plugin list are read at startup, `admin.config.apply` and
+`admin.plugins.apply` take effect only after this restart. `confirm` must be exactly the word
+`restart`; anything else is `-32602`. A second call while shutdown is pending answers
+`-32000 restart already requested`.
+
+---
+
 ## MCP endpoint (Streamable HTTP)
 
 Decision q#3052=B: the MCP server lives **inside this plugin**, not in a sidecar. The same
@@ -442,9 +577,12 @@ Tools are 1:1 with the admin methods: `admin.ping`, `admin.node_info`, `admin.di
 `admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
 `admin.webserver.stats`, `admin.webserver.whitelist_add`, `admin.webserver.whitelist_remove`,
 `admin.webserver.blacklist_add`, `admin.webserver.blacklist_remove`, `admin.webserver.reset`,
-`admin.webserver.reload` (twenty-four).
+`admin.webserver.reload`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
+`admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
+(thirty-one).
 The peer actions additionally require the `p2p` scope, the snapshot actions the `snapshot`
-scope and the webserver actions the `webserver` scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
+scope, the webserver actions the `webserver` scope, config/plugin edits the `config` or
+`plugins` scope and restart the `process` scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
 result (`"isError": true` with the message in `content[0].text`), as MCP expects; protocol
 errors (unknown tool, bad params, missing scope) remain JSON-RPC errors.
 
@@ -550,8 +688,9 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
   audit log attributes calls correctly, and give each the smallest scope it needs.
 * `admin.config.get` masks secrets by key name, not by value shape. A secret stored under
   an innocuous key would be printed; do not invent such keys.
-* The admin API never returns WIF keys. Besides the audit log, the only method that writes
-  to disk is `admin.snapshot.create` (into the configured snapshot directory).
+* The admin API never returns WIF keys. Besides the audit log, the methods that write to disk
+  are `admin.snapshot.create` (into the configured snapshot directory) and
+  `admin.config.*`/`admin.plugins.*` apply (the config plus one `.bak-*` per apply).
 * `admin.snapshot.restore` **replaces all chain state** with the chosen file. It pauses block
   processing and wipes shared memory; a wrong or stale snapshot is destructive. Treat the
   `snapshot` scope as equivalent to write access to the node's state, and prefer a snapshot
@@ -568,6 +707,14 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
   a wrong blacklist entry rejects legitimate clients). A token with it is a policy
   credential, not just a read credential; changes also persist across restarts through
   `webserver-admin-state`.
+* The `config` and `plugins` scopes edit `config.ini` on disk. The allow-list keeps identity,
+  keys, endpoints and `plugin` out of reach, but the keys that are editable still change node
+  behaviour at the next restart. `apply` re-checks the file hash, so an edit made by someone
+  else after the plan is never silently overwritten; the backup is the rollback path.
+* `admin.config.backups` lists files that contain secrets (tokens, `private-key` lines). They
+  are created with the original file's permissions; do not copy them to a world-readable path.
+* The `process` scope stops the node. Without a supervisor the node does not come back; the
+  admin API deliberately cannot restart itself outside the process lifecycle.
 
 ---
 
@@ -586,6 +733,13 @@ allow-list, status codes, audit, rate limit, P2P peer actions (including the `p2
 denial), snapshot status/listing/download (including `HEAD`, traversal and missing-file
 cases, and the `snapshot`-scope denial on create/restore), MCP
 `initialize`/`tools/list`/`tools/call`, webserver stats/limits (burst → `429`, whitelist
-bypass, blacklist `403`, hot limits change, persistence and reload), and the `/ui/` page. It
+bypass, blacklist `403`, hot limits change, persistence and reload), config/plugin
+plan-and-apply (allow-list, scope and token binding, single use, expiry, stale-hash refusal,
+backups, plugin protection), restart (`confirm` guard, scope guard, clean exit 0 and a
+supervisor-style start that reads the edited config back), and the `/ui/` page. It
 starts the webserver plugin on a third port and needs a built `vizd` and three free ports,
 so it is not part of CTest.
+
+`tests/node_admin/` is a CTest target (`node_admin_util`, Boost.Test) over the pure helpers:
+secret masking, token parsing, the config parser, the allow-list and normalization, and the
+raw-line editors (spacing, CRLF, sections, plugin add/remove guards).

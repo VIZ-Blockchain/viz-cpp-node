@@ -22,6 +22,8 @@ OPS=accept-ops-token
 PEER=accept-peer-token
 SNAP=accept-snap-token
 WS=accept-webserver-token
+ADM=accept-admin-token
+ADM2=accept-admin2-token
 EXPIRED=accept-expired-token
 sha() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
 
@@ -39,7 +41,11 @@ admin-token = ops:process:$(sha "$OPS")
 admin-token = peer:read,p2p:$(sha "$PEER")
 admin-token = snap:read,snapshot:$(sha "$SNAP")
 admin-token = ws:read,webserver:$(sha "$WS")
+admin-token = adm:read,config,plugins,process:$(sha "$ADM")
+admin-token = adm2:read,config,plugins,process:$(sha "$ADM2")
 admin-token = old:read:$(sha "$EXPIRED"):1000000000
+# Short TTL so the expired-plan branch is reachable inside this script (a 4 s sleep).
+admin-plan-ttl = 3
 admin-audit-log = $WORK/audit.log
 admin-log-file = node=$WORK/node.log
 
@@ -96,6 +102,14 @@ for k in sys.argv[2].split("."):
     if k.isdigit(): v=v[int(k)]
     else: v=v[k]
 print(json.dumps(v))' "$OUT" "$1"; }
+# raw: same walk but prints the value unquoted (plan ids, paths)
+raw() { python3 -c 'import json,sys
+try: v=json.load(open(sys.argv[1]))
+except Exception: print(""); raise SystemExit
+for k in sys.argv[2].split("."):
+    if k.isdigit(): v=v[int(k)]
+    else: v=v[k]
+print(v)' "$OUT" "$1"; }
 
 check() { # check <label> <expected> <actual>
     if [ "$2" = "$3" ]; then
@@ -427,6 +441,159 @@ check "webserver.reset -> whitelist kept empty" 0 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["whitelist"]))' "$OUT")"
 
 
+# ── config/plugin edits: two-phase plan/apply ────────────────────────────────────────────
+# Plans are single-use, token-bound and expire after admin-plan-ttl (3 s in this config);
+# each plan+apply pair must fit that window. A fresh second keeps the 20 req/s limiter out.
+sleep 1
+CFG="$WORK/config.ini"
+
+# scope gates: 'read' and unrelated scopes may not edit config or the plugin list
+auth "$GOOD" '{"jsonrpc":"2.0","id":80,"method":"admin.config.plan","params":{"set":{"webserver-limit-m":42}}}'
+check "config.plan with only 'read' -> -32002" -32002 "$(field error.code)"
+check_contains "config.plan -> names the missing scope" "no 'config' scope" "$(field error.data.reason)"
+auth "$GOOD" '{"jsonrpc":"2.0","id":81,"method":"admin.plugins.plan","params":{"add":["block_info"]}}'
+check "plugins.plan with only 'read' -> -32002" -32002 "$(field error.code)"
+check_contains "plugins.plan -> names the missing scope" "no 'plugins' scope" "$(field error.data.reason)"
+
+# allow-list: identity, endpoints and out-of-range values never reach a plan
+auth "$ADM" '{"jsonrpc":"2.0","id":82,"method":"admin.config.plan","params":{"set":{"private-key":"5Hw9YPABaFxa2LooiANLrhUK5TPryy8f7v9Y1rk923PuYqbYdfC"}}}'
+check "config.plan -> identity key refused" -32602 "$(field error.code)"
+check_contains "config.plan -> allow-list named" "admin allow-list" "$(field error.data.reason)"
+auth "$ADM" '{"jsonrpc":"2.0","id":83,"method":"admin.config.plan","params":{"set":{"webserver-http-endpoint":"0.0.0.0:9999"}}}'
+check "config.plan -> endpoint key refused" -32602 "$(field error.code)"
+auth "$ADM" '{"jsonrpc":"2.0","id":84,"method":"admin.config.plan","params":{"set":{"p2p-max-connections":0}}}'
+check "config.plan -> out-of-range value refused" -32602 "$(field error.code)"
+check_contains "config.plan -> range named" "between" "$(field error.data.reason)"
+auth "$ADM" '{"jsonrpc":"2.0","id":85,"method":"admin.config.plan","params":{"set":{}}}'
+check "config.plan -> empty set refused" -32602 "$(field error.code)"
+
+# a real plan: one key replaces an existing entry, one is appended
+ORIG_SHA=$(sha256sum "$CFG" | cut -d' ' -f1)
+auth "$ADM" '{"jsonrpc":"2.0","id":86,"method":"admin.config.plan","params":{"set":{"webserver-limit-m":42,"dlt-stats-interval-sec":60}}}'
+check "config.plan -> HTTP 200" 200 "$CODE"
+check "config.plan -> kind" '"config"' "$(field result.kind)"
+check "config.plan -> two diff entries" 2 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["diff"]))' "$OUT")"
+check "config.plan -> diff names the replaced key" true \
+    "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["key"]=="webserver-limit-m" and e["from"]=="5" and e["to"]=="42" for e in d)).lower())' "$OUT")"
+check "config.plan -> new key has a null 'from'" true \
+    "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["key"]=="dlt-stats-interval-sec" and e["from"] is None for e in d)).lower())' "$OUT")"
+check "config.plan -> needs a restart" true "$(field result.needs_restart)"
+PLAN=$(raw result.plan_id)
+check "config.plan -> plan id is 32 chars" 32 "$(printf %s "$PLAN" | wc -c | tr -d ' ')"
+check "config.plan -> wrote nothing" "$ORIG_SHA" "$(sha256sum "$CFG" | cut -d' ' -f1)"
+
+# a no-op plan is refused: apply would rewrite an identical file for nothing
+auth "$ADM" '{"jsonrpc":"2.0","id":87,"method":"admin.config.plan","params":{"set":{"webserver-limit-m":5}}}'
+check "config.plan -> no-op refused" -32602 "$(field error.code)"
+check_contains "config.plan -> says nothing changes" "no changes" "$(field error.data.reason)"
+
+# a plan belongs to the token that made it (and survives that refused attempt)
+auth "$ADM2" '{"jsonrpc":"2.0","id":88,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "config.apply from another token -> -32002" -32002 "$(field error.code)"
+check_contains "config.apply -> token binding named" "another token" "$(field error.data.reason)"
+
+# apply: backup first, then an atomic replace
+auth "$ADM" '{"jsonrpc":"2.0","id":89,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "config.apply -> HTTP 200" 200 "$CODE"
+check "config.apply -> applied" true "$(field result.applied)"
+BACKUP=$(raw result.backup)
+if [ -f "$BACKUP" ]; then
+    echo "ok   config.apply -> backup file exists"
+else
+    echo "FAIL config.apply -> backup file missing at [$BACKUP]"; FAIL=$((FAIL + 1))
+fi
+check_contains "config.apply -> replaced value in config.ini" '^webserver-limit-m = 42$' \
+    "$(grep -E '^webserver-limit-m' "$CFG")"
+check_contains "config.apply -> appended key in config.ini" '^dlt-stats-interval-sec = 60$' \
+    "$(grep -E '^dlt-stats-interval-sec' "$CFG")"
+check_contains "config.apply -> backup keeps the old value" '^webserver-limit-m = 5$' \
+    "$(grep -E '^webserver-limit-m' "$BACKUP" 2>/dev/null)"
+check_contains "config.apply -> comments survive" '# Short TTL' "$(cat "$CFG")"
+
+# single-use: the same plan cannot be replayed
+auth "$ADM" '{"jsonrpc":"2.0","id":90,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "config.apply replay -> -32004" -32004 "$(field error.code)"
+check_contains "config.apply replay -> unknown plan" "unknown plan" "$(field error.message)"
+
+# backups are listed newest first, under the plain 'read' scope
+auth "$GOOD" '{"jsonrpc":"2.0","id":91,"method":"admin.config.backups"}'
+check "config.backups -> one backup" 1 "$(field result.count)"
+check_contains "config.backups -> backup name" '.bak-' "$(field 'result.backups.0.name')"
+check "config.backups -> backup is not empty" true \
+    "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["result"]["backups"][0]["bytes"] > 0).lower())' "$OUT")"
+
+# cancel removes a plan without writing anything
+auth "$ADM" '{"jsonrpc":"2.0","id":92,"method":"admin.config.plan","params":{"set":{"webserver-limit-h":200}}}'
+PLAN=$(raw result.plan_id)
+auth "$ADM2" '{"jsonrpc":"2.0","id":93,"method":"admin.plan.cancel","params":{"plan_id":"'$PLAN'"}}'
+check "plan.cancel from another token -> -32002" -32002 "$(field error.code)"
+auth "$ADM" '{"jsonrpc":"2.0","id":94,"method":"admin.plan.cancel","params":{"plan_id":"'$PLAN'"}}'
+check "plan.cancel -> cancelled" true "$(field result.cancelled)"
+auth "$ADM" '{"jsonrpc":"2.0","id":95,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "cancelled plan cannot be applied -> -32004" -32004 "$(field error.code)"
+check_contains "cancel wrote nothing" '^webserver-limit-h = 100$' "$(grep -E '^webserver-limit-h' "$CFG")"
+
+# plans expire: wait past admin-plan-ttl, then apply
+auth "$ADM" '{"jsonrpc":"2.0","id":96,"method":"admin.config.plan","params":{"set":{"webserver-limit-d":2000}}}'
+PLAN=$(raw result.plan_id)
+sleep 4
+auth "$ADM" '{"jsonrpc":"2.0","id":97,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "expired plan -> -32004" -32004 "$(field error.code)"
+check_contains "expired plan -> says expired" "plan expired" "$(field error.message)"
+check_contains "expired plan wrote nothing" '^webserver-limit-d = 1000$' "$(grep -E '^webserver-limit-d' "$CFG")"
+
+# the plan carries the file hash: a hand edit in between makes it stale
+auth "$ADM" '{"jsonrpc":"2.0","id":98,"method":"admin.config.plan","params":{"set":{"webserver-limit-m":43}}}'
+PLAN=$(raw result.plan_id)
+printf '# hand edit made outside the admin API\n' >> "$CFG"
+auth "$ADM" '{"jsonrpc":"2.0","id":99,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "stale plan -> -32000" -32000 "$(field error.code)"
+check_contains "stale plan -> says nothing was written" "nothing was written" "$(field error.data.reason)"
+check_contains "stale plan -> config kept the hand edit" '# hand edit' "$(cat "$CFG")"
+check_contains "stale plan -> value untouched" '^webserver-limit-m = 42$' "$(grep -E '^webserver-limit-m' "$CFG")"
+
+# ── plugin list edits ────────────────────────────────────────────────────────────────────
+sleep 1
+auth "$ADM" '{"jsonrpc":"2.0","id":100,"method":"admin.plugins.plan","params":{"add":["bogus_plugin"]}}'
+check "plugins.plan -> unknown plugin refused" -32602 "$(field error.code)"
+check_contains "plugins.plan -> unknown name named" "unknown plugin" "$(field error.data.reason)"
+auth "$ADM" '{"jsonrpc":"2.0","id":101,"method":"admin.plugins.plan","params":{"remove":["node_admin"]}}'
+check "plugins.plan -> node_admin cannot be removed" -32602 "$(field error.code)"
+check_contains "plugins.plan -> protection named" "cannot be disabled" "$(field error.data.reason)"
+auth "$ADM" '{"jsonrpc":"2.0","id":102,"method":"admin.plugins.plan","params":{"remove":["chain"]}}'
+check "plugins.plan -> chain cannot be removed" -32602 "$(field error.code)"
+auth "$ADM" '{"jsonrpc":"2.0","id":103,"method":"admin.plugins.plan","params":{"remove":["validator"]}}'
+check "plugins.plan -> removing an absent plugin refused" -32602 "$(field error.code)"
+check_contains "plugins.plan -> absence named" "not configured" "$(field error.data.reason)"
+auth "$ADM" '{"jsonrpc":"2.0","id":104,"method":"admin.plugins.plan","params":{"add":["block_info"],"remove":["snapshot"]}}'
+check "plugins.plan -> HTTP 200" 200 "$CODE"
+check "plugins.plan -> two diff entries" 2 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["diff"]))' "$OUT")"
+check "plugins.plan -> adds block_info" true \
+    "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["op"]=="add" and e["name"]=="block_info" for e in d)).lower())' "$OUT")"
+check "plugins.plan -> removes snapshot" true \
+    "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["diff"]; print(str(any(e["op"]=="remove" and e["name"]=="snapshot" for e in d)).lower())' "$OUT")"
+check_contains "plugins.plan -> nothing written" '^plugin = snapshot$' "$(grep -E '^plugin = ' "$CFG")"
+
+# a config plan is not a plugin plan
+PLAN=$(raw result.plan_id)
+auth "$ADM" '{"jsonrpc":"2.0","id":105,"method":"admin.config.apply","params":{"plan_id":"'$PLAN'"}}'
+check "config.apply of a plugin plan -> -32602" -32602 "$(field error.code)"
+check_contains "config.apply -> kind mismatch named" "plan kind is 'plugins'" "$(field error.data.reason)"
+
+auth "$ADM" '{"jsonrpc":"2.0","id":106,"method":"admin.plugins.apply","params":{"plan_id":"'$PLAN'"}}'
+check "plugins.apply -> applied" true "$(field result.applied)"
+check_contains "plugins.apply -> block_info in config.ini" '^plugin = block_info$' "$(grep -E '^plugin = ' "$CFG")"
+if grep -qE '^plugin = snapshot$' "$CFG"; then
+    echo "FAIL plugins.apply -> snapshot still present"; FAIL=$((FAIL + 1))
+else
+    echo "ok   plugins.apply -> snapshot removed"
+fi
+check "plugins.apply -> still six plugin lines" 6 "$(grep -cE '^plugin = ' "$CFG")"
+auth "$GOOD" '{"jsonrpc":"2.0","id":107,"method":"admin.config.backups"}'
+check "plugins.apply -> wrote a second backup" 2 "$(field result.count)"
+
 # ── MCP (Streamable HTTP) on the same listener ───────────────────────────────────────────
 sleep 1
 call -d '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
@@ -447,7 +614,7 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> twenty-four tools" 24 \
+check "MCP tools/list -> thirty-one tools" 31 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.node_info present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
@@ -463,6 +630,10 @@ check "MCP tools/list -> admin.webserver.status present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.webserver.status" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.webserver.blacklist_add present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.webserver.blacklist_add" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.config.plan present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.config.plan" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.restart present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.restart" for t in ts)).lower())' "$OUT")"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"admin.webserver.limits","arguments":{"per_minute":10}}}'
 check "MCP webserver.limits without 'webserver' scope -> isError" true "$(field result.isError)"
@@ -546,6 +717,65 @@ for i in $(seq 1 40); do
     [ "$CODE" = 429 ] && { LIMITED=1; break; }
 done
 check "burst -> HTTP 429" 1 "$LIMITED"
+
+# ── restart through the supervisor contract (last: the process really exits) ─────────────
+sleep 1
+auth "$ADM" '{"jsonrpc":"2.0","id":110,"method":"admin.restart","params":{"confirm":"please"}}'
+check "restart -> confirm must be exact" -32602 "$(field error.code)"
+check_contains "restart -> names the required word" "exactly the word 'restart'" \
+    "$(field error.data.reason)"
+auth "$GOOD" '{"jsonrpc":"2.0","id":111,"method":"admin.restart","params":{"confirm":"restart"}}'
+check "restart without 'process' scope -> -32002" -32002 "$(field error.code)"
+check_contains "restart -> scope named" "no 'process' scope" "$(field error.data.reason)"
+
+auth "$ADM" '{"jsonrpc":"2.0","id":112,"method":"admin.restart","params":{"confirm":"restart"}}'
+check "restart -> HTTP 200" 200 "$CODE"
+check "restart -> ok" true "$(field result.ok)"
+check "restart -> restarting" true "$(field result.restarting)"
+check "restart -> replies before quitting" 0 "$(field result.exit_code)"
+
+for _ in $(seq 1 80); do
+    kill -0 "$NODE_PID" 2>/dev/null || break
+    sleep 0.25
+done
+if kill -0 "$NODE_PID" 2>/dev/null; then
+    echo "FAIL restart -> the process is still running after 20 s"; FAIL=$((FAIL + 1))
+    kill "$NODE_PID" 2>/dev/null
+else
+    echo "ok   restart -> the process exited"
+fi
+wait "$NODE_PID"; NODE_RC=$?
+NODE_PID=
+check "restart -> clean exit code" 0 "$NODE_RC"
+
+# the edits persist on disk; the supervisor-style start reads them back
+check_contains "restart -> config.ini keeps webserver-limit-m = 42" '^webserver-limit-m = 42$' \
+    "$(grep -E '^webserver-limit-m' "$CFG")"
+check_contains "restart -> config.ini keeps plugin = block_info" '^plugin = block_info$' \
+    "$(grep -E '^plugin = ' "$CFG")"
+
+"$VIZD" --data-dir "$WORK" > "$WORK/console2.log" 2>&1 &
+NODE_PID=$!
+for _ in $(seq 1 120); do
+    grep -q "node_admin: listening" "$WORK/console2.log" && break
+    kill -0 "$NODE_PID" 2>/dev/null || break
+    sleep 0.25
+done
+if grep -q "node_admin: listening" "$WORK/console2.log"; then
+    echo "ok   restart -> the node is back after the supervisor-style start"
+else
+    echo "FAIL restart -> the node did not come back"
+    tail -20 "$WORK/console2.log"
+    FAIL=$((FAIL + 1))
+fi
+auth "$ADM" '{"jsonrpc":"2.0","id":113,"method":"admin.ping"}'
+check "restart -> admin answers after the restart" true "$(field result.ok)"
+
+auth "$ADM" '{"jsonrpc":"2.0","id":114,"method":"admin.plugins.list"}'
+check "restart -> block_info is configured now" true \
+    "$(python3 -c 'import json,sys; ps=json.load(open(sys.argv[1]))["result"]["plugins"]; print(str(any(p["name"]=="block_info" for p in ps)).lower())' "$OUT")"
+check "restart -> snapshot is gone from the plugin list" true \
+    "$(python3 -c 'import json,sys; ps=json.load(open(sys.argv[1]))["result"]["plugins"]; print(str(not any(p["name"]=="snapshot" for p in ps)).lower())' "$OUT")"
 
 echo
 if [ "$FAIL" -eq 0 ]; then

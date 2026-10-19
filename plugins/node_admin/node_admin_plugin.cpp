@@ -24,13 +24,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -62,12 +65,20 @@ using graphene::protocol::version;
 namespace {
 
 using util::cfg_entry;
+using util::classify_config_line;
+using util::edit_plugin_lines;
 using util::is_plain_snapshot_name;
+using util::join_lines;
+using util::line_edit;
 using util::mask_text;
+using util::normalize_config_value;
 using util::parse_config_file;
 using util::parse_token_spec;
+using util::plugin_removal_forbidden;
 using util::sensitive_key;
+using util::set_config_value;
 using util::split;
+using util::split_lines;
 using util::to_lower;
 using util::token_info;
 using util::trim;
@@ -118,6 +129,129 @@ std::string unixtime_iso(uint32_t t) {
     return iso_utc(fc::time_point_sec(t));
 }
 
+uint32_t now_unixtime() {
+    return static_cast<uint32_t>(fc::time_point::now().sec_since_epoch());
+}
+
+// ── config file IO ────────────────────────────────────────────────────────────────────────
+bool read_text_file(const std::string &path, std::string &out, std::string &why) {
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) {
+        why = "cannot open " + path;
+        return false;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+std::string text_sha256(const std::string &text) {
+    return fc::sha256::hash(text).str();
+}
+
+/// Current value of a top-level key, for the plan diff. Keys inside [sections] are a different
+/// namespace and are not touched by the editor.
+bool top_level_value(const std::vector<std::string> &lines, const std::string &key,
+                     std::string &value) {
+    std::string section;
+    bool found = false;
+    for (const std::string &raw : lines) {
+        const util::cfg_line l = util::classify_config_line(raw, section);
+        if (l.kind == util::cfg_line::header) {
+            section = l.section;
+            continue;
+        }
+        if (l.kind == util::cfg_line::entry && l.section.empty() && l.key == key) {
+            value = l.value;
+            found = true;
+        }
+    }
+    return found;
+}
+
+/// Replace config.ini atomically: copy the current file to `<path>.bak-<unixtime>`, write the
+/// candidate to a sibling temp file, fsync it, rename over the original and fsync the directory.
+/// A failure before the rename leaves the original untouched; a crash after it leaves either
+/// the old or the new file, never a half-written one.
+bool write_config_atomic(const std::string &path, const std::string &body,
+                         std::string &backup_path, std::string &why) {
+    const bfs::path target(path);
+    const bfs::path dir = target.parent_path();
+    boost::system::error_code ec;
+
+    if (bfs::exists(target, ec)) {
+        const std::string stamp = std::to_string(static_cast<uint64_t>(now_unixtime()));
+        backup_path = path + ".bak-" + stamp;
+        for (int n = 1; bfs::exists(backup_path, ec); ++n) {
+            backup_path = path + ".bak-" + stamp + "-" + std::to_string(n);
+        }
+        bfs::copy_file(target, bfs::path(backup_path), bfs::copy_options::none, ec);
+        if (ec) {
+            why = "cannot back up " + path + ": " + ec.message();
+            return false;
+        }
+    }
+
+#ifdef _WIN32
+    const std::string tmp = path + ".tmp";
+#else
+    const std::string tmp = path + ".tmp." + std::to_string(::getpid());
+#endif
+    {
+        std::ofstream out(tmp.c_str(), std::ios::binary | std::ios::trunc);
+        if (!out) {
+            why = "cannot write " + tmp;
+            return false;
+        }
+        out.write(body.data(), static_cast<std::streamsize>(body.size()));
+        out.flush();
+        if (!out) {
+            why = "short write to " + tmp;
+            return false;
+        }
+    }
+#ifndef _WIN32
+    struct stat st;
+    if (::stat(path.c_str(), &st) == 0) ::chmod(tmp.c_str(), st.st_mode & 07777);
+    const int fd = ::open(tmp.c_str(), O_RDONLY);
+    if (fd >= 0) {
+        if (::fsync(fd) != 0) {
+            ::close(fd);
+            why = "cannot fsync " + tmp;
+            return false;
+        }
+        ::close(fd);
+    }
+#endif
+    bfs::rename(bfs::path(tmp), target, ec);
+    if (ec) {
+        why = "cannot replace " + path + ": " + ec.message();
+        return false;
+    }
+#ifndef _WIN32
+    const int dfd = ::open(dir.string().c_str(), O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+        ::fsync(dfd);
+        ::close(dfd);
+    }
+#endif
+    return true;
+}
+
+/// Plan ids are bearer capabilities for one single use, so they come from random_device rather
+/// than from a counter: an id that can be guessed is an id somebody else can spend.
+std::string random_plan_id() {
+    std::random_device rd;
+    std::mt19937_64 gen((static_cast<uint64_t>(rd()) << 32) ^ rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    const uint64_t a = dist(gen);
+    const uint64_t b = dist(gen);
+    char buf[33];
+    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
+                  static_cast<unsigned long long>(a), static_cast<unsigned long long>(b));
+    return std::string(buf, 32);
+}
 
 // ── tail a file ────────────────────────────────────────────────────────────────────────────
 struct tail_result {
@@ -691,6 +825,33 @@ struct node_admin_plugin::impl {
     std::atomic<uint64_t> request_seq{0};
     std::mutex audit_mutex;
 
+    // plan/apply for config.ini (design §0.3). A plan is a single-use, token-bound snapshot of
+    // "what will be written": the file's hash at plan time, the exact key/value set or plugin
+    // edit, and an expiry. apply re-checks the hash, so a hand edit between plan and apply is a
+    // refusal, not an overwrite.
+    struct pending_plan {
+        std::string id;
+        std::string label;
+        std::string kind; // "config" | "plugins"
+        uint32_t created = 0;
+        uint32_t expires = 0;
+        std::string base_sha256;
+        std::map<std::string, std::string> set; // config
+        std::vector<std::string> add;           // plugins
+        std::vector<std::string> remove;        // plugins
+        fc::variant diff;
+    };
+    std::mutex plans_mutex;
+    std::map<std::string, pending_plan> plans;
+    // Serializes the read-hash-write of an apply: without it two concurrent applies each
+    // pass their own hash check and the later rename silently drops the other's edit.
+    std::mutex config_write_mutex;
+    uint32_t plan_ttl_sec = 120;
+    std::atomic<bool> restart_requested{false};
+
+    void store_plan(const pending_plan &p);
+    pending_plan take_plan(const std::string &id, const token_info &token, const std::string &kind);
+
     // ── listener ───────────────────────────────────────────────────────────────────────────
     void start();
     void stop();
@@ -739,6 +900,15 @@ struct node_admin_plugin::impl {
     fc::variant h_webserver_list_remove(const fc::variant &params, bool whitelist);
     fc::variant h_webserver_reset(const fc::variant &params);
     fc::variant h_webserver_reload(const fc::variant &params);
+
+    // ── config/plugin editor and restart (plan/apply) ─────────────────────────────────────
+    fc::variant h_config_plan(const fc::variant &params, const token_info &token);
+    fc::variant h_config_apply(const fc::variant &params, const token_info &token);
+    fc::variant h_config_backups(const fc::variant &params);
+    fc::variant h_plugins_plan(const fc::variant &params, const token_info &token);
+    fc::variant h_plugins_apply(const fc::variant &params, const token_info &token);
+    fc::variant h_plan_cancel(const fc::variant &params, const token_info &token);
+    fc::variant h_restart(const fc::variant &params);
 
     // ── MCP (Streamable HTTP) ──────────────────────────────────────────────────────────────
     fc::variant mcp_tools() const;
@@ -797,6 +967,9 @@ void node_admin_plugin::set_program_options(
         ("admin-allow-remote", bpo::value<bool>()->default_value(false),
          "Allow admin-endpoint on a non-loopback address. Off by default; a remote admin "
          "port is a security decision, not a convenience.")
+        ("admin-plan-ttl", bpo::value<uint32_t>()->default_value(120),
+         "Seconds a config/plugin plan stays applicable. Plans are single-use and bound to the "
+         "token that created them. Default: 120.")
         ("admin-audit-log", bpo::value<std::string>()->default_value(""),
          "Append-only audit log path. Default: node-admin-audit.log next to config.ini.")
         ("admin-log-file", bpo::value<std::vector<std::string>>()->composing()->multitoken(),
@@ -825,6 +998,9 @@ void node_admin_plugin::plugin_initialize(const bpo::variables_map &options) {
     }
 
     pimpl->allow_remote = options.at("admin-allow-remote").as<bool>();
+    // A zero TTL would make every plan unusable before it is returned; clamp like the
+    // webserver limits do.
+    pimpl->plan_ttl_sec = std::max<uint32_t>(1, options.at("admin-plan-ttl").as<uint32_t>());
 
     // Tokens are mandatory: an admin port without authentication is never a valid state.
     FC_ASSERT(options.count("admin-token"), "node_admin: admin-endpoint is set but no admin-token is configured");
@@ -1367,6 +1543,42 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
         if (method == "admin.webserver.blacklist_remove") return h_webserver_list_remove(params, false);
         if (method == "admin.webserver.reset") return h_webserver_reset(params);
         return h_webserver_reload(params);
+    }
+
+    // Config.ini edits are two-phase: plan returns the exact diff plus a single-use,
+    // token-bound plan_id; apply re-validates against the current file and writes atomically
+    // with a backup. Reads (config.backups) stay under `read`.
+    if (method == "admin.config.plan" || method == "admin.config.apply" ||
+        method == "admin.config.backups" || method == "admin.plugins.plan" ||
+        method == "admin.plugins.apply") {
+        const bool cfg = method == "admin.config.plan" || method == "admin.config.apply";
+        const bool plg = method == "admin.plugins.plan" || method == "admin.plugins.apply";
+        if (cfg && token.scopes.find("config") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'config' scope",
+                            "config edits need a token with scopes 'read,config'"};
+        }
+        if (plg && token.scopes.find("plugins") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'plugins' scope",
+                            "plugin edits need a token with scopes 'read,plugins'"};
+        }
+        if (method == "admin.config.plan") return h_config_plan(params, token);
+        if (method == "admin.config.apply") return h_config_apply(params, token);
+        if (method == "admin.config.backups") return h_config_backups(params);
+        if (method == "admin.plugins.plan") return h_plugins_plan(params, token);
+        return h_plugins_apply(params, token);
+    }
+
+    if (method == "admin.plan.cancel") return h_plan_cancel(params, token);
+
+    if (method == "admin.restart") {
+        if (token.scopes.find("process") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'process' scope",
+                            "restart needs a token with scopes 'read,process'"};
+        }
+        return h_restart(params);
     }
 
     // MCP Streamable HTTP on the same authenticated listener (decision q#3052=B: the MCP
@@ -2103,6 +2315,417 @@ fc::variant node_admin_plugin::impl::h_webserver_reload(const fc::variant &) {
 }
 
 
+// ── config/plugin editor: plan/apply ─────────────────────────────────────────────────────
+void node_admin_plugin::impl::store_plan(const pending_plan &p) {
+    std::lock_guard<std::mutex> lock(plans_mutex);
+    const uint32_t now = now_unixtime();
+    for (auto it = plans.begin(); it != plans.end();) {
+        if (it->second.expires <= now) it = plans.erase(it);
+        else ++it;
+    }
+    // Plans are tiny, but an authenticated caller must not be able to grow this map without
+    // bound; 64 outstanding plans is far more than any single operator needs.
+    if (plans.size() >= 64) {
+        auto oldest = plans.begin();
+        for (auto it = plans.begin(); it != plans.end(); ++it) {
+            if (it->second.created < oldest->second.created) oldest = it;
+        }
+        plans.erase(oldest);
+    }
+    plans[p.id] = p;
+}
+
+node_admin_plugin::impl::pending_plan node_admin_plugin::impl::take_plan(
+    const std::string &id, const token_info &token, const std::string &kind) {
+    if (id.empty()) {
+        throw rpc_error{-32602, "invalid params", "missing plan_id",
+                        "create a plan first: admin.config.plan or admin.plugins.plan"};
+    }
+    std::lock_guard<std::mutex> lock(plans_mutex);
+    auto it = plans.find(id);
+    if (it == plans.end()) {
+        throw rpc_error{-32004, "unknown plan", id,
+                        "plans are single-use and expire; create a new one"};
+    }
+    if (it->second.kind != kind) {
+        throw rpc_error{-32602, "invalid params",
+                        "plan kind is '" + it->second.kind + "', not '" + kind + "'", ""};
+    }
+    if (it->second.label != token.label) {
+        throw rpc_error{-32002, "forbidden", "plan belongs to another token",
+                        "a plan is bound to the token that created it"};
+    }
+    if (it->second.expires <= now_unixtime()) {
+        plans.erase(it);
+        throw rpc_error{-32004, "plan expired", id, "create a new plan"};
+    }
+    pending_plan p = it->second;
+    // Single-use: consumed even when the write below fails, so a plan cannot be replayed.
+    plans.erase(it);
+    return p;
+}
+
+fc::variant node_admin_plugin::impl::h_config_plan(const fc::variant &params,
+                                                   const token_info &token) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {set: {key: value}}", ""};
+    }
+    const fc::variant_object &o = params.get_object();
+    auto it = o.find("set");
+    if (it == o.end() || !it->value().is_object() || it->value().get_object().size() == 0) {
+        throw rpc_error{-32602, "invalid params",
+                        "'set' must be a non-empty object of key: value",
+                        "only allow-listed keys are accepted; see admin.config.get"};
+    }
+
+    std::map<std::string, std::string> set;
+    for (const auto &kv : it->value().get_object()) {
+        std::string raw;
+        if (kv.value().is_string()) raw = kv.value().as_string();
+        else if (kv.value().is_bool()) raw = kv.value().as_bool() ? "true" : "false";
+        else if (kv.value().is_int64()) raw = std::to_string(kv.value().as_int64());
+        else if (kv.value().is_uint64()) raw = std::to_string(kv.value().as_uint64());
+        else {
+            throw rpc_error{-32602, "invalid params",
+                            "value for '" + kv.key() + "' must be a string, number or boolean",
+                            ""};
+        }
+        std::string norm;
+        std::string why;
+        if (!normalize_config_value(kv.key(), raw, norm, why)) {
+            throw rpc_error{-32602, "invalid params", why,
+                            "the admin API edits only allow-listed keys"};
+        }
+        set[kv.key()] = norm;
+    }
+
+    std::string text;
+    std::string why;
+    if (!read_text_file(config_path(), text, why)) {
+        throw rpc_error{-32004, "config unavailable", why, "check the data directory"};
+    }
+    std::vector<std::string> lines = split_lines(text);
+    fc::variants diff;
+    for (const auto &kv : set) {
+        std::string old;
+        const bool found = top_level_value(lines, kv.first, old);
+        if (found && old == kv.second) continue;
+        line_edit e = set_config_value(lines, kv.first, kv.second);
+        if (!e.error.empty()) throw rpc_error{-32602, "invalid params", e.error, ""};
+        lines = std::move(e.lines);
+        fc::mutable_variant_object d;
+        d("key", kv.first);
+        d("from", found ? fc::variant(old) : fc::variant());
+        d("to", kv.second);
+        diff.push_back(fc::variant(d));
+    }
+    if (diff.empty()) {
+        throw rpc_error{-32602, "invalid params", "no changes: every value already matches", ""};
+    }
+
+    pending_plan p;
+    p.id = random_plan_id();
+    p.label = token.label;
+    p.kind = "config";
+    p.created = now_unixtime();
+    p.expires = p.created + plan_ttl_sec;
+    p.base_sha256 = text_sha256(text);
+    p.set = std::move(set);
+    p.diff = fc::variant(diff);
+    store_plan(p);
+
+    fc::mutable_variant_object m;
+    m("plan_id", p.id);
+    m("kind", "config");
+    m("config_path", config_path());
+    m("diff", diff);
+    m("needs_restart", true);
+    m("expires_at", unixtime_iso(p.expires));
+    m("hint", "nothing was written yet; apply with admin.config.apply {plan_id}. The plan is "
+              "single-use, bound to this token, and refused if config.ini changes meanwhile.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_config_apply(const fc::variant &params,
+                                                    const token_info &token) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {plan_id}", ""};
+    }
+    const pending_plan p =
+        take_plan(trim(param_str(params.get_object(), "plan_id", "")), token, "config");
+
+    std::lock_guard<std::mutex> write_lock(config_write_mutex);
+    std::string text;
+    std::string why;
+    if (!read_text_file(config_path(), text, why)) {
+        throw rpc_error{-32004, "config unavailable", why, "check the data directory"};
+    }
+    if (text_sha256(text) != p.base_sha256) {
+        throw rpc_error{-32000, "config changed",
+                        "config.ini was modified after this plan was made; nothing was written",
+                        "create a new plan with admin.config.plan"};
+    }
+
+    std::vector<std::string> lines = split_lines(text);
+    for (const auto &kv : p.set) {
+        std::string norm;
+        std::string why2;
+        if (!normalize_config_value(kv.first, kv.second, norm, why2)) {
+            throw rpc_error{-32602, "invalid params", why2, ""};
+        }
+        line_edit e = set_config_value(lines, kv.first, norm);
+        if (!e.error.empty()) throw rpc_error{-32602, "invalid params", e.error, ""};
+        lines = std::move(e.lines);
+    }
+
+    std::string backup;
+    std::string werr;
+    if (!write_config_atomic(config_path(), join_lines(lines, true), backup, werr)) {
+        throw rpc_error{-32000, "write failed", werr,
+                        "the original config.ini was left untouched"};
+    }
+
+    fc::mutable_variant_object m;
+    m("applied", true);
+    m("kind", "config");
+    m("config_path", config_path());
+    m("backup", backup);
+    m("diff", p.diff);
+    m("needs_restart", true);
+    m("restart_hint",
+      "config.ini is read at startup: call admin.restart {confirm:\"restart\"} once the "
+      "process is supervised (docker --restart unless-stopped or systemd Restart=always).");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_config_backups(const fc::variant &) {
+    const bfs::path cfg(config_path());
+    const std::string prefix = cfg.filename().string() + ".bak-";
+    struct backup_row {
+        std::time_t mtime;
+        std::string name;
+        uintmax_t size;
+    };
+    std::vector<backup_row> rows;
+    boost::system::error_code ec;
+    bfs::directory_iterator it(cfg.parent_path(), ec);
+    const bfs::directory_iterator end;
+    if (ec) {
+        throw rpc_error{-32004, "config unavailable",
+                        "cannot list " + cfg.parent_path().string() + ": " + ec.message(), ""};
+    }
+    for (; it != end; it.increment(ec)) {
+        if (ec) break;
+        const std::string name = it->path().filename().string();
+        if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) continue;
+        const uintmax_t size = bfs::file_size(it->path(), ec);
+        if (ec) continue;
+        rows.push_back(backup_row{bfs::last_write_time(it->path(), ec), name, size});
+    }
+    std::sort(rows.begin(), rows.end(), [](const backup_row &a, const backup_row &b) {
+        if (a.mtime != b.mtime) return a.mtime > b.mtime;
+        return a.name > b.name;
+    });
+
+    fc::variants files;
+    for (const backup_row &r : rows) {
+        fc::mutable_variant_object f;
+        f("name", r.name);
+        f("path", (cfg.parent_path() / r.name).string());
+        f("bytes", static_cast<int64_t>(r.size));
+        f("modified", iso_utc(fc::time_point_sec(static_cast<uint32_t>(r.mtime))));
+        files.push_back(fc::variant(f));
+    }
+
+    fc::mutable_variant_object m;
+    m("config_path", config_path());
+    m("count", static_cast<int64_t>(files.size()));
+    m("backups", files);
+    m("hint", "each apply writes one backup before replacing config.ini; copy one back and "
+              "restart to roll back by hand");
+    return fc::variant(m);
+}
+
+/// Read an array of strings from params, ignoring an absent or null key.
+static void read_string_list(const fc::variant_object &o, const char *key,
+                             std::vector<std::string> &out) {
+    auto it = o.find(key);
+    if (it == o.end() || it->value().is_null()) return;
+    if (!it->value().is_array()) {
+        throw rpc_error{-32602, "invalid params", std::string("'") + key + "' must be an array",
+                        ""};
+    }
+    for (const fc::variant &v : it->value().get_array()) {
+        if (!v.is_string()) {
+            throw rpc_error{-32602, "invalid params",
+                            std::string("'") + key + "' must contain plugin name strings", ""};
+        }
+        const std::string name = trim(v.as_string());
+        if (!name.empty()) out.push_back(name);
+    }
+}
+
+fc::variant node_admin_plugin::impl::h_plugins_plan(const fc::variant &params,
+                                                    const token_info &token) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {add: [], remove: []}", ""};
+    }
+    const fc::variant_object &o = params.get_object();
+    std::vector<std::string> add;
+    std::vector<std::string> remove;
+    read_string_list(o, "add", add);
+    read_string_list(o, "remove", remove);
+    if (add.empty() && remove.empty()) {
+        throw rpc_error{-32602, "invalid params", "nothing to do: add and remove are empty",
+                        "example: {\"add\":[\"block_info\"],\"remove\":[]}"};
+    }
+
+    std::string text;
+    std::string why;
+    if (!read_text_file(config_path(), text, why)) {
+        throw rpc_error{-32004, "config unavailable", why, "check the data directory"};
+    }
+    const line_edit e = edit_plugin_lines(split_lines(text), add, remove);
+    if (!e.error.empty()) throw rpc_error{-32602, "invalid params", e.error, ""};
+
+    fc::variants diff;
+    for (const std::string &name : add) {
+        fc::mutable_variant_object d;
+        d("op", "add");
+        d("name", name);
+        diff.push_back(fc::variant(d));
+    }
+    for (const std::string &name : remove) {
+        fc::mutable_variant_object d;
+        d("op", "remove");
+        d("name", name);
+        diff.push_back(fc::variant(d));
+    }
+
+    pending_plan p;
+    p.id = random_plan_id();
+    p.label = token.label;
+    p.kind = "plugins";
+    p.created = now_unixtime();
+    p.expires = p.created + plan_ttl_sec;
+    p.base_sha256 = text_sha256(text);
+    p.add = std::move(add);
+    p.remove = std::move(remove);
+    p.diff = fc::variant(diff);
+    store_plan(p);
+
+    fc::mutable_variant_object m;
+    m("plan_id", p.id);
+    m("kind", "plugins");
+    m("config_path", config_path());
+    m("diff", diff);
+    m("needs_restart", true);
+    m("expires_at", unixtime_iso(p.expires));
+    m("hint", "nothing was written yet; apply with admin.plugins.apply {plan_id}. The plan is "
+              "single-use, bound to this token, and refused if config.ini changes meanwhile.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_plugins_apply(const fc::variant &params,
+                                                     const token_info &token) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {plan_id}", ""};
+    }
+    const pending_plan p =
+        take_plan(trim(param_str(params.get_object(), "plan_id", "")), token, "plugins");
+
+    std::lock_guard<std::mutex> write_lock(config_write_mutex);
+    std::string text;
+    std::string why;
+    if (!read_text_file(config_path(), text, why)) {
+        throw rpc_error{-32004, "config unavailable", why, "check the data directory"};
+    }
+    if (text_sha256(text) != p.base_sha256) {
+        throw rpc_error{-32000, "config changed",
+                        "config.ini was modified after this plan was made; nothing was written",
+                        "create a new plan with admin.plugins.plan"};
+    }
+
+    const line_edit e = edit_plugin_lines(split_lines(text), p.add, p.remove);
+    if (!e.error.empty()) throw rpc_error{-32602, "invalid params", e.error, ""};
+
+    std::string backup;
+    std::string werr;
+    if (!write_config_atomic(config_path(), join_lines(e.lines, true), backup, werr)) {
+        throw rpc_error{-32000, "write failed", werr,
+                        "the original config.ini was left untouched"};
+    }
+
+    fc::mutable_variant_object m;
+    m("applied", true);
+    m("kind", "plugins");
+    m("config_path", config_path());
+    m("backup", backup);
+    m("diff", p.diff);
+    m("needs_restart", true);
+    m("restart_hint",
+      "plugin changes are applied by a restart: call admin.restart {confirm:\"restart\"} once "
+      "the process is supervised (docker --restart unless-stopped or systemd Restart=always).");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_plan_cancel(const fc::variant &params,
+                                                   const token_info &token) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {plan_id}", ""};
+    }
+    const std::string id = trim(param_str(params.get_object(), "plan_id", ""));
+    if (id.empty()) throw rpc_error{-32602, "invalid params", "missing plan_id", ""};
+
+    std::lock_guard<std::mutex> lock(plans_mutex);
+    auto it = plans.find(id);
+    if (it == plans.end()) {
+        throw rpc_error{-32004, "unknown plan", id, "plans are single-use and expire"};
+    }
+    if (it->second.label != token.label) {
+        throw rpc_error{-32002, "forbidden", "plan belongs to another token", ""};
+    }
+    plans.erase(it);
+
+    fc::mutable_variant_object m;
+    m("cancelled", true);
+    m("plan_id", id);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_restart(const fc::variant &params) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {confirm: \"restart\"}", ""};
+    }
+    const std::string confirm = trim(param_str(params.get_object(), "confirm", ""));
+    if (confirm != "restart") {
+        throw rpc_error{-32602, "invalid params",
+                        "confirm must be exactly the word 'restart'",
+                        "this stops the node process; a supervisor has to bring it back"};
+    }
+    if (restart_requested.exchange(true)) {
+        throw rpc_error{-32000, "restart already requested",
+                        "the process is already shutting down", ""};
+    }
+
+    // Reply first, quit second: the handler runs on the listener thread and appbase::quit()
+    // stops the io_service, so the short delay lets this HTTP response reach the client.
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        ilog("node_admin: restart requested through the admin API; asking appbase to quit");
+        appbase::app().quit();
+    }).detach();
+
+    fc::mutable_variant_object m;
+    m("ok", true);
+    m("restarting", true);
+    m("exit_code", 0);
+    m("hint", "the process exits cleanly right after this reply. Bring-up belongs to the "
+              "supervisor: docker --restart unless-stopped or systemd Restart=always. Without "
+              "one, the node stays down.");
+    return fc::variant(m);
+}
+
 // ── MCP (Streamable HTTP) ────────────────────────────────────────────────────────────────
 // The MCP endpoint is the same loopback listener and the same bearer tokens as admin.*.
 // Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
@@ -2260,6 +2883,59 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Re-read the webserver admin state file (limits and IP lists) from "
                          "disk without restarting. Needs the 'webserver' scope.",
                          no_args));
+
+    fc::mutable_variant_object set_prop;
+    set_prop("type", "object");
+    set_prop("description",
+             "Allow-listed config keys mapped to new values (string, number or boolean). "
+             "Identity, keys, data paths and listener endpoints are never editable.");
+    set_prop("additionalProperties", true);
+    fc::variants cfg_plan_props;
+    cfg_plan_props.push_back(fc::variant(set_prop));
+    fc::variants cfg_set_required;
+    cfg_set_required.push_back(fc::variant(std::string("set")));
+    fc::variants plan_id_props;
+    plan_id_props.push_back(prop("string", "plan_id returned by the matching *.plan call"));
+    fc::variants plan_id_required;
+    plan_id_required.push_back(fc::variant(std::string("plan_id")));
+    fc::variants list_props;
+    list_props.push_back(prop("array", "Plugin names to add (must be registered in vizd)"));
+    list_props.push_back(prop("array", "Plugin names to remove (chain and node_admin are protected)"));
+    fc::variants confirm_props;
+    confirm_props.push_back(prop("string", "Must be exactly 'restart'"));
+    fc::variants confirm_required;
+    confirm_required.push_back(fc::variant(std::string("confirm")));
+
+    tools.push_back(tool("admin.config.plan",
+                         "Validate an allow-listed config.ini change and return the exact diff "
+                         "plus a single-use plan_id. Nothing is written. Needs the 'config' scope.",
+                         schema(cfg_plan_props, cfg_set_required)));
+    tools.push_back(tool("admin.config.apply",
+                         "Write the change shown by admin.config.plan: re-checks the file hash, "
+                         "backs the old file up and replaces config.ini atomically. Needs the "
+                         "'config' scope.",
+                         schema(plan_id_props, plan_id_required)));
+    tools.push_back(tool("admin.config.backups",
+                         "Backups written next to config.ini by previous applies, newest first.",
+                         no_args));
+    tools.push_back(tool("admin.plugins.plan",
+                         "Validate adding/removing `plugin =` lines and return a single-use "
+                         "plan_id with the exact edit. Nothing is written until apply. Needs the "
+                         "'plugins' scope.",
+                         schema(list_props, fc::variants{})));
+    tools.push_back(tool("admin.plugins.apply",
+                         "Write the plugin edit shown by admin.plugins.plan, with the same "
+                         "hash check, backup and atomic replace as config.apply. Needs the "
+                         "'plugins' scope.",
+                         schema(plan_id_props, plan_id_required)));
+    tools.push_back(tool("admin.plan.cancel",
+                         "Drop a plan without applying it. Only the token that created it can "
+                         "cancel it.",
+                         schema(plan_id_props, plan_id_required)));
+    tools.push_back(tool("admin.restart",
+                         "Ask appbase to quit so the supervisor (docker --restart / systemd "
+                         "Restart=always) starts the node again. Needs the 'process' scope.",
+                         schema(confirm_props, confirm_required)));
     return fc::variant(tools);
 }
 
@@ -2293,9 +2969,13 @@ fc::variant node_admin_plugin::impl::h_mcp_initialize(const fc::variant &params)
       "additionally need the 'p2p' scope; admin.snapshot.create and admin.snapshot.restore "
       "additionally need the 'snapshot' scope; the webserver policy tools "
       "(admin.webserver.limits / stats / whitelist_* / blacklist_* / reset / reload) "
-      "additionally need the 'webserver' scope. Webserver changes apply to the next request "
-      "and persist in the plugin's admin state file. A human-facing UI is served at /ui/ on "
-      "this same listener and uses the same bearer token.");
+      "additionally need the 'webserver' scope; admin.config.plan/apply need 'config', "
+      "admin.plugins.plan/apply need 'plugins', and admin.restart needs 'process'. Config and "
+      "plugin edits are two-phase: plan shows the exact diff and returns a single-use, "
+      "token-bound plan_id; apply re-checks that config.ini did not change, writes it "
+      "atomically and keeps a .bak copy. Both need a restart to take effect. Webserver changes "
+      "apply to the next request and persist in the plugin's admin state file. A human-facing "
+      "UI is served at /ui/ on this same listener and uses the same bearer token.");
     return fc::variant(m);
 }
 

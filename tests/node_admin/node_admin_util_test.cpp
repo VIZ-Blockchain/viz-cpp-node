@@ -160,6 +160,157 @@ BOOST_AUTO_TEST_CASE(config_missing_file_reports_absent) {
     BOOST_CHECK(e.empty());
 }
 
+// ─── config allow-list ────────────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(config_allowlist_excludes_identity_and_endpoints) {
+    BOOST_CHECK(config_spec_for("p2p-max-connections") != nullptr);
+    BOOST_CHECK(config_spec_for("webserver-limit-m") != nullptr);
+    BOOST_CHECK(!config_spec_for("private-key"));
+    BOOST_CHECK(!config_spec_for("emergency-private-key"));
+    BOOST_CHECK(!config_spec_for("admin-token"));
+    BOOST_CHECK(!config_spec_for("data-dir"));
+    BOOST_CHECK(!config_spec_for("webserver-http-endpoint"));
+    BOOST_CHECK(!config_spec_for("plugin"));
+    BOOST_CHECK(!config_spec_for("shared-file-size"));
+}
+
+BOOST_AUTO_TEST_CASE(config_values_are_normalized_and_bounded) {
+    std::string v;
+    std::string why;
+    BOOST_CHECK(normalize_config_value("webserver-stats-enabled", " YES ", v, why));
+    BOOST_CHECK_EQUAL(v, "true");
+    BOOST_CHECK(normalize_config_value("p2p-isolated-peers", "0", v, why));
+    BOOST_CHECK_EQUAL(v, "false");
+    BOOST_CHECK(normalize_config_value("p2p-max-connections", "007", v, why));
+    BOOST_CHECK_EQUAL(v, "7");
+
+    BOOST_CHECK(!normalize_config_value("webserver-stats-enabled", "maybe", v, why));
+    BOOST_CHECK(why.find("boolean") != std::string::npos);
+    BOOST_CHECK(!normalize_config_value("p2p-max-connections", "-1", v, why));
+    BOOST_CHECK(!normalize_config_value("p2p-max-connections", "10k", v, why));
+    BOOST_CHECK(!normalize_config_value("p2p-max-connections", "0", v, why));
+    BOOST_CHECK(why.find("between") != std::string::npos);
+    BOOST_CHECK(!normalize_config_value("private-key", "5Hx", v, why));
+    BOOST_CHECK(why.find("allow-list") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(plugin_names_and_protection) {
+    BOOST_CHECK(known_plugins().count("node_admin"));
+    BOOST_CHECK(known_plugins().count("json_rpc"));
+    BOOST_CHECK(known_plugins().count("snapshot"));
+    BOOST_CHECK(!known_plugins().count("not_a_plugin"));
+    BOOST_CHECK(plugin_removal_forbidden("node_admin"));
+    BOOST_CHECK(plugin_removal_forbidden("chain"));
+    BOOST_CHECK(!plugin_removal_forbidden("snapshot"));
+}
+
+// ─── raw config line editing ──────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(set_value_keeps_spacing_and_comments) {
+    const std::vector<std::string> lines = {
+        "# node config",
+        "p2p-max-connections = 10",
+        "webserver-cache-enabled=true",
+        "[logger]",
+        "level = debug"
+    };
+    const line_edit e = set_config_value(lines, "p2p-max-connections", "20");
+    BOOST_CHECK(e.error.empty());
+    BOOST_CHECK_EQUAL(e.changed, std::size_t(1));
+    BOOST_CHECK_EQUAL(e.lines[0], "# node config");
+    BOOST_CHECK_EQUAL(e.lines[1], "p2p-max-connections = 20");
+    BOOST_CHECK_EQUAL(e.lines[2], "webserver-cache-enabled=true");
+
+    const line_edit f = set_config_value(lines, "webserver-cache-enabled", "false");
+    BOOST_CHECK_EQUAL(f.lines[2], "webserver-cache-enabled=false");
+}
+
+BOOST_AUTO_TEST_CASE(set_value_inserts_before_first_section) {
+    const std::vector<std::string> lines = {"plugin = chain", "", "[logger]", "level = info"};
+    const line_edit e = set_config_value(lines, "webserver-limit-m", "42");
+    BOOST_CHECK_EQUAL(e.changed, std::size_t(1));
+    BOOST_CHECK_EQUAL(e.lines[0], "plugin = chain");
+    BOOST_CHECK_EQUAL(e.lines[1], "");
+    BOOST_CHECK_EQUAL(e.lines[2], "webserver-limit-m = 42");
+    BOOST_CHECK_EQUAL(e.lines[3], "[logger]");
+    BOOST_CHECK_EQUAL(e.lines[4], "level = info");
+}
+
+BOOST_AUTO_TEST_CASE(set_value_appends_without_sections) {
+    const line_edit e = set_config_value({"plugin = chain"}, "dlt-stats-interval-sec", "60");
+    BOOST_CHECK_EQUAL(e.lines.size(), std::size_t(2));
+    BOOST_CHECK_EQUAL(e.lines[1], "dlt-stats-interval-sec = 60");
+}
+
+BOOST_AUTO_TEST_CASE(set_value_ignores_same_key_inside_a_section) {
+    const std::vector<std::string> lines = {"[logger]", "webserver-limit-m = 1"};
+    const line_edit e = set_config_value(lines, "webserver-limit-m", "5");
+    // The section entry is not ours; the top-level key is inserted before the section.
+    BOOST_CHECK_EQUAL(e.lines[0], "webserver-limit-m = 5");
+    BOOST_CHECK_EQUAL(e.lines[1], "[logger]");
+    BOOST_CHECK_EQUAL(e.lines[2], "webserver-limit-m = 1");
+}
+
+BOOST_AUTO_TEST_CASE(set_value_preserves_crlf) {
+    const std::vector<std::string> lines = {"p2p-max-connections = 1\r", "[logger]\r"};
+    const line_edit e = set_config_value(lines, "p2p-max-connections", "2");
+    BOOST_CHECK_EQUAL(e.lines[0], "p2p-max-connections = 2\r");
+    const line_edit f = set_config_value(lines, "dlt-stats-interval-sec", "60");
+    BOOST_CHECK_EQUAL(f.lines[0], "p2p-max-connections = 1\r");
+    BOOST_CHECK_EQUAL(f.lines[1], "dlt-stats-interval-sec = 60\r");
+    BOOST_CHECK_EQUAL(f.lines[2], "[logger]\r");
+}
+
+BOOST_AUTO_TEST_CASE(split_and_join_roundtrip) {
+    const std::string text = "a = 1\nb = 2\n";
+    BOOST_CHECK_EQUAL(join_lines(split_lines(text)), text);
+    BOOST_CHECK_EQUAL(join_lines(split_lines("a = 1\nb = 2")), "a = 1\nb = 2\n");
+}
+
+// ─── plugin line editing ──────────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(plugin_lines_add_and_remove) {
+    const std::vector<std::string> lines = {
+        "plugin = chain",
+        "plugin = p2p",
+        "plugin = node_admin",
+        "[logger]",
+        "level = info"
+    };
+    const line_edit rm = edit_plugin_lines(lines, {}, {"p2p"});
+    BOOST_CHECK(rm.error.empty());
+    BOOST_CHECK_EQUAL(rm.changed, std::size_t(1));
+    BOOST_CHECK_EQUAL(rm.lines[0], "plugin = chain");
+    BOOST_CHECK_EQUAL(rm.lines[1], "plugin = node_admin");
+
+    const line_edit add = edit_plugin_lines(lines, {"snapshot"}, {});
+    BOOST_CHECK(add.error.empty());
+    BOOST_CHECK_EQUAL(add.changed, std::size_t(1));
+    // After the last plugin line, before the [section].
+    BOOST_CHECK_EQUAL(add.lines[3], "plugin = snapshot");
+    BOOST_CHECK_EQUAL(add.lines[4], "[logger]");
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lines_insert_before_section_when_none) {
+    const line_edit e = edit_plugin_lines({"p2p-max-connections = 10", "[logger]", "level = info"},
+                                          {"snapshot"}, {});
+    BOOST_CHECK(e.error.empty());
+    BOOST_CHECK_EQUAL(e.lines[0], "p2p-max-connections = 10");
+    BOOST_CHECK_EQUAL(e.lines[1], "plugin = snapshot");
+    BOOST_CHECK_EQUAL(e.lines[2], "[logger]");
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lines_refuse_bad_edits) {
+    const std::vector<std::string> lines = {"plugin = chain", "plugin = node_admin"};
+    BOOST_CHECK(!edit_plugin_lines(lines, {"bogus"}, {}).error.empty());
+    BOOST_CHECK(!edit_plugin_lines(lines, {"chain"}, {}).error.empty());      // already configured
+    BOOST_CHECK(!edit_plugin_lines(lines, {}, {"chain"}).error.empty());     // protected
+    BOOST_CHECK(!edit_plugin_lines(lines, {}, {"node_admin"}).error.empty()); // protected
+    BOOST_CHECK(!edit_plugin_lines(lines, {}, {"p2p"}).error.empty());       // not configured
+    BOOST_CHECK(!edit_plugin_lines(lines, {}, {}).error.empty());            // nothing to do
+    BOOST_CHECK(!edit_plugin_lines(lines, {"snapshot"}, {"snapshot"}).error.empty());
+}
+
 // ─── snapshot names ───────────────────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(snapshot_names_accept_plain_files_only) {

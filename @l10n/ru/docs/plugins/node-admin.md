@@ -6,15 +6,16 @@
 пользователей и не вместо публичного API. На том же слушателе работают эндпоинт **MCP**
 (Model Context Protocol) поверх HTTP и небольшой встроенный веб-интерфейс по адресу `/ui/`.
 
-> **Изменяющая поверхность: P2P-пиры, снапшоты и политика webserver.** `admin.p2p.add_node`,
-> `admin.p2p.add_trusted` и `admin.p2p.clear_banned` меняют, с кем нода устанавливает
-> соединения; `admin.snapshot.create` и `admin.snapshot.restore` пишут файл снапшота или
-> заменяют состояние ноды в памяти; изменяющие методы `admin.webserver.*` меняют лимиты,
-> переключатель статистики и списки разрешённых/запрещённых IP. Им нужен токен со скоупом
-> `p2p`, `snapshot` или `webserver` соответственно. Действия над пирами сериализуются на
-> P2P-потоке; изменения политики webserver применяются к следующему же запросу. Остальные
-> изменяющие операции (конфигурация, плагины, процесс, цепь) — следующий этап, на той же
-> модели аутентификации и аудита с двухфазными `plan`/`apply`.
+> **Изменяющая поверхность: P2P-пиры, снапшоты, политика webserver, `config.ini` и процесс.**
+> `admin.p2p.add_node`, `admin.p2p.add_trusted` и `admin.p2p.clear_banned` меняют, с кем нода
+> устанавливает соединения; `admin.snapshot.create` и `admin.snapshot.restore` пишут файл
+> снапшота или заменяют состояние ноды в памяти; изменяющие методы `admin.webserver.*` меняют
+> лимиты, переключатель статистики и списки разрешённых/запрещённых IP; `admin.config.*` и
+> `admin.plugins.*` правят `config.ini` через двухфазные `plan`/`apply`; `admin.restart`
+> просит процесс завершиться. Им нужен токен со скоупом `p2p`, `snapshot`, `webserver`,
+> `config`, `plugins` или `process` соответственно. Действия над пирами сериализуются на
+> P2P-потоке; изменения политики webserver применяются к следующему же запросу; правки
+> конфигурации и плагинов читаются при старте, поэтому нужен перезапуск.
 
 ---
 
@@ -49,6 +50,7 @@ admin-log-file = node=/var/log/vizd/vizd.log
 | `admin-allow-remote` | `false` | Разрешить `admin-endpoint` не на loopback. |
 | `admin-audit-log` | рядом с `config.ini` | Append-only журнал аудита (0600, ротация на 16 МБ). |
 | `admin-log-file` | — | Записи `name=path`, которые разрешено читать `admin.logs.tail`. Можно повторять. |
+| `admin-plan-ttl` | `120` | Сколько секунд `plan_id` остаётся действительным до отказа `apply`. |
 
 Плагин отказывается стартовать, если `admin-endpoint` задан, а токенов нет: админский
 порт без аутентификации не бывает допустимым состоянием.
@@ -66,8 +68,12 @@ admin-log-file = node=/var/log/vizd/vizd.log
 * `webserver` — изменяющие методы `admin.webserver.*` (лимиты, переключатель статистики,
   списки IP, reset, reload). `admin.webserver.status` и `admin.webserver.ips` требуют
   только `read`.
-* `plugins`, `config`, `process`, `chain` — зарезервированы под изменяющие этапы; токен
-  только с ними пока не может вызвать ничего.
+* `config` — `admin.config.plan` и `admin.config.apply` (правка разрешённых ключей
+  `config.ini`). `admin.config.backups` требует только `read`.
+* `plugins` — `admin.plugins.plan` и `admin.plugins.apply` (правка списка `plugin =`).
+* `process` — `admin.restart`. Он гасит процесс; поднять его обратно обязан супервизор.
+* `chain` — зарезервирован под изменяющий этап над цепью; токен только с ним пока не может
+  вызвать ничего.
 
 Отзыв — правка строки и перезапуск. Необязательный `expires-unixtime` делает токен
 недействительным после этого момента без перезапуска.
@@ -424,6 +430,136 @@ webserver отвечает клиентам из чёрного списка `40
 
 ---
 
+## Правка конфигурации и плагинов (две фазы)
+
+`config.ini` правится через **plan**, который возвращает точный дифф и ничего не пишет, и
+**apply**, который перепроверяет файл и заменяет его атомарно. Так намерение агента можно
+проверить до того, как оно коснётся боевой ноды, а падение посреди apply не оставит
+обрезанный файл.
+
+### Семантика plan
+
+* `admin.config.plan {"set":{"key":value,…}}` проверяет каждый ключ по **allow-list** ниже,
+  нормализует значение (`yes/on/1` → `true`; целые проверяются по диапазону) и возвращает
+  `plan_id`, `kind:"config"`, `diff` (`[{key, from, to}]`), `config_path`, `needs_restart:true`
+  и `expires_at`. **Ничего не пишется.** План без фактических изменений отклоняется с
+  `-32602`.
+* `admin.plugins.plan {"add":[…],"remove":[…]}` проверяет имена по набору плагинов, которые
+  умеет грузить бинарник, отклоняет дубли, отсутствующие имена и удаление `chain` и
+  `node_admin`, и возвращает `diff` из `[{op:"add"|"remove", name}]`.
+* План **одноразовый** (сгорает на первом `apply`, успешном или нет), **привязан к label
+  токена**, который его создал (`-32002` для любого другого), и **истекает** через
+  `admin-plan-ttl` секунд (`-32004 plan expired`). Хранится до 64 планов; при переполнении
+  вытесняется самый старый. `admin.plan.cancel` отбрасывает план явно.
+* `apply` заново считает SHA-256 файла `config.ini` и отказывает с `-32000 config changed …
+  nothing was written`, если файл изменился после создания плана. Затем он заново
+  нормализует и проверяет каждое значение — apply никогда не доверяет плану слепо.
+
+### Атомарная запись и бэкапы
+
+Оба apply правят файл как **сырые строки**, поэтому комментарии, порядок, отступы и CRLF
+сохраняются. Отсутствующий ключ вставляется перед первым `[section]` (верхний уровень);
+существующий ключ верхнего уровня меняется на месте, а ключ, который есть только внутри
+секции, не трогается — вместо него добавляется ключ верхнего уровня.
+
+Каждый успешный apply пишет один бэкап рядом с конфигом — `<config.ini>.bak-<unixtime>`
+(при коллизии с суффиксом `-n`), — затем временный файл в том же каталоге, `fsync`, копию
+прав исходного файла, `rename` поверх `config.ini` и `fsync` каталога. Неудачная запись
+оставляет исходный файл нетронутым. Старые бэкапы нода не чистит; в них есть секреты
+(токены, ключи), поэтому обращаться с ними нужно как с самим конфигом.
+
+`admin.config.backups` (скоуп `read`) перечисляет `<config.ini>.bak-*`, новые сверху, с
+размером и mtime. Откат вручную — скопировать бэкап обратно и перезапустить ноду.
+
+### Allow-list
+
+Админский API правит только эти ключи. Всё остальное — идентичность, ключи, data-dir,
+эндпоинты, `plugin`, `shared-file-size` — намеренно вне досягаемости bearer-токена.
+
+| Ключи | Тип | Диапазон |
+|---|---|---|
+| `p2p-max-connections` | uint | 1–10000 |
+| `dlt-peer-max-disconnect-hours` | uint | 1–8760 |
+| `dlt-mempool-max-tx` | uint | 1–1000000 |
+| `dlt-mempool-max-bytes` | uint | 1024–1073741824 |
+| `dlt-mempool-max-tx-size` | uint | 256–67108864 |
+| `dlt-mempool-max-expiration-hours` | uint | 1–720 |
+| `dlt-peer-exchange-max-per-reply` | uint | 0–1000 |
+| `dlt-peer-exchange-max-per-subnet` | uint | 0–1000 |
+| `dlt-peer-exchange-min-uptime-sec` | uint | 0–86400 |
+| `dlt-stats-interval-sec` | uint | 10–86400 |
+| `p2p-isolated-peers`, `auto-resync-on-wedge` | bool | — |
+| `webserver-thread-pool-size` | uint | 1–4096 |
+| `webserver-cache-enabled` | bool | — |
+| `webserver-cache-size` | uint | 0–10000000 |
+| `webserver-stats-enabled`, `webserver-limits-enabled` | bool | — |
+| `webserver-limit-m`, `webserver-limit-h`, `webserver-limit-d` | uint | 1–100000000 |
+| `webserver-stats-log-max-size` | uint | 1024–1073741824 |
+| `webserver-stats-log-keep` | uint | 1–1000 |
+| `webserver-stats-interval` | uint | 1–86400 |
+| `validator-guard-enabled`, `validator-guard-disable`, `validator-guard-disable-on-shutdown` | bool | — |
+| `validator-guard-interval`, `validator-guard-shutdown-grace` | uint | 1–3600 |
+| `validator-guard-disable-max` | uint | 0–1000 |
+
+### Пример
+
+```json
+{"jsonrpc":"2.0","id":80,"method":"admin.config.plan",
+ "params":{"set":{"p2p-max-connections":200,"webserver-limit-m":600}}}
+
+{"jsonrpc":"2.0","id":80,"result":{
+  "plan_id":"9f2c41a0d3b54e8770c5f1a2b3c4d5e6","kind":"config",
+  "config_path":"/var/lib/vizd/config.ini","needs_restart":true,
+  "diff":[{"key":"p2p-max-connections","from":"64","to":"200"},
+          {"key":"webserver-limit-m","from":null,"to":"600"}],
+  "expires_at":"2026-10-19T14:42:00Z",
+  "hint":"nothing was written yet; apply with admin.config.apply {plan_id}…"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":81,"method":"admin.config.apply",
+ "params":{"plan_id":"9f2c41a0d3b54e8770c5f1a2b3c4d5e6"}}
+
+{"jsonrpc":"2.0","id":81,"result":{
+  "applied":true,"kind":"config",
+  "config_path":"/var/lib/vizd/config.ini",
+  "backup":"/var/lib/vizd/config.ini.bak-1760884860",
+  "needs_restart":true,
+  "restart_hint":"config.ini is read at startup: call admin.restart {confirm:\"restart\"}…"}}
+```
+
+Пример с плагинами:
+
+```json
+{"jsonrpc":"2.0","method":"admin.plugins.plan",
+ "params":{"add":["block_info"],"remove":[]}}
+{"jsonrpc":"2.0","method":"admin.plugins.apply","params":{"plan_id":"…"}}
+```
+
+Оба apply отвечают `-32004 config unavailable`, если `config.ini` не читается, и
+`-32000 write failed`, если атомарная замена не удалась (исходный файл остаётся нетронутым).
+
+---
+
+## Перезапуск и супервизия
+
+`admin.restart {"confirm":"restart"}` (скоуп `process`) просит `appbase` завершиться:
+сначала уходит ответ, затем отдельный поток через 300 мс вызывает `quit()`, чтобы HTTP-ответ
+успел дойти до клиента. Процесс завершается с кодом 0.
+
+**Сам плагин ноду обратно не поднимает.** Это работа супервизора — `--restart
+unless-stopped` у контейнера или `Restart=always` у systemd. Без них нода просто останется
+лежать; ответ говорит об этом в `hint`, и это намеренно: админский эндпоинт, который
+форкает новый процесс ноды, был бы путём эскалации привилегий за пределы жизненного цикла
+процесса.
+
+Поскольку `config.ini` и список плагинов читаются при старте, `admin.config.apply` и
+`admin.plugins.apply` вступают в силу только после этого перезапуска. `confirm` обязан быть
+ровно словом `restart`; иначе `-32602`. Повторный вызов, пока завершение ещё не началось,
+отвечает `-32000 restart already requested`.
+
+---
+
 ## Эндпоинт MCP (Streamable HTTP)
 
 Решение q#3052=B: MCP-сервер живёт **внутри этого плагина**, а не в sidecar. Тот же
@@ -447,9 +583,12 @@ Protocol поверх HTTP — на хосте ничего дополнител
 `admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
 `admin.webserver.stats`, `admin.webserver.whitelist_add`, `admin.webserver.whitelist_remove`,
 `admin.webserver.blacklist_add`, `admin.webserver.blacklist_remove`, `admin.webserver.reset`,
-`admin.webserver.reload` (двадцать четыре).
+`admin.webserver.reload`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
+`admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
+(тридцать один).
 Действия над пирами дополнительно требуют скоупа `p2p`, действия над снапшотами — `snapshot`,
-действия над webserver — `webserver`, ровно как и по обычному JSON-RPC. Ошибки исполнения инструмента возвращаются **внутри**
+действия над webserver — `webserver`, правки конфига и плагинов — `config` или `plugins`,
+перезапуск — `process`, ровно как и по обычному JSON-RPC. Ошибки исполнения инструмента возвращаются **внутри**
 результата (`"isError": true`, текст в `content[0].text`), как требует MCP; протокольные
 ошибки (неизвестный инструмент, плохие параметры, нет скоупа) остаются ошибками JSON-RPC.
 
@@ -556,8 +695,9 @@ admin-token = ui:read,snapshot,p2p:<sha256 от 32 случайных байт>
   вызовы, и минимальный набор скоупов.
 * `admin.config.get` маскирует секреты по имени ключа, а не по форме значения. Секрет под
   безобидным именем будет напечатан — не заводите таких ключей.
-* Админский API никогда не отдаёт WIF-ключи. Кроме журнала аудита, единственный метод,
-  который пишет на диск, — `admin.snapshot.create` (в настроенный каталог снапшотов).
+* Админский API никогда не отдаёт WIF-ключи. Кроме журнала аудита, на диск пишут
+  `admin.snapshot.create` (в настроенный каталог снапшотов) и apply у
+  `admin.config.*`/`admin.plugins.*` (конфиг плюс один `.bak-*` на каждый apply).
 * `admin.snapshot.restore` **заменяет всё состояние цепи** выбранным файлом. Он
   приостанавливает обработку блоков и очищает shared memory; неверный или устаревший снапшот
   разрушителен. Считайте скоуп `snapshot` эквивалентом права записи в состояние ноды, а при
@@ -574,6 +714,16 @@ admin-token = ui:read,snapshot,p2p:<sha256 от 32 случайных байт>
   ошибочная запись в чёрном списке отклоняют добросовестных клиентов). Токен с ним — это
   политический credential, а не только читающий; изменения к тому же переживают перезапуск
   через `webserver-admin-state`.
+* Скоупы `config` и `plugins` правят `config.ini` на диске. Allow-list держит вне
+  досягаемости идентичность, ключи, эндпоинты и `plugin`, но редактируемые ключи всё равно
+  меняют поведение ноды при следующем перезапуске. `apply` сверяет хеш файла, поэтому правка,
+  сделанная кем-то другим после плана, никогда не будет молча перезаписана; бэкап — это путь
+  отката.
+* `admin.config.backups` перечисляет файлы, в которых есть секреты (токены, строки
+  `private-key`). Они создаются с правами исходного файла; не копируйте их в общедоступный
+  путь.
+* Скоуп `process` останавливает ноду. Без супервизора нода не вернётся; админский API
+  намеренно не умеет перезапускать себя в обход жизненного цикла процесса.
 
 ---
 
@@ -592,6 +742,14 @@ allowlist логов, коды ответов, аудит, лимит, дейс�
 скоупа `p2p`), статус/список/скачивание снапшотов (включая `HEAD`, traversal и отсутствующий
 файл, а также отказ без скоупа `snapshot` на create/restore), статистику/лимиты webserver
 (всплеск → `429`, обход белым списком, `403` чёрным, смена лимитов на ходу, сохранение и
-reload), MCP `initialize`/`tools/list`/`tools/call` и страницу `/ui/`. Поднимает плагин
+reload), двухфазную правку конфига и плагинов (allow-list, скоупы и привязка к токену,
+одноразовость, истечение, отказ по устаревшему хешу, бэкапы, защита плагинов), перезапуск
+(гард `confirm`, гард скоупа, чистый выход с кодом 0 и старт «как у супервизора», который
+читает отредактированный конфиг обратно), MCP `initialize`/`tools/list`/`tools/call` и
+страницу `/ui/`. Поднимает плагин
 webserver на третьем порту, поэтому нужны собранный `vizd` и три свободных порта; в CTest
 не входит.
+
+`tests/node_admin/` — цель CTest (`node_admin_util`, Boost.Test) над чистыми хелперами:
+маскирование секретов, разбор токенов, парсер конфига, allow-list и нормализация, а также
+редакторы сырых строк (отступы, CRLF, секции, гарды добавления/удаления плагинов).
