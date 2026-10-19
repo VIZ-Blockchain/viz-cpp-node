@@ -4,9 +4,11 @@
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/plugins/validator_guard/validator_guard.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/webserver/webserver_plugin.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/version.hpp>
 
 #include <appbase/application.hpp>
@@ -104,6 +106,7 @@ const appbase::abstract_plugin *observe_plugin(const std::string &name) {
 const std::size_t kMaxBodyBytes = 64 * 1024;
 const std::size_t kMaxLogBytes = 64 * 1024;
 const std::size_t kMaxLines = 2000;
+const std::size_t kMaxSnapshotPage = 200;
 const std::size_t kAuditRotateBytes = 16 * 1024 * 1024;
 const uint32_t kRatePerSecond = 20;
 // Snapshot files are served in one HTTP response, so the body has to fit in memory.
@@ -347,25 +350,41 @@ const char *ui_page() {
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:14px 18px;
+  header { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:14px 18px;
            border-bottom:1px solid var(--line); background:var(--panel); }
-  h1 { font-size:16px; margin:0 12px 0 0; font-weight:600; }
+  h1 { font-size:16px; margin:0 10px 0 0; font-weight:600; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);
-       margin:0 0 8px; font-weight:600; }
+       margin:0 0 10px; font-weight:600; }
   main { padding:18px; display:grid; gap:18px; max-width:1200px; }
-  input[type=password], input[type=text] { background:#0d1117; color:var(--fg);
+  input[type=password], input[type=text], select { background:#0d1117; color:var(--fg);
        border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
   button { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
            padding:7px 12px; font:inherit; cursor:pointer; }
   button:hover { border-color:var(--acc); }
   button.danger:hover { border-color:var(--bad); }
   button:disabled { opacity:.45; cursor:default; }
+  nav.tabs { display:flex; flex-wrap:wrap; gap:4px; padding:10px 18px 0;
+             border-bottom:1px solid var(--line); }
+  nav.tabs button { background:transparent; border:1px solid transparent; border-bottom:0;
+                    border-radius:8px 8px 0 0; color:var(--dim); padding:9px 14px; }
+  nav.tabs button:hover { color:var(--fg); border-color:var(--line); }
+  nav.tabs button.active { background:var(--bg); color:var(--fg);
+                           border-color:var(--line); border-bottom:1px solid var(--bg);
+                           margin-bottom:-1px; }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:3px 10px; font-size:12px;
+          color:var(--dim); }
+  .chip.ok { color:var(--ok); border-color:var(--ok); }
+  .chip.warn { color:var(--warn); border-color:var(--warn); }
+  .chip.bad { color:var(--bad); border-color:var(--bad); }
+  .notice { padding:8px 18px; border-bottom:1px solid var(--line); background:#0d1117;
+            font-size:12.5px; }
+  .notice div { padding:1px 0; white-space:pre-wrap; }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
   .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
   .card .v { font-size:19px; margin-top:2px; }
   .card .s { color:var(--dim); font-size:11px; margin-top:2px; }
-  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .card .v.bad, .bad { color:var(--bad); } .ok { color:var(--ok); } .warn { color:var(--warn); }
   .dim { color:var(--dim); }
   .tablewrap { overflow:auto; border:1px solid var(--line); border-radius:8px; }
   table { width:100%; border-collapse:collapse; background:var(--panel); }
@@ -376,25 +395,52 @@ const char *ui_page() {
   tr:last-child td { border-bottom:0; }
   .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .actions input[type=text] { min-width:240px; }
-  pre#log { margin:0; background:var(--panel); border:1px solid var(--line); border-radius:8px;
-            padding:10px 12px; min-height:60px; max-height:220px; overflow:auto; color:var(--dim); }
+  .logview { margin:0; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+             padding:10px 12px; min-height:60px; max-height:62vh; overflow:auto;
+             font-size:12.5px; }
+  .logview div { white-space:pre-wrap; word-break:break-word; }
+  /* Radial progress on a button that is waiting for a slow HTTP response. The button is
+     disabled for the whole request, so a second click cannot start a second download. */
+  button.loading { position:relative; padding-left:30px; opacity:.75; }
+  button.loading::before { content:''; position:absolute; left:9px; top:50%; width:12px;
+      height:12px; margin-top:-6px; border:2px solid var(--line); border-top-color:var(--acc);
+      border-radius:50%; animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
 <header>
   <h1>VIZ node admin</h1>
-  <input id="token" type="password" placeholder="bearer token" autocomplete="off" size="38">
+  <input id="token" type="password" placeholder="bearer token" autocomplete="off" size="36">
   <button id="save">Save token</button>
-  <span id="state" class="dim">no token</span>
+  <span id="who" class="chip">no token</span>
+  <span id="state" class="dim">—</span>
 </header>
+<div id="notice" class="notice" hidden></div>
+<nav class="tabs">
+  <button data-tab="status" class="active">Status</button>
+  <button data-tab="peers">Peers</button>
+  <button data-tab="snapshots">Snapshots</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="validators">Validators</button>
+</nav>
 <main>
-  <section>
+  <section id="tab-status">
     <h2>Node</h2>
     <div class="cards" id="cards"></div>
   </section>
 
-  <section>
+  <section id="tab-peers" hidden>
     <h2>Peers</h2>
+    <div class="actions" id="peerActions" style="margin-bottom:10px" hidden>
+      <input id="endpoint" type="text" placeholder="IP:port, e.g. 1.2.3.4:1776" autocomplete="off">
+      <button id="add">Add node</button>
+      <button id="addTrusted">Add as trusted</button>
+      <button id="clearBanned" class="danger">Clear banned list</button>
+    </div>
+    <div id="peerRo" class="dim" style="margin-bottom:10px" hidden>
+      read-only token: peer actions are hidden
+    </div>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Endpoint</th><th>State</th><th>Dir</th><th>Head</th><th>Lag</th>
@@ -404,13 +450,16 @@ const char *ui_page() {
     </div>
   </section>
 
-  <section>
+  <section id="tab-snapshots" hidden>
     <h2>Snapshots</h2>
     <div class="cards" id="snapCards"></div>
-    <div class="actions" style="margin:10px 0">
+    <div class="actions" id="snapActions" style="margin:10px 0" hidden>
       <button id="snapCreate">Create snapshot</button>
       <button id="snapRestoreLatest" class="danger">Restore latest</button>
       <span class="dim">restore wipes shared memory and re-imports the chosen snapshot in-process</span>
+    </div>
+    <div id="snapRo" class="dim" style="margin:10px 0" hidden>
+      read-only token: create and restore are hidden
     </div>
     <div class="tablewrap">
       <table>
@@ -418,21 +467,35 @@ const char *ui_page() {
         <tbody id="snapshots"></tbody>
       </table>
     </div>
-  </section>
-
-  <section>
-    <h2>Actions</h2>
-    <div class="actions">
-      <input id="endpoint" type="text" placeholder="IP:port, e.g. 1.2.3.4:1776" autocomplete="off">
-      <button id="add">Add node</button>
-      <button id="addTrusted">Add as trusted</button>
-      <button id="clearBanned" class="danger">Clear banned list</button>
+    <div class="actions" style="margin-top:10px">
+      <button id="snapMore" hidden>Load more</button>
+      <span id="snapCount" class="dim"></span>
     </div>
   </section>
 
-  <section>
-    <h2>Log</h2>
-    <pre id="log"></pre>
+  <section id="tab-logs" hidden>
+    <h2>Logs</h2>
+    <div class="actions" style="margin-bottom:10px">
+      <select id="logName"></select>
+      <button id="logToggle">Play</button>
+      <button id="logClear">Clear</button>
+      <span id="logState" class="dim">paused</span>
+      <span class="dim">live tail starts paused; Play appends new lines at the bottom</span>
+    </div>
+    <pre id="logView" class="logview"><span class="dim">no token — enter one above</span></pre>
+  </section>
+
+  <section id="tab-validators" hidden>
+    <h2>Active validators</h2>
+    <div class="cards" id="valCards"></div>
+    <div class="tablewrap" style="margin-top:12px">
+      <table>
+        <thead><tr><th>#</th><th>Validator in the current schedule</th></tr></thead>
+        <tbody id="valNames"></tbody>
+      </table>
+    </div>
+    <h2 style="margin-top:18px">This node's validators (validator_guard)</h2>
+    <div id="guardBox" class="dim">not loaded</div>
   </section>
 </main>
 <script>
@@ -440,20 +503,33 @@ const char *ui_page() {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var token = sessionStorage.getItem('vizAdminToken') || '';
-  var timer = null;
   // The page is served at "/ui/" when the listener is reached directly, but an operator
   // may publish it behind an nginx prefix (e.g. "/admin/ui/"). JSON-RPC and snapshot
   // downloads then live under that same prefix, so derive it from our own URL.
   var base = location.pathname.replace(/\/ui\/?$/, '/');
+  var scopes = null;            // null until admin.auth.me answers
+  var activeTab = sessionStorage.getItem('vizAdminTab') || 'status';
+  var tickTimer = null;
+  var snapItems = [];
+  var snapHasMore = false;
+  var snapLoading = false;
+  var downloading = Object.create(null);
+  var logLines = [];
+  var logName = '';
+  var logPlaying = false;
+  var logTimer = null;
+  var logBusy = false;
 
-  function say(msg, cls) {
-    var el = $('log');
-    var t = new Date().toISOString().replace('T', ' ').replace('Z', 'Z');
-    var line = document.createElement('div');
-    line.textContent = t + '  ' + msg;
-    if (cls) line.className = cls;
-    el.appendChild(line);
-    el.scrollTop = el.scrollHeight;
+  function hasScope(s) { return !!(scopes && scopes.indexOf(s) >= 0); }
+
+  function notice(msg, cls) {
+    var n = $('notice');
+    n.hidden = false;
+    var d = document.createElement('div');
+    d.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+    if (cls) d.className = cls;
+    n.appendChild(d);
+    while (n.children.length > 4) n.removeChild(n.firstChild);
   }
 
   function setState(msg, cls) {
@@ -495,7 +571,7 @@ const char *ui_page() {
     el.className = 'card';
     var k = document.createElement('div'); k.className = 'k'; k.textContent = label;
     var v = document.createElement('div'); v.className = 'v' + (cls ? ' ' + cls : '');
-    v.textContent = value;
+    v.textContent = value == null ? '-' : String(value);
     el.appendChild(k); el.appendChild(v);
     if (sub) { var s = document.createElement('div'); s.className = 's'; s.textContent = sub;
                el.appendChild(s); }
@@ -509,13 +585,91 @@ const char *ui_page() {
     return '0';
   }
 
-  function renderPeers(peers) {
+  function sizeText(bytes) {
+    if (bytes == null) return '-';
+    bytes = Number(bytes) || 0;
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+  }
+
+  function ageText(sec) {
+    sec = Number(sec);
+    if (isNaN(sec)) return '-';
+    if (sec < 0) sec = 0;
+    if (sec < 120) return sec + 's';
+    if (sec < 7200) return Math.floor(sec / 60) + 'm';
+    if (sec < 172800) return Math.floor(sec / 3600) + 'h';
+    return Math.floor(sec / 86400) + 'd';
+  }
+
+  function button(label, cls, fn) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  // ── identity and scopes ────────────────────────────────────────────────────────────────
+  function applyScopes() {
+    var canSnap = hasScope('snapshot');
+    var canP2p = hasScope('p2p');
+    // The "read-only" note appears only once we actually know the scopes; before that the
+    // page simply has no token and the missing token is the message.
+    var known = scopes !== null;
+    $('snapActions').hidden = !canSnap;
+    $('snapRo').hidden = !known || canSnap;
+    $('peerActions').hidden = !canP2p;
+    $('peerRo').hidden = !known || canP2p;
+    $('snapCreate').disabled = !canSnap;
+    $('snapRestoreLatest').disabled = !canSnap;
+  }
+
+  function refreshAuth() {
+    if (!token) {
+      scopes = null;
+      $('who').textContent = 'no token';
+      $('who').className = 'chip warn';
+      setState('—');
+      applyScopes();
+      return Promise.resolve(false);
+    }
+    return rpc('admin.auth.me').then(function (r) {
+      scopes = r.scopes || [];
+      $('who').textContent = r.label + ' · ' + (scopes.join(',') || 'no scopes');
+      $('who').className = 'chip ' + ((hasScope('snapshot') || hasScope('p2p')) ? 'ok' : 'warn');
+      $('who').title = r.expires ? 'expires ' + new Date(r.expires * 1000).toLocaleString() : 'no expiry';
+      setState('connected · ' + new Date().toLocaleTimeString());
+      applyScopes();
+      return true;
+    }).catch(function (e) {
+      scopes = null;
+      if (e.rpcCode === -32001 || e.httpStatus === 401) {
+        setState('token rejected (401)', 'bad');
+        $('who').textContent = 'rejected';
+        $('who').className = 'chip bad';
+      } else {
+        setState('error: ' + e.message, 'bad');
+        $('who').textContent = 'error';
+        $('who').className = 'chip bad';
+      }
+      applyScopes();
+      return false;
+    });
+  }
+
+  // ── status / peers ─────────────────────────────────────────────────────────────────────
+  function renderPeers(peers, err) {
     var body = $('peers');
     body.textContent = '';
     if (!peers || !peers.length) {
       var tr = document.createElement('tr');
       var td = document.createElement('td');
-      td.colSpan = 9; td.className = 'dim'; td.textContent = 'no peers connected or known';
+      td.colSpan = 9; td.className = 'dim';
+      td.textContent = err ? 'p2p status unavailable: ' + err
+                           : 'no peers connected or known';
       tr.appendChild(td); body.appendChild(tr);
       return;
     }
@@ -546,35 +700,92 @@ const char *ui_page() {
     });
   }
 
-  function sizeText(bytes) {
-    bytes = Number(bytes) || 0;
-    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
-    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
-    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return bytes + ' B';
+  function renderStatus(info, p2p, p2pErr) {
+    var cards = $('cards');
+    cards.textContent = '';
+    if (info) {
+      var em = !!info.emergency_consensus_active;
+      cards.appendChild(card('Emergency consensus', em ? 'ACTIVE' : 'normal',
+        em ? 'since block #' + info.emergency_consensus_start_block
+           : 'validators sign normally', em ? 'bad' : 'ok'));
+      cards.appendChild(card('Emergency key',
+        info.emergency_key_configured ? 'configured' : 'not configured',
+        'validator plugin emergency key',
+        info.emergency_key_configured ? 'ok' : (em ? 'warn' : '')));
+      cards.appendChild(card('Head / LIB', '#' + info.head_block_num,
+        'lib #' + info.last_irreversible_block_num));
+      cards.appendChild(card('Head age', ageText(info.head_age_sec),
+        'block time vs server clock', Number(info.head_age_sec) > 30 ? 'warn' : ''));
+      cards.appendChild(card('Version', info.version, 'hardforks: ' + info.hardfork_count));
+      cards.appendChild(card('Uptime', uptime(info.uptime_sec), 'since process start'));
+      if (info.recovering) {
+        cards.appendChild(card('Recovering', 'YES',
+          'chain is replaying or rebuilding state', 'warn'));
+      }
+    }
+    if (p2p) {
+      cards.appendChild(card('Node status', p2p.node_status, 'fork: ' + p2p.fork_status,
+        p2p.node_status === 'FORWARD' ? 'ok' : 'warn'));
+      cards.appendChild(card('Peers', p2p.active + ' active / ' + p2p.connections,
+        p2p.known_peers + ' known, ' + p2p.trusted_peers + ' trusted'));
+      cards.appendChild(card('Best peer head', p2p.best_peer_head ? '#' + p2p.best_peer_head : '-',
+        p2p.best_peer_head ? 'lag ' + lagText(p2p.best_peer_head_lag) +
+        ' (' + p2p.peers_ahead + ' ahead)' : 'no peer heads yet',
+        p2p.best_peer_head_lag < -2 ? 'warn' : ''));
+      cards.appendChild(card('Banned', p2p.banned_peers, 'soft-banned entries',
+        p2p.banned_peers ? 'warn' : ''));
+      var notes = [];
+      if (p2p.paused) notes.push('BLOCK PROCESSING PAUSED');
+      if (p2p.catching_up) notes.push('catching up');
+      if (p2p.isolated_peers) notes.push('isolated-peers mode');
+      if (p2p.fork_status !== 'NORMAL') notes.push('fork: ' + p2p.fork_status);
+      cards.appendChild(card('Flags', notes.length ? notes.join(' · ') : 'ok',
+        'as of ' + p2p.as_of, notes.length ? 'warn' : 'ok'));
+    }
+    if (!info) {
+      cards.appendChild(card('Node', 'unavailable', p2pErr || 'node_info failed', 'bad'));
+    }
   }
 
-  function ageText(sec) {
-    sec = Number(sec);
-    if (isNaN(sec)) return '-';
-    if (sec < 0) sec = 0;
-    if (sec < 120) return sec + 's';
-    if (sec < 7200) return Math.floor(sec / 60) + 'm';
-    if (sec < 172800) return Math.floor(sec / 3600) + 'h';
-    return Math.floor(sec / 86400) + 'd';
+  function refreshStatus() {
+    if (!token) return Promise.resolve();
+    return Promise.all([
+      rpc('admin.node_info').then(function (r) { return { ok: true, value: r }; },
+                                  function (e) { return { ok: false, error: e }; }),
+      rpc('admin.p2p.status').then(function (r) { return { ok: true, value: r }; },
+                                   function (e) { return { ok: false, error: e }; })
+    ]).then(function (res) {
+      var info = res[0].ok ? res[0].value : null;
+      var p2p = res[1].ok ? res[1].value : null;
+      var perr = res[1].ok ? null :
+        (res[1].error.rpcCode === -32004 ? 'p2p plugin is not enabled' : res[1].error.message);
+      renderStatus(info, p2p, perr);
+      if (p2p) {
+        renderPeers(p2p.peers, null);
+      } else {
+        renderPeers(null, perr);
+      }
+      var e = !res[0].ok ? res[0].error : (!res[1].ok ? res[1].error : null);
+      if (e && (e.rpcCode === -32001 || e.httpStatus === 401)) {
+        setState('token rejected (401)', 'bad');
+      } else if (info || p2p) {
+        setState('updated ' + new Date().toLocaleTimeString(), 'ok');
+      } else {
+        setState('error: ' + (e ? e.message : 'no data'), 'bad');
+      }
+    });
   }
 
-  function button(label, cls, fn) {
-    var b = document.createElement('button');
-    b.textContent = label;
-    if (cls) b.className = cls;
-    b.addEventListener('click', fn);
-    return b;
-  }
-
-  function downloadSnapshot(name) {
-    if (!token) { say('enter a token first', 'bad'); return; }
-    say('downloading ' + name + ' …');
+  // ── snapshots ──────────────────────────────────────────────────────────────────────────
+  function downloadSnapshot(name, btn) {
+    if (!token) { notice('enter a token first', 'bad'); return; }
+    if (downloading[name]) return;   // a second click while the first is in flight is a no-op
+    downloading[name] = true;
+    btn.disabled = true;
+    btn.className = 'loading';
+    var old = btn.textContent;
+    btn.textContent = 'Downloading…';
+    notice('requesting ' + name + ' …');
     fetch(base + 'snapshot/' + encodeURIComponent(name), {
       headers: { 'Authorization': 'Bearer ' + token }
     }).then(function (res) {
@@ -590,10 +801,15 @@ const char *ui_page() {
       a.download = name;
       document.body.appendChild(a);
       a.click();
-      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-      say('downloaded ' + name + ' (' + sizeText(blob.size) + ')', 'ok');
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      notice('downloaded ' + name + ' (' + sizeText(blob.size) + ')', 'ok');
     }).catch(function (e) {
-      say('download failed: ' + e.message, 'bad');
+      notice('download failed: ' + e.message, 'bad');
+    }).then(function () {
+      downloading[name] = false;
+      btn.disabled = false;
+      btn.className = '';
+      btn.textContent = old;
     });
   }
 
@@ -605,29 +821,17 @@ const char *ui_page() {
     act('admin.snapshot.restore', { name: name }, 'restore started for ' + name);
   }
 
-  function renderSnapshots(st) {
-    var cards = $('snapCards');
-    cards.textContent = '';
-    var state = st.restoring ? 'restoring' : (st.in_progress ? 'creating' : 'idle');
-    cards.appendChild(card('State', state, 'head ' +
-      (st.head_block_num == null ? 'n/a during restore' : '#' + st.head_block_num),
-      st.restoring || st.in_progress ? 'warn' : 'ok'));
-    cards.appendChild(card('Snapshots', st.snapshot_count, st.dir));
-    cards.appendChild(card('Latest', st.latest_name || '-',
-      st.latest_name ? 'used by Restore latest and /snapshot/latest' : 'none yet',
-      st.latest_name ? '' : 'warn'));
-
+  function renderSnapshotRows(st) {
     var body = $('snapshots');
     body.textContent = '';
-    if (!st.snapshots || !st.snapshots.length) {
+    if (!snapItems.length) {
       var tr = document.createElement('tr');
       var td = document.createElement('td');
       td.colSpan = 5; td.className = 'dim';
-      td.textContent = 'no snapshot files in ' + st.dir;
+      td.textContent = 'no snapshot files in ' + (st.dir || 'the snapshot directory');
       tr.appendChild(td); body.appendChild(tr);
-      return;
     }
-    st.snapshots.forEach(function (p) {
+    snapItems.forEach(function (p) {
       var tr = document.createElement('tr');
       function cell(text, cls) {
         var td = document.createElement('td');
@@ -641,98 +845,366 @@ const char *ui_page() {
       cell(sizeText(p.size_bytes));
       cell(ageText(st.as_of - p.modified));
       var actions = cell('');
-      actions.appendChild(button('Download', '', function () { downloadSnapshot(p.name); }));
-      actions.appendChild(button('Restore', 'danger', function () {
-        restoreSnapshot(p.name, p.block_num);
-      }));
+      var dl = button('Download', '', function () { downloadSnapshot(p.name, dl); });
+      if (downloading[p.name]) {
+        dl.disabled = true; dl.className = 'loading'; dl.textContent = 'Downloading…';
+      }
+      actions.appendChild(dl);
+      if (hasScope('snapshot')) {
+        actions.appendChild(button('Restore', 'danger', function () {
+          restoreSnapshot(p.name, p.block_num);
+        }));
+      }
       body.appendChild(tr);
     });
+    $('snapMore').hidden = !snapHasMore;
+    $('snapCount').textContent = snapItems.length +
+      (st.snapshot_total != null ? ' of ' + st.snapshot_total : '') + ' files shown';
   }
 
-  var lastSnapError = '';
+  function renderSnapCards(st) {
+    var cards = $('snapCards');
+    cards.textContent = '';
+    var state, sub, cls;
+    if (st.restoring) { state = 'restoring'; sub = 'shared memory is being re-imported'; cls = 'warn'; }
+    else if (st.in_progress) { state = 'creating'; sub = 'a snapshot is being written now'; cls = 'warn'; }
+    else { state = 'idle'; sub = 'no snapshot job is running'; cls = 'ok'; }
+    cards.appendChild(card('Snapshot state', state,
+      sub + (st.head_block_num == null ? '' : ' · head #' + st.head_block_num), cls));
+    cards.appendChild(card('Snapshots', st.snapshot_count, st.dir));
+    cards.appendChild(card('Latest', st.latest_name || '-',
+      st.latest_name ? 'used by Restore latest and /snapshot/latest' : 'none yet',
+      st.latest_name ? '' : 'warn'));
+  }
 
-  function refreshSnapshots() {
-    if (!token) return Promise.resolve();
-    return rpc('admin.snapshot.status').then(function (st) {
-      lastSnapError = '';
-      renderSnapshots(st);
+  function refreshSnapshots(reset) {
+    if (!token || snapLoading) return Promise.resolve();
+    snapLoading = true;
+    var offset = reset ? 0 : snapItems.length;
+    return rpc('admin.snapshot.status', { offset: offset, limit: 20 }).then(function (st) {
+      if (reset) snapItems = [];
+      snapItems = snapItems.concat(st.snapshots || []);
+      snapHasMore = !!st.has_more;
+      renderSnapCards(st);
+      renderSnapshotRows(st);
+      $('snapCreate').disabled = !hasScope('snapshot') || st.in_progress || st.restoring;
+      $('snapRestoreLatest').disabled = !hasScope('snapshot') || st.restoring;
     }).catch(function (e) {
       var msg = e.rpcCode === -32004 ? 'snapshot plugin is not enabled on this node' : e.message;
       var cards = $('snapCards');
       cards.textContent = '';
       cards.appendChild(card('Snapshots', 'unavailable', msg, 'warn'));
       $('snapshots').textContent = '';
-      if (msg !== lastSnapError) { say('snapshots: ' + msg, 'bad'); lastSnapError = msg; }
-    });
+      notice('snapshots: ' + msg, 'bad');
+    }).then(function () { snapLoading = false; });
   }
 
-  function render(s) {
-    var cards = $('cards');
-    cards.textContent = '';
-    var syncCls = s.node_status === 'FORWARD' ? 'ok' : 'warn';
-    cards.appendChild(card('Node status', s.node_status, 'fork: ' + s.fork_status, syncCls));
-    cards.appendChild(card('Head / LIB', '#' + s.head_block_num, 'lib #' + s.lib_block_num));
-    cards.appendChild(card('DLT range', s.dlt_earliest + ' - ' + s.dlt_latest,
-                           'blocks available locally'));
-    cards.appendChild(card('Peers', s.active + ' active / ' + s.connections,
-                           s.known_peers + ' known, ' + s.trusted_peers + ' trusted'));
-    cards.appendChild(card('Best peer head', s.best_peer_head ? '#' + s.best_peer_head : '-',
-                           s.best_peer_head ? 'lag ' + lagText(s.best_peer_head_lag) +
-                           ' (' + s.peers_ahead + ' ahead)' : 'no peer heads yet',
-                           s.best_peer_head_lag < -2 ? 'warn' : ''));
-    cards.appendChild(card('Uptime', uptime(s.uptime_sec), 'since process start'));
-    cards.appendChild(card('Banned', s.banned_peers, 'soft-banned entries',
-                           s.banned_peers ? 'warn' : ''));
-    var notes = [];
-    if (s.paused) notes.push('BLOCK PROCESSING PAUSED');
-    if (s.catching_up) notes.push('catching up');
-    if (s.isolated_peers) notes.push('isolated-peers mode');
-    if (s.fork_status !== 'NORMAL') notes.push('fork: ' + s.fork_status);
-    cards.appendChild(card('Flags', notes.length ? notes.join(' · ') : 'ok',
-                           'as of ' + s.as_of, notes.length ? 'warn' : 'ok'));
-    renderPeers(s.peers);
-  }
+  // ── logs ───────────────────────────────────────────────────────────────────────────────
+  var ANSI = /\x1b\[([0-9;]*)m/;
 
-  function refresh() {
-    if (!token) { setState('no token', 'warn'); return Promise.resolve(); }
-    return rpc('admin.p2p.status').then(function (s) {
-      setState('connected · updated ' + new Date().toLocaleTimeString(), 'ok');
-      render(s);
-      return refreshSnapshots();
-    }).catch(function (e) {
-      if (e.rpcCode === -32001 || e.httpStatus === 401) {
-        setState('token rejected (401) — check the token and its scopes', 'bad');
+  function ansiFragments(text) {
+    var parts = text.split(ANSI);
+    var frag = document.createDocumentFragment();
+    var cls = '';
+    for (var i = 0; i < parts.length; i++) {
+      if (i % 2 === 0) {
+        if (!parts[i]) continue;
+        var span = document.createElement('span');
+        span.textContent = parts[i];
+        if (cls) span.className = cls;
+        frag.appendChild(span);
       } else {
-        setState('error: ' + e.message, 'bad');
+        var c = parts[i];
+        if (c === '' || c === '0') cls = '';
+        else if (/^(1;)?31$|^91$/.test(c)) cls = 'bad';
+        else if (/^(1;)?33$|^93$/.test(c)) cls = 'warn';
+        else if (/^(1;)?32$|^92$/.test(c)) cls = 'ok';
+        else if (/^(1;)?3[46]$|^9[46]$/.test(c)) cls = 'dim';
+        else if (/^1$/.test(c)) cls = 'strong';
       }
-      say('status: ' + e.message, 'bad');
+    }
+    return frag;
+  }
+
+  function levelClass(t) {
+    // The file appender writes plain text without a level column and without ANSI, so the
+    // colour has to come from the message itself. Console stdout does carry ANSI and is
+    // parsed separately above.
+    if (/\b(FATAL|CRITICAL|ERROR)\b|exception|failed|rejected/.test(t)) return 'bad';
+    if (/\b(WARN|WARNING)\b|banned|reset|reconnect|behind schedule|lagging/.test(t)) return 'warn';
+    if (/Validated block|Produced block|started|connected/.test(t)) return 'ok';
+    if (/\b(INFO|NOTICE)\b/.test(t)) return 'dim';
+    return '';
+  }
+
+  function addLogLine(text) {
+    var view = $('logView');
+    var el = document.createElement('div');
+    var cls = levelClass(text);
+    if (cls) el.className = cls;
+    if (text.indexOf('\x1b[') >= 0) el.appendChild(ansiFragments(text));
+    else el.textContent = text;
+    view.appendChild(el);
+  }
+
+  function appendLog(lines, reset) {
+    var view = $('logView');
+    if (reset) { logLines = []; view.textContent = ''; }
+    if (!lines || !lines.length) {
+      if (!logLines.length) {
+        view.textContent = '';
+        var d = document.createElement('div');
+        d.className = 'dim';
+        d.textContent = 'the log file is empty so far';
+        view.appendChild(d);
+      }
+      return;
+    }
+    var atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
+    var start = 0;
+    // The "file is empty" placeholder is not part of the line buffer; drop it before the
+    // first real line arrives, or it would sit above the log forever.
+    if (!reset && !logLines.length) view.textContent = '';
+    if (logLines.length) {
+      var idx = lines.lastIndexOf(logLines[logLines.length - 1]);
+      if (idx >= 0) {
+        start = idx + 1;
+      } else {
+        var maxK = Math.min(logLines.length, lines.length);
+        for (var k = maxK; k > 0; k--) {
+          var same = true;
+          for (var i = 0; i < k; i++) {
+            if (logLines[logLines.length - k + i] !== lines[i]) { same = false; break; }
+          }
+          if (same) { start = k; break; }
+        }
+      }
+    }
+    for (var j = start; j < lines.length; j++) {
+      addLogLine(lines[j]);
+      logLines.push(lines[j]);
+    }
+    while (logLines.length > 2000 && view.firstChild) {
+      view.removeChild(view.firstChild);
+      logLines.shift();
+    }
+    if (atBottom) view.scrollTop = view.scrollHeight;
+  }
+
+  function tailOnce(reset) {
+    if (!token || !logName || logBusy) return Promise.resolve();
+    logBusy = true;
+    return rpc('admin.logs.tail', { name: logName, lines: 300, bytes: 131072 })
+      .then(function (r) {
+        appendLog(r.lines || [], !!reset);
+        $('logState').textContent = logPlaying ? 'playing' : 'paused';
+      }).catch(function (e) {
+        notice('log: ' + e.message, 'bad');
+        $('logState').textContent = 'error';
+      }).then(function () { logBusy = false; });
+  }
+
+  function setPlaying(on) {
+    logPlaying = on;
+    $('logToggle').textContent = on ? 'Pause' : 'Play';
+    $('logState').textContent = on ? 'playing' : 'paused';
+    if (logTimer) { clearInterval(logTimer); logTimer = null; }
+    if (on) {
+      tailOnce(false);
+      logTimer = setInterval(function () {
+        if (!document.hidden) tailOnce(false);
+      }, 2000);
+    }
+  }
+
+  function loadLogList() {
+    if (!token) return Promise.resolve();
+    return rpc('admin.logs.list').then(function (r) {
+      var logs = r.logs || [];
+      var sel = $('logName');
+      var prev = logName || sel.value;
+      sel.textContent = '';
+      if (!logs.length) {
+        var o = document.createElement('option');
+        o.value = ''; o.textContent = '(no admin-log-file entries configured)';
+        sel.appendChild(o);
+        logName = '';
+        $('logToggle').disabled = true;
+        return;
+      }
+      logs.forEach(function (l) {
+        var o = document.createElement('option');
+        o.value = l.name;
+        o.textContent = l.name + (l.exists ? ' · ' + sizeText(l.size) : ' · missing');
+        sel.appendChild(o);
+      });
+      if (prev && logs.some(function (l) { return l.name === prev; })) sel.value = prev;
+      logName = sel.value;
+      $('logToggle').disabled = !logName;
+      if (!logLines.length) tailOnce(true);
+    }).catch(function (e) { notice('logs: ' + e.message, 'bad'); });
+  }
+
+  // ── validators ─────────────────────────────────────────────────────────────────────────
+  function renderGuard(r) {
+    var box = $('guardBox');
+    box.textContent = '';
+    box.className = '';
+    var g = (r && r.guard) || {};
+    var line = document.createElement('div');
+    line.className = g.available ? 'ok' : 'dim';
+    line.textContent = g.available ? 'validator_guard is live'
+      : (g.reason || 'validator_guard is not loaded');
+    box.appendChild(line);
+    var list = (r && r.validators) || [];
+    if (!list.length) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'tablewrap';
+    wrap.style.marginTop = '8px';
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var htr = document.createElement('tr');
+    ['Validator', 'On chain', 'Enabled', 'Hold', 'Active authority', 'Scheduled in',
+     'Signing key', 'Configured key'].forEach(function (h) {
+      var th = document.createElement('th'); th.textContent = h; htr.appendChild(th);
+    });
+    thead.appendChild(htr); table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    list.forEach(function (v) {
+      var tr = document.createElement('tr');
+      function cell(text, cls) {
+        var td = document.createElement('td');
+        td.textContent = text == null || text === '' ? '-' : String(text);
+        if (cls) td.className = cls;
+        tr.appendChild(td);
+      }
+      cell(v.name);
+      cell(v.on_chain ? 'yes' : 'no', v.on_chain ? 'ok' : 'warn');
+      cell(v.enabled ? 'yes' : 'no', v.enabled ? 'ok' : 'warn');
+      cell(v.hold ? 'yes' : 'no', v.hold ? 'warn' : '');
+      cell(v.active_authority ? 'yes' : 'no', v.active_authority ? 'ok' : 'warn');
+      cell(v.scheduled_in == null ? '-' : v.scheduled_in);
+      cell(v.signing_key || '-');
+      cell(v.configured_key || '-');
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    box.appendChild(wrap);
+  }
+
+  function refreshValidators() {
+    if (!token) return Promise.resolve();
+    return Promise.all([
+      rpc('admin.validators.active').then(function (r) { return { ok: true, value: r }; },
+                                          function (e) { return { ok: false, error: e }; }),
+      rpc('admin.validator.list').then(function (r) { return { ok: true, value: r }; },
+                                       function (e) { return { ok: false, error: e }; })
+    ]).then(function (res) {
+      var cards = $('valCards');
+      cards.textContent = '';
+      var body = $('valNames');
+      body.textContent = '';
+      if (res[0].ok) {
+        var v = res[0].value;
+        cards.appendChild(card('Scheduled validators', v.count,
+          'num_scheduled=' + v.num_scheduled + ' · head #' + v.head_block_num));
+        cards.appendChild(card('Emergency consensus',
+          v.emergency_consensus_active ? 'ACTIVE' : 'normal',
+          v.emergency_consensus_active ? 'since block #' + v.emergency_consensus_start_block
+                                      : 'validators sign normally',
+          v.emergency_consensus_active ? 'bad' : 'ok'));
+        cards.appendChild(card('Validator plugin',
+          v.validator_plugin_loaded ? 'started' : 'not started',
+          'this process', v.validator_plugin_loaded ? 'ok' : 'dim'));
+        var names = v.validators || [];
+        if (!names.length) {
+          var tr = document.createElement('tr');
+          var td = document.createElement('td');
+          td.colSpan = 2; td.className = 'dim'; td.textContent = 'the schedule is empty';
+          tr.appendChild(td); body.appendChild(tr);
+        }
+        names.forEach(function (n, i) {
+          var tr = document.createElement('tr');
+          var a = document.createElement('td'); a.textContent = i + 1; a.className = 'dim';
+          var b = document.createElement('td'); b.textContent = n;
+          tr.appendChild(a); tr.appendChild(b); body.appendChild(tr);
+        });
+      } else {
+        cards.appendChild(card('Validators', 'unavailable', res[0].error.message, 'bad'));
+      }
+      if (res[1].ok) {
+        renderGuard(res[1].value);
+      } else {
+        $('guardBox').textContent = 'validator_guard: ' + res[1].error.message;
+        $('guardBox').className = 'dim';
+      }
     });
   }
 
+  // ── actions ────────────────────────────────────────────────────────────────────────────
   function act(method, params, okText) {
     return rpc(method, params).then(function (r) {
-      say(okText + ': ' + JSON.stringify(r), 'ok');
-      return refresh();
+      notice(okText + ': ' + JSON.stringify(r), 'ok');
+      return refreshActiveTab();
     }).catch(function (e) {
-      say(method + ' failed: ' + e.message, 'bad');
+      notice(method + ' failed: ' + e.message, 'bad');
     });
   }
 
   function endpoint() {
     var v = $('endpoint').value.trim();
-    if (!v) { say('enter IP:port first', 'bad'); return null; }
+    if (!v) { notice('enter IP:port first', 'bad'); return null; }
     return v;
+  }
+
+  // ── tabs and timers ────────────────────────────────────────────────────────────────────
+  function refreshActiveTab() {
+    if (!token) return Promise.resolve();
+    if (activeTab === 'status' || activeTab === 'peers') return refreshStatus();
+    if (activeTab === 'snapshots') return refreshSnapshots(true);
+    if (activeTab === 'logs') return loadLogList();
+    if (activeTab === 'validators') return refreshValidators();
+    return Promise.resolve();
+  }
+
+  function activate(name) {
+    activeTab = name;
+    sessionStorage.setItem('vizAdminTab', name);
+    ['status', 'peers', 'snapshots', 'logs', 'validators'].forEach(function (t) {
+      $('tab-' + t).hidden = t !== name;
+    });
+    var tabs = document.querySelectorAll('nav.tabs button');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].className = tabs[i].getAttribute('data-tab') === name ? 'active' : '';
+    }
+    if (name !== 'logs') setPlaying(false);
+    refreshActiveTab();
+    if (!tickTimer) {
+      tickTimer = setInterval(function () {
+        if (document.hidden || !token) return;
+        if (activeTab === 'status' || activeTab === 'peers') refreshStatus();
+        else if (activeTab === 'snapshots') refreshSnapshots(false);
+        else if (activeTab === 'validators') refreshValidators();
+      }, 5000);
+    }
   }
 
   $('save').addEventListener('click', function () {
     token = $('token').value.trim();
-    if (token) { sessionStorage.setItem('vizAdminToken', token); say('token saved for this tab'); }
+    if (token) { sessionStorage.setItem('vizAdminToken', token); notice('token saved for this tab'); }
     else { sessionStorage.removeItem('vizAdminToken'); }
-    refresh();
+    refreshAuth().then(refreshActiveTab);
   });
   $('token').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') $('save').click();
   });
+  var tabButtons = document.querySelectorAll('nav.tabs button');
+  for (var tbi = 0; tbi < tabButtons.length; tbi++) {
+    tabButtons[tbi].addEventListener('click', function () {
+      activate(this.getAttribute('data-tab'));
+    });
+  }
   $('add').addEventListener('click', function () {
     var ep = endpoint(); if (ep) act('admin.p2p.add_node', { endpoint: ep }, 'added ' + ep);
   });
@@ -752,13 +1224,30 @@ const char *ui_page() {
                  'The node pauses block processing while it happens; HTTP stays up.')) return;
     act('admin.snapshot.restore', { latest: true }, 'restore started for the latest snapshot');
   });
+  $('snapMore').addEventListener('click', function () {
+    if (snapHasMore) refreshSnapshots(false);
+  });
+  $('logToggle').addEventListener('click', function () { setPlaying(!logPlaying); });
+  $('logClear').addEventListener('click', function () {
+    logLines = [];
+    $('logView').textContent = '';
+  });
+  $('logName').addEventListener('change', function () {
+    logName = this.value;
+    setPlaying(false);
+    tailOnce(true);
+  });
 
   if (token) { $('token').value = token; }
-  refresh();
-  timer = setInterval(function () {
-    if (!document.hidden) refresh();
-  }, 5000);
-  window.addEventListener('beforeunload', function () { clearInterval(timer); });
+  applyScopes();
+  activate(activeTab);
+  refreshAuth().then(function (ok) {
+    if (!ok && token) setState('token rejected or unreachable', 'bad');
+  });
+  window.addEventListener('beforeunload', function () {
+    if (tickTimer) clearInterval(tickTimer);
+    if (logTimer) clearInterval(logTimer);
+  });
 })();
 </script>
 </body>
@@ -880,13 +1369,16 @@ struct node_admin_plugin::impl {
 
     // ── methods ────────────────────────────────────────────────────────────────────────────
     fc::mutable_variant_object make_node_info() const;
+    fc::variant h_auth_me(const token_info &token);
     fc::variant h_ping(const fc::variant &params);
     fc::variant h_node_info(const fc::variant &params);
     fc::variant h_diagnostics(const fc::variant &params);
     fc::variant h_plugins_list(const fc::variant &params);
     fc::variant h_config_get(const fc::variant &params);
+    fc::variant h_logs_list(const fc::variant &params);
     fc::variant h_logs_tail(const fc::variant &params);
     fc::variant h_audit_tail(const fc::variant &params);
+    fc::variant h_validators_active(const fc::variant &params);
 
     // ── P2P operator methods ──────────────────────────────────────────────────────────────
     graphene::plugins::p2p::p2p_plugin &p2p_started() const;
@@ -1504,13 +1996,18 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
         throw rpc_error{-32002, "forbidden", "token '" + token.label + "' has no 'read' scope", ""};
     }
 
+    // The UI asks who it is so it can hide actions the token cannot perform. Answer with the
+    // token's own label and scopes — never with the token or its hash.
+    if (method == "admin.auth.me") return h_auth_me(token);
     if (method == "admin.ping") return h_ping(params);
     if (method == "admin.node_info") return h_node_info(params);
     if (method == "admin.diagnostics") return h_diagnostics(params);
     if (method == "admin.plugins.list") return h_plugins_list(params);
     if (method == "admin.config.get") return h_config_get(params);
+    if (method == "admin.logs.list") return h_logs_list(params);
     if (method == "admin.logs.tail") return h_logs_tail(params);
     if (method == "admin.audit.tail") return h_audit_tail(params);
+    if (method == "admin.validators.active") return h_validators_active(params);
     if (method == "admin.p2p.status") return h_p2p_status(params);
     if (method == "admin.snapshot.status") return h_snapshot_status(params);
     if (method == "admin.webserver.status") return h_webserver_status(params);
@@ -1650,8 +2147,18 @@ fc::mutable_variant_object node_admin_plugin::impl::make_node_info() const {
     m("head_block_time", iso_utc(head_time));
     // An empty chain reports head time 1970, so the "age" would be 56 years and mean nothing.
     m("head_age_sec", db.head_block_num() == 0 ? fc::variant() : fc::variant(head_age < 0 ? 0 : head_age));
-    m("last_irreversible_block_num",
-      static_cast<int64_t>(db.get_dynamic_global_properties().last_irreversible_block_num));
+    const auto &dgp = db.get_dynamic_global_properties();
+    m("last_irreversible_block_num", static_cast<int64_t>(dgp.last_irreversible_block_num));
+    // Emergency consensus is a chain-wide state voted in by validators. It used to be visible
+    // only in the p2p hello and in the log, never on the operator page.
+    m("emergency_consensus_active", dgp.emergency_consensus_active);
+    m("emergency_consensus_start_block",
+      static_cast<int64_t>(dgp.emergency_consensus_active ? dgp.emergency_consensus_start_block : 0));
+    bool emergency_key = false;
+    if (auto *vp = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>()) {
+        emergency_key = vp->is_emergency_key_configured();
+    }
+    m("emergency_key_configured", emergency_key);
     m("recovering", chain.is_recovering());
     m("uptime_sec", static_cast<int64_t>((fc::time_point::now() - started_at).count() / 1000000));
     return m;
@@ -1661,6 +2168,21 @@ fc::variant node_admin_plugin::impl::h_ping(const fc::variant &) {
     fc::mutable_variant_object m;
     m("ok", true);
     m("server_time", now_iso());
+    return fc::variant(m);
+}
+
+// The UI cannot guess what a token may do: the same page is opened with a read-only token and
+// with a full one. It asks here and hides the actions the token cannot perform. Only the label,
+// the scopes and the expiry leave this method — never the token or its hash.
+fc::variant node_admin_plugin::impl::h_auth_me(const token_info &token) {
+    fc::variants scopes;
+    for (const std::string &s : token.scopes) scopes.push_back(fc::variant(s));
+
+    fc::mutable_variant_object m;
+    m("label", token.label);
+    m("scopes", scopes);
+    m("expires", token.expires == 0 ? fc::variant()
+                                    : fc::variant(static_cast<int64_t>(token.expires)));
     return fc::variant(m);
 }
 
@@ -1807,6 +2329,26 @@ fc::variant node_admin_plugin::impl::h_config_get(const fc::variant &) {
     m("path", config_path());
     m("exists", exists);
     m("sections", sections);
+    return fc::variant(m);
+}
+
+// Which logs an operator can tail. A file that is configured but not there yet is still listed:
+// "the appender has not written anything" is a different fact from "nobody configured it".
+fc::variant node_admin_plugin::impl::h_logs_list(const fc::variant &) {
+    fc::variants arr;
+    for (const auto &kv : log_files) {
+        boost::system::error_code ec;
+        const uintmax_t size = bfs::file_size(kv.second, ec);
+        fc::mutable_variant_object m;
+        m("name", kv.first);
+        m("path", kv.second);
+        m("exists", !ec);
+        m("size", ec ? fc::variant() : fc::variant(static_cast<int64_t>(size)));
+        arr.push_back(fc::variant(m));
+    }
+
+    fc::mutable_variant_object m;
+    m("logs", arr);
     return fc::variant(m);
 }
 
@@ -2014,11 +2556,26 @@ fc::variant node_admin_plugin::impl::snapshot_list_variant() const {
     return fc::variant(files);
 }
 
-fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &) {
+fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &params) {
+    const fc::variant_object empty;
+    const fc::variant_object &o = params.is_object() ? params.get_object() : empty;
+    // A node that has been running for a year accumulates hundreds of snapshots; the page shows
+    // the newest page and asks for the next one on demand.
+    const int64_t offset = std::max<int64_t>(0, param_int(o, "offset", 0));
+    const int64_t limit = std::max<int64_t>(1, std::min<int64_t>(
+        param_int(o, "limit", 20), static_cast<int64_t>(kMaxSnapshotPage)));
+
     auto &snap = snapshot_started();
     const bool recovering = chain.is_recovering();
-    const fc::variant files = snapshot_list_variant();
+    const fc::variant all_files = snapshot_list_variant();
+    const fc::variants &files = all_files.get_array();
     const std::string latest_path = snap.latest_snapshot_path();
+
+    fc::variants page;
+    const std::size_t begin = std::min<std::size_t>(static_cast<std::size_t>(offset), files.size());
+    const std::size_t end = std::min<std::size_t>(
+        begin + static_cast<std::size_t>(limit), files.size());
+    for (std::size_t i = begin; i < end; ++i) page.push_back(files[i]);
 
     fc::mutable_variant_object m;
     m("as_of", now_iso());
@@ -2028,6 +2585,10 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &) {
     m("head_block_num", recovering ? fc::variant()
                                    : fc::variant(static_cast<int64_t>(chain.db().head_block_num())));
     m("snapshot_count", static_cast<int64_t>(files.size()));
+    m("snapshot_total", static_cast<int64_t>(files.size()));
+    m("offset", offset);
+    m("limit", limit);
+    m("has_more", static_cast<int64_t>(end) < static_cast<int64_t>(files.size()));
     m("in_progress", snap.is_snapshot_in_progress());
     m("restoring", snap.is_restoring());
     m("recovering", recovering);
@@ -2035,7 +2596,7 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &) {
     m("latest_name", latest_path.empty()
                          ? fc::variant()
                          : fc::variant(bfs::path(latest_path).filename().string()));
-    m("snapshots", files);
+    m("snapshots", page);
     return fc::variant(m);
 }
 
@@ -2829,6 +3390,40 @@ fc::variant node_admin_plugin::impl::h_validator_list(const fc::variant &) {
     return fc::variant(m);
 }
 
+// Who is scheduled in the current validator schedule, and whether the chain is in emergency
+// consensus. Names only: signing keys live in the validator plugin and are shown by
+// admin.validator.list (and only for the validators this node actually runs).
+fc::variant node_admin_plugin::impl::h_validators_active(const fc::variant &) {
+    const graphene::chain::database &db = chain.db();
+    const auto &wso = db.get_validator_schedule_object();
+    const auto &dgp = db.get_dynamic_global_properties();
+
+    fc::variants names;
+    std::set<std::string> seen;
+    for (const auto &n : wso.current_shuffled_validators) {
+        const std::string name = n;
+        if (name.empty() || !seen.insert(name).second) continue;
+        names.push_back(fc::variant(name));
+    }
+
+    bool validator_loaded = false;
+    if (auto *vp = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>()) {
+        validator_loaded = vp->get_state() == appbase::abstract_plugin::started;
+    }
+
+    fc::mutable_variant_object m;
+    m("as_of", now_iso());
+    m("head_block_num", static_cast<int64_t>(db.head_block_num()));
+    m("count", static_cast<int64_t>(names.size()));
+    m("num_scheduled", static_cast<int64_t>(wso.num_scheduled_validators));
+    m("validators", names);
+    m("emergency_consensus_active", dgp.emergency_consensus_active);
+    m("emergency_consensus_start_block",
+      static_cast<int64_t>(dgp.emergency_consensus_active ? dgp.emergency_consensus_start_block : 0));
+    m("validator_plugin_loaded", validator_loaded);
+    return fc::variant(m);
+}
+
 fc::variant node_admin_plugin::impl::h_validator_plan(const fc::variant &params,
                                                       const token_info &token) {
     namespace vg = graphene::plugins::validator_guard;
@@ -3069,8 +3664,13 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
 
     fc::variants tools;
     tools.push_back(tool("admin.ping", "Liveness check: server time and ok=true.", no_args));
+    tools.push_back(tool("admin.auth.me",
+                         "Who the presented token is: its label and scopes. The token and its "
+                         "hash are never returned. Clients use it to hide actions they cannot run.",
+                         no_args));
     tools.push_back(tool("admin.node_info",
-                         "Chain id, head block, hardfork, uptime and head age.", no_args));
+                         "Chain id, head block, hardfork, uptime, head age and emergency "
+                         "consensus state.", no_args));
     tools.push_back(tool("admin.diagnostics",
                          "Node info plus data dir, peer count, disk/RSS/loadavg and plugin counters.",
                          no_args));
@@ -3078,6 +3678,9 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Plugins configured in config.ini with observed lifecycle state.", no_args));
     tools.push_back(tool("admin.config.get",
                          "Effective config.ini by sections with secret values masked.", no_args));
+    tools.push_back(tool("admin.logs.list",
+                         "Log files the admin API may tail, as configured by admin-log-file, "
+                         "with size and whether the file exists yet.", no_args));
     tools.push_back(tool("admin.logs.tail",
                          "Tail an allow-listed log file; secrets and WIFs are masked.",
                          schema(logs_props, logs_required)));
@@ -3117,10 +3720,16 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
         "Restore the highest-block snapshot in the snapshot directory (default when "
         "neither name nor path is given)"));
 
+    fc::variants snap_props;
+    snap_props.push_back(prop("integer", "Skip this many snapshots from the newest (default 0)"));
+    snap_props.push_back(prop("integer", "Return at most this many snapshots (default 20, max 200)"));
+
     tools.push_back(tool("admin.snapshot.status",
-                         "Snapshots on disk (newest block first) with size and age, the latest "
-                         "file, and whether a creation or restore is currently running.",
-                         no_args));
+                         "A page of snapshots on disk (newest block first) with size and age, the "
+                         "latest file, and whether a creation or restore is currently running. "
+                         "offset/limit page through the list; snapshot_total and has_more say "
+                         "how much is left.",
+                         schema(snap_props, fc::variants{})));
     tools.push_back(tool("admin.snapshot.create",
                          "Create a snapshot of the current head block in the snapshot directory, "
                          "asynchronously. Needs the 'snapshot' scope.",
@@ -3247,6 +3856,10 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
     fc::variants validator_required;
     validator_required.push_back(fc::variant(std::string("actions")));
 
+    tools.push_back(tool("admin.validators.active",
+                         "Names in the current validator schedule, the number of scheduled "
+                         "slots and whether the chain is in emergency consensus. No keys.",
+                         no_args));
     tools.push_back(tool("admin.validator.list",
                          "Validators monitored by validator_guard: on-chain signing key, "
                          "whether the operator hold is set, the guard's active authority and "

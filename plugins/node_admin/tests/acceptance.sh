@@ -153,11 +153,38 @@ auth "$GOOD" '{"jsonrpc":"2.0","id":5,"method":"admin.ping"}'
 check "ping -> HTTP 200" 200 "$CODE"
 check "ping -> ok" true "$(field result.ok)"
 
+# The UI asks who it is so it can hide actions the token cannot perform. The answer must name
+# the label and the scopes, and must never carry the token or its hash.
+auth "$GOOD" '{"jsonrpc":"2.0","id":55,"method":"admin.auth.me"}'
+check "auth.me -> label" '"agent"' "$(field result.label)"
+check "auth.me -> one scope" 1 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["scopes"]))' "$OUT")"
+check "auth.me -> read scope" '"read"' "$(field 'result.scopes.0')"
+check "auth.me -> no hash in the answer" false \
+    "$(python3 -c 'import json,sys; print(str("hash" in json.dumps(json.load(open(sys.argv[1]))["result"])).lower())' "$OUT")"
+auth "$SNAP" '{"jsonrpc":"2.0","id":56,"method":"admin.auth.me"}'
+check "auth.me -> sees the snapshot scope" true \
+    "$(python3 -c 'import json,sys; print(str("snapshot" in json.load(open(sys.argv[1]))["result"]["scopes"]).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":57,"method":"admin.logs.list"}'
+check "logs.list -> one allow-listed file" 1 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["logs"]))' "$OUT")"
+check "logs.list -> names it" '"node"' "$(field 'result.logs.0.name')"
+check "logs.list -> file exists" true "$(field 'result.logs.0.exists')"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":58,"method":"admin.validators.active"}'
+check "validators.active -> count is a number" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["count"], int)).lower())' "$OUT")"
+check "validators.active -> emergency flag is a boolean" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["emergency_consensus_active"], bool)).lower())' "$OUT")"
+
 auth "$GOOD" '{"jsonrpc":"2.0","id":6,"method":"admin.node_info"}'
 check "node_info -> head_block_num is a number" true \
     "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["head_block_num"], int)).lower())' "$OUT")"
 check "node_info -> head_age_sec null on an empty chain" null "$(field result.head_age_sec)"
 check_contains "node_info -> version present" "4.2.0" "$(field result.version)"
+check "node_info -> emergency consensus exposed" false "$(field result.emergency_consensus_active)"
+check "node_info -> emergency key exposed" false "$(field result.emergency_key_configured)"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":7,"method":"admin.diagnostics"}'
 check "diagnostics -> configured plugins" 6 "$(field result.plugins_configured)"
@@ -243,6 +270,9 @@ sleep 1
 auth "$GOOD" '{"jsonrpc":"2.0","id":40,"method":"admin.snapshot.status"}'
 check "snapshot.status -> HTTP 200" 200 "$CODE"
 check "snapshot.status -> empty directory" 0 "$(field result.snapshot_count)"
+check "snapshot.status -> total equals count on the first page" 0 "$(field result.snapshot_total)"
+check "snapshot.status -> default page size 20" 20 "$(field result.limit)"
+check "snapshot.status -> no more after the last page" false "$(field result.has_more)"
 check "snapshot.status -> latest_name null with no files" null "$(field result.latest_name)"
 check "snapshot.status -> not restoring" false "$(field result.restoring)"
 check "snapshot.status -> not creating" false "$(field result.in_progress)"
@@ -619,8 +649,14 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> thirty-four tools" 34 \
+check "MCP tools/list -> thirty-seven tools" 37 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
+check "MCP tools/list -> admin.auth.me present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.auth.me" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.logs.list present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.logs.list" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.validators.active present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.validators.active" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.node_info present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.p2p.status present" true \
