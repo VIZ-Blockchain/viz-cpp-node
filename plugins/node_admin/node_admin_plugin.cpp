@@ -513,12 +513,14 @@ const char *ui_page() {
   var snapItems = [];
   var snapHasMore = false;
   var snapLoading = false;
+  var snapPaged = false;      // the operator pressed Load more: stop auto-refreshing page 1
   var downloading = Object.create(null);
   var logLines = [];
   var logName = '';
   var logPlaying = false;
   var logTimer = null;
   var logBusy = false;
+  var logPendingReset = false;
 
   function hasScope(s) { return !!(scopes && scopes.indexOf(s) >= 0); }
 
@@ -595,6 +597,7 @@ const char *ui_page() {
   }
 
   function ageText(sec) {
+    if (sec == null) return '-';
     sec = Number(sec);
     if (isNaN(sec)) return '-';
     if (sec < 0) sec = 0;
@@ -992,16 +995,22 @@ const char *ui_page() {
   }
 
   function tailOnce(reset) {
-    if (!token || !logName || logBusy) return Promise.resolve();
+    if (!token || !logName) return Promise.resolve();
+    if (logBusy) { logPendingReset = logPendingReset || !!reset; return Promise.resolve(); }
     logBusy = true;
-    return rpc('admin.logs.tail', { name: logName, lines: 300, bytes: 131072 })
+    var name = logName;
+    return rpc('admin.logs.tail', { name: name, lines: 300, bytes: 131072 })
       .then(function (r) {
+        if (name !== logName) { logPendingReset = true; return; }
         appendLog(r.lines || [], !!reset);
         $('logState').textContent = logPlaying ? 'playing' : 'paused';
       }).catch(function (e) {
         notice('log: ' + e.message, 'bad');
         $('logState').textContent = 'error';
-      }).then(function () { logBusy = false; });
+      }).then(function () {
+        logBusy = false;
+        if (logPendingReset) { logPendingReset = false; tailOnce(true); }
+      });
   }
 
   function setPlaying(on) {
@@ -1162,7 +1171,7 @@ const char *ui_page() {
   function refreshActiveTab() {
     if (!token) return Promise.resolve();
     if (activeTab === 'status' || activeTab === 'peers') return refreshStatus();
-    if (activeTab === 'snapshots') return refreshSnapshots(true);
+    if (activeTab === 'snapshots') { snapPaged = false; return refreshSnapshots(true); }
     if (activeTab === 'logs') return loadLogList();
     if (activeTab === 'validators') return refreshValidators();
     return Promise.resolve();
@@ -1178,13 +1187,15 @@ const char *ui_page() {
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].className = tabs[i].getAttribute('data-tab') === name ? 'active' : '';
     }
-    if (name !== 'logs') setPlaying(false);
+    // Play is an explicit operator decision: switching tabs does not silently stop the tail.
     refreshActiveTab();
     if (!tickTimer) {
       tickTimer = setInterval(function () {
         if (document.hidden || !token) return;
         if (activeTab === 'status' || activeTab === 'peers') refreshStatus();
-        else if (activeTab === 'snapshots') refreshSnapshots(false);
+        // Page 1 is refreshed on a timer; once the operator asked for older pages we leave
+        // the list alone instead of appending the next page every tick.
+        else if (activeTab === 'snapshots') { if (!snapPaged) refreshSnapshots(true); }
         else if (activeTab === 'validators') refreshValidators();
       }, 5000);
     }
@@ -1225,7 +1236,7 @@ const char *ui_page() {
     act('admin.snapshot.restore', { latest: true }, 'restore started for the latest snapshot');
   });
   $('snapMore').addEventListener('click', function () {
-    if (snapHasMore) refreshSnapshots(false);
+    if (snapHasMore && !snapLoading) { snapPaged = true; refreshSnapshots(false); }
   });
   $('logToggle').addEventListener('click', function () { setPlaying(!logPlaying); });
   $('logClear').addEventListener('click', function () {
