@@ -2,6 +2,8 @@
 
 #include <graphene/plugins/chain/plugin.hpp>
 
+#include <graphene/network/dlt_p2p_node.hpp>
+
 #include <appbase/application.hpp>
 
 #define P2P_PLUGIN_NAME "p2p"
@@ -97,6 +99,14 @@ namespace graphene {
                  * thread itself — it would wait for itself.
                  */
                 uint32_t get_connections_count_sync() const;
+
+                /**
+                 * Operator controls, serialized onto the P2P thread (the peer maps live there).
+                 * See dlt_p2p_node for semantics; these are the entry points used by node_admin.
+                 */
+                void add_peer_sync(const fc::ip::endpoint &ep, bool trusted);
+                uint32_t clear_banned_peers_sync();
+                graphene::network::dlt_peer_report get_peer_report_sync() const;
 
                 bool is_isolated_peers() const;
 

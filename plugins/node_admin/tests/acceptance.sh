@@ -11,25 +11,32 @@ set -u
 
 VIZD=${1:-${VIZD:-build/programs/vizd/vizd}}
 PORT=${PORT:-18099}
+P2P_PORT=${P2P_PORT:-$((PORT + 1))}
 BASE="http://127.0.0.1:$PORT"
 WORK=$(mktemp -d /tmp/vizd-node-admin.XXXXXX)
 
 GOOD=accept-good-token
 OPS=accept-ops-token
+PEER=accept-peer-token
 EXPIRED=accept-expired-token
 sha() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
 
 cat > "$WORK/config.ini" <<EOF
 plugin = chain
 plugin = json_rpc
+plugin = p2p
 plugin = node_admin
 
 admin-endpoint = 127.0.0.1:$PORT
 admin-token = agent:read:$(sha "$GOOD")
 admin-token = ops:process:$(sha "$OPS")
+admin-token = peer:read,p2p:$(sha "$PEER")
 admin-token = old:read:$(sha "$EXPIRED"):1000000000
 admin-audit-log = $WORK/audit.log
 admin-log-file = node=$WORK/node.log
+
+p2p-endpoint = 127.0.0.1:$P2P_PORT
+p2p-max-connections = 10
 
 shared-file-size = 256M
 private-key = 5Hw9YPABaFxa2LooiANLrhUK5TPryy8f7v9Y1rk923PuYqbYdfC
@@ -119,8 +126,8 @@ check "node_info -> head_age_sec null on an empty chain" null "$(field result.he
 check_contains "node_info -> version present" "4.2.0" "$(field result.version)"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":7,"method":"admin.diagnostics"}'
-check "diagnostics -> configured plugins" 3 "$(field result.plugins_configured)"
-check "diagnostics -> observed plugins" 2 "$(field result.plugins_observed)"
+check "diagnostics -> configured plugins" 4 "$(field result.plugins_configured)"
+check "diagnostics -> observed plugins" 3 "$(field result.plugins_observed)"
 check "diagnostics -> disk_free_bytes is a number" true \
     "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["disk_free_bytes"], int)).lower())' "$OUT")"
 check "diagnostics -> p2p is loaded" true "$(field result.p2p_loaded)"
@@ -152,6 +159,49 @@ check "logs.tail -> name outside the allow-list rejected" -32004 "$(field error.
 auth "$GOOD" '{"jsonrpc":"2.0","id":12,"method":"admin.nope"}'
 check "unknown method -> -32601" -32601 "$(field error.code)"
 
+# ── p2p status and operator actions ──────────────────────────────────────────────────────
+auth "$GOOD" '{"jsonrpc":"2.0","id":30,"method":"admin.p2p.status"}'
+check "p2p.status -> HTTP 200" 200 "$CODE"
+check "p2p.status -> head_block_num is a number" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["head_block_num"], int)).lower())' "$OUT")"
+check "p2p.status -> peers is a list" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["peers"], list)).lower())' "$OUT")"
+check "p2p.status -> uptime_sec is a number" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["uptime_sec"], int)).lower())' "$OUT")"
+check_contains "p2p.status -> node_status present" 'node_status' "$(tr -d '\n' < "$OUT")"
+check "p2p.status -> trusted_peers starts at 0" 0 "$(field result.trusted_peers)"
+
+# a read-only token must not be able to change peers
+auth "$GOOD" '{"jsonrpc":"2.0","id":31,"method":"admin.p2p.add_node","params":{"endpoint":"127.0.0.1:1"}}'
+check "p2p.add_node without 'p2p' scope -> -32002" -32002 "$(field error.code)"
+
+auth "$PEER" '{"jsonrpc":"2.0","id":32,"method":"admin.p2p.add_node","params":{}}'
+check "p2p.add_node -> missing endpoint" -32602 "$(field error.code)"
+
+auth "$PEER" '{"jsonrpc":"2.0","id":33,"method":"admin.p2p.add_node","params":{"endpoint":"not-an-endpoint"}}'
+check "p2p.add_node -> bad endpoint" -32602 "$(field error.code)"
+
+auth "$PEER" '{"jsonrpc":"2.0","id":34,"method":"admin.p2p.add_node","params":{"endpoint":"127.0.0.1:1"}}'
+check "p2p.add_node -> added" '"added"' "$(field result.status)"
+check "p2p.add_node -> not trusted" false "$(field result.trusted)"
+
+auth "$PEER" '{"jsonrpc":"2.0","id":35,"method":"admin.p2p.add_trusted","params":{"endpoint":"127.0.0.1:1"}}'
+check "p2p.add_trusted -> added" '"added"' "$(field result.status)"
+check "p2p.add_trusted -> trusted" true "$(field result.trusted)"
+
+auth "$PEER" '{"jsonrpc":"2.0","id":36,"method":"admin.p2p.status"}'
+check "p2p.status -> trusted peer counted" 1 "$(field result.trusted_peers)"
+check "p2p.status -> added endpoint is in the peer list" true \
+    "$(python3 -c 'import json,sys; ps=json.load(open(sys.argv[1]))["result"]["peers"]; print(str(any(p["endpoint"]=="127.0.0.1:1" for p in ps)).lower())' "$OUT")"
+check "p2p.status -> the added peer is flagged trusted" true \
+    "$(python3 -c 'import json,sys; ps=json.load(open(sys.argv[1]))["result"]["peers"]; print(str(any(p["endpoint"]=="127.0.0.1:1" and p["trusted"] for p in ps)).lower())' "$OUT")"
+
+auth "$PEER" '{"jsonrpc":"2.0","id":37,"method":"admin.p2p.clear_banned"}'
+check "p2p.clear_banned -> ok" '"ok"' "$(field result.status)"
+check "p2p.clear_banned -> cleared is a number" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["cleared"], int)).lower())' "$OUT")"
+
+
 # ── MCP (Streamable HTTP) on the same listener ───────────────────────────────────────────
 call -d '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
 check "MCP initialize without a token -> HTTP 401" 401 "$CODE"
@@ -171,10 +221,16 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> seven tools" 7 \
+check "MCP tools/list -> eleven tools" 11 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.node_info present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.p2p.status present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.p2p.status" for t in ts)).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"admin.p2p.add_node","arguments":{"endpoint":"127.0.0.1:1"}}}'
+check "MCP mutating tool without 'p2p' -> isError" true "$(field result.isError)"
+check_contains "MCP mutating tool -> scope named" "no 'p2p' scope" "$(field 'result.content.0.text')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"admin.node_info","arguments":{}}}'
 check "MCP tools/call -> not an error" false "$(field result.isError)"
@@ -192,6 +248,19 @@ check_contains "MCP tool execution error -> reason in text" 'no admin-log-file e
 # ── protocol edges ────────────────────────────────────────────────────────────────────────
 CODE=$(curl -s -o "$OUT" -w '%{http_code}' "$BASE")
 check "GET -> HTTP 405" 405 "$CODE"
+
+# ── built-in UI ──────────────────────────────────────────────────────────────────────────
+CODE=$(curl -s -o "$WORK/ui.html" -w '%{http_code}' -D "$WORK/ui.hdr" "$BASE/ui/")
+check "GET /ui/ -> HTTP 200" 200 "$CODE"
+check_contains "GET /ui/ -> HTML content type" 'Content-Type: text/html' "$(tr -d '\r' < "$WORK/ui.hdr")"
+check_contains "GET /ui/ -> CSP header" 'Content-Security-Policy' "$(tr -d '\r' < "$WORK/ui.hdr")"
+check_contains "GET /ui/ -> page title" '<title>VIZ node admin</title>' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> calls the p2p status method" 'admin.p2p.status' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> has the add-trusted action" 'admin.p2p.add_trusted' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> has the clear-banned action" 'admin.p2p.clear_banned' "$(cat "$WORK/ui.html")"
+CODE=$(curl -s -o "$OUT" -w '%{http_code}' "$BASE/ui")
+check "GET /ui without slash -> HTTP 200" 200 "$CODE"
+
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":13,'
 check "malformed JSON -> -32700" -32700 "$(field error.code)"

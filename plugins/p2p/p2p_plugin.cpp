@@ -755,6 +755,24 @@ bool p2p_plugin::is_isolated_peers() const {
     return my->isolated_peers;
 }
 
+void p2p_plugin::add_peer_sync(const fc::ip::endpoint &ep, bool trusted) {
+    my->p2p_thread.async([this, ep, trusted]() {
+        if (my->node) my->node->add_peer(ep, trusted);
+    }).wait();
+}
+
+uint32_t p2p_plugin::clear_banned_peers_sync() {
+    return my->p2p_thread.async([this]() -> uint32_t {
+        return my->node ? my->node->clear_banned_peers() : 0;
+    }).wait();
+}
+
+graphene::network::dlt_peer_report p2p_plugin::get_peer_report_sync() const {
+    return my->p2p_thread.async([this]() {
+        return my->node ? my->node->get_peer_report() : graphene::network::dlt_peer_report();
+    }).wait();
+}
+
 void p2p_plugin::reconnect_seeds() {
     my->p2p_thread.async([this]() {
         my->node->reconnect_seeds();

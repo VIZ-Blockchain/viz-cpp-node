@@ -254,6 +254,293 @@ tail_result tail_file(const std::string &path, uint64_t bytes, std::size_t max_l
     return r;
 }
 
+// ── built-in UI ──────────────────────────────────────────────────────────────────────────
+// A single static page served at /ui/. It holds no secrets and no state: the operator
+// pastes a bearer token, the page keeps it in sessionStorage and calls the same JSON-RPC
+// endpoint. Vanilla JS, no build step, no external assets (CSP forbids them anyway).
+const char *ui_page() {
+    return R"HTML(<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VIZ node admin</title>
+<style>
+  :root { color-scheme: dark; --bg:#111418; --panel:#1a1f26; --line:#2b323c;
+          --fg:#e6e9ee; --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+          --acc:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:14px 18px;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  h1 { font-size:16px; margin:0 12px 0 0; font-weight:600; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);
+       margin:0 0 8px; font-weight:600; }
+  main { padding:18px; display:grid; gap:18px; max-width:1200px; }
+  input[type=password], input[type=text] { background:#0d1117; color:var(--fg);
+       border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
+  button { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+           padding:7px 12px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.danger:hover { border-color:var(--bad); }
+  button:disabled { opacity:.45; cursor:default; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  .card .v { font-size:19px; margin-top:2px; }
+  .card .s { color:var(--dim); font-size:11px; margin-top:2px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .dim { color:var(--dim); }
+  .tablewrap { overflow:auto; border:1px solid var(--line); border-radius:8px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); }
+  th, td { padding:7px 10px; text-align:left; white-space:nowrap;
+           border-bottom:1px solid var(--line); font-size:12.5px; }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase;
+       letter-spacing:.06em; }
+  tr:last-child td { border-bottom:0; }
+  .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .actions input[type=text] { min-width:240px; }
+  pre#log { margin:0; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+            padding:10px 12px; min-height:60px; max-height:220px; overflow:auto; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>VIZ node admin</h1>
+  <input id="token" type="password" placeholder="bearer token" autocomplete="off" size="38">
+  <button id="save">Save token</button>
+  <span id="state" class="dim">no token</span>
+</header>
+<main>
+  <section>
+    <h2>Node</h2>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section>
+    <h2>Peers</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Endpoint</th><th>State</th><th>Dir</th><th>Head</th><th>Lag</th>
+          <th>Peer</th><th>Flags</th><th>Since</th><th>Note</th></tr></thead>
+        <tbody id="peers"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Actions</h2>
+    <div class="actions">
+      <input id="endpoint" type="text" placeholder="IP:port, e.g. 1.2.3.4:1776" autocomplete="off">
+      <button id="add">Add node</button>
+      <button id="addTrusted">Add as trusted</button>
+      <button id="clearBanned" class="danger">Clear banned list</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var token = sessionStorage.getItem('vizAdminToken') || '';
+  var timer = null;
+
+  function say(msg, cls) {
+    var el = $('log');
+    var t = new Date().toISOString().replace('T', ' ').replace('Z', 'Z');
+    var line = document.createElement('div');
+    line.textContent = t + '  ' + msg;
+    if (cls) line.className = cls;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setState(msg, cls) {
+    var el = $('state');
+    el.textContent = msg;
+    el.className = cls || 'dim';
+  }
+
+  function rpc(method, params) {
+    if (!token) return Promise.reject(new Error('no token'));
+    return fetch('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: method, params: params || {} })
+    }).then(function (res) {
+      return res.json().then(function (body) { return { status: res.status, body: body }; });
+    }).then(function (r) {
+      if (r.body && r.body.error) {
+        var e = new Error(r.body.error.message +
+          (r.body.error.data && r.body.error.data.reason ? ': ' + r.body.error.data.reason : ''));
+        e.rpcCode = r.body.error.code;
+        e.httpStatus = r.status;
+        throw e;
+      }
+      if (!r.body || !('result' in r.body)) throw new Error('HTTP ' + r.status + ': empty response');
+      return r.body.result;
+    });
+  }
+
+  function uptime(sec) {
+    sec = Number(sec) || 0;
+    var d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600),
+        m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm ' + s + 's';
+  }
+
+  function card(label, value, sub, cls) {
+    var el = document.createElement('div');
+    el.className = 'card';
+    var k = document.createElement('div'); k.className = 'k'; k.textContent = label;
+    var v = document.createElement('div'); v.className = 'v' + (cls ? ' ' + cls : '');
+    v.textContent = value;
+    el.appendChild(k); el.appendChild(v);
+    if (sub) { var s = document.createElement('div'); s.className = 's'; s.textContent = sub;
+               el.appendChild(s); }
+    return el;
+  }
+
+  function lagText(lag) {
+    lag = Number(lag) || 0;
+    if (lag > 0) return '+' + lag;
+    if (lag < 0) return String(lag);
+    return '0';
+  }
+
+  function renderPeers(peers) {
+    var body = $('peers');
+    body.textContent = '';
+    if (!peers || !peers.length) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 9; td.className = 'dim'; td.textContent = 'no peers connected or known';
+      tr.appendChild(td); body.appendChild(tr);
+      return;
+    }
+    peers.forEach(function (p) {
+      var tr = document.createElement('tr');
+      function cell(text, cls) {
+        var td = document.createElement('td');
+        td.textContent = text == null ? '' : String(text);
+        if (cls) td.className = cls;
+        tr.appendChild(td);
+      }
+      cell(p.endpoint);
+      cell(p.lifecycle, p.lifecycle === 'ACTIVE' ? 'ok' :
+           (p.lifecycle === 'BANNED' ? 'bad' : 'warn'));
+      cell(p.incoming ? 'in' : 'out');
+      cell(p.peer_head || '-');
+      cell(lagText(p.head_lag), p.head_lag < 0 ? 'warn' : '');
+      cell(p.node_status + '/' + p.fork_status);
+      var flags = [];
+      if (p.trusted) flags.push('trusted');
+      if (p.exchange_enabled) flags.push('exchange');
+      if (p.fork_alignment) flags.push('aligned');
+      cell(flags.join(',') || '-');
+      cell(p.connected_sec ? uptime(p.connected_sec) : '-');
+      cell(p.ban_reason || (p.next_reconnect_in_sec ? 'retry in ' + p.next_reconnect_in_sec + 's' : ''),
+           p.ban_reason ? 'bad' : 'dim');
+      body.appendChild(tr);
+    });
+  }
+
+  function render(s) {
+    var cards = $('cards');
+    cards.textContent = '';
+    var syncCls = s.node_status === 'FORWARD' ? 'ok' : 'warn';
+    cards.appendChild(card('Node status', s.node_status, 'fork: ' + s.fork_status, syncCls));
+    cards.appendChild(card('Head / LIB', '#' + s.head_block_num, 'lib #' + s.lib_block_num));
+    cards.appendChild(card('DLT range', s.dlt_earliest + ' - ' + s.dlt_latest,
+                           'blocks available locally'));
+    cards.appendChild(card('Peers', s.active + ' active / ' + s.connections,
+                           s.known_peers + ' known, ' + s.trusted_peers + ' trusted'));
+    cards.appendChild(card('Best peer head', s.best_peer_head ? '#' + s.best_peer_head : '-',
+                           s.best_peer_head ? 'lag ' + lagText(s.best_peer_head_lag) +
+                           ' (' + s.peers_ahead + ' ahead)' : 'no peer heads yet',
+                           s.best_peer_head_lag < -2 ? 'warn' : ''));
+    cards.appendChild(card('Uptime', uptime(s.uptime_sec), 'since process start'));
+    cards.appendChild(card('Banned', s.banned_peers, 'soft-banned entries',
+                           s.banned_peers ? 'warn' : ''));
+    var notes = [];
+    if (s.paused) notes.push('BLOCK PROCESSING PAUSED');
+    if (s.catching_up) notes.push('catching up');
+    if (s.isolated_peers) notes.push('isolated-peers mode');
+    if (s.fork_status !== 'NORMAL') notes.push('fork: ' + s.fork_status);
+    cards.appendChild(card('Flags', notes.length ? notes.join(' · ') : 'ok',
+                           'as of ' + s.as_of, notes.length ? 'warn' : 'ok'));
+    renderPeers(s.peers);
+  }
+
+  function refresh() {
+    if (!token) { setState('no token', 'warn'); return Promise.resolve(); }
+    return rpc('admin.p2p.status').then(function (s) {
+      setState('connected · updated ' + new Date().toLocaleTimeString(), 'ok');
+      render(s);
+    }).catch(function (e) {
+      if (e.rpcCode === -32001 || e.httpStatus === 401) {
+        setState('token rejected (401) — check the token and its scopes', 'bad');
+      } else {
+        setState('error: ' + e.message, 'bad');
+      }
+      say('status: ' + e.message, 'bad');
+    });
+  }
+
+  function act(method, params, okText) {
+    return rpc(method, params).then(function (r) {
+      say(okText + ': ' + JSON.stringify(r), 'ok');
+      return refresh();
+    }).catch(function (e) {
+      say(method + ' failed: ' + e.message, 'bad');
+    });
+  }
+
+  function endpoint() {
+    var v = $('endpoint').value.trim();
+    if (!v) { say('enter IP:port first', 'bad'); return null; }
+    return v;
+  }
+
+  $('save').addEventListener('click', function () {
+    token = $('token').value.trim();
+    if (token) { sessionStorage.setItem('vizAdminToken', token); say('token saved for this tab'); }
+    else { sessionStorage.removeItem('vizAdminToken'); }
+    refresh();
+  });
+  $('token').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('save').click();
+  });
+  $('add').addEventListener('click', function () {
+    var ep = endpoint(); if (ep) act('admin.p2p.add_node', { endpoint: ep }, 'added ' + ep);
+  });
+  $('addTrusted').addEventListener('click', function () {
+    var ep = endpoint(); if (ep) act('admin.p2p.add_trusted', { endpoint: ep }, 'trusted ' + ep);
+  });
+  $('clearBanned').addEventListener('click', function () {
+    if (!confirm('Clear every soft-ban and retry those peers now?')) return;
+    act('admin.p2p.clear_banned', {}, 'bans cleared');
+  });
+
+  if (token) { $('token').value = token; }
+  refresh();
+  timer = setInterval(function () {
+    if (!document.hidden) refresh();
+  }, 5000);
+  window.addEventListener('beforeunload', function () { clearInterval(timer); });
+})();
+</script>
+</body>
+</html>
+)HTML";
+}
+
 // ── websocketpp server config (same stub-log shape as webserver_plugin) ─────────────────────
 struct asio_with_stub_log : public websocketpp::config::asio {
     typedef asio_with_stub_log type;
@@ -314,8 +601,8 @@ token_info parse_token_spec(const std::string &spec) {
     for (const std::string &raw : split(parts[1], ',')) {
         const std::string scope = trim(raw);
         FC_ASSERT(scope == "read" || scope == "plugins" || scope == "config" ||
-                  scope == "process" || scope == "chain",
-                  "admin-token: unknown scope '${s}' (allowed: read, plugins, config, process, chain)",
+                  scope == "process" || scope == "chain" || scope == "p2p",
+                  "admin-token: unknown scope '${s}' (allowed: read, plugins, config, process, chain, p2p)",
                   ("s", scope));
         t.scopes.insert(scope);
     }
@@ -389,6 +676,12 @@ struct node_admin_plugin::impl {
     fc::variant h_logs_tail(const fc::variant &params);
     fc::variant h_audit_tail(const fc::variant &params);
 
+    // ── P2P operator methods ──────────────────────────────────────────────────────────────
+    graphene::plugins::p2p::p2p_plugin &p2p_started() const;
+    fc::variant h_p2p_status(const fc::variant &params);
+    fc::variant h_p2p_add_node(const fc::variant &params, bool trusted);
+    fc::variant h_p2p_clear_banned(const fc::variant &params);
+
     // ── MCP (Streamable HTTP) ──────────────────────────────────────────────────────────────
     fc::variant mcp_tools() const;
     fc::variant h_mcp_initialize(const fc::variant &params);
@@ -406,9 +699,10 @@ struct node_admin_plugin::impl {
     std::string config_path() const { return appbase::app().config_path().string(); }
 
     void respond(websocket_server_type::connection_ptr con,
-                 websocketpp::http::status_code::value status, const std::string &body) {
+                 websocketpp::http::status_code::value status, const std::string &body,
+                 const std::string &content_type = "application/json") {
         try {
-            con->append_header("Content-Type", "application/json");
+            con->append_header("Content-Type", content_type);
             con->append_header("Cache-Control", "no-store");
             con->set_body(body);
             con->set_status(status);
@@ -635,6 +929,36 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
         respond(con, status, body);
     };
 
+    // ── built-in UI: one static page, no data and no secrets in it ────────────────────────
+    // The page cannot carry a bearer token on navigation, and it does not need one: it is
+    // the same bytes for everybody and all real calls go back to this listener as POSTs
+    // with the operator-supplied token. Serving it unauthenticated therefore leaks nothing.
+    const std::string req_method = con->get_request().get_method();
+    if (req_method == "GET" || req_method == "HEAD") {
+        std::string path = con->get_request().get_uri();
+        const std::size_t qpos = path.find('?');
+        if (qpos != std::string::npos) path = path.substr(0, qpos);
+        if (path == "/ui" || path == "/ui/") {
+            try {
+                con->append_header("X-Content-Type-Options", "nosniff");
+                con->append_header("X-Frame-Options", "DENY");
+                con->append_header("Referrer-Policy", "no-referrer");
+                con->append_header("Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "connect-src 'self'; base-uri 'none'; form-action 'none'; "
+                    "frame-ancestors 'none'");
+            } catch (const std::exception &e) {
+                wlog("node_admin: failed to set UI headers: ${e}", ("e", e.what()));
+            }
+            respond(con, websocketpp::http::status_code::ok,
+                    req_method == "HEAD" ? std::string() : std::string(ui_page()),
+                    "text/html; charset=utf-8");
+            audit(rid, "-", req_method + " " + path, fc::variant(), "ui", 0,
+                  elapsed_ms(started), remote);
+            return;
+        }
+    }
+
     if (con->get_request().get_method() != "POST") {
         const fc::variant id;
         finish(websocketpp::http::status_code::method_not_allowed,
@@ -778,6 +1102,21 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
     if (method == "admin.config.get") return h_config_get(params);
     if (method == "admin.logs.tail") return h_logs_tail(params);
     if (method == "admin.audit.tail") return h_audit_tail(params);
+    if (method == "admin.p2p.status") return h_p2p_status(params);
+
+    // Mutating peer operations need `p2p` on top of `read`: a read-only token must not be able
+    // to change whom this node talks to. Both required scopes are named in the error.
+    if (method == "admin.p2p.add_node" || method == "admin.p2p.add_trusted" ||
+        method == "admin.p2p.clear_banned") {
+        if (token.scopes.find("p2p") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'p2p' scope",
+                            "peer operations need a token with scopes 'read,p2p'"};
+        }
+        if (method == "admin.p2p.add_node") return h_p2p_add_node(params, false);
+        if (method == "admin.p2p.add_trusted") return h_p2p_add_node(params, true);
+        return h_p2p_clear_banned(params);
+    }
 
     // MCP Streamable HTTP on the same authenticated listener (decision q#3052=B: the MCP
     // endpoint lives inside the plugin, not in a sidecar). Tools are 1:1 with the admin.*
@@ -1029,6 +1368,119 @@ fc::variant node_admin_plugin::impl::h_audit_tail(const fc::variant &params) {
     return fc::variant(m);
 }
 
+// ── P2P operator methods ─────────────────────────────────────────────────────────────────
+graphene::plugins::p2p::p2p_plugin &node_admin_plugin::impl::p2p_started() const {
+    auto *p2p = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+    if (p2p == nullptr || p2p->get_state() != appbase::abstract_plugin::started) {
+        throw rpc_error{-32004, "p2p unavailable",
+                        "the p2p plugin is not loaded or not started",
+                        "peer administration needs 'plugin = p2p' in config.ini"};
+    }
+    return *p2p;
+}
+
+// Mirrors what the node writes to its own log every minute (log_node_status) and every five
+// minutes (log_peer_stats): the same facts, on demand, for an operator or agent.
+fc::variant node_admin_plugin::impl::h_p2p_status(const fc::variant &) {
+    const graphene::network::dlt_peer_report r = p2p_started().get_peer_report_sync();
+
+    fc::mutable_variant_object m;
+    m("as_of", now_iso());
+    m("uptime_sec", static_cast<int64_t>(r.uptime_sec));
+    m("node_status", r.node_status);
+    m("fork_status", r.fork_status);
+    m("paused", r.paused);
+    m("isolated_peers", r.isolated_peers);
+    m("catching_up", r.catching_up);
+    m("head_block_num", static_cast<int64_t>(r.our_head));
+    m("lib_block_num", static_cast<int64_t>(r.our_lib));
+    m("dlt_earliest", static_cast<int64_t>(r.dlt_earliest));
+    m("dlt_latest", static_cast<int64_t>(r.dlt_latest));
+    m("connections", static_cast<int64_t>(r.connection_count));
+    m("active", static_cast<int64_t>(r.active_count));
+    m("max_connections", static_cast<int64_t>(r.max_connections));
+    m("known_peers", static_cast<int64_t>(r.known_peers));
+    m("trusted_peers", static_cast<int64_t>(r.trusted_peers));
+    m("banned_peers", static_cast<int64_t>(r.banned_peers));
+    m("best_peer_head", static_cast<int64_t>(r.best_peer_head));
+    // our head minus the best peer head: negative means we are behind the network
+    m("best_peer_head_lag", r.best_peer_head_lag);
+    m("peers_ahead", static_cast<int64_t>(r.peers_ahead));
+
+    fc::variants peers;
+    for (const graphene::network::dlt_peer_report_entry &p : r.peers) {
+        fc::mutable_variant_object e;
+        e("endpoint", p.endpoint);
+        e("node_id", p.node_id);
+        e("lifecycle", p.lifecycle);
+        e("node_status", p.node_status);
+        e("fork_status", p.fork_status);
+        e("incoming", p.incoming);
+        e("trusted", p.trusted);
+        e("exchange_enabled", p.exchange_enabled);
+        e("fork_alignment", p.fork_alignment);
+        e("connected_sec", static_cast<int64_t>(p.connected_sec));
+        e("peer_head", static_cast<int64_t>(p.peer_head));
+        e("peer_lib", static_cast<int64_t>(p.peer_lib));
+        e("peer_dlt_earliest", static_cast<int64_t>(p.peer_dlt_earliest));
+        e("peer_dlt_latest", static_cast<int64_t>(p.peer_dlt_latest));
+        e("head_lag", p.head_lag);
+        e("spam_strikes", static_cast<int64_t>(p.spam_strikes));
+        e("ban_reason", p.ban_reason);
+        e("ban_duration_sec", static_cast<int64_t>(p.ban_duration_sec));
+        e("reconnect_backoff_sec", static_cast<int64_t>(p.reconnect_backoff_sec));
+        e("next_reconnect_in_sec", static_cast<int64_t>(p.next_reconnect_in_sec));
+        peers.push_back(fc::variant(e));
+    }
+    m("peers", peers);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_p2p_add_node(const fc::variant &params, bool trusted) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected an object {endpoint}",
+                        "endpoint is IPv4:port, e.g. 1.2.3.4:1776"};
+    }
+    const fc::variant_object &o = params.get_object();
+    const std::string text = trim(param_str(o, "endpoint", ""));
+    if (text.empty()) {
+        throw rpc_error{-32602, "invalid params", "missing 'endpoint'",
+                        "endpoint is IPv4:port, e.g. 1.2.3.4:1776"};
+    }
+
+    fc::ip::endpoint ep;
+    try {
+        ep = fc::ip::endpoint::from_string(text);
+    } catch (const fc::exception &) {
+        throw rpc_error{-32602, "invalid endpoint", text,
+                        "expected IPv4:port, e.g. 1.2.3.4:1776"};
+    }
+    if (ep.port() == 0) {
+        throw rpc_error{-32602, "invalid endpoint", text, "port must be 1..65535"};
+    }
+
+    // Serialized onto the p2p thread: the peer maps are owned there.
+    p2p_started().add_peer_sync(ep, trusted);
+
+    fc::mutable_variant_object m;
+    m("endpoint", std::string(ep));
+    m("trusted", trusted);
+    m("status", "added");
+    m("note", trusted
+        ? "trusted peers are never soft-banned and are kept through known-peer GC; the trusted "
+          "set lives in memory and is not persisted across restarts"
+        : "the peer is dialed now; use admin.p2p.add_trusted to exempt it from soft bans");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_p2p_clear_banned(const fc::variant &) {
+    const uint32_t cleared = p2p_started().clear_banned_peers_sync();
+    fc::mutable_variant_object m;
+    m("cleared", static_cast<int64_t>(cleared));
+    m("status", "ok");
+    return fc::variant(m);
+}
+
 // ── MCP (Streamable HTTP) ────────────────────────────────────────────────────────────────
 // The MCP endpoint is the same loopback listener and the same bearer tokens as admin.*.
 // Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
@@ -1084,6 +1536,29 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
     tools.push_back(tool("admin.audit.tail",
                          "Tail the node_admin audit log (one JSON line per request outcome).",
                          schema(audit_props, fc::variants{})));
+
+    fc::variants endpoint_props;
+    endpoint_props.push_back(prop("string", "Peer endpoint as IPv4:port, e.g. 1.2.3.4:1776"));
+    fc::variants endpoint_required;
+    endpoint_required.push_back(fc::variant(std::string("endpoint")));
+
+    tools.push_back(tool("admin.p2p.status",
+                         "P2P diagnostics, the same facts the node logs every minute and five "
+                         "minutes: head and LIB, the DLT block range held locally, lag behind "
+                         "the best peer, uptime, connection counts, and every peer with its "
+                         "lifecycle, head, fork status, trust and ban state.",
+                         no_args));
+    tools.push_back(tool("admin.p2p.add_node",
+                         "Add a P2P peer endpoint and dial it now. Needs the 'p2p' scope.",
+                         schema(endpoint_props, endpoint_required)));
+    tools.push_back(tool("admin.p2p.add_trusted",
+                         "Add a P2P peer as trusted and dial it now: never soft-banned, kept "
+                         "through known-peer GC. Needs the 'p2p' scope.",
+                         schema(endpoint_props, endpoint_required)));
+    tools.push_back(tool("admin.p2p.clear_banned",
+                         "Clear every soft ban and retry those peers immediately. "
+                         "Needs the 'p2p' scope.",
+                         no_args));
     return fc::variant(tools);
 }
 
@@ -1112,8 +1587,10 @@ fc::variant node_admin_plugin::impl::h_mcp_initialize(const fc::variant &params)
     m("capabilities", caps);
     m("serverInfo", server);
     m("instructions",
-      "Read-only administration of this VIZ node. Tools map 1:1 to admin.* methods; "
-      "mutating tools arrive with node_admin v2 and use the same bearer token and audit log.");
+      "Administration of this VIZ node. Read-only tools need the 'read' scope; the mutating "
+      "peer tools admin.p2p.add_node, admin.p2p.add_trusted and admin.p2p.clear_banned "
+      "additionally need the 'p2p' scope. A human-facing UI is served at /ui/ on this same "
+      "listener and uses the same bearer token.");
     return fc::variant(m);
 }
 

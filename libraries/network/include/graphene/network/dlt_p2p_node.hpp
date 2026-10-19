@@ -38,6 +38,57 @@ enum class dlt_block_accept_result {
     REJECTED       ///< Block failed validation entirely (bad signature, etc.)
 };
 
+// ── Operator-facing snapshots ─────────────────────────────────────────
+// Plain data copies of the P2P state, returned on demand by the admin API. They must be
+// read on the P2P thread (the maps they copy belong to it); everything here is already
+// formatted (no fc types) so the HTTP layer stays free of network internals.
+
+struct dlt_peer_report_entry {
+    std::string endpoint;
+    std::string node_id;            ///< hex of public_key_data, empty before hello
+    std::string lifecycle;          ///< CONNECTING / HANDSHAKING / SYNCING / ACTIVE / DISCONNECTED / BANNED
+    std::string node_status;        ///< SYNC / FORWARD, as last seen from the peer
+    std::string fork_status;        ///< NORMAL / LOOKING_RESOLUTION / MINORITY
+    bool        incoming = false;
+    bool        trusted = false;
+    bool        exchange_enabled = false;
+    bool        fork_alignment = false;
+    uint32_t    connected_sec = 0;
+    uint32_t    peer_head = 0;
+    uint32_t    peer_lib = 0;
+    uint32_t    peer_dlt_earliest = 0;
+    uint32_t    peer_dlt_latest = 0;
+    int64_t     head_lag = 0;       ///< our head - peer head; negative = the peer is ahead
+    uint32_t    spam_strikes = 0;
+    std::string ban_reason;
+    uint32_t    ban_duration_sec = 0;
+    uint32_t    reconnect_backoff_sec = 0;
+    uint32_t    next_reconnect_in_sec = 0;
+};
+
+struct dlt_peer_report {
+    uint64_t    uptime_sec = 0;
+    std::string node_status;
+    std::string fork_status;
+    bool        paused = false;
+    bool        isolated_peers = false;
+    bool        catching_up = false;
+    uint32_t    our_head = 0;
+    uint32_t    our_lib = 0;
+    uint32_t    dlt_earliest = 0;
+    uint32_t    dlt_latest = 0;
+    uint32_t    connection_count = 0;
+    uint32_t    active_count = 0;
+    uint32_t    max_connections = 0;
+    uint32_t    known_peers = 0;
+    uint32_t    trusted_peers = 0;
+    uint32_t    banned_peers = 0;
+    uint32_t    best_peer_head = 0;
+    int64_t     best_peer_head_lag = 0;  ///< our head - best peer head; negative = behind
+    uint32_t    peers_ahead = 0;
+    std::vector<dlt_peer_report_entry> peers;
+};
+
 /**
  *  @class dlt_p2p_delegate
  *  @brief Callback interface between dlt_p2p_node and the chain/plugin layer.
@@ -157,6 +208,20 @@ public:
     dlt_node_status get_node_status() const { return _node_status; }
     dlt_fork_status get_fork_status() const { return _fork_status; }
     bool is_on_majority_fork() const;
+
+    // ── Operator control (admin API) ─────────────────────────────
+    // All three must be called on the P2P thread: they touch the peer maps.
+    //
+    // add_peer() starts dialing immediately and remembers the endpoint so the periodic
+    // reconnect loop keeps retrying it. trusted=true additionally makes the peer
+    // exempt from soft-bans: a trusted node that sends bad data is disconnected and
+    // retried instead of being banned for an hour.
+    void add_peer(const fc::ip::endpoint& ep, bool trusted);
+    // Clears local and remote soft-bans, resets backoff and re-dials. Returns the number
+    // of peer entries that carried a ban.
+    uint32_t clear_banned_peers();
+    // Read-only copy of the state served by admin.p2p.status / the /ui/ page.
+    dlt_peer_report get_peer_report() const;
 
     // True when block production should be deferred: either during
     // a block-processing pause (snapshot creation holding DB read lock)
@@ -391,6 +456,10 @@ private:
     std::map<peer_id, dlt_peer_state> _peer_states;
     std::set<dlt_known_peer>        _known_peers;
     std::vector<fc::ip::endpoint>   _seed_nodes;
+    // Endpoints the operator marked trusted at runtime (admin.p2p.add_trusted). They are
+    // kept out of the known-peer GC and never soft-banned. Not persisted: a restart drops
+    // them unless the operator re-adds them (or lists them in p2p-seed-node).
+    std::set<fc::ip::endpoint>      _trusted_peers;
 
     // ── Active connections ───────────────────────────────────────
     std::map<peer_id, fc::tcp_socket_ptr> _connections;
