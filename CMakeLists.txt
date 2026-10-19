@@ -280,6 +280,7 @@ if(BUILD_CONSENSUS_TESTS)
     enable_testing()
     add_subdirectory(tests/consensus_sim)
     add_subdirectory(tests/pm)
+    add_subdirectory(tests/node_admin)
 endif()
 
 if(ENABLE_INSTALLER)
