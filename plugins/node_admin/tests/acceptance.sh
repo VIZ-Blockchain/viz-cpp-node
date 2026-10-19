@@ -317,6 +317,19 @@ check "snapshot.status -> block number parsed from the name" 123 "$(field 'resul
 check "snapshot.status -> file flagged latest" true "$(field 'result.snapshots.0.latest')"
 check "snapshot.status -> size reported" 23 "$(field 'result.snapshots.0.size_bytes')"
 
+# Cursor paging: an anchor must continue after THAT row, not after its index — a snapshot
+# written between two pages shifts every offset below it, and retention prunes the tail.
+for b in 120 121 122; do printf 'dummy snapshot payload\n' > "$SNAPDIR/snapshot-block-$b.vizjson"; done
+auth "$GOOD" '{"jsonrpc":"2.0","id":46,"method":"admin.snapshot.status","params":{"limit":2}}'
+N0=$(raw result.snapshots.0.name)
+N1=$(raw result.snapshots.1.name)
+auth "$GOOD" "{\"jsonrpc\":\"2.0\",\"id\":47,\"method\":\"admin.snapshot.status\",\"params\":{\"limit\":1,\"after\":\"$N0\"}}"
+check "snapshot.status -> cursor anchor found" true "$(field result.after_found)"
+check "snapshot.status -> cursor continues after the anchored row" "\"$N1\"" "$(field 'result.snapshots.0.name')"
+auth "$GOOD" '{"jsonrpc":"2.0","id":48,"method":"admin.snapshot.status","params":{"limit":1,"offset":1,"after":"snapshot-block-0.vizjson"}}'
+check "snapshot.status -> pruned anchor is reported" false "$(field result.after_found)"
+check "snapshot.status -> pruned anchor falls back to offset" "\"$N1\"" "$(field 'result.snapshots.0.name')"
+
 CODE=$(curl -s -o "$WORK/dl.bin" -D "$WORK/dl.hdr" -w '%{http_code}' \
     -H "Authorization: Bearer $GOOD" "$BASE/snapshot/latest")
 check "GET /snapshot/latest -> HTTP 200" 200 "$CODE"

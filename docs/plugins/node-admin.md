@@ -350,9 +350,16 @@ curl -s http://127.0.0.1:8099 -H "Authorization: Bearer $T" \
 
 ### `admin.snapshot.status`
 
-Params: `{"offset":0,"limit":20}` — both optional. Requires `read` and the `snapshot` plugin
-to be loaded. Returns one page of the snapshot files in the configured `snapshot-dir`, newest
-block first, and reports what the plugin is doing. `limit` is clamped to 200.
+Params: `{"offset":0,"limit":20,"after":"snapshot-block-84360000.vizjson"}` — all optional.
+Requires `read` and the `snapshot` plugin to be loaded. Returns one page of the snapshot files
+in the configured `snapshot-dir`, newest block first, and reports what the plugin is doing.
+`limit` is clamped to 200.
+
+Use `after` (the name of the last row you already have) instead of `offset` when paging a
+directory that changes under the reader: a snapshot written between two pages shifts every
+offset below it, so offsets repeat a row, and the retention sweep (24 h) shifts the other way
+and makes offsets skip one. With `after` the page continues after that exact row. If the anchor
+has already been pruned the reply carries `after_found: false` and falls back to `offset`.
 
 | Field | Meaning |
 |---|---|
@@ -362,6 +369,7 @@ block first, and reports what the plugin is doing. `limit` is clamped to 200.
 | `snapshot_count` | Number of files in the whole directory |
 | `snapshot_total` | Same total, named explicitly for paging clients |
 | `offset`, `limit` | The page that was returned |
+| `after`, `after_found` | The cursor that was sent and whether it still exists |
 | `has_more` | More files exist after this page |
 | `in_progress`, `restoring`, `recovering` | A snapshot is being written, a restore is running, the chain plugin is recovering |
 | `latest_path`, `latest_name` | Newest snapshot (highest block number); `latest_path` is an empty string and `latest_name` is `null` when there are none |

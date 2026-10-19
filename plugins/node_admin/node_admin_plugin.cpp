@@ -884,9 +884,23 @@ const char *ui_page() {
     if (!token || snapLoading) return Promise.resolve();
     snapLoading = true;
     var offset = reset ? 0 : snapItems.length;
-    return rpc('admin.snapshot.status', { offset: offset, limit: 20 }).then(function (st) {
+    // Anchor the next page to the last row actually shown, not to its index: snapshots are
+    // written and pruned while the operator pages, which shifts every offset below the change.
+    var after = (!reset && snapItems.length) ? snapItems[snapItems.length - 1].name : '';
+    return rpc('admin.snapshot.status', { offset: offset, limit: 20, after: after }).then(function (st) {
+      if (after && st.after_found === false) {
+        // The anchor was pruned between pages; the stable answer is to start over from page 1.
+        snapLoading = false;
+        notice('snapshot list changed under the pager; reloaded from the newest', 'warn');
+        return refreshSnapshots(true);
+      }
       if (reset) snapItems = [];
-      snapItems = snapItems.concat(st.snapshots || []);
+      var seen = Object.create(null);
+      for (var k = 0; k < snapItems.length; k++) seen[snapItems[k].name] = true;
+      var add = st.snapshots || [];
+      for (var i = 0; i < add.length; i++) {
+        if (!seen[add[i].name]) { snapItems.push(add[i]); seen[add[i].name] = true; }
+      }
       snapHasMore = !!st.has_more;
       renderSnapCards(st);
       renderSnapshotRows(st);
@@ -2575,6 +2589,12 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &params
     const int64_t offset = std::max<int64_t>(0, param_int(o, "offset", 0));
     const int64_t limit = std::max<int64_t>(1, std::min<int64_t>(
         param_int(o, "limit", 20), static_cast<int64_t>(kMaxSnapshotPage)));
+    // Plain offset paging on a list that changes under the reader repeats or skips rows: a
+    // snapshot written between two pages shifts every index below it by one, and the retention
+    // sweep removes from the tail. A client that sends the name of the last row it already has
+    // gets the page that follows THAT row ("after"); offset stays the fallback for an anchor that
+    // has already been pruned, and the reply says so instead of silently serving a shifted page.
+    const std::string after = param_str(o, "after", "");
 
     auto &snap = snapshot_started();
     const bool recovering = chain.is_recovering();
@@ -2583,7 +2603,17 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &params
     const std::string latest_path = snap.latest_snapshot_path();
 
     fc::variants page;
-    const std::size_t begin = std::min<std::size_t>(static_cast<std::size_t>(offset), files.size());
+    std::size_t begin = std::min<std::size_t>(static_cast<std::size_t>(offset), files.size());
+    bool after_found = false;
+    if (!after.empty()) {
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            if (files[i].get_object()["name"].as_string() == after) {
+                begin = i + 1;
+                after_found = true;
+                break;
+            }
+        }
+    }
     const std::size_t end = std::min<std::size_t>(
         begin + static_cast<std::size_t>(limit), files.size());
     for (std::size_t i = begin; i < end; ++i) page.push_back(files[i]);
@@ -2599,6 +2629,8 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &params
     m("snapshot_total", static_cast<int64_t>(files.size()));
     m("offset", offset);
     m("limit", limit);
+    m("after", after.empty() ? fc::variant() : fc::variant(after));
+    m("after_found", after_found);
     m("has_more", static_cast<int64_t>(end) < static_cast<int64_t>(files.size()));
     m("in_progress", snap.is_snapshot_in_progress());
     m("restoring", snap.is_restoring());
@@ -3734,12 +3766,17 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
     fc::variants snap_props;
     snap_props.push_back(prop("integer", "Skip this many snapshots from the newest (default 0)"));
     snap_props.push_back(prop("integer", "Return at most this many snapshots (default 20, max 200)"));
+    snap_props.push_back(prop("string",
+        "Name of the last row you already have; the page continues after it. Use this instead "
+        "of offset when paging through a directory that changes: offset repeats or skips rows "
+        "when a snapshot is written or pruned between pages. A pruned anchor is reported as "
+        "after_found=false and offset applies."));
 
     tools.push_back(tool("admin.snapshot.status",
                          "A page of snapshots on disk (newest block first) with size and age, the "
                          "latest file, and whether a creation or restore is currently running. "
                          "offset/limit page through the list; snapshot_total and has_more say "
-                         "how much is left.",
+                         "how much is left. after=<last name you have> is the stable cursor.",
                          schema(snap_props, fc::variants{})));
     tools.push_back(tool("admin.snapshot.create",
                          "Create a snapshot of the current head block in the snapshot directory, "
