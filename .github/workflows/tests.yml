@@ -51,8 +51,10 @@ jobs:
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
                 -DBUILD_CONSENSUS_TESTS=ON ..
           # Build exactly the binaries ctest will run, so a new add_test never shows up as "Not Run".
-          TEST_BINS=$(grep -ho 'add_test(NAME [a-z_]* COMMAND [a-z_]*' \
-            ../tests/pm/CMakeLists.txt ../tests/consensus_sim/CMakeLists.txt | awk '{print $NF}')
+          # Discover the suites instead of naming them: a hardcoded list silently skipped
+          # tests/node_admin and ctest reported its only test as "Not Run".
+          TEST_CMAKE=$(find ../tests -mindepth 2 -maxdepth 2 -name CMakeLists.txt)
+          TEST_BINS=$(grep -ho 'add_test(NAME [a-z_]* COMMAND [a-z_]*' $TEST_CMAKE | awk '{print $NF}')
           make -j"$(nproc)" $TEST_BINS
 
       - name: Run tests
