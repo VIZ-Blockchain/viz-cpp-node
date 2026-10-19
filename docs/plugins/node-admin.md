@@ -828,11 +828,25 @@ starts the webserver plugin on a third port and needs a built `vizd` and three f
 so it is not part of CTest.
 
 The signing path itself cannot run in that script: a fresh chain has no second validator, and
-the genesis `committee` account has an empty active authority. It is exercised separately on a
-scratch chain (`plugin = validator` with stale production, a `validator-guard-validator` entry,
-and `cli_wallet` to create a second account and register it as a validator): list shows
-`on_chain`/`enabled`/`active_authority`, disable/enable/set-key change the on-chain signing key
-and write a transaction id, and a disable survives a node restart through the hold file.
+the genesis `committee` account has an empty active authority. It is exercised by
+`plugins/node_admin/tests/validator-e2e.sh`, which builds its own scratch chain (a temp dir and
+three ports; `--keep` leaves it behind for inspection). It stages a testnet one-slot chain
+through HF9/HF12 — `viz` is registered, vested and voted in the first blocks, because votes weigh
+vesting shares, HF9 deletes validators that never signed a block and HF12 excludes `committee`
+from selection — then creates two more validators: `backup` carries the operator actions and
+`cold` lets a batch plan name two different validators. Checks: list (`on_chain`, `enabled`,
+`active_authority`), disable/enable/set-key with a transaction id, the hold file surviving a node
+restart, a stale plan refused with `chain state changed` and nothing signed, a two-action plan
+applying both actions, and the contract corners (duplicate, unknown, bad key, no-op → `-32602`).
+
+Two staging decisions are load-bearing. Operator actions never target the only *scheduled*
+validator: the schedule is rebuilt only at the end of an applied block, so nulling its key leaves
+a stale schedule pointing at a keyless validator and bricks a one-slot chain. The producing
+validator's own key is never rotated: the producer selects the signing key from the session-visible
+validator object (`validator.cpp:1875`), so a pending `validator_update` that rotates the producing
+validator's key makes it sign the block with the new key, while `validate_block_header` checks the
+signature against the pre-block key; the block is rejected, the pending pool is cleared and the
+update is lost.
 
 `tests/node_admin/` is a CTest target (`node_admin_util`, Boost.Test) over the pure helpers:
 secret masking, token parsing, the config parser, the allow-list and normalization, and the
