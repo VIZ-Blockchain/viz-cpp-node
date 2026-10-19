@@ -3,6 +3,7 @@
 Административный JSON-RPC-эндпоинт самого процесса ноды: здоровье, конфигурация,
 состояние плагинов, логи и аудит. Предназначен для инструментов оператора и AI-агентов,
 у которых есть bearer-токен; не для конечных пользователей и не вместо публичного API.
+На том же слушателе работает эндпоинт **MCP** (Model Context Protocol) поверх HTTP.
 
 > **v1 работает только на чтение.** Он не меняет конфигурацию, не включает/выключает
 > плагины, не перезапускает процесс и не трогает ключ делегата. Изменяющие методы —
@@ -164,6 +165,51 @@ admin-log-file = node=/var/log/vizd/vizd.log
 ### `admin.audit.tail`
 
 Параметры: `{"lines":100}`. Хвост журнала аудита.
+
+---
+
+## Эндпоинт MCP (Streamable HTTP)
+
+Решение q#3052=B: MCP-сервер живёт **внутри этого плагина**, а не в sidecar. Тот же
+loopback-слушатель, те же bearer-токены и тот же журнал аудита обслуживают Model Context
+Protocol поверх HTTP — на хосте ничего дополнительно ставить не нужно.
+
+Запросы MCP — обычные JSON-RPC 2.0 `POST` на админский эндпоинт:
+
+| Метод | Назначение |
+|---|---|
+| `initialize` | Рукопожатие. Поддерживаемые версии: `2024-11-05`, `2025-03-26`, `2025-06-18` (запрошенная возвращается как есть, иначе `2025-06-18`). Объявляется только возможность `tools`. |
+| `notifications/initialized` | Уведомление (без `id`); ответ — HTTP 202 с пустым телом. |
+| `ping` | Keepalive MCP; возвращает `{}`. |
+| `tools/list` | Инструменты ниже с JSON-схемой `inputSchema`. |
+| `tools/call` | `{"name":"admin.node_info","arguments":{…}}` — выполняет соответствующий метод `admin.*`. |
+
+Инструменты 1:1 с методами чтения: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
+`admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`. Ошибки
+исполнения инструмента возвращаются **внутри** результата (`"isError": true`, текст в
+`content[0].text`), как требует MCP; протокольные ошибки (неизвестный инструмент, плохие
+параметры, нет скоупа) остаются ошибками JSON-RPC.
+
+```json
+{"jsonrpc":"2.0","id":7,"result":{"tools":[
+  {"name":"admin.node_info","description":"Chain id, head block, hardfork, uptime and head age.",
+   "inputSchema":{"type":"object","properties":{},"additionalProperties":false}}]}}
+```
+
+```json
+{"jsonrpc":"2.0","id":8,"result":{
+  "content":[{"type":"text","text":"{\"head_block_num\":1234,…}"}],"isError":false}}
+```
+
+Эндпоинт без сессий: `Mcp-Session-Id` не выдаётся, `GET` (необязательный SSE-поток)
+отвечает `405`. Клиенты, которым обязателен SSE, не поддерживаются; ответы — JSON.
+
+Конфигурация клиента (транспорт Streamable HTTP) указывает на тот же loopback-адрес:
+
+```json
+{"mcpServers":{"viz-node":{"type":"http","url":"http://127.0.0.1:8099",
+  "headers":{"Authorization":"Bearer <token>"}}}}
+```
 
 ---
 

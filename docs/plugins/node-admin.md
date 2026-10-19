@@ -3,6 +3,7 @@
 Administrative JSON-RPC endpoint for the node process itself: health, configuration,
 plugin state, logs and the audit trail. It is meant for operator tooling and AI agents
 holding a bearer token — not for end users, and not as a replacement for the public API.
+The same listener also serves an **MCP** (Model Context Protocol) endpoint over HTTP.
 
 > **v1 is read-only.** It cannot change configuration, enable/disable plugins, restart the
 > process or touch the validator key. Mutating methods are a later stage and will follow
@@ -163,6 +164,51 @@ Params: `{"name":"node","bytes":16384,"lines":200}`. `name` must match an
 ### `admin.audit.tail`
 
 Params: `{"lines":100}`. Returns the tail of the audit log.
+
+---
+
+## MCP endpoint (Streamable HTTP)
+
+Decision q#3052=B: the MCP server lives **inside this plugin**, not in a sidecar. The same
+loopback listener, the same bearer tokens and the same audit log serve the Model Context
+Protocol over HTTP; there is nothing extra to install on the host.
+
+MCP requests are ordinary JSON-RPC 2.0 `POST`s to the admin endpoint:
+
+| Method | Purpose |
+|---|---|
+| `initialize` | Protocol handshake. Supported versions: `2024-11-05`, `2025-03-26`, `2025-06-18` (echoed when requested, otherwise `2025-06-18`). Advertises only the `tools` capability. |
+| `notifications/initialized` | Notification (no `id`); answered with HTTP 202 and an empty body. |
+| `ping` | MCP keepalive; returns `{}`. |
+| `tools/list` | The tools below with JSON-Schema `inputSchema`. |
+| `tools/call` | `{"name":"admin.node_info","arguments":{…}}` — executes the matching `admin.*` method. |
+
+Tools are 1:1 with the read methods: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
+`admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`. Tool
+execution errors are returned **inside** the result (`"isError": true` with the message in
+`content[0].text`), as MCP expects; protocol errors (unknown tool, bad params, missing
+scope) remain JSON-RPC errors.
+
+```json
+{"jsonrpc":"2.0","id":7,"result":{"tools":[
+  {"name":"admin.node_info","description":"Chain id, head block, hardfork, uptime and head age.",
+   "inputSchema":{"type":"object","properties":{},"additionalProperties":false}}]}}
+```
+
+```json
+{"jsonrpc":"2.0","id":8,"result":{
+  "content":[{"type":"text","text":"{\"head_block_num\":1234,…}"}],"isError":false}}
+```
+
+The endpoint is sessionless: no `Mcp-Session-Id` is issued, and `GET` (the optional SSE
+stream) answers `405`. Clients that require SSE are not supported; JSON responses are.
+
+Client configuration (Streamable HTTP transport) points at the same loopback address:
+
+```json
+{"mcpServers":{"viz-node":{"type":"http","url":"http://127.0.0.1:8099",
+  "headers":{"Authorization":"Bearer <token>"}}}}
+```
 
 ---
 

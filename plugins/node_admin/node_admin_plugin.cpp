@@ -389,6 +389,13 @@ struct node_admin_plugin::impl {
     fc::variant h_logs_tail(const fc::variant &params);
     fc::variant h_audit_tail(const fc::variant &params);
 
+    // ── MCP (Streamable HTTP) ──────────────────────────────────────────────────────────────
+    fc::variant mcp_tools() const;
+    fc::variant h_mcp_initialize(const fc::variant &params);
+    fc::variant h_mcp_ping(const fc::variant &params);
+    fc::variant h_mcp_tools_list(const fc::variant &params);
+    fc::variant h_mcp_tools_call(const fc::variant &params, const token_info &token);
+
     // ── audit ──────────────────────────────────────────────────────────────────────────────
     void audit(const std::string &rid, const std::string &label, const std::string &method,
                const fc::variant &params, const std::string &outcome, int code,
@@ -704,6 +711,14 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
     auto p_it = obj.find("params");
     if (p_it != obj.end()) params = p_it->value();
 
+    // JSON-RPC notification (no id): MCP clients send `notifications/initialized` this way and
+    // expect 202 with no body. Answering a notification with a response is a protocol error.
+    if (method.compare(0, 14, "notifications/") == 0) {
+        finish(websocketpp::http::status_code::accepted, "");
+        audit(rid, token->label, method, params, "notification", 0, elapsed_ms(started), remote);
+        return;
+    }
+
     try {
         const fc::variant result = dispatch(method, params, *token);
         finish(websocketpp::http::status_code::ok, to_json(rpc_ok(id, result)));
@@ -763,6 +778,14 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
     if (method == "admin.config.get") return h_config_get(params);
     if (method == "admin.logs.tail") return h_logs_tail(params);
     if (method == "admin.audit.tail") return h_audit_tail(params);
+
+    // MCP Streamable HTTP on the same authenticated listener (decision q#3052=B: the MCP
+    // endpoint lives inside the plugin, not in a sidecar). Tools are 1:1 with the admin.*
+    // methods above, so the audit trail and scopes are shared.
+    if (method == "initialize") return h_mcp_initialize(params);
+    if (method == "ping") return h_mcp_ping(params);
+    if (method == "tools/list") return h_mcp_tools_list(params);
+    if (method == "tools/call") return h_mcp_tools_call(params, token);
 
     throw rpc_error{-32601, "method not found", method, ""};
 }
@@ -1005,6 +1028,162 @@ fc::variant node_admin_plugin::impl::h_audit_tail(const fc::variant &params) {
     m("lines", out);
     return fc::variant(m);
 }
+
+// ── MCP (Streamable HTTP) ────────────────────────────────────────────────────────────────
+// The MCP endpoint is the same loopback listener and the same bearer tokens as admin.*.
+// Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
+// its own method name (`tools/call` is the JSON-RPC method; the tool name is in params).
+fc::variant node_admin_plugin::impl::mcp_tools() const {
+    auto schema = [](fc::variants props, fc::variants required) {
+        fc::mutable_variant_object s;
+        s("type", "object");
+        s("properties", props);
+        s("additionalProperties", false);
+        if (!required.empty()) s("required", required);
+        return fc::variant(s);
+    };
+    auto prop = [](const char *type, const char *desc) {
+        fc::mutable_variant_object p;
+        p("type", type);
+        p("description", desc);
+        return fc::variant(p);
+    };
+    auto tool = [&](const char *name, const char *desc, const fc::variant &input) {
+        fc::mutable_variant_object t;
+        t("name", name);
+        t("description", desc);
+        t("inputSchema", input);
+        return fc::variant(t);
+    };
+    const fc::variant no_args = schema(fc::variants{}, fc::variants{});
+
+    fc::variants logs_props;
+    logs_props.push_back(prop("string", "Name from admin-log-file entries"));
+    logs_props.push_back(prop("integer", "Maximum bytes to read from the tail (default 16384)"));
+    logs_props.push_back(prop("integer", "Maximum lines to return (default 200)"));
+    fc::variants logs_required;
+    logs_required.push_back(fc::variant(std::string("name")));
+
+    fc::variants audit_props;
+    audit_props.push_back(prop("integer", "Maximum audit lines to return (default 100)"));
+
+    fc::variants tools;
+    tools.push_back(tool("admin.ping", "Liveness check: server time and ok=true.", no_args));
+    tools.push_back(tool("admin.node_info",
+                         "Chain id, head block, hardfork, uptime and head age.", no_args));
+    tools.push_back(tool("admin.diagnostics",
+                         "Node info plus data dir, peer count, disk/RSS/loadavg and plugin counters.",
+                         no_args));
+    tools.push_back(tool("admin.plugins.list",
+                         "Plugins configured in config.ini with observed lifecycle state.", no_args));
+    tools.push_back(tool("admin.config.get",
+                         "Effective config.ini by sections with secret values masked.", no_args));
+    tools.push_back(tool("admin.logs.tail",
+                         "Tail an allow-listed log file; secrets and WIFs are masked.",
+                         schema(logs_props, logs_required)));
+    tools.push_back(tool("admin.audit.tail",
+                         "Tail the node_admin audit log (one JSON line per request outcome).",
+                         schema(audit_props, fc::variants{})));
+    return fc::variant(tools);
+}
+
+fc::variant node_admin_plugin::impl::h_mcp_initialize(const fc::variant &params) {
+    std::string requested;
+    if (params.is_object()) {
+        requested = param_str(params.get_object(), "protocolVersion", "");
+    }
+    // Echo only versions we actually implement; otherwise answer with our own, as the spec
+    // requires ("the server MUST respond with a protocol version it supports").
+    const std::set<std::string> supported{"2024-11-05", "2025-03-26", "2025-06-18"};
+    const std::string proto =
+        supported.count(requested) ? requested : std::string("2025-06-18");
+
+    fc::mutable_variant_object tools_cap;
+    tools_cap("listChanged", false);
+    fc::mutable_variant_object caps;
+    caps("tools", tools_cap);
+
+    fc::mutable_variant_object server;
+    server("name", "viz-node-admin");
+    server("version", "0.1.0");
+
+    fc::mutable_variant_object m;
+    m("protocolVersion", proto);
+    m("capabilities", caps);
+    m("serverInfo", server);
+    m("instructions",
+      "Read-only administration of this VIZ node. Tools map 1:1 to admin.* methods; "
+      "mutating tools arrive with node_admin v2 and use the same bearer token and audit log.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_mcp_ping(const fc::variant &) {
+    return fc::variant(fc::mutable_variant_object());
+}
+
+fc::variant node_admin_plugin::impl::h_mcp_tools_list(const fc::variant &) {
+    fc::mutable_variant_object m;
+    m("tools", mcp_tools());
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_mcp_tools_call(const fc::variant &params,
+                                                      const token_info &token) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected an object {name, arguments}", ""};
+    }
+    const fc::variant_object &o = params.get_object();
+    const std::string name = param_str(o, "name", "");
+    if (name.empty()) {
+        throw rpc_error{-32602, "invalid params", "missing tool name", "see tools/list"};
+    }
+    const fc::variant tools = mcp_tools();
+    bool known = false;
+    for (const fc::variant &t : tools.get_array()) {
+        if (t.get_object()["name"].as_string() == name) {
+            known = true;
+            break;
+        }
+    }
+    if (!known) {
+        throw rpc_error{-32602, "unknown tool", name, "see tools/list"};
+    }
+
+    fc::variant args;
+    auto a_it = o.find("arguments");
+    if (a_it != o.end() && !a_it->value().is_null()) {
+        if (!a_it->value().is_object()) {
+            throw rpc_error{-32602, "invalid params", "'arguments' must be an object", ""};
+        }
+        args = a_it->value();
+    }
+
+    auto content = [](const std::string &text, bool is_error) {
+        fc::mutable_variant_object item;
+        item("type", "text");
+        item("text", text);
+        fc::mutable_variant_object m;
+        m("content", fc::variants{fc::variant(item)});
+        m("isError", is_error);
+        return fc::variant(m);
+    };
+
+    try {
+        return content(to_json(dispatch(name, args, token)), false);
+    } catch (const rpc_error &e) {
+        // Tool execution errors are reported inside the result (isError), not as a
+        // protocol-level JSON-RPC error: the model must see what the tool said.
+        std::string text = "error " + std::to_string(e.code) + ": " + e.message;
+        if (!e.reason.empty()) text += ": " + e.reason;
+        if (!e.hint.empty()) text += " (" + e.hint + ")";
+        return content(text, true);
+    } catch (const fc::exception &e) {
+        return content("internal error: " + e.to_string(), true);
+    } catch (const std::exception &e) {
+        return content(std::string("internal error: ") + e.what(), true);
+    }
+}
+
 
 // ── audit ────────────────────────────────────────────────────────────────────────────────
 void node_admin_plugin::impl::audit(const std::string &rid, const std::string &label,

@@ -152,6 +152,43 @@ check "logs.tail -> name outside the allow-list rejected" -32004 "$(field error.
 auth "$GOOD" '{"jsonrpc":"2.0","id":12,"method":"admin.nope"}'
 check "unknown method -> -32601" -32601 "$(field error.code)"
 
+# ── MCP (Streamable HTTP) on the same listener ───────────────────────────────────────────
+call -d '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+check "MCP initialize without a token -> HTTP 401" 401 "$CODE"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":21,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"acceptance","version":"0"}}}'
+check "MCP initialize -> HTTP 200" 200 "$CODE"
+check "MCP initialize -> version echoed" '"2025-06-18"' "$(field result.protocolVersion)"
+check "MCP initialize -> server name" '"viz-node-admin"' "$(field result.serverInfo.name)"
+check "MCP initialize -> tools capability" true \
+    "$(python3 -c 'import json,sys; print(str("tools" in json.load(open(sys.argv[1]))["result"]["capabilities"]).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":22,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}'
+check "MCP initialize -> unknown version falls back" '"2025-06-18"' "$(field result.protocolVersion)"
+
+call -H "Authorization: Bearer $GOOD" -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+check "MCP notification -> HTTP 202" 202 "$CODE"
+check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
+check "MCP tools/list -> seven tools" 7 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
+check "MCP tools/list -> admin.node_info present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"admin.node_info","arguments":{}}}'
+check "MCP tools/call -> not an error" false "$(field result.isError)"
+check "MCP tools/call -> text content" '"text"' "$(field 'result.content.0.type')"
+check_contains "MCP tools/call -> tool result is JSON" 'head_block_num' "$(field 'result.content.0.text')"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"admin.nope","arguments":{}}}'
+check "MCP unknown tool -> -32602" -32602 "$(field error.code)"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"admin.logs.tail","arguments":{"name":"secret"}}}'
+check "MCP tool execution error -> isError" true "$(field result.isError)"
+check_contains "MCP tool execution error -> reason in text" 'no admin-log-file entry' \
+    "$(field 'result.content.0.text')"
+
 # ── protocol edges ────────────────────────────────────────────────────────────────────────
 CODE=$(curl -s -o "$OUT" -w '%{http_code}' "$BASE")
 check "GET -> HTTP 405" 405 "$CODE"
