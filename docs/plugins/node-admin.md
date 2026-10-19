@@ -6,13 +6,15 @@ and AI agents holding a bearer token — not for end users, and not as a replace
 public API. The same listener also serves an **MCP** (Model Context Protocol) endpoint over
 HTTP and a small built-in web UI at `/ui/`.
 
-> **Mutating surface: P2P peers and snapshots.** `admin.p2p.add_node`, `admin.p2p.add_trusted`
-> and `admin.p2p.clear_banned` change whom the node dials; `admin.snapshot.create` and
-> `admin.snapshot.restore` write a snapshot file or replace the node's in-memory state. They
-> require a token with the `p2p` or `snapshot` scope respectively and are serialized onto the
-> P2P / snapshot threads. The remaining mutating operations (config, plugins, process, chain)
-> are a later stage and will follow the same authentication/audit model with two-phase
-> `plan`/`apply`.
+> **Mutating surface: P2P peers, snapshots and webserver policy.** `admin.p2p.add_node`,
+> `admin.p2p.add_trusted` and `admin.p2p.clear_banned` change whom the node dials;
+> `admin.snapshot.create` and `admin.snapshot.restore` write a snapshot file or replace the
+> node's in-memory state; `admin.webserver.*` mutating methods change rate limits, the
+> stats switch and the IP allow/deny lists. They require a token with the `p2p`, `snapshot`
+> or `webserver` scope respectively. Peer actions are serialized onto the P2P thread;
+> webserver policy changes apply to the very next request. The remaining mutating operations
+> (config, plugins, process, chain) are a later stage and will follow the same
+> authentication/audit model with two-phase `plan`/`apply`.
 
 ---
 
@@ -60,6 +62,8 @@ in the configuration; comparison is constant-time. Scopes:
   `admin.p2p.clear_banned`. A token with only `p2p` (without `read`) cannot call anything.
 * `snapshot` — `admin.snapshot.create` and `admin.snapshot.restore`. Listing and downloading
   snapshots need only `read`.
+* `webserver` — the mutating `admin.webserver.*` methods (limits, stats switch, IP lists,
+  reset, reload). `admin.webserver.status` and `admin.webserver.ips` need only `read`.
 * `plugins`, `config`, `process`, `chain` — reserved for the mutating stages; a token that
   carries only these cannot call anything yet.
 
@@ -158,7 +162,7 @@ are not listed.
 Each entry carries `loaded`, `state` and `state_source`:
 
 * `state_source: "observed"` — the lifecycle state was read from the running plugin
-  (`chain`, `p2p`, `node_admin`). `state` is one of `registered`, `initialized`, `started`,
+  (`chain`, `p2p`, `snapshot`, `webserver`, `node_admin`). `state` is one of `registered`, `initialized`, `started`,
   `stopped`; `loaded` is false only while the plugin is still merely `registered`.
 * `state_source: "inferred"` — AppBase initializes every `plugin =` line and aborts startup
   when a name is unknown, so a configured plugin on a running node is loaded. `state` is
@@ -371,6 +375,50 @@ not pretend the restore succeeded.
 
 ---
 
+## Webserver policy methods
+
+These methods manage the public API plugin: per-IP request counters, the stats log, rate
+limits and the IP lists. Their semantics, defaults and log format are documented in
+[Webserver — Request Accounting and Rate Limiting](./webserver.md#request-accounting-and-rate-limiting).
+
+**Changes are live.** The plugin keeps this state in memory; a change applies to the next
+request the webserver receives, with no restart and no re-reading of `config.ini`. Every
+change is also persisted atomically to `webserver-admin-state`
+(`<data-dir>/webserver-admin.json` by default), which is loaded at startup and therefore
+overrides the `config.ini` seed. The `reload` method re-reads that file for manual edits.
+
+| Method | Scope | Params | Purpose |
+|--------|-------|--------|---------|
+| `admin.webserver.status` | `read` | none | Limits, totals, IP lists and tracked-IP count. |
+| `admin.webserver.ips` | `read` | `{"limit":200}` (max 5000) | Per-IP rows: `total`, `minute`, `hour`, `day`, `blocked`, `limited`, `last_seen`, `whitelisted`, `blacklisted`, sorted by total. |
+| `admin.webserver.limits` | `webserver` | `{"enabled":bool,"per_minute":N,"per_hour":N,"per_day":N}` | Omitted fields keep their value. |
+| `admin.webserver.stats` | `webserver` | `{"enabled":bool}` | Turn request accounting on/off. Limits are controlled separately. |
+| `admin.webserver.whitelist_add` / `whitelist_remove` | `webserver` | `{"ip":"1.2.3.4"}` | Whitelisted addresses bypass limits but are still counted. |
+| `admin.webserver.blacklist_add` / `blacklist_remove` | `webserver` | `{"ip":"1.2.3.4"}` | Blacklisted addresses get `403`; enforced even with stats off. |
+| `admin.webserver.reset` | `webserver` | none | Zero the counters; keep lists and limits. |
+| `admin.webserver.reload` | `webserver` | none | Re-read the state file from disk; returns the applied status. |
+
+Adding an IP to one list removes it from the other. An address must be a single IPv4 or IPv6
+literal; anything else answers `-32602`.
+
+```json
+{"jsonrpc":"2.0","id":53,"method":"admin.webserver.limits","params":{"per_minute":600}}
+```
+
+```json
+{"jsonrpc":"2.0","id":53,"result":{
+  "status":"applied",
+  "limits":{"enabled":true,"per_minute":600,"per_hour":10000,"per_day":100000},
+  "stats_enabled":true,
+  "note":"applied to the live webserver on the next request and persisted to its admin state file; config.ini is unchanged."}}
+```
+
+A node without the `webserver` plugin loaded answers `-32004 webserver unavailable`. The
+public webserver rejects blacklisted clients with `403` and rate-limited clients with
+`429` + `Retry-After: 60`; those responses are produced by the webserver, not by this API.
+
+---
+
 ## MCP endpoint (Streamable HTTP)
 
 Decision q#3052=B: the MCP server lives **inside this plugin**, not in a sidecar. The same
@@ -390,9 +438,13 @@ MCP requests are ordinary JSON-RPC 2.0 `POST`s to the admin endpoint:
 Tools are 1:1 with the admin methods: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
 `admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`,
 `admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
-`admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore` (fourteen).
-The peer actions additionally require the `p2p` scope and the snapshot actions the `snapshot`
-scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
+`admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore`,
+`admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
+`admin.webserver.stats`, `admin.webserver.whitelist_add`, `admin.webserver.whitelist_remove`,
+`admin.webserver.blacklist_add`, `admin.webserver.blacklist_remove`, `admin.webserver.reset`,
+`admin.webserver.reload` (twenty-four).
+The peer actions additionally require the `p2p` scope, the snapshot actions the `snapshot`
+scope and the webserver actions the `webserver` scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
 result (`"isError": true` with the message in `content[0].text`), as MCP expects; protocol
 errors (unknown tool, bad params, missing scope) remain JSON-RPC errors.
 
@@ -512,6 +564,10 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
   and sends no CORS headers, so another origin cannot drive it through a browser.
 * Peer actions are in-memory. `add_trusted` and `add_node` survive until the process
   restarts; permanent pins belong in the P2P seed configuration, not in the admin API.
+* The `webserver` scope can change the availability of the public API (a too-strict limit or
+  a wrong blacklist entry rejects legitimate clients). A token with it is a policy
+  credential, not just a read credential; changes also persist across restarts through
+  `webserver-admin-state`.
 
 ---
 
@@ -529,5 +585,7 @@ curl and checks this contract: authentication and scopes, config/log masking, th
 allow-list, status codes, audit, rate limit, P2P peer actions (including the `p2p`-scope
 denial), snapshot status/listing/download (including `HEAD`, traversal and missing-file
 cases, and the `snapshot`-scope denial on create/restore), MCP
-`initialize`/`tools/list`/`tools/call`, and the `/ui/` page. It is not part of CTest because
-it needs a built `vizd` and two free ports.
+`initialize`/`tools/list`/`tools/call`, webserver stats/limits (burst → `429`, whitelist
+bypass, blacklist `403`, hot limits change, persistence and reload), and the `/ui/` page. It
+starts the webserver plugin on a third port and needs a built `vizd` and three free ports,
+so it is not part of CTest.

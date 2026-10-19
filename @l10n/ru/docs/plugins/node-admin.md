@@ -6,13 +6,15 @@
 пользователей и не вместо публичного API. На том же слушателе работают эндпоинт **MCP**
 (Model Context Protocol) поверх HTTP и небольшой встроенный веб-интерфейс по адресу `/ui/`.
 
-> **Изменяющая поверхность: P2P-пиры и снапшоты.** `admin.p2p.add_node`,
+> **Изменяющая поверхность: P2P-пиры, снапшоты и политика webserver.** `admin.p2p.add_node`,
 > `admin.p2p.add_trusted` и `admin.p2p.clear_banned` меняют, с кем нода устанавливает
 > соединения; `admin.snapshot.create` и `admin.snapshot.restore` пишут файл снапшота или
-> заменяют состояние ноды в памяти. Им нужен токен со скоупом `p2p` или `snapshot`
-> соответственно, и выполняются они на P2P-потоке / потоке снапшотов. Остальные изменяющие
-> операции (конфигурация, плагины, процесс, цепь) — следующий этап, на той же модели
-> аутентификации и аудита с двухфазными `plan`/`apply`.
+> заменяют состояние ноды в памяти; изменяющие методы `admin.webserver.*` меняют лимиты,
+> переключатель статистики и списки разрешённых/запрещённых IP. Им нужен токен со скоупом
+> `p2p`, `snapshot` или `webserver` соответственно. Действия над пирами сериализуются на
+> P2P-потоке; изменения политики webserver применяются к следующему же запросу. Остальные
+> изменяющие операции (конфигурация, плагины, процесс, цепь) — следующий этап, на той же
+> модели аутентификации и аудита с двухфазными `plan`/`apply`.
 
 ---
 
@@ -61,6 +63,9 @@ admin-log-file = node=/var/log/vizd/vizd.log
   `admin.p2p.clear_banned`. Токен только с `p2p` (без `read`) не может вызвать ничего.
 * `snapshot` — `admin.snapshot.create` и `admin.snapshot.restore`. Список и скачивание
   снапшотов требуют только `read`.
+* `webserver` — изменяющие методы `admin.webserver.*` (лимиты, переключатель статистики,
+  списки IP, reset, reload). `admin.webserver.status` и `admin.webserver.ips` требуют
+  только `read`.
 * `plugins`, `config`, `process`, `chain` — зарезервированы под изменяющие этапы; токен
   только с ними пока не может вызвать ничего.
 
@@ -157,7 +162,7 @@ admin-log-file = node=/var/log/vizd/vizd.log
 
 У каждой записи есть `loaded`, `state` и `state_source`:
 
-* `state_source: "observed"` — состояние прочитано у живого плагина (`chain`, `p2p`,
+* `state_source: "observed"` — состояние прочитано у живого плагина (`chain`, `p2p`, `snapshot`, `webserver`,
   `node_admin`). `state` — `registered`, `initialized`, `started` или `stopped`; `loaded`
   равен false только пока плагин в состоянии `registered`.
 * `state_source: "inferred"` — AppBase инициализирует каждую строку `plugin =` и падает на
@@ -374,6 +379,51 @@ curl -s http://127.0.0.1:8099 -H "Authorization: Bearer $T" \
 
 ---
 
+## Методы политики webserver
+
+Эти методы управляют плагином публичного API: счётчиками запросов по IP, логом статистики,
+лимитами и списками IP. Семантика, значения по умолчанию и формат лога описаны в
+[Webserver — «Учёт запросов и лимиты»](./webserver.md#учёт-запросов-и-лимиты).
+
+**Изменения живые.** Плагин держит это состояние в памяти; изменение применяется к
+следующему запросу webserver — без перезапуска и без перечитывания `config.ini`. Каждое
+изменение также атомарно сохраняется в `webserver-admin-state`
+(по умолчанию `<data-dir>/webserver-admin.json`), который загружается при старте и потому
+перекрывает стартовое значение из `config.ini`. Метод `reload` перечитывает этот файл для
+правок руками.
+
+| Метод | Скоуп | Параметры | Назначение |
+|-------|-------|-----------|------------|
+| `admin.webserver.status` | `read` | нет | Лимиты, итоги, списки IP и число отслеживаемых адресов. |
+| `admin.webserver.ips` | `read` | `{"limit":200}` (макс. 5000) | Строки по IP: `total`, `minute`, `hour`, `day`, `blocked`, `limited`, `last_seen`, `whitelisted`, `blacklisted`; сортировка по total. |
+| `admin.webserver.limits` | `webserver` | `{"enabled":bool,"per_minute":N,"per_hour":N,"per_day":N}` | Опущенные поля сохраняют значение. |
+| `admin.webserver.stats` | `webserver` | `{"enabled":bool}` | Включить/выключить учёт запросов. Лимиты управляются отдельно. |
+| `admin.webserver.whitelist_add` / `whitelist_remove` | `webserver` | `{"ip":"1.2.3.4"}` | Адреса из белого списка обходят лимиты, но всё равно считаются. |
+| `admin.webserver.blacklist_add` / `blacklist_remove` | `webserver` | `{"ip":"1.2.3.4"}` | Адреса из чёрного списка получают `403`; действует даже при выключенной статистике. |
+| `admin.webserver.reset` | `webserver` | нет | Обнулить счётчики; списки и лимиты сохранить. |
+| `admin.webserver.reload` | `webserver` | нет | Перечитать файл состояния с диска; вернуть применённый статус. |
+
+Добавление IP в один список удаляет его из другого. Адрес должен быть одним литералом
+IPv4 или IPv6; иначе `-32602`.
+
+```json
+{"jsonrpc":"2.0","id":53,"method":"admin.webserver.limits","params":{"per_minute":600}}
+```
+
+```json
+{"jsonrpc":"2.0","id":53,"result":{
+  "status":"applied",
+  "limits":{"enabled":true,"per_minute":600,"per_hour":10000,"per_day":100000},
+  "stats_enabled":true,
+  "note":"applied to the live webserver on the next request and persisted to its admin state file; config.ini is unchanged."}}
+```
+
+Если плагин `webserver` не загружен, ответ — `-32004 webserver unavailable`. Публичный
+webserver отвечает клиентам из чёрного списка `403`, а превысившим лимит — `429` с
+`Retry-After: 60`; эти ответы производит webserver, а не этот API.
+
+---
+
 ## Эндпоинт MCP (Streamable HTTP)
 
 Решение q#3052=B: MCP-сервер живёт **внутри этого плагина**, а не в sidecar. Тот же
@@ -393,9 +443,13 @@ Protocol поверх HTTP — на хосте ничего дополнител
 Инструменты 1:1 с методами admin: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
 `admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`,
 `admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
-`admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore` (четырнадцать).
+`admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore`,
+`admin.webserver.status`, `admin.webserver.ips`, `admin.webserver.limits`,
+`admin.webserver.stats`, `admin.webserver.whitelist_add`, `admin.webserver.whitelist_remove`,
+`admin.webserver.blacklist_add`, `admin.webserver.blacklist_remove`, `admin.webserver.reset`,
+`admin.webserver.reload` (двадцать четыре).
 Действия над пирами дополнительно требуют скоупа `p2p`, действия над снапшотами — `snapshot`,
-ровно как и по обычному JSON-RPC. Ошибки исполнения инструмента возвращаются **внутри**
+действия над webserver — `webserver`, ровно как и по обычному JSON-RPC. Ошибки исполнения инструмента возвращаются **внутри**
 результата (`"isError": true`, текст в `content[0].text`), как требует MCP; протокольные
 ошибки (неизвестный инструмент, плохие параметры, нет скоупа) остаются ошибками JSON-RPC.
 
@@ -516,6 +570,10 @@ admin-token = ui:read,snapshot,p2p:<sha256 от 32 случайных байт>
   CORS-заголовков не шлёт, поэтому чужая страница не сможет дёргать его из браузера.
 * Действия над пирами живут в памяти. `add_trusted` и `add_node` действуют до перезапуска
   процесса; постоянные закрепления — в конфигурации сидов P2P, а не в админском API.
+* Скоуп `webserver` может влиять на доступность публичного API (слишком строгий лимит или
+  ошибочная запись в чёрном списке отклоняют добросовестных клиентов). Токен с ним — это
+  политический credential, а не только читающий; изменения к тому же переживают перезапуск
+  через `webserver-admin-state`.
 
 ---
 
@@ -532,6 +590,8 @@ admin-token = ui:read,snapshot,p2p:<sha256 от 32 случайных байт>
 curl'ом и проверяет этот контракт: аутентификацию и скоупы, маскирование конфига/логов,
 allowlist логов, коды ответов, аудит, лимит, действия над P2P-пирами (включая отказ без
 скоупа `p2p`), статус/список/скачивание снапшотов (включая `HEAD`, traversal и отсутствующий
-файл, а также отказ без скоупа `snapshot` на create/restore), MCP
-`initialize`/`tools/list`/`tools/call` и страницу `/ui/`. В CTest не входит: нужны
-собранный `vizd` и два свободных порта.
+файл, а также отказ без скоупа `snapshot` на create/restore), статистику/лимиты webserver
+(всплеск → `429`, обход белым списком, `403` чёрным, смена лимитов на ходу, сохранение и
+reload), MCP `initialize`/`tools/list`/`tools/call` и страницу `/ui/`. Поднимает плагин
+webserver на третьем порту, поэтому нужны собранный `vizd` и три свободных порта; в CTest
+не входит.

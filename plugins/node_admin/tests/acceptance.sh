@@ -12,13 +12,16 @@ set -u
 VIZD=${1:-${VIZD:-build/programs/vizd/vizd}}
 PORT=${PORT:-18099}
 P2P_PORT=${P2P_PORT:-$((PORT + 1))}
+WEB_PORT=${WEB_PORT:-$((PORT + 2))}
 BASE="http://127.0.0.1:$PORT"
+WEB="http://127.0.0.1:$WEB_PORT"
 WORK=$(mktemp -d /tmp/vizd-node-admin.XXXXXX)
 
 GOOD=accept-good-token
 OPS=accept-ops-token
 PEER=accept-peer-token
 SNAP=accept-snap-token
+WS=accept-webserver-token
 EXPIRED=accept-expired-token
 sha() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
 
@@ -27,6 +30,7 @@ plugin = chain
 plugin = json_rpc
 plugin = p2p
 plugin = snapshot
+plugin = webserver
 plugin = node_admin
 
 admin-endpoint = 127.0.0.1:$PORT
@@ -34,12 +38,22 @@ admin-token = agent:read:$(sha "$GOOD")
 admin-token = ops:process:$(sha "$OPS")
 admin-token = peer:read,p2p:$(sha "$PEER")
 admin-token = snap:read,snapshot:$(sha "$SNAP")
+admin-token = ws:read,webserver:$(sha "$WS")
 admin-token = old:read:$(sha "$EXPIRED"):1000000000
 admin-audit-log = $WORK/audit.log
 admin-log-file = node=$WORK/node.log
 
 p2p-endpoint = 127.0.0.1:$P2P_PORT
 p2p-max-connections = 10
+
+webserver-http-endpoint = 127.0.0.1:$WEB_PORT
+webserver-stats-enabled = true
+webserver-limit-m = 5
+webserver-limit-h = 100
+webserver-limit-d = 1000
+webserver-stats-log = $WORK/webserver-stats.log
+webserver-stats-interval = 1
+webserver-admin-state = $WORK/webserver-admin.json
 
 shared-file-size = 256M
 private-key = 5Hw9YPABaFxa2LooiANLrhUK5TPryy8f7v9Y1rk923PuYqbYdfC
@@ -129,8 +143,8 @@ check "node_info -> head_age_sec null on an empty chain" null "$(field result.he
 check_contains "node_info -> version present" "4.2.0" "$(field result.version)"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":7,"method":"admin.diagnostics"}'
-check "diagnostics -> configured plugins" 5 "$(field result.plugins_configured)"
-check "diagnostics -> observed plugins" 4 "$(field result.plugins_observed)"
+check "diagnostics -> configured plugins" 6 "$(field result.plugins_configured)"
+check "diagnostics -> observed plugins" 5 "$(field result.plugins_observed)"
 check "diagnostics -> disk_free_bytes is a number" true \
     "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["disk_free_bytes"], int)).lower())' "$OUT")"
 check "diagnostics -> p2p is loaded" true "$(field result.p2p_loaded)"
@@ -284,6 +298,135 @@ auth "$SNAP" '{"jsonrpc":"2.0","id":49,"method":"admin.snapshot.restore","params
 check "snapshot.restore with latest:false and no name -> -32602" -32602 "$(field error.code)"
 
 
+# ── webserver stats, limits and IP lists ────────────────────────────────────────────────
+# The webserver runs on its own port; requests to it are what the counters and limits see.
+for _ in $(seq 1 40); do
+    grep -q "start listening for http requests" "$WORK/console.log" && break
+    sleep 0.25
+done
+if ! grep -q "start listening for http requests" "$WORK/console.log"; then
+    echo "webserver never listened on $WEB_PORT"; tail -20 "$WORK/console.log"; exit 2
+fi
+
+# webcall sets CODE and OUT; the body itself does not matter for admission
+webcall() {
+    CODE=$(curl -s -o "$OUT" -w '%{http_code}' -X POST "$WEB" \
+        -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"call","params":["database_api","get_dynamic_global_properties",{}]}')
+}
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":50,"method":"admin.webserver.status"}'
+check "webserver.status -> HTTP 200" 200 "$CODE"
+check "webserver.status -> stats enabled from config" true "$(field result.stats_enabled)"
+check "webserver.status -> minute limit from config" 5 "$(field 'result.limits.per_minute')"
+check "webserver.status -> hour limit from config" 100 "$(field 'result.limits.per_hour')"
+check "webserver.status -> day limit from config" 1000 "$(field 'result.limits.per_day')"
+check "webserver.status -> limits enforced" true "$(field 'result.limits.enabled')"
+check "webserver.status -> no IPs seen yet" 0 "$(field result.tracked_ips)"
+
+# burst: five requests pass, the sixth is rejected with 429 and Retry-After
+for i in 1 2 3 4 5; do
+    webcall
+    check "webserver request $i -> HTTP 200" 200 "$CODE"
+done
+CODE=$(curl -s -o "$OUT" -D "$WORK/web.hdr" -w '%{http_code}' -X POST "$WEB" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"call","params":["database_api","get_dynamic_global_properties",{}]}')
+check "webserver sixth request -> HTTP 429" 429 "$CODE"
+check_contains "webserver 429 -> names the limit" 'rate limit exceeded' "$(cat "$OUT")"
+check_contains "webserver 429 -> Retry-After header" 'Retry-After: 60' "$(tr -d '\r' < "$WORK/web.hdr")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":51,"method":"admin.webserver.ips","params":{"limit":10}}'
+check "webserver.ips -> one tracked IP" 1 "$(field result.tracked_ips)"
+check "webserver.ips -> loopback address" '"127.0.0.1"' "$(field 'result.ips.0.ip')"
+check "webserver.ips -> total counted" 6 "$(field 'result.ips.0.total')"
+check "webserver.ips -> one request limited" 1 "$(field 'result.ips.0.limited')"
+check "webserver.ips -> minute counter includes the burst" true \
+    "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["result"]["ips"][0]["minute"] >= 6).lower())' "$OUT")"
+
+# the stats log is written on the stats interval and carries per-IP lines
+for _ in $(seq 1 40); do
+    grep -q 'ip=127.0.0.1' "$WORK/webserver-stats.log" 2>/dev/null && break
+    sleep 0.25
+done
+check_contains "stats log -> per-IP line" 'ip=127.0.0.1' "$(cat "$WORK/webserver-stats.log" 2>/dev/null)"
+check_contains "stats log -> summary line" 'summary' "$(cat "$WORK/webserver-stats.log" 2>/dev/null)"
+
+# a read-only token cannot manage the webserver
+auth "$GOOD" '{"jsonrpc":"2.0","id":52,"method":"admin.webserver.limits","params":{"per_minute":1000}}'
+check "webserver.limits with only 'read' -> -32002" -32002 "$(field error.code)"
+check_contains "webserver.limits -> scope named" "no 'webserver' scope" "$(field error.data.reason)"
+
+# whitelisting bypasses the (already exceeded) limit; counting continues
+auth "$WS" '{"jsonrpc":"2.0","id":53,"method":"admin.webserver.whitelist_add","params":{"ip":"127.0.0.1"}}'
+check "whitelist_add -> added" '"added"' "$(field result.status)"
+check "whitelist_add -> list contains the address" '"127.0.0.1"' "$(field 'result.whitelist.0')"
+webcall
+check "whitelisted IP bypasses the limit -> HTTP 200" 200 "$CODE"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":54,"method":"admin.webserver.ips"}'
+check "webserver.ips -> address flagged whitelisted" true "$(field 'result.ips.0.whitelisted')"
+
+# the blacklist wins over the whitelist and rejects with 403
+auth "$WS" '{"jsonrpc":"2.0","id":55,"method":"admin.webserver.blacklist_add","params":{"ip":"127.0.0.1"}}'
+check "blacklist_add -> added" '"added"' "$(field result.status)"
+check "blacklist_add -> removed the address from the whitelist" 0 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["whitelist"]))' "$OUT")"
+webcall
+check "blacklisted IP -> HTTP 403" 403 "$CODE"
+check_contains "blacklisted IP -> body names the reason" 'forbidden' "$(cat "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":56,"method":"admin.webserver.ips"}'
+check "webserver.ips -> address flagged blacklisted" true "$(field 'result.ips.0.blacklisted')"
+check "webserver.ips -> blocked counter is 1" 1 "$(field 'result.ips.0.blocked')"
+
+auth "$WS" '{"jsonrpc":"2.0","id":57,"method":"admin.webserver.blacklist_remove","params":{"ip":"127.0.0.1"}}'
+check "blacklist_remove -> removed" '"removed"' "$(field result.status)"
+webcall
+check "blacklist removal lifts the 403 (still rate limited) -> HTTP 429" 429 "$CODE"
+
+auth "$WS" '{"jsonrpc":"2.0","id":58,"method":"admin.webserver.limits","params":{"per_minute":1000,"per_hour":10000,"per_day":100000}}'
+check "webserver.limits -> applied" '"applied"' "$(field result.status)"
+check "webserver.limits -> per_minute updated" 1000 "$(field 'result.limits.per_minute')"
+webcall
+check "raised limit applies on the next request -> HTTP 200" 200 "$CODE"
+
+# stats can be switched at runtime; the blacklist keeps working without them
+auth "$WS" '{"jsonrpc":"2.0","id":59,"method":"admin.webserver.stats","params":{"enabled":false}}'
+check "webserver.stats -> disabled" '"disabled"' "$(field result.status)"
+check "webserver.stats -> stats flag is false" false "$(field result.stats_enabled)"
+auth "$WS" '{"jsonrpc":"2.0","id":60,"method":"admin.webserver.blacklist_add","params":{"ip":"127.0.0.1"}}'
+webcall
+check "blacklist still enforced with stats off -> HTTP 403" 403 "$CODE"
+auth "$WS" '{"jsonrpc":"2.0","id":61,"method":"admin.webserver.blacklist_remove","params":{"ip":"127.0.0.1"}}'
+auth "$WS" '{"jsonrpc":"2.0","id":62,"method":"admin.webserver.stats","params":{"enabled":true}}'
+check "webserver.stats -> re-enabled" '"enabled"' "$(field result.status)"
+
+# changes are persisted, and reload re-reads the file from disk
+check_contains "admin state file -> limits persisted" '"per_minute":1000' \
+    "$(cat "$WORK/webserver-admin.json" 2>/dev/null)"
+python3 - "$WORK/webserver-admin.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["per_minute"] = 7
+json.dump(d, open(p, "w"))
+PY
+auth "$WS" '{"jsonrpc":"2.0","id":63,"method":"admin.webserver.reload"}'
+check "webserver.reload -> HTTP 200" 200 "$CODE"
+check "webserver.reload -> picked up the edited limit" 7 "$(field 'result.limits.per_minute')"
+auth "$WS" '{"jsonrpc":"2.0","id":64,"method":"admin.webserver.limits","params":{"per_minute":1000}}'
+check "webserver.limits -> per_minute restored" 1000 "$(field 'result.limits.per_minute')"
+
+auth "$WS" '{"jsonrpc":"2.0","id":65,"method":"admin.webserver.reset"}'
+check "webserver.reset -> status" '"reset"' "$(field result.status)"
+auth "$GOOD" '{"jsonrpc":"2.0","id":66,"method":"admin.webserver.status"}'
+check "webserver.reset -> counters zeroed" 0 "$(field result.total_requests)"
+check "webserver.reset -> limits kept" 1000 "$(field 'result.limits.per_minute')"
+check "webserver.reset -> whitelist kept empty" 0 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["whitelist"]))' "$OUT")"
+
+
 # ── MCP (Streamable HTTP) on the same listener ───────────────────────────────────────────
 sleep 1
 call -d '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
@@ -304,7 +447,7 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> fourteen tools" 14 \
+check "MCP tools/list -> twenty-four tools" 24 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.node_info present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
@@ -316,6 +459,19 @@ check "MCP tools/list -> admin.snapshot.create present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.snapshot.create" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.snapshot.restore present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.snapshot.restore" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.webserver.status present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.webserver.status" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.webserver.blacklist_add present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.webserver.blacklist_add" for t in ts)).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"admin.webserver.limits","arguments":{"per_minute":10}}}'
+check "MCP webserver.limits without 'webserver' scope -> isError" true "$(field result.isError)"
+check_contains "MCP webserver.limits -> scope named" "no 'webserver' scope" \
+    "$(field 'result.content.0.text')"
+
+auth "$WS" '{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{"name":"admin.webserver.status","arguments":{}}}'
+check "MCP webserver.status -> not an error" false "$(field result.isError)"
+check_contains "MCP webserver.status -> returns limits" 'per_minute' "$(field 'result.content.0.text')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"admin.p2p.add_node","arguments":{"endpoint":"127.0.0.1:1"}}}'
 check "MCP mutating tool without 'p2p' -> isError" true "$(field result.isError)"

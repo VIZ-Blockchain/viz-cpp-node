@@ -2,6 +2,7 @@
 
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
+#include <graphene/plugins/webserver/webserver_plugin.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
 #include <graphene/protocol/version.hpp>
@@ -66,6 +67,7 @@ const appbase::abstract_plugin *observe_plugin(const std::string &name) {
     if (name == "chain") return appbase::app().find_plugin<graphene::plugins::chain::plugin>();
     if (name == "p2p") return appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
     if (name == "snapshot") return appbase::app().find_plugin<graphene::plugins::snapshot::snapshot_plugin>();
+    if (name == "webserver") return appbase::app().find_plugin<graphene::plugins::webserver::webserver_plugin>();
     if (name == node_admin_plugin::name()) return appbase::app().find_plugin<node_admin_plugin>();
     return nullptr;
 }
@@ -141,6 +143,10 @@ std::string iso_utc(const fc::time_point_sec &t) {
 
 std::string now_iso() {
     return iso_utc(fc::time_point_sec(static_cast<uint32_t>(fc::time_point::now().sec_since_epoch())));
+}
+
+std::string unixtime_iso(uint32_t t) {
+    return iso_utc(fc::time_point_sec(t));
 }
 
 // ── secret masking ──────────────────────────────────────────────────────────────────────────
@@ -770,8 +776,8 @@ token_info parse_token_spec(const std::string &spec) {
         const std::string scope = trim(raw);
         FC_ASSERT(scope == "read" || scope == "plugins" || scope == "config" ||
                   scope == "process" || scope == "chain" || scope == "p2p" ||
-                  scope == "snapshot",
-                  "admin-token: unknown scope '${s}' (allowed: read, plugins, config, process, chain, p2p, snapshot)",
+                  scope == "snapshot" || scope == "webserver",
+                  "admin-token: unknown scope '${s}' (allowed: read, plugins, config, process, chain, p2p, snapshot, webserver)",
                   ("s", scope));
         t.scopes.insert(scope);
     }
@@ -857,6 +863,17 @@ struct node_admin_plugin::impl {
     fc::variant h_snapshot_status(const fc::variant &params);
     fc::variant h_snapshot_create(const fc::variant &params);
     fc::variant h_snapshot_restore(const fc::variant &params);
+
+    // ── webserver operator methods ────────────────────────────────────────────────────────
+    graphene::plugins::webserver::webserver_plugin &webserver_started() const;
+    fc::variant h_webserver_status(const fc::variant &params);
+    fc::variant h_webserver_ips(const fc::variant &params);
+    fc::variant h_webserver_limits(const fc::variant &params);
+    fc::variant h_webserver_stats(const fc::variant &params);
+    fc::variant h_webserver_list_add(const fc::variant &params, bool whitelist);
+    fc::variant h_webserver_list_remove(const fc::variant &params, bool whitelist);
+    fc::variant h_webserver_reset(const fc::variant &params);
+    fc::variant h_webserver_reload(const fc::variant &params);
 
     // ── MCP (Streamable HTTP) ──────────────────────────────────────────────────────────────
     fc::variant mcp_tools() const;
@@ -1435,6 +1452,8 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
     if (method == "admin.audit.tail") return h_audit_tail(params);
     if (method == "admin.p2p.status") return h_p2p_status(params);
     if (method == "admin.snapshot.status") return h_snapshot_status(params);
+    if (method == "admin.webserver.status") return h_webserver_status(params);
+    if (method == "admin.webserver.ips") return h_webserver_ips(params);
 
     // Mutating peer operations need `p2p` on top of `read`: a read-only token must not be able
     // to change whom this node talks to. Both required scopes are named in the error.
@@ -1460,6 +1479,29 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
         }
         if (method == "admin.snapshot.create") return h_snapshot_create(params);
         return h_snapshot_restore(params);
+    }
+
+    // The webserver knobs (limits, IP lists, stats switch, reset/reload) change how the
+    // public API treats its clients, so they need the `webserver` scope. Reads stay under
+    // `read`. Changes are applied to the live plugin immediately and persisted to its
+    // admin state file; config.ini is only the startup seed.
+    if (method == "admin.webserver.limits" || method == "admin.webserver.stats" ||
+        method == "admin.webserver.whitelist_add" || method == "admin.webserver.whitelist_remove" ||
+        method == "admin.webserver.blacklist_add" || method == "admin.webserver.blacklist_remove" ||
+        method == "admin.webserver.reset" || method == "admin.webserver.reload") {
+        if (token.scopes.find("webserver") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'webserver' scope",
+                            "webserver operations need a token with scopes 'read,webserver'"};
+        }
+        if (method == "admin.webserver.limits") return h_webserver_limits(params);
+        if (method == "admin.webserver.stats") return h_webserver_stats(params);
+        if (method == "admin.webserver.whitelist_add") return h_webserver_list_add(params, true);
+        if (method == "admin.webserver.whitelist_remove") return h_webserver_list_remove(params, true);
+        if (method == "admin.webserver.blacklist_add") return h_webserver_list_add(params, false);
+        if (method == "admin.webserver.blacklist_remove") return h_webserver_list_remove(params, false);
+        if (method == "admin.webserver.reset") return h_webserver_reset(params);
+        return h_webserver_reload(params);
     }
 
     // MCP Streamable HTTP on the same authenticated listener (decision q#3052=B: the MCP
@@ -1986,6 +2028,216 @@ fc::variant node_admin_plugin::impl::h_snapshot_restore(const fc::variant &param
     return fc::variant(m);
 }
 
+// ── webserver operator methods ───────────────────────────────────────────────────────────
+// The webserver plugin keeps its limits and IP lists in live state: every change below is
+// visible to the very next request, without a restart and without re-reading config.ini.
+// config.ini seeds the state at startup; changes are persisted to the plugin's admin state
+// file (<data-dir>/webserver-admin.json by default) so they survive a restart.
+namespace ws = graphene::plugins::webserver;
+
+graphene::plugins::webserver::webserver_plugin &node_admin_plugin::impl::webserver_started() const {
+    auto *plugin = appbase::app().find_plugin<ws::webserver_plugin>();
+    if (plugin == nullptr || plugin->get_state() != appbase::abstract_plugin::started) {
+        throw rpc_error{-32004, "webserver unavailable",
+                        "the webserver plugin is not loaded or not started",
+                        "webserver administration needs 'plugin = webserver' in config.ini"};
+    }
+    return *plugin;
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_status(const fc::variant &) {
+    const ws::webserver_admin_state st = webserver_started().admin_state(0);
+
+    fc::mutable_variant_object limits;
+    limits("enabled", st.limits.enabled);
+    limits("per_minute", st.limits.per_minute);
+    limits("per_hour", st.limits.per_hour);
+    limits("per_day", st.limits.per_day);
+
+    fc::variants wl, bl;
+    for (const auto &ip : st.whitelist) wl.push_back(fc::variant(ip));
+    for (const auto &ip : st.blacklist) bl.push_back(fc::variant(ip));
+
+    fc::mutable_variant_object m;
+    m("as_of", now_iso());
+    m("stats_enabled", st.stats_enabled);
+    m("limits", limits);
+    m("total_requests", static_cast<int64_t>(st.total_requests));
+    m("blocked_requests", static_cast<int64_t>(st.blocked_requests));
+    m("limited_requests", static_cast<int64_t>(st.limited_requests));
+    m("tracked_ips", static_cast<int64_t>(st.tracked_ips));
+    m("whitelist", wl);
+    m("blacklist", bl);
+    m("note", "limits are off unless stats are enabled; the blacklist is enforced even "
+              "when stats are off. Changes apply to the next request.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_ips(const fc::variant &params) {
+    const fc::variant_object empty;
+    const fc::variant_object &o = params.is_object() ? params.get_object() : empty;
+    const int64_t limit = std::max<int64_t>(1, std::min<int64_t>(param_int(o, "limit", 200), 5000));
+
+    const ws::webserver_admin_state st =
+        webserver_started().admin_state(static_cast<std::size_t>(limit));
+
+    fc::variants ips;
+    for (const auto &s : st.ips) {
+        fc::mutable_variant_object r;
+        r("ip", s.ip);
+        r("total", static_cast<int64_t>(s.total));
+        r("minute", static_cast<int64_t>(s.minute));
+        r("hour", static_cast<int64_t>(s.hour));
+        r("day", static_cast<int64_t>(s.day));
+        r("blocked", static_cast<int64_t>(s.blocked));
+        r("limited", static_cast<int64_t>(s.limited));
+        r("last_seen", static_cast<int64_t>(s.last_seen));
+        r("last_seen_iso", s.last_seen ? fc::variant(unixtime_iso(s.last_seen)) : fc::variant());
+        r("whitelisted", s.whitelisted);
+        r("blacklisted", s.blacklisted);
+        ips.push_back(fc::variant(r));
+    }
+
+    fc::mutable_variant_object m;
+    m("as_of", now_iso());
+    m("tracked_ips", static_cast<int64_t>(st.tracked_ips));
+    m("returned", static_cast<int64_t>(ips.size()));
+    m("ips", ips);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_limits(const fc::variant &params) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected an object",
+                        "{enabled, per_minute, per_hour, per_day}; omitted fields keep their value"};
+    }
+    auto &plugin = webserver_started();
+    const ws::webserver_admin_state st = plugin.admin_state(0);
+    const fc::variant_object &o = params.get_object();
+
+    const bool enabled = o.contains("enabled") ? o["enabled"].as_bool() : st.limits.enabled;
+    const uint32_t per_minute = static_cast<uint32_t>(
+        std::max<int64_t>(1, param_int(o, "per_minute", st.limits.per_minute)));
+    const uint32_t per_hour = static_cast<uint32_t>(
+        std::max<int64_t>(1, param_int(o, "per_hour", st.limits.per_hour)));
+    const uint32_t per_day = static_cast<uint32_t>(
+        std::max<int64_t>(1, param_int(o, "per_day", st.limits.per_day)));
+
+    std::string error;
+    if (!plugin.set_limits(enabled, per_minute, per_hour, per_day, error)) {
+        throw rpc_error{-32000, "limits not applied", error, ""};
+    }
+
+    const ws::webserver_admin_state after = plugin.admin_state(0);
+    fc::mutable_variant_object limits;
+    limits("enabled", after.limits.enabled);
+    limits("per_minute", after.limits.per_minute);
+    limits("per_hour", after.limits.per_hour);
+    limits("per_day", after.limits.per_day);
+
+    fc::mutable_variant_object m;
+    m("status", "applied");
+    m("limits", limits);
+    m("stats_enabled", after.stats_enabled);
+    m("note", "applied to the live webserver on the next request and persisted to its "
+              "admin state file; config.ini is unchanged.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_stats(const fc::variant &params) {
+    if (!params.is_object() || !params.get_object().contains("enabled")) {
+        throw rpc_error{-32602, "invalid params", "expected an object {enabled: bool}", ""};
+    }
+    auto &plugin = webserver_started();
+    const bool enabled = params.get_object()["enabled"].as_bool();
+    plugin.set_stats_enabled(enabled);
+
+    const ws::webserver_admin_state after = plugin.admin_state(0);
+    fc::mutable_variant_object m;
+    m("status", enabled ? "enabled" : "disabled");
+    m("stats_enabled", after.stats_enabled);
+    m("limits_enabled", after.limits.enabled);
+    m("note", "applied to the live webserver immediately and persisted; limits enforcement "
+              "is controlled separately by admin.webserver.limits.");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_list_add(const fc::variant &params, bool whitelist) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected an object {ip}", ""};
+    }
+    const std::string ip = trim(param_str(params.get_object(), "ip", ""));
+    if (ip.empty()) {
+        throw rpc_error{-32602, "invalid params", "missing 'ip'", "a single IPv4 or IPv6 address"};
+    }
+    auto &plugin = webserver_started();
+    const bool ok = whitelist ? plugin.whitelist_add(ip) : plugin.blacklist_add(ip);
+    if (!ok) {
+        throw rpc_error{-32602, "invalid ip", ip, "a single IPv4 or IPv6 address"};
+    }
+
+    const ws::webserver_admin_state st = plugin.admin_state(0);
+    fc::variants wl, bl;
+    for (const auto &v : st.whitelist) wl.push_back(fc::variant(v));
+    for (const auto &v : st.blacklist) bl.push_back(fc::variant(v));
+
+    fc::mutable_variant_object m;
+    m("status", "added");
+    m("list", whitelist ? "whitelist" : "blacklist");
+    m("ip", ip);
+    m("whitelist", wl);
+    m("blacklist", bl);
+    m("note", whitelist
+        ? "whitelisted addresses bypass the rate limits (they are still counted)"
+        : "blacklisted addresses are rejected with HTTP 403; the blacklist wins over the whitelist");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_list_remove(const fc::variant &params, bool whitelist) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected an object {ip}", ""};
+    }
+    const std::string ip = trim(param_str(params.get_object(), "ip", ""));
+    if (ip.empty()) {
+        throw rpc_error{-32602, "invalid params", "missing 'ip'", ""};
+    }
+    auto &plugin = webserver_started();
+    const bool erased = whitelist ? plugin.whitelist_remove(ip) : plugin.blacklist_remove(ip);
+
+    const ws::webserver_admin_state st = plugin.admin_state(0);
+    fc::variants wl, bl;
+    for (const auto &v : st.whitelist) wl.push_back(fc::variant(v));
+    for (const auto &v : st.blacklist) bl.push_back(fc::variant(v));
+
+    fc::mutable_variant_object m;
+    m("status", erased ? "removed" : "not_found");
+    m("list", whitelist ? "whitelist" : "blacklist");
+    m("ip", ip);
+    m("whitelist", wl);
+    m("blacklist", bl);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_reset(const fc::variant &) {
+    auto &plugin = webserver_started();
+    plugin.reset_stats();
+    fc::mutable_variant_object m;
+    m("status", "reset");
+    m("note", "counters zeroed; IP lists and limits are unchanged");
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_webserver_reload(const fc::variant &) {
+    auto &plugin = webserver_started();
+    std::string error;
+    if (!plugin.reload_admin_state(error)) {
+        throw rpc_error{-32000, "state not reloaded", error,
+                        "fix the admin state file or change values via admin.webserver.limits"};
+    }
+    return h_webserver_status(fc::variant(fc::mutable_variant_object()));
+}
+
+
 // ── MCP (Streamable HTTP) ────────────────────────────────────────────────────────────────
 // The MCP endpoint is the same loopback listener and the same bearer tokens as admin.*.
 // Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
@@ -2087,6 +2339,62 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "in-process: pauses P2P, wipes shared memory, imports the snapshot, "
                          "replays dlt_block_log and resumes P2P. Needs the 'snapshot' scope.",
                          schema(restore_props, fc::variants{})));
+
+    fc::variants ws_ips_props;
+    ws_ips_props.push_back(prop("integer", "Maximum rows to return (default 200, max 5000)"));
+    fc::variants ws_limits_props;
+    ws_limits_props.push_back(prop("boolean", "Enforce the limits (default: keep the current value)"));
+    ws_limits_props.push_back(prop("integer", "Max requests per IP per minute"));
+    ws_limits_props.push_back(prop("integer", "Max requests per IP per hour"));
+    ws_limits_props.push_back(prop("integer", "Max requests per IP per day"));
+    fc::variants ws_stats_props;
+    ws_stats_props.push_back(prop("boolean", "Enable or disable per-IP request accounting"));
+    fc::variants ws_stats_required;
+    ws_stats_required.push_back(fc::variant(std::string("enabled")));
+    fc::variants ws_ip_props;
+    ws_ip_props.push_back(prop("string", "A single IPv4 or IPv6 address"));
+    fc::variants ws_ip_required;
+    ws_ip_required.push_back(fc::variant(std::string("ip")));
+
+    tools.push_back(tool("admin.webserver.status",
+                         "Public webserver policy: stats switch, limits, request totals and "
+                         "the whitelist/blacklist. Changes made by the other webserver tools "
+                         "apply to the next request.",
+                         no_args));
+    tools.push_back(tool("admin.webserver.ips",
+                         "Per-IP request counts (total, current minute/hour/day, blocked and "
+                         "rate-limited), highest first.",
+                         schema(ws_ips_props, fc::variants{})));
+    tools.push_back(tool("admin.webserver.limits",
+                         "Set the per-IP request limits and whether they are enforced. Omitted "
+                         "fields keep their value. Needs the 'webserver' scope.",
+                         schema(ws_limits_props, fc::variants{})));
+    tools.push_back(tool("admin.webserver.stats",
+                         "Turn per-IP request accounting on or off at runtime. Needs the "
+                         "'webserver' scope.",
+                         schema(ws_stats_props, ws_stats_required)));
+    tools.push_back(tool("admin.webserver.whitelist_add",
+                         "Whitelist an IP: it bypasses the rate limits (still counted). "
+                         "Needs the 'webserver' scope.",
+                         schema(ws_ip_props, ws_ip_required)));
+    tools.push_back(tool("admin.webserver.whitelist_remove",
+                         "Remove an IP from the whitelist. Needs the 'webserver' scope.",
+                         schema(ws_ip_props, ws_ip_required)));
+    tools.push_back(tool("admin.webserver.blacklist_add",
+                         "Blacklist an IP: every request from it is rejected with HTTP 403. "
+                         "Needs the 'webserver' scope.",
+                         schema(ws_ip_props, ws_ip_required)));
+    tools.push_back(tool("admin.webserver.blacklist_remove",
+                         "Remove an IP from the blacklist. Needs the 'webserver' scope.",
+                         schema(ws_ip_props, ws_ip_required)));
+    tools.push_back(tool("admin.webserver.reset",
+                         "Zero the request counters; lists and limits are kept. Needs the "
+                         "'webserver' scope.",
+                         no_args));
+    tools.push_back(tool("admin.webserver.reload",
+                         "Re-read the webserver admin state file (limits and IP lists) from "
+                         "disk without restarting. Needs the 'webserver' scope.",
+                         no_args));
     return fc::variant(tools);
 }
 
@@ -2118,8 +2426,11 @@ fc::variant node_admin_plugin::impl::h_mcp_initialize(const fc::variant &params)
       "Administration of this VIZ node. Read-only tools need the 'read' scope; the mutating "
       "peer tools admin.p2p.add_node, admin.p2p.add_trusted and admin.p2p.clear_banned "
       "additionally need the 'p2p' scope; admin.snapshot.create and admin.snapshot.restore "
-      "additionally need the 'snapshot' scope. A human-facing UI is served at /ui/ on this "
-      "same listener and uses the same bearer token.");
+      "additionally need the 'snapshot' scope; the webserver policy tools "
+      "(admin.webserver.limits / stats / whitelist_* / blacklist_* / reset / reload) "
+      "additionally need the 'webserver' scope. Webserver changes apply to the next request "
+      "and persist in the plugin's admin state file. A human-facing UI is served at /ui/ on "
+      "this same listener and uses the same bearer token.");
     return fc::variant(m);
 }
 
