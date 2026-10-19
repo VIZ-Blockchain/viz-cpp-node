@@ -19,6 +19,10 @@
 #include <boost/asio.hpp>
 #include <boost/filesystem.hpp>
 
+// Must precede any websocketpp header: restores the `io_service` alias that
+// Boost >= 1.87 dropped but the vendored websocketpp still spells throughout.
+#include <fc/compat/asio_compat.hpp>
+
 #include <websocketpp/config/asio.hpp>
 #include <websocketpp/server.hpp>
 
