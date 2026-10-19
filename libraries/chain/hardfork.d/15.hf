@@ -37,7 +37,8 @@
 #define CHAIN_HARDFORK_15_TIME 1791158400      // 2026-10-05 00:00:00 UTC
 #define CHAIN_HARDFORK_15_VERSION hardfork_version( version(4, 1, 0) )
 #endif
-// Registration itself is unconditional in both configs (CHAIN_NUM_HARDFORKS is 15 everywhere), so
-// the fork can never be "unknown" to a binary that carries it; what gates it is the time above plus
-// the 17/21 validator quorum. The stale-state migration runs separately — see the checklist.
+// Registration itself is unconditional in both configs (the hardfork arrays are sized
+// [CHAIN_NUM_HARDFORKS + 1]), so the fork can never be "unknown" to a binary that carries it; what
+// gates it is the time above plus the 17/21 validator quorum. The stale-state migration runs
+// separately — see the checklist.
 #endif

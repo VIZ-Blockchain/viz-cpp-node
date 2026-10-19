@@ -56,7 +56,7 @@ Read-only JSON-RPC доступ к состоянию прогнозных ры�
 | `get_account_leverage_positions` | `account, from, limit` | `pm_leverage_position_object[]` |
 | `get_market_leverage_positions` | `market_id, from, limit` | `pm_leverage_position_object[]` |
 | `get_creator_ban` | `account` | `pm_creator_ban_object` (или ошибка, если нет) |
-| `get_oracle` | `owner` | `pm_oracle` (объект + `reliability_score`) |
+| `get_oracle` | `owner` | `pm_oracle` (объект + `reliability_score` + чтения no-contest) |
 | `list_oracles` | `from, limit` | `pm_oracle_object[]` |
 
 ### Превью плеча (Boost)
@@ -85,9 +85,11 @@ Read-only котировки, вызывающие **ту же внутриуз�
 | `get_lazy_deposit` | `account` | `pm_lazy_deposit_object` |
 | `get_lazy_allocations` | `from, limit` | `pm_lazy_allocation_object[]` |
 | `get_market_lazy_allocation` | `market_id` | `pm_lazy_allocation_object` (или ошибка, если нет) |
-| `get_pm_chain_properties` | — | `chain_properties_pm` (медиана, v5) |
+| `get_pm_chain_properties` | — | `chain_properties_pm` (медиана, v5) + `pm_no_contest_fee_per_market` (производное) |
 
 `get_lazy_allocations` перечисляет записи аллокаций lazy-пула по рынкам (для дашборда пула); `get_market_lazy_allocation` берёт запись для конкретного рынка. Штрафные штампы оракула отдельного метода не требуют — они идут на `pm_oracle_object` (`penalty_stamps`, `last_penalty_stamp_time`) через `get_oracle`.
+
+Каждая карточка рынка (`pm_market_card` — в списках, `get_market` и `get_market_full`) несёт **`settlement_charge`**: штраф за no-contest, который расчёт спишет прямо сейчас — замороженная при объявлении цена (HF16) или текущая медиана для дофорковых строк, с кэпом по страховке оракула — и `0`, если рынок не объявлен void (`status 3`, выплата не произведена, спора нет) или на нём нет ставок. `get_oracle` агрегирует тот же расчёт по всему оракулу: `no_contest_pending_count` / `_stake` / `_fee_nominal` / `_fee_capped` (обход `by_oracle_finalized` по открытым обязательствам, история оракула не читается). Оба поля — только чтение для отображения; само списание делает консенсус при расчёте.
 
 ### Графики — kline / история весов
 

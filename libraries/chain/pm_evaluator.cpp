@@ -1040,12 +1040,29 @@ void pm_no_contest_evaluator::do_apply(const pm_no_contest_operation& o) {
             ora.markets_in_dispute_window++;   // enters disputable window (status3, payout1, no dispute)
             ora.last_active_time = now;
         });
+    // HF16: fix the price of the void HERE, from the median of the announcing block. Settlement then
+    // charges this number instead of re-reading the median — otherwise a parameter vote inside the
+    // dispute window changes the bill after the oracle announced it. Correct base: bets require
+    // status == 1 (pm_place_bet), and the modify below moves the market to 3, so bets_sum is final.
+    const bool freeze_fee = db.has_hardfork(CHAIN_PM_NO_CONTEST_FREEZE_HARDFORK);
+    share_type frozen_fee(0);   // every path that writes no_contest_fee goes through the freeze branch
+    if (freeze_fee && mkt.bets_sum.value > 0) {
+        const auto& mp = median(db);
+        frozen_fee = share_type((int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                          * (uint64_t)mp.pm_no_contest_penalty_percent / 10000).lo);
+    }
     db.modify(mkt, [&](pm_market_object& m) {
         m.status            = 3;
         m.payout_status     = 1;
         m.resolved_outcome  = -1;
         m.result_expiration = now;  // start the dispute/settle grace from here
         from_string(m.decision_reason, o.reason); // NO-CONTEST rationale, readable via get_market
+        if (freeze_fee) {
+            // The flag marks "announced under HF16" even when the amount is 0: a frozen 0 must not
+            // fall back to the median later and pick up a vote that happened inside the window.
+            m.no_contest_fee_frozen = true;
+            m.no_contest_fee = frozen_fee;
+        }
     });
 }
 

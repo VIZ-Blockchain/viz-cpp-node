@@ -1,0 +1,48 @@
+// 16 Hardfork — freeze the no-contest price at announcement. Today pm_no_contest only declares the
+// void and opens the pm_dispute_grace_sec window; the penalty is computed at settlement from the
+// median chain_properties_pm of THAT moment. A parameter vote inside the window therefore changes
+// the price retroactively: the oracle announces one number and pays another. This fork records the
+// nominal fee on the market (pm_market_object::no_contest_fee) in pm_no_contest_evaluator and makes
+// settle_market(win < 0) charge exactly that; the oracle gets a monotone no_contest_slashed_total
+// counter in the same modify() that grows total_insurance_slashed (exact attribution of the class
+// without a virtual operation). The insurance cap stays where it was — per settlement.
+// See docs/prediction-markets/pm-no-contest-fee-freeze.md.
+#ifndef CHAIN_HARDFORK_16
+#define CHAIN_HARDFORK_16 16
+// The same fork under the name the fix itself uses (the gates read this one, so the pair is
+// deliberately not two independent facts: they are defined together and must stay equal).
+#ifndef CHAIN_PM_NO_CONTEST_FREEZE_HARDFORK
+#define CHAIN_PM_NO_CONTEST_FREEZE_HARDFORK 16
+#endif
+#ifdef BUILD_TESTNET
+// Testnet-config activation (CHAIN_NAME "VIZTEST"). Testnet has a single validator
+// (CHAIN_HARDFORK_REQUIRED_VALIDATORS=1), so this timestamp IS the whole coordination: the
+// validator's auto-vote in _generate_block reaches quorum by itself and the fork applies on the
+// first block at or after this time.
+#define CHAIN_HARDFORK_16_TIME 1794700800      // 2026-11-15 00:00:00 UTC (PLACEHOLDER — not announced)
+#define CHAIN_HARDFORK_16_VERSION hardfork_version( version(4, 2, 0) )
+#else
+// Production-config activation. This branch is what the shelter testnet runs too — that node is a
+// PRODUCTION-config deployment (config_testnet.hpp would change CHAIN_ID/CHAIN_NAME and 17/21
+// validator quorum to 1), so the only lever for a production-config testnet is this timestamp.
+// 17 of 21 validators must still vote the version above, which the node does on its own
+// (database.cpp _generate_block injects hardfork_version_vote while current_hardfork_version <
+// CHAIN_HARDFORK_VERSION); the fork then applies on the first block at or after this time.
+//
+// PLACEHOLDER — NOT ANNOUNCED. The owner names the mainnet date; this value exists only so the
+// binary has a future milestone to compile and test against. It MUST stay in the FUTURE for the
+// announced moment to exist at all — with a past date the fork activates in whatever block the
+// 17th validator happens to upgrade in, with no announceable moment (same warning as 14.hf/15.hf).
+// Change this value together with any announcement text, never after one is published.
+#define CHAIN_HARDFORK_16_TIME 1796083200      // 2026-12-01 00:00:00 UTC (PLACEHOLDER — not announced)
+#define CHAIN_HARDFORK_16_VERSION hardfork_version( version(4, 2, 0) )
+#endif
+// Registration itself is unconditional in both configs (the hardfork arrays are sized
+// [CHAIN_NUM_HARDFORKS + 1]), so the fork can never be "unknown" to a binary that carries it; what
+// gates it is the time above plus
+// the 17/21 validator quorum. Rows that were already inside the dispute window at activation carry
+// no_contest_fee_frozen == false, which the settlement treats as "legacy row" and prices from the
+// current median — exactly the pre-fork behaviour, so no seed pass is needed. The flag is separate
+// from the amount on purpose: a frozen fee of 0 (penalty percent voted to 0) must not fall back to
+// the median and pick up a later vote; 0-amount and never-frozen are different states.
+#endif

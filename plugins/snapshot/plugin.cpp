@@ -843,6 +843,10 @@ inline uint32_t import_pm_oracles(graphene::chain::database& db, const fc::varia
                 obj.resolved_late_count  = static_cast<uint32_t>(v["resolved_late_count"].as_uint64());
             if (v.get_object().contains("resolution_time_hist"))
                 obj.resolution_time_hist = v["resolution_time_hist"].as<fc::array<share_type, 8>>();
+            // HF16: forward-accumulating no-contest attribution counter; absent in pre-HF16
+            // snapshots, where 0 is the correct starting point (no backfill — see pm_objects.hpp).
+            if (v.get_object().contains("no_contest_slashed_total"))
+                obj.no_contest_slashed_total = v["no_contest_slashed_total"].as<share_type>();
         });
         ++count;
     }
@@ -914,6 +918,13 @@ inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::varia
             // default to 0; reveal/forfeit decrements are clamped, so drift can only relax the cap).
             if (v.get_object().contains("open_commits"))
                 obj.open_commits = static_cast<uint32_t>(v["open_commits"].as_uint64());
+            // HF16: per-market frozen no-contest price. Both fields move together; a snapshot from
+            // before the fork has neither, and the defaults (0/false) are exactly the "legacy row"
+            // state the settlement expects.
+            if (v.get_object().contains("no_contest_fee"))
+                obj.no_contest_fee = v["no_contest_fee"].as<share_type>();
+            if (v.get_object().contains("no_contest_fee_frozen"))
+                obj.no_contest_fee_frozen = v["no_contest_fee_frozen"].as<bool>();
             // NB: `metadata` is no longer a consensus field (moved off-chain to the
             // prediction_market_api plugin); older snapshots that still carry it are ignored.
         });
