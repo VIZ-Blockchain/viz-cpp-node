@@ -126,6 +126,15 @@ namespace graphene {
                 void pause_block_processing();
 
                 /**
+                 * Pause block processing from a NON-p2p thread. The flag is owned by
+                 * the p2p thread, so the call is posted there and the caller waits.
+                 * Must not be called from the p2p thread itself (async().wait() there
+                 * would deadlock); code already on the p2p thread calls
+                 * pause_block_processing() directly.
+                 */
+                void pause_block_processing_sync();
+
+                /**
                  * Resume block processing after a pause.
                  */
                 void resume_block_processing();

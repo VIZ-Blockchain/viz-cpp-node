@@ -1134,6 +1134,110 @@ namespace chain {
         }
     }
 
+    bool plugin::restore_from_snapshot(const std::string& snapshot_path, std::string& error) {
+        bool expected = false;
+        if (!my->recovery_in_progress.compare_exchange_strong(expected, true)) {
+            error = "another recovery or restore is already in progress";
+            return false;
+        }
+        struct flag_reset {
+            std::atomic<bool>& flag;
+            ~flag_reset() { flag.store(false, std::memory_order_release); }
+        } reset_guard{my->recovery_in_progress};
+
+        if (snapshot_path.empty()) {
+            error = "empty snapshot path";
+            return false;
+        }
+        if (!snapshot_load_callback) {
+            error = "snapshot plugin is not loaded (add 'plugin = snapshot' to config.ini)";
+            return false;
+        }
+        if (!bfs::exists(snapshot_path) || !bfs::is_regular_file(snapshot_path)) {
+            error = "snapshot file not found: " + snapshot_path;
+            return false;
+        }
+
+        wlog("=== RESTORE FROM SNAPSHOT: ${p} ===", ("p", snapshot_path));
+
+        // 1. Stop P2P from pushing blocks into a database that is about to be rebuilt.
+        //    pause_block_processing() itself must run on the p2p thread; this method is
+        //    called from an fc thread, so use the sync wrapper.
+        try {
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->pause_block_processing_sync();
+                wlog("Restore: P2P block processing paused");
+            }
+        } catch (const fc::exception& e) {
+            wlog("Restore: failed to pause P2P: ${e}", ("e", e.to_detail_string()));
+        } catch (...) {
+            wlog("Restore: failed to pause P2P");
+        }
+
+        // 2. Gate block production (validator reads is_syncing()).
+        my->currently_syncing.store(true, std::memory_order_release);
+
+        // 3. Close the current database. open_from_snapshot() in do_snapshot_load()
+        //    reopens it and wipes shared memory for a recovery load.
+        try {
+            my->db.close(false);
+        } catch (...) {
+            wlog("Restore: ignoring error while closing the database");
+        }
+
+        my->snapshot_path = snapshot_path;
+        auto data_dir = appbase::app().data_dir() / "state";
+
+        try {
+            do_snapshot_load(data_dir, true);
+        } catch (const fc::exception& e) {
+            error = e.to_detail_string();
+            elog("Restore FAILED during snapshot load: ${e}", ("e", error));
+        } catch (const std::exception& e) {
+            error = e.what();
+            elog("Restore FAILED during snapshot load: ${e}", ("e", error));
+        } catch (...) {
+            error = "unknown exception during snapshot load";
+            elog("Restore FAILED during snapshot load: unknown exception");
+        }
+
+        uint32_t head = 0;
+        try {
+            head = my->db.head_block_num();
+        } catch (...) {
+        }
+
+        // do_snapshot_load() handles a failed import by wiping the state and requesting
+        // shutdown, then returns normally. A zero head is the observable trace of that.
+        if (!error.empty() || head == 0) {
+            if (error.empty()) error = "snapshot import did not produce state";
+            elog("Restore FAILED: ${e}", ("e", error));
+            // P2P stays paused and the syncing flag stays set: the state on disk is not
+            // safe to consume. do_snapshot_load() has already asked the process to quit;
+            // if it did not, the node must not resume as if nothing happened.
+            return false;
+        }
+
+        my->currently_syncing.store(false, std::memory_order_release);
+
+        // 4. Resume P2P. reset_peers_after_recovery() clears soft bans and stale sync
+        //    state, so peers can serve blocks immediately after the import.
+        try {
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->reset_peers_after_recovery();
+                p2p_plug->resume_block_processing();
+                wlog("Restore: P2P block processing resumed");
+            }
+        } catch (...) {
+            wlog("Restore: failed to resume P2P");
+        }
+
+        wlog("=== RESTORE COMPLETE: node resumed at block ${n} ===", ("n", head));
+        return true;
+    }
+
     void plugin::wipe_state() {
         auto data_dir = appbase::app().data_dir() / "state";
         my->wipe_db(data_dir, false);

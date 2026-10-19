@@ -795,6 +795,15 @@ void p2p_plugin::pause_block_processing() {
         my->node->pause_block_processing();
 }
 
+void p2p_plugin::pause_block_processing_sync() {
+    // Same flag as pause_block_processing(), but posted to its owning thread.
+    // Callers are admin/restore threads, never the p2p thread itself.
+    if (!my) return;
+    my->p2p_thread.async([this]() {
+        if (my->node) my->node->pause_block_processing();
+    }).wait();
+}
+
 void p2p_plugin::resume_block_processing() {
     // Set the two atomic flags immediately from the calling thread.
     // Both are std::atomic<bool> so no P2P-thread dispatch is needed.

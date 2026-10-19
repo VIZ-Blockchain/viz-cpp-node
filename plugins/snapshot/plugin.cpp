@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <limits>
 #include <set>
 #include <map>
 #include <algorithm>
@@ -1207,6 +1208,7 @@ public:
     bool _p2p_recovery_attempted = false;  // guard: try P2P recovery before snapshot download
     uint32_t _last_stalled_check_head = 0;  // track head for emergency follower detection
     std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
+    std::atomic<bool> _restore_in_progress{false}; // operator-requested restore (admin API)
     fc::time_point sync_ended_at;  // when is_syncing last transitioned to false
     std::atomic<bool> cancel_snapshot_requested{false};  // cancellation flag for in-progress snapshot
 
@@ -1586,24 +1588,30 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(
         ("ratio", 100 - (compressed.size() * 100 / snapshot_json.size()))
         ("time", compress_elapsed));
 
-    std::ofstream out(output_path.string(), std::ios::binary);
+    // Write to a sibling `.part` file and rename it into place when complete: a reader
+    // (admin download, another snapshot picker) must never see a half-written
+    // `snapshot-block-*.vizjson` and mistake it for a usable snapshot. The `.part`
+    // extension is invisible to list_snapshots()/find_latest_snapshot() by design.
+    std::string tmp_path = output_path.string() + ".part";
+    std::ofstream out(tmp_path, std::ios::binary);
     if (!out.is_open()) {
         // Try to create parent directory
         auto parent = output_path.parent_path();
         if (!parent.string().empty() && !boost::filesystem::exists(parent)) {
             boost::filesystem::create_directories(parent);
             ilog(CLOG_GREEN "Created snapshot directory: ${d}" CLOG_RESET, ("d", parent.string()));
-            out.open(output_path.string(), std::ios::binary);
+            out.open(tmp_path, std::ios::binary);
         }
     }
-    FC_ASSERT(out.is_open(), "Failed to open snapshot file for writing: ${p}", ("p", output_path.string()));
+    FC_ASSERT(out.is_open(), "Failed to open snapshot file for writing: ${p}", ("p", tmp_path));
     out.write(compressed.data(), compressed.size());
     out.flush();
     out.close();
+    FC_ASSERT(!out.fail(), "Failed to write snapshot file: ${p}", ("p", tmp_path));
 
 #ifndef _WIN32
     // fsync to ensure data is persisted to disk before we report success
-    int fd = ::open(output_path.string().c_str(), O_RDONLY);
+    int fd = ::open(tmp_path.c_str(), O_RDONLY);
     if (fd >= 0) {
 #ifdef __APPLE__
         // macOS has no fdatasync. F_FULLFSYNC is Apple's documented equivalent
@@ -1616,6 +1624,22 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(
         ::close(fd);
     }
 #endif
+
+    boost::system::error_code rename_ec;
+    boost::filesystem::rename(tmp_path, output_path, rename_ec);
+    if (rename_ec) {
+        // Windows' rename does not replace an existing target; keep the old overwrite
+        // semantics of the direct write by removing it first and retrying once.
+        boost::system::error_code ignore_ec;
+        boost::filesystem::remove(output_path, ignore_ec);
+        boost::filesystem::rename(tmp_path, output_path, rename_ec);
+    }
+    if (rename_ec) {
+        boost::system::error_code ignore_ec;
+        boost::filesystem::remove(tmp_path, ignore_ec);
+        FC_ASSERT(false, "Failed to move snapshot into place: ${p}: ${e}",
+                  ("p", output_path.string())("e", rename_ec.message()));
+    }
 
     auto end = fc::time_point::now();
     ilog(CLOG_GREEN "Snapshot created successfully: ${path} (${size} bytes compressed, ${time} sec)" CLOG_RESET,
@@ -5312,6 +5336,237 @@ void snapshot_plugin::create_snapshot_at(const std::string& path) {
     FC_ASSERT(my, "Snapshot plugin not initialized");
     my->create_snapshot(fc::path(path));
     // Note: create_snapshot() already calls update_snapshot_cache()
+}
+
+std::string snapshot_plugin::snapshot_directory() const {
+    return my ? my->snapshot_dir : std::string();
+}
+
+namespace {
+
+/// Parse the block number out of the standard `snapshot-block-<N>.vizjson` name.
+/// Returns 0 for any other name (such files are still listable, just never "latest").
+uint32_t snapshot_block_from_name(const std::string& filename) {
+    const std::string marker = "snapshot-block-";
+    const std::size_t pos = filename.find(marker);
+    if (pos == std::string::npos) return 0;
+    std::string num = filename.substr(pos + marker.size());
+    const std::size_t dot = num.find('.');
+    if (dot != std::string::npos) num = num.substr(0, dot);
+    if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos) return 0;
+    try {
+        const unsigned long v = std::stoul(num);
+        return v > std::numeric_limits<uint32_t>::max() ? 0 : static_cast<uint32_t>(v);
+    } catch (...) {
+        return 0;
+    }
+}
+
+} // namespace
+
+std::vector<snapshot_file_info> snapshot_plugin::list_snapshots() const {
+    std::vector<snapshot_file_info> out;
+    if (!my) return out;
+    const std::string dir = my->snapshot_dir;
+    if (dir.empty() || !boost::filesystem::exists(dir) || !boost::filesystem::is_directory(dir)) {
+        return out;
+    }
+
+    boost::filesystem::directory_iterator end_itr;
+    for (boost::filesystem::directory_iterator itr(dir); itr != end_itr; ++itr) {
+        boost::system::error_code ec;
+        if (!boost::filesystem::is_regular_file(itr->status(ec)) || ec) continue;
+        const std::string ext = itr->path().extension().string();
+        if (ext != ".vizjson" && ext != ".json") continue;
+
+        snapshot_file_info f;
+        f.path = itr->path().string();
+        f.name = itr->path().filename().string();
+        f.block_num = snapshot_block_from_name(f.name);
+        f.size_bytes = boost::filesystem::file_size(itr->path(), ec);
+        if (ec) f.size_bytes = 0;
+        f.modified = static_cast<uint32_t>(boost::filesystem::last_write_time(itr->path(), ec));
+        if (ec) f.modified = 0;
+        out.push_back(std::move(f));
+    }
+
+    std::sort(out.begin(), out.end(), [](const snapshot_file_info& a, const snapshot_file_info& b) {
+        if (a.block_num != b.block_num) return a.block_num > b.block_num;
+        return a.name > b.name;
+    });
+    return out;
+}
+
+std::string snapshot_plugin::latest_snapshot_path() const {
+    if (!my) return std::string();
+    return my->find_latest_snapshot().string();
+}
+
+std::string snapshot_plugin::request_snapshot_creation(std::string& path) {
+    path.clear();
+    if (!my) return "unavailable";
+    if (my->_restore_in_progress.load(std::memory_order_acquire)) return "busy";
+
+    const uint32_t head = my->db.head_block_num();
+    if (head == 0) return "empty";
+
+    const fc::path output = fc::path(my->snapshot_dir) /
+        ("snapshot-block-" + std::to_string(head) + ".vizjson");
+    path = output.string();
+
+    boost::system::error_code ec;
+    if (boost::filesystem::exists(output, ec) && !ec) return "exists";
+
+    if (my->snapshot_in_progress.exchange(true)) return "busy";
+
+    // Pause P2P before the async task takes its strong read lock: otherwise a block
+    // pushed between now and then can starve the snapshot lock, and a long snapshot
+    // can stall block production. On this path the caller is the admin listener
+    // thread, so pause through the p2p thread and wait for it to take effect.
+    graphene::plugins::p2p::p2p_plugin* p2p_plug = nullptr;
+    bool p2p_paused = false;
+    try {
+        p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+        if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+            p2p_plug->pause_block_processing_sync();
+            p2p_paused = true;
+        }
+    } catch (...) {
+        p2p_plug = nullptr;
+        p2p_paused = false;
+    }
+
+    auto resume_paused_p2p = [&]() {
+        if (p2p_paused && p2p_plug &&
+            p2p_plug->get_state() == appbase::abstract_plugin::started) {
+            try { p2p_plug->resume_block_processing(); } catch (...) {}
+        }
+        p2p_paused = false;
+    };
+
+    ilog(CLOG_GREEN "Admin request: scheduling snapshot at ${p}" CLOG_RESET, ("p", path));
+    try {
+        if (!my->snapshot_thread) my->snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
+        my->snapshot_future = my->snapshot_thread->async([this, output, p2p_plug, p2p_paused]() {
+            struct flag_guard {
+                std::atomic<bool>& flag;
+                ~flag_guard() { flag.store(false, std::memory_order_release); }
+            } guard{my->snapshot_in_progress};
+
+            bool p2p_resumed = false;
+            auto resume_p2p = [&]() {
+                if (p2p_resumed) return;
+                if (p2p_paused && p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                    try { p2p_plug->resume_block_processing(); } catch (...) {}
+                }
+                p2p_resumed = true;
+            };
+
+            try {
+                // Resume as soon as the DB read lock is released (before compression), so
+                // block production is not held up by file I/O.
+                my->create_snapshot(output, resume_p2p);
+                my->cleanup_old_snapshots();
+                ilog(CLOG_GREEN "Admin-requested snapshot written: ${p}" CLOG_RESET, ("p", output.string()));
+            } catch (const fc::exception& e) {
+                elog("Admin-requested snapshot failed: ${e}", ("e", e.to_detail_string()));
+                resume_p2p();
+            } catch (const std::exception& e) {
+                elog("Admin-requested snapshot failed: ${e}", ("e", e.what()));
+                resume_p2p();
+            } catch (...) {
+                elog("Admin-requested snapshot failed: unknown exception");
+                resume_p2p();
+            }
+        }, "async_snapshot_admin");
+    } catch (const fc::exception& e) {
+        elog("Admin-requested snapshot could not be scheduled: ${e}", ("e", e.to_detail_string()));
+        my->snapshot_in_progress.store(false, std::memory_order_release);
+        resume_paused_p2p();
+        return "unavailable";
+    } catch (...) {
+        elog("Admin-requested snapshot could not be scheduled: unknown exception");
+        my->snapshot_in_progress.store(false, std::memory_order_release);
+        resume_paused_p2p();
+        return "unavailable";
+    }
+    return "started";
+}
+
+bool snapshot_plugin::restore_snapshot_now(const std::string& path, std::string& error) {
+    if (!my) {
+        error = "snapshot plugin not initialized";
+        return false;
+    }
+
+    std::string target = path;
+    if (target.empty()) target = my->find_latest_snapshot().string();
+    if (target.empty()) {
+        error = "no snapshots found in " + my->snapshot_dir;
+        return false;
+    }
+    boost::system::error_code ec;
+    if (!boost::filesystem::exists(target, ec) || ec ||
+        !boost::filesystem::is_regular_file(target, ec) || ec) {
+        error = "snapshot file not found: " + target;
+        return false;
+    }
+
+    if (my->_restore_in_progress.exchange(true)) {
+        error = "a snapshot restore is already in progress";
+        return false;
+    }
+    if (my->snapshot_in_progress.load(std::memory_order_acquire)) {
+        my->_restore_in_progress.store(false, std::memory_order_release);
+        error = "a snapshot creation is in progress; retry when it finishes";
+        return false;
+    }
+    if (my->_snapshot_reloading.load(std::memory_order_acquire)) {
+        my->_restore_in_progress.store(false, std::memory_order_release);
+        error = "a snapshot reload is already in progress";
+        return false;
+    }
+    my->_snapshot_reloading.store(true, std::memory_order_release);
+    ilog(CLOG_YELLOW "Admin request: restoring from snapshot ${p}" CLOG_RESET, ("p", target));
+    try {
+        if (!my->snapshot_thread) my->snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
+        my->snapshot_future = my->snapshot_thread->async([this, target]() {
+            std::string err;
+            bool ok = false;
+            try {
+                auto& chain_plug = appbase::app().get_plugin<graphene::plugins::chain::plugin>();
+                ok = chain_plug.restore_from_snapshot(target, err);
+            } catch (const fc::exception& e) {
+                err = e.to_detail_string();
+            } catch (const std::exception& e) {
+                err = e.what();
+            } catch (...) {
+                err = "unknown exception";
+            }
+            if (ok) {
+                ilog(CLOG_GREEN "Admin-requested restore complete: ${p}" CLOG_RESET, ("p", target));
+            } else {
+                elog(CLOG_RED "Admin-requested restore failed: ${e}" CLOG_RESET, ("e", err));
+            }
+            my->_snapshot_reloading.store(false, std::memory_order_release);
+            my->_restore_in_progress.store(false, std::memory_order_release);
+        }, "async_snapshot_restore");
+    } catch (const fc::exception& e) {
+        error = "could not schedule restore: " + e.to_detail_string();
+        my->_snapshot_reloading.store(false, std::memory_order_release);
+        my->_restore_in_progress.store(false, std::memory_order_release);
+        return false;
+    } catch (...) {
+        error = "could not schedule restore: unknown exception";
+        my->_snapshot_reloading.store(false, std::memory_order_release);
+        my->_restore_in_progress.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+bool snapshot_plugin::is_restoring() const {
+    return my && my->_restore_in_progress.load(std::memory_order_acquire);
 }
 
 const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() const {

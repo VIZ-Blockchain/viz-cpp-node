@@ -18,6 +18,7 @@ WORK=$(mktemp -d /tmp/vizd-node-admin.XXXXXX)
 GOOD=accept-good-token
 OPS=accept-ops-token
 PEER=accept-peer-token
+SNAP=accept-snap-token
 EXPIRED=accept-expired-token
 sha() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
 
@@ -25,12 +26,14 @@ cat > "$WORK/config.ini" <<EOF
 plugin = chain
 plugin = json_rpc
 plugin = p2p
+plugin = snapshot
 plugin = node_admin
 
 admin-endpoint = 127.0.0.1:$PORT
 admin-token = agent:read:$(sha "$GOOD")
 admin-token = ops:process:$(sha "$OPS")
 admin-token = peer:read,p2p:$(sha "$PEER")
+admin-token = snap:read,snapshot:$(sha "$SNAP")
 admin-token = old:read:$(sha "$EXPIRED"):1000000000
 admin-audit-log = $WORK/audit.log
 admin-log-file = node=$WORK/node.log
@@ -126,8 +129,8 @@ check "node_info -> head_age_sec null on an empty chain" null "$(field result.he
 check_contains "node_info -> version present" "4.2.0" "$(field result.version)"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":7,"method":"admin.diagnostics"}'
-check "diagnostics -> configured plugins" 4 "$(field result.plugins_configured)"
-check "diagnostics -> observed plugins" 3 "$(field result.plugins_observed)"
+check "diagnostics -> configured plugins" 5 "$(field result.plugins_configured)"
+check "diagnostics -> observed plugins" 4 "$(field result.plugins_observed)"
 check "diagnostics -> disk_free_bytes is a number" true \
     "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["disk_free_bytes"], int)).lower())' "$OUT")"
 check "diagnostics -> p2p is loaded" true "$(field result.p2p_loaded)"
@@ -202,7 +205,87 @@ check "p2p.clear_banned -> cleared is a number" true \
     "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["cleared"], int)).lower())' "$OUT")"
 
 
+# ── snapshots: status, list, download, create/restore guards ─────────────────────────────
+# The limiter allows 20 req/s per token; start this block in a fresh window so the extra
+# requests below cannot trip it before the deliberate burst at the end.
+sleep 1
+auth "$GOOD" '{"jsonrpc":"2.0","id":40,"method":"admin.snapshot.status"}'
+check "snapshot.status -> HTTP 200" 200 "$CODE"
+check "snapshot.status -> empty directory" 0 "$(field result.snapshot_count)"
+check "snapshot.status -> latest_name null with no files" null "$(field result.latest_name)"
+check "snapshot.status -> not restoring" false "$(field result.restoring)"
+check "snapshot.status -> not creating" false "$(field result.in_progress)"
+check "snapshot.status -> dir lives under the data dir" true \
+    "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["result"]["dir"]; print(str(d.startswith(sys.argv[2])).lower())' "$OUT" "$WORK")"
+SNAPDIR=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result"]["dir"])' "$OUT")
+
+# creation is refused on an empty chain (head 0), not queued
+auth "$SNAP" '{"jsonrpc":"2.0","id":41,"method":"admin.snapshot.create"}'
+check "snapshot.create on an empty chain -> -32000" -32000 "$(field error.code)"
+check_contains "snapshot.create -> names the empty head" 'head is 0' "$(field error.data.reason)"
+
+# create/restore additionally need the 'snapshot' scope; read is not enough
+auth "$GOOD" '{"jsonrpc":"2.0","id":42,"method":"admin.snapshot.create"}'
+check "snapshot.create with only 'read' -> -32002" -32002 "$(field error.code)"
+auth "$GOOD" '{"jsonrpc":"2.0","id":43,"method":"admin.snapshot.restore","params":{}}'
+check "snapshot.restore with only 'read' -> -32002" -32002 "$(field error.code)"
+
+# restore with no files on disk fails before anything is touched
+auth "$SNAP" '{"jsonrpc":"2.0","id":44,"method":"admin.snapshot.restore","params":{}}'
+check "snapshot.restore with no snapshots -> -32000" -32000 "$(field error.code)"
+check_contains "snapshot.restore -> says no snapshots found" 'no snapshots found' \
+    "$(field error.data.reason)"
+
+# download: auth and name validation
+CODE=$(curl -s -o "$OUT" -w '%{http_code}' "$BASE/snapshot/latest")
+check "GET /snapshot/latest without a token -> HTTP 401" 401 "$CODE"
+CODE=$(curl -s -o "$OUT" -w '%{http_code}' -H "Authorization: Bearer $OPS" "$BASE/snapshot/latest")
+check "GET /snapshot/latest without 'read' -> HTTP 403" 403 "$CODE"
+CODE=$(curl -s -o "$OUT" -w '%{http_code}' -H "Authorization: Bearer $GOOD" "$BASE/snapshot/latest")
+check "GET /snapshot/latest with no snapshot -> HTTP 404" 404 "$CODE"
+CODE=$(curl -s -o "$OUT" -w '%{http_code}' -H "Authorization: Bearer $GOOD" "$BASE/snapshot/config.ini")
+check "GET /snapshot/<non-snapshot name> -> HTTP 400" 400 "$CODE"
+
+# a real file in the snapshot directory must appear in the list and download verbatim
+mkdir -p "$SNAPDIR"
+printf 'dummy snapshot payload\n' > "$SNAPDIR/snapshot-block-123.vizjson"
+auth "$GOOD" '{"jsonrpc":"2.0","id":45,"method":"admin.snapshot.status"}'
+check "snapshot.status -> one file" 1 "$(field result.snapshot_count)"
+check "snapshot.status -> latest is the only file" '"snapshot-block-123.vizjson"' "$(field result.latest_name)"
+check "snapshot.status -> block number parsed from the name" 123 "$(field 'result.snapshots.0.block_num')"
+check "snapshot.status -> file flagged latest" true "$(field 'result.snapshots.0.latest')"
+check "snapshot.status -> size reported" 23 "$(field 'result.snapshots.0.size_bytes')"
+
+CODE=$(curl -s -o "$WORK/dl.bin" -D "$WORK/dl.hdr" -w '%{http_code}' \
+    -H "Authorization: Bearer $GOOD" "$BASE/snapshot/latest")
+check "GET /snapshot/latest -> HTTP 200" 200 "$CODE"
+check "GET /snapshot/latest -> body is the file" "dummy snapshot payload" "$(cat "$WORK/dl.bin")"
+check_contains "GET /snapshot/latest -> attachment disposition" \
+    'Content-Disposition: attachment; filename="snapshot-block-123.vizjson"' "$(tr -d '\r' < "$WORK/dl.hdr")"
+check_contains "GET /snapshot/latest -> octet stream" 'Content-Type: application/octet-stream' \
+    "$(tr -d '\r' < "$WORK/dl.hdr")"
+
+CODE=$(curl -s -I -o "$WORK/dl-head.hdr" -w '%{http_code}' \
+    -H "Authorization: Bearer $GOOD" "$BASE/snapshot/snapshot-block-123.vizjson")
+check "HEAD /snapshot/<name> -> HTTP 200" 200 "$CODE"
+check_contains "HEAD /snapshot/<name> -> content length" 'Content-Length: 23' \
+    "$(tr -d '\r' < "$WORK/dl-head.hdr")"
+
+# restore path guards never start a restore from an unexpected file
+auth "$SNAP" '{"jsonrpc":"2.0","id":46,"method":"admin.snapshot.restore","params":{"name":"missing.vizjson"}}'
+check "snapshot.restore of a missing name -> -32602" -32602 "$(field error.code)"
+auth "$SNAP" '{"jsonrpc":"2.0","id":47,"method":"admin.snapshot.restore","params":{"name":"../../config.ini"}}'
+check "snapshot.restore with traversal -> -32602" -32602 "$(field error.code)"
+auth "$SNAP" '{"jsonrpc":"2.0","id":48,"method":"admin.snapshot.restore","params":{"path":"'$WORK'/config.ini"}}'
+check "snapshot.restore of a path outside the snapshot dir -> -32602" -32602 "$(field error.code)"
+check_contains "snapshot.restore path guard names the directory" 'outside snapshot directory' \
+    "$(field error.message)"
+auth "$SNAP" '{"jsonrpc":"2.0","id":49,"method":"admin.snapshot.restore","params":{"latest":false}}'
+check "snapshot.restore with latest:false and no name -> -32602" -32602 "$(field error.code)"
+
+
 # ── MCP (Streamable HTTP) on the same listener ───────────────────────────────────────────
+sleep 1
 call -d '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
 check "MCP initialize without a token -> HTTP 401" 401 "$CODE"
 
@@ -221,16 +304,32 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> eleven tools" 11 \
+check "MCP tools/list -> fourteen tools" 14 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.node_info present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.node_info" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.p2p.status present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.p2p.status" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.snapshot.status present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.snapshot.status" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.snapshot.create present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.snapshot.create" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.snapshot.restore present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.snapshot.restore" for t in ts)).lower())' "$OUT")"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"admin.p2p.add_node","arguments":{"endpoint":"127.0.0.1:1"}}}'
 check "MCP mutating tool without 'p2p' -> isError" true "$(field result.isError)"
 check_contains "MCP mutating tool -> scope named" "no 'p2p' scope" "$(field 'result.content.0.text')"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"admin.snapshot.create","arguments":{}}}'
+check "MCP snapshot.create without 'snapshot' scope -> isError" true "$(field result.isError)"
+check_contains "MCP snapshot.create -> scope named" "no 'snapshot' scope" \
+    "$(field 'result.content.0.text')"
+
+auth "$SNAP" '{"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"admin.snapshot.status","arguments":{}}}'
+check "MCP snapshot.status -> not an error" false "$(field result.isError)"
+check_contains "MCP snapshot.status -> returns the snapshot count" 'snapshot_count' \
+    "$(field 'result.content.0.text')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"admin.node_info","arguments":{}}}'
 check "MCP tools/call -> not an error" false "$(field result.isError)"
@@ -258,6 +357,10 @@ check_contains "GET /ui/ -> page title" '<title>VIZ node admin</title>' "$(cat "
 check_contains "GET /ui/ -> calls the p2p status method" 'admin.p2p.status' "$(cat "$WORK/ui.html")"
 check_contains "GET /ui/ -> has the add-trusted action" 'admin.p2p.add_trusted' "$(cat "$WORK/ui.html")"
 check_contains "GET /ui/ -> has the clear-banned action" 'admin.p2p.clear_banned' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> reads snapshot status" 'admin.snapshot.status' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> has the create-snapshot action" 'admin.snapshot.create' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> has the restore action" 'admin.snapshot.restore' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> downloads snapshots by name" '/snapshot/' "$(cat "$WORK/ui.html")"
 CODE=$(curl -s -o "$OUT" -w '%{http_code}' "$BASE/ui")
 check "GET /ui without slash -> HTTP 200" 200 "$CODE"
 

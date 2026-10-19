@@ -137,6 +137,16 @@ namespace graphene {
                 /// Can be called from any plugin that detects corruption at runtime.
                 void attempt_auto_recovery();
 
+                /// Restore chain state from a specific snapshot file, in-process:
+                /// pause P2P, close and wipe shared memory, import the snapshot,
+                /// replay dlt_block_log and resume P2P. This is the same sequence as
+                /// attempt_auto_recovery(), but with an operator-chosen file.
+                /// Blocks for the whole import, so call it on an fc thread (not on a
+                /// plain std::thread and not on the p2p thread itself).
+                /// Returns false and fills `error` if the restore cannot start or fails;
+                /// a failed import has already wiped the state and requested shutdown.
+                bool restore_from_snapshot(const std::string& snapshot_path, std::string& error);
+
                 /// Apply the chain's runtime corruption policy: recover when enabled,
                 /// otherwise request shutdown. Callers must stop processing the failed item.
                 void handle_shared_memory_corruption();

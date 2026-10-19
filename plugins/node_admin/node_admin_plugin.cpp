@@ -1,6 +1,7 @@
 #include <graphene/plugins/node_admin/node_admin_plugin.hpp>
 
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
+#include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
 #include <graphene/protocol/version.hpp>
@@ -23,6 +24,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -63,6 +65,7 @@ namespace {
 const appbase::abstract_plugin *observe_plugin(const std::string &name) {
     if (name == "chain") return appbase::app().find_plugin<graphene::plugins::chain::plugin>();
     if (name == "p2p") return appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+    if (name == "snapshot") return appbase::app().find_plugin<graphene::plugins::snapshot::snapshot_plugin>();
     if (name == node_admin_plugin::name()) return appbase::app().find_plugin<node_admin_plugin>();
     return nullptr;
 }
@@ -73,6 +76,10 @@ const std::size_t kMaxLogBytes = 64 * 1024;
 const std::size_t kMaxLines = 2000;
 const std::size_t kAuditRotateBytes = 16 * 1024 * 1024;
 const uint32_t kRatePerSecond = 20;
+// Snapshot files are served in one HTTP response, so the body has to fit in memory.
+// VIZ mainnet snapshots are ~4 MB compressed; the cap is for a pathological file, not
+// the normal case. Larger files stay downloadable with scp from the node.
+const uint64_t kMaxSnapshotDownloadBytes = 512ULL * 1024 * 1024;
 
 // ── small string helpers ────────────────────────────────────────────────────────────────────
 std::string trim(const std::string &s) {
@@ -86,6 +93,21 @@ std::string trim(const std::string &s) {
 std::string to_lower(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+/// A snapshot file name as accepted from HTTP paths and JSON params: one path component,
+/// no traversal, and a snapshot extension. Names come from list_snapshots(), so anything
+/// else is a client mistake (or an attempt to reach outside the snapshot directory).
+bool is_plain_snapshot_name(const std::string &name) {
+    if (name.empty() || name.size() > 255) return false;
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return false;
+    if (name == "." || name == "..") return false;
+    const std::string lower = to_lower(name);
+    auto ends_with = [&](const char *suffix) {
+        const std::size_t n = std::strlen(suffix);
+        return lower.size() > n && lower.compare(lower.size() - n, n, suffix) == 0;
+    };
+    return ends_with(".vizjson") || ends_with(".json");
 }
 
 std::vector<std::string> split(const std::string &s, char sep) {
@@ -330,6 +352,22 @@ const char *ui_page() {
   </section>
 
   <section>
+    <h2>Snapshots</h2>
+    <div class="cards" id="snapCards"></div>
+    <div class="actions" style="margin:10px 0">
+      <button id="snapCreate">Create snapshot</button>
+      <button id="snapRestoreLatest" class="danger">Restore latest</button>
+      <span class="dim">restore wipes shared memory and re-imports the chosen snapshot in-process</span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Block</th><th>File</th><th>Size</th><th>Age</th><th>Actions</th></tr></thead>
+        <tbody id="snapshots"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <h2>Actions</h2>
     <div class="actions">
       <input id="endpoint" type="text" placeholder="IP:port, e.g. 1.2.3.4:1776" autocomplete="off">
@@ -451,6 +489,126 @@ const char *ui_page() {
     });
   }
 
+  function sizeText(bytes) {
+    bytes = Number(bytes) || 0;
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+  }
+
+  function ageText(sec) {
+    sec = Number(sec);
+    if (isNaN(sec)) return '-';
+    if (sec < 0) sec = 0;
+    if (sec < 120) return sec + 's';
+    if (sec < 7200) return Math.floor(sec / 60) + 'm';
+    if (sec < 172800) return Math.floor(sec / 3600) + 'h';
+    return Math.floor(sec / 86400) + 'd';
+  }
+
+  function button(label, cls, fn) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  function downloadSnapshot(name) {
+    if (!token) { say('enter a token first', 'bad'); return; }
+    say('downloading ' + name + ' …');
+    fetch('/snapshot/' + encodeURIComponent(name), {
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (t) {
+          throw new Error('HTTP ' + res.status + (t ? ': ' + t : ''));
+        });
+      }
+      return res.blob();
+    }).then(function (blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      say('downloaded ' + name + ' (' + sizeText(blob.size) + ')', 'ok');
+    }).catch(function (e) {
+      say('download failed: ' + e.message, 'bad');
+    });
+  }
+
+  function restoreSnapshot(name, blockNum) {
+    var what = blockNum ? 'block #' + blockNum : name;
+    if (!confirm('Restore ' + what + ' from ' + name + '?\n\n' +
+                 'Shared memory is wiped and the snapshot is re-imported in-process. ' +
+                 'The node pauses block processing while it happens; HTTP stays up.')) return;
+    act('admin.snapshot.restore', { name: name }, 'restore started for ' + name);
+  }
+
+  function renderSnapshots(st) {
+    var cards = $('snapCards');
+    cards.textContent = '';
+    var state = st.restoring ? 'restoring' : (st.in_progress ? 'creating' : 'idle');
+    cards.appendChild(card('State', state, 'head ' +
+      (st.head_block_num == null ? 'n/a during restore' : '#' + st.head_block_num),
+      st.restoring || st.in_progress ? 'warn' : 'ok'));
+    cards.appendChild(card('Snapshots', st.snapshot_count, st.dir));
+    cards.appendChild(card('Latest', st.latest_name || '-',
+      st.latest_name ? 'used by Restore latest and /snapshot/latest' : 'none yet',
+      st.latest_name ? '' : 'warn'));
+
+    var body = $('snapshots');
+    body.textContent = '';
+    if (!st.snapshots || !st.snapshots.length) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 5; td.className = 'dim';
+      td.textContent = 'no snapshot files in ' + st.dir;
+      tr.appendChild(td); body.appendChild(tr);
+      return;
+    }
+    st.snapshots.forEach(function (p) {
+      var tr = document.createElement('tr');
+      function cell(text, cls) {
+        var td = document.createElement('td');
+        td.textContent = text == null ? '' : String(text);
+        if (cls) td.className = cls;
+        tr.appendChild(td);
+        return td;
+      }
+      cell(p.block_num ? '#' + p.block_num : '-');
+      cell(p.name + (p.latest ? '  (latest)' : ''), p.latest ? 'ok' : '');
+      cell(sizeText(p.size_bytes));
+      cell(ageText(st.as_of - p.modified));
+      var actions = cell('');
+      actions.appendChild(button('Download', '', function () { downloadSnapshot(p.name); }));
+      actions.appendChild(button('Restore', 'danger', function () {
+        restoreSnapshot(p.name, p.block_num);
+      }));
+      body.appendChild(tr);
+    });
+  }
+
+  var lastSnapError = '';
+
+  function refreshSnapshots() {
+    if (!token) return Promise.resolve();
+    return rpc('admin.snapshot.status').then(function (st) {
+      lastSnapError = '';
+      renderSnapshots(st);
+    }).catch(function (e) {
+      var msg = e.rpcCode === -32004 ? 'snapshot plugin is not enabled on this node' : e.message;
+      var cards = $('snapCards');
+      cards.textContent = '';
+      cards.appendChild(card('Snapshots', 'unavailable', msg, 'warn'));
+      $('snapshots').textContent = '';
+      if (msg !== lastSnapError) { say('snapshots: ' + msg, 'bad'); lastSnapError = msg; }
+    });
+  }
+
   function render(s) {
     var cards = $('cards');
     cards.textContent = '';
@@ -483,6 +641,7 @@ const char *ui_page() {
     return rpc('admin.p2p.status').then(function (s) {
       setState('connected · updated ' + new Date().toLocaleTimeString(), 'ok');
       render(s);
+      return refreshSnapshots();
     }).catch(function (e) {
       if (e.rpcCode === -32001 || e.httpStatus === 401) {
         setState('token rejected (401) — check the token and its scopes', 'bad');
@@ -526,6 +685,15 @@ const char *ui_page() {
   $('clearBanned').addEventListener('click', function () {
     if (!confirm('Clear every soft-ban and retry those peers now?')) return;
     act('admin.p2p.clear_banned', {}, 'bans cleared');
+  });
+  $('snapCreate').addEventListener('click', function () {
+    act('admin.snapshot.create', {}, 'snapshot creation requested');
+  });
+  $('snapRestoreLatest').addEventListener('click', function () {
+    if (!confirm('Restore the LATEST snapshot?\n\n' +
+                 'Shared memory is wiped and the snapshot is re-imported in-process. ' +
+                 'The node pauses block processing while it happens; HTTP stays up.')) return;
+    act('admin.snapshot.restore', { latest: true }, 'restore started for the latest snapshot');
   });
 
   if (token) { $('token').value = token; }
@@ -601,8 +769,9 @@ token_info parse_token_spec(const std::string &spec) {
     for (const std::string &raw : split(parts[1], ',')) {
         const std::string scope = trim(raw);
         FC_ASSERT(scope == "read" || scope == "plugins" || scope == "config" ||
-                  scope == "process" || scope == "chain" || scope == "p2p",
-                  "admin-token: unknown scope '${s}' (allowed: read, plugins, config, process, chain, p2p)",
+                  scope == "process" || scope == "chain" || scope == "p2p" ||
+                  scope == "snapshot",
+                  "admin-token: unknown scope '${s}' (allowed: read, plugins, config, process, chain, p2p, snapshot)",
                   ("s", scope));
         t.scopes.insert(scope);
     }
@@ -682,6 +851,13 @@ struct node_admin_plugin::impl {
     fc::variant h_p2p_add_node(const fc::variant &params, bool trusted);
     fc::variant h_p2p_clear_banned(const fc::variant &params);
 
+    // ── snapshot operator methods ─────────────────────────────────────────────────────────
+    graphene::plugins::snapshot::snapshot_plugin &snapshot_started() const;
+    fc::variant snapshot_list_variant() const;
+    fc::variant h_snapshot_status(const fc::variant &params);
+    fc::variant h_snapshot_create(const fc::variant &params);
+    fc::variant h_snapshot_restore(const fc::variant &params);
+
     // ── MCP (Streamable HTTP) ──────────────────────────────────────────────────────────────
     fc::variant mcp_tools() const;
     fc::variant h_mcp_initialize(const fc::variant &params);
@@ -700,11 +876,18 @@ struct node_admin_plugin::impl {
 
     void respond(websocket_server_type::connection_ptr con,
                  websocketpp::http::status_code::value status, const std::string &body,
-                 const std::string &content_type = "application/json") {
+                 const std::string &content_type = "application/json",
+                 int64_t content_length_override = -1) {
         try {
             con->append_header("Content-Type", content_type);
             con->append_header("Cache-Control", "no-store");
             con->set_body(body);
+            // set_body rewrites Content-Length (0 for a HEAD reply), so an explicit
+            // length must be applied after it, not before.
+            if (content_length_override >= 0) {
+                con->replace_header("Content-Length",
+                                    std::to_string(content_length_override));
+            }
             con->set_status(status);
             con->send_http_response();
         } catch (const std::exception &e) {
@@ -934,10 +1117,12 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
     // the same bytes for everybody and all real calls go back to this listener as POSTs
     // with the operator-supplied token. Serving it unauthenticated therefore leaks nothing.
     const std::string req_method = con->get_request().get_method();
-    if (req_method == "GET" || req_method == "HEAD") {
-        std::string path = con->get_request().get_uri();
+    std::string path = con->get_request().get_uri();
+    {
         const std::size_t qpos = path.find('?');
         if (qpos != std::string::npos) path = path.substr(0, qpos);
+    }
+    if (req_method == "GET" || req_method == "HEAD") {
         if (path == "/ui" || path == "/ui/") {
             try {
                 con->append_header("X-Content-Type-Options", "nosniff");
@@ -955,6 +1140,152 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
                     "text/html; charset=utf-8");
             audit(rid, "-", req_method + " " + path, fc::variant(), "ui", 0,
                   elapsed_ms(started), remote);
+            return;
+        }
+
+        // Snapshot download: the newest file by default, or a named file from list_snapshots().
+        // Unlike /ui/ this carries node state, so it is authenticated like every JSON-RPC call.
+        static const std::string snap_prefix = "/snapshot/";
+        if (path == "/snapshot" || path.compare(0, snap_prefix.size(), snap_prefix) == 0) {
+            std::string why;
+            const token_info *token =
+                authenticate(con->get_request().get_header("Authorization"), why);
+            if (!token) {
+                respond(con, websocketpp::http::status_code::unauthorized,
+                        to_json(rpc_err(fc::variant(), rpc_error{-32001, "unauthorized", why, ""})));
+                audit(rid, "-", req_method + " " + path, fc::variant(), "unauthorized",
+                      -32001, elapsed_ms(started), remote);
+                return;
+            }
+            if (!rate_ok(token->label)) {
+                respond(con, websocketpp::http::status_code::too_many_requests,
+                        to_json(rpc_err(fc::variant(),
+                                        rpc_error{-32005, "rate limit exceeded", "", ""})));
+                audit(rid, token->label, req_method + " " + path, fc::variant(), "rate_limited",
+                      -32005, elapsed_ms(started), remote);
+                return;
+            }
+            if (token->scopes.find("read") == token->scopes.end()) {
+                respond(con, websocketpp::http::status_code::forbidden,
+                        to_json(rpc_err(fc::variant(),
+                                        rpc_error{-32002, "forbidden",
+                                                  "token '" + token->label + "' has no 'read' scope",
+                                                  ""})));
+                audit(rid, token->label, req_method + " " + path, fc::variant(), "forbidden",
+                      -32002, elapsed_ms(started), remote);
+                return;
+            }
+
+            std::string file;
+            std::string filename;
+            try {
+                auto &snap = snapshot_started();
+                if (path == "/snapshot" || path == "/snapshot/") {
+                    respond(con, websocketpp::http::status_code::bad_request,
+                            to_json(rpc_err(fc::variant(),
+                                            rpc_error{-32602, "invalid params",
+                                                      "use /snapshot/latest or /snapshot/<name>",
+                                                      "names come from admin.snapshot.status"})));
+                    audit(rid, token->label, req_method + " " + path, fc::variant(),
+                          "bad_request", -32602, elapsed_ms(started), remote);
+                    return;
+                }
+                const std::string name = path.substr(snap_prefix.size());
+                if (name == "latest") {
+                    file = snap.latest_snapshot_path();
+                } else if (is_plain_snapshot_name(name)) {
+                    file = (bfs::path(snap.snapshot_directory()) / name).string();
+                } else {
+                    respond(con, websocketpp::http::status_code::bad_request,
+                            to_json(rpc_err(fc::variant(),
+                                            rpc_error{-32602, "invalid snapshot name", name,
+                                                      "expected a file name ending in .vizjson"})));
+                    audit(rid, token->label, req_method + " " + path, fc::variant(),
+                          "bad_request", -32602, elapsed_ms(started), remote);
+                    return;
+                }
+                if (!file.empty()) filename = bfs::path(file).filename().string();
+            } catch (const rpc_error &e) {
+                respond(con, websocketpp::http::status_code::service_unavailable,
+                        to_json(rpc_err(fc::variant(), e)));
+                audit(rid, token->label, req_method + " " + path, fc::variant(), "error",
+                      e.code, elapsed_ms(started), remote);
+                return;
+            } catch (const std::exception &e) {
+                respond(con, websocketpp::http::status_code::internal_server_error,
+                        to_json(rpc_err(fc::variant(),
+                                        rpc_error{-32099, "internal error", e.what(), ""})));
+                audit(rid, token->label, req_method + " " + path, fc::variant(),
+                      "internal_error", -32099, elapsed_ms(started), remote);
+                return;
+            }
+
+            boost::system::error_code ec;
+            if (file.empty() || !bfs::exists(file, ec) || ec ||
+                !bfs::is_regular_file(file, ec) || ec) {
+                respond(con, websocketpp::http::status_code::not_found,
+                        to_json(rpc_err(fc::variant(),
+                                        rpc_error{-32602, "snapshot not found",
+                                                  file.empty() ? "no snapshots in the snapshot directory" : file,
+                                                  "see admin.snapshot.status"})));
+                audit(rid, token->label, req_method + " " + path, fc::variant(), "not_found",
+                      -32602, elapsed_ms(started), remote);
+                return;
+            }
+            const uintmax_t size = bfs::file_size(file, ec);
+            if (ec || size > kMaxSnapshotDownloadBytes) {
+                respond(con, websocketpp::http::status_code::request_entity_too_large,
+                        to_json(rpc_err(fc::variant(),
+                                        rpc_error{-32600, "snapshot too large to serve over HTTP",
+                                                  std::to_string(size) + " bytes (limit " +
+                                                      std::to_string(kMaxSnapshotDownloadBytes) + ")",
+                                                  "copy the file with scp instead"})));
+                audit(rid, token->label, req_method + " " + path, fc::variant(),
+                      "too_large", -32600, elapsed_ms(started), remote);
+                return;
+            }
+
+            std::string content;
+            if (req_method != "HEAD") {
+                std::ifstream in(file, std::ios::binary);
+                if (!in) {
+                    respond(con, websocketpp::http::status_code::internal_server_error,
+                            to_json(rpc_err(fc::variant(),
+                                            rpc_error{-32099, "cannot open snapshot file",
+                                                      file, ""})));
+                    audit(rid, token->label, req_method + " " + path, fc::variant(),
+                          "open_failed", -32099, elapsed_ms(started), remote);
+                    return;
+                }
+                content.resize(static_cast<std::size_t>(size));
+                if (size) in.read(&content[0], static_cast<std::streamsize>(size));
+                content.resize(static_cast<std::size_t>(in.gcount()));
+                if (!in && !in.eof()) {
+                    respond(con, websocketpp::http::status_code::internal_server_error,
+                            to_json(rpc_err(fc::variant(),
+                                            rpc_error{-32099, "cannot read snapshot file",
+                                                      file, ""})));
+                    audit(rid, token->label, req_method + " " + path, fc::variant(),
+                          "read_failed", -32099, elapsed_ms(started), remote);
+                    return;
+                }
+            }
+
+            try {
+                con->append_header("X-Content-Type-Options", "nosniff");
+                con->append_header("Content-Disposition",
+                                   "attachment; filename=\"" + filename + "\"");
+            } catch (const std::exception &e) {
+                wlog("node_admin: failed to set snapshot headers: ${e}", ("e", e.what()));
+            }
+            respond(con, websocketpp::http::status_code::ok, content,
+                    "application/octet-stream",
+                    // A HEAD reply carries the headers a GET would return, so the file
+                    // size must be explicit: the body is empty by design.
+                    req_method == "HEAD" ? static_cast<int64_t>(size) : -1);
+            audit(rid, token->label, req_method + " " + path,
+                  fc::mutable_variant_object("file", filename)("bytes", static_cast<int64_t>(size)),
+                  "snapshot_download", 0, elapsed_ms(started), remote);
             return;
         }
     }
@@ -1103,6 +1434,7 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
     if (method == "admin.logs.tail") return h_logs_tail(params);
     if (method == "admin.audit.tail") return h_audit_tail(params);
     if (method == "admin.p2p.status") return h_p2p_status(params);
+    if (method == "admin.snapshot.status") return h_snapshot_status(params);
 
     // Mutating peer operations need `p2p` on top of `read`: a read-only token must not be able
     // to change whom this node talks to. Both required scopes are named in the error.
@@ -1116,6 +1448,18 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
         if (method == "admin.p2p.add_node") return h_p2p_add_node(params, false);
         if (method == "admin.p2p.add_trusted") return h_p2p_add_node(params, true);
         return h_p2p_clear_banned(params);
+    }
+
+    // Snapshot creation and restore rewrite node state / disk, so they need `snapshot`
+    // on top of `read`. Listing and downloading stay under `read`.
+    if (method == "admin.snapshot.create" || method == "admin.snapshot.restore") {
+        if (token.scopes.find("snapshot") == token.scopes.end()) {
+            throw rpc_error{-32002, "forbidden",
+                            "token '" + token.label + "' has no 'snapshot' scope",
+                            "snapshot operations need a token with scopes 'read,snapshot'"};
+        }
+        if (method == "admin.snapshot.create") return h_snapshot_create(params);
+        return h_snapshot_restore(params);
     }
 
     // MCP Streamable HTTP on the same authenticated listener (decision q#3052=B: the MCP
@@ -1481,6 +1825,167 @@ fc::variant node_admin_plugin::impl::h_p2p_clear_banned(const fc::variant &) {
     return fc::variant(m);
 }
 
+// ── snapshots ────────────────────────────────────────────────────────────────────────────
+graphene::plugins::snapshot::snapshot_plugin &node_admin_plugin::impl::snapshot_started() const {
+    auto *snap = appbase::app().find_plugin<graphene::plugins::snapshot::snapshot_plugin>();
+    if (!snap) {
+        throw rpc_error{-32004, "snapshot unavailable",
+                        "the snapshot plugin is not loaded",
+                        "add 'plugin = snapshot' to config.ini"};
+    }
+    return *snap;
+}
+
+fc::variant node_admin_plugin::impl::snapshot_list_variant() const {
+    auto &snap = snapshot_started();
+    const std::string latest_path = snap.latest_snapshot_path();
+    fc::variants files;
+    for (const auto &f : snap.list_snapshots()) {
+        fc::mutable_variant_object m;
+        m("name", f.name);
+        m("path", f.path);
+        m("block_num", static_cast<int64_t>(f.block_num));
+        m("size_bytes", static_cast<int64_t>(f.size_bytes));
+        m("modified", static_cast<int64_t>(f.modified));
+        m("modified_iso", iso_utc(fc::time_point_sec(f.modified)));
+        m("latest", !latest_path.empty() && f.path == latest_path);
+        files.push_back(fc::variant(m));
+    }
+    return fc::variant(files);
+}
+
+fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &) {
+    auto &snap = snapshot_started();
+    const bool recovering = chain.is_recovering();
+    const fc::variant files = snapshot_list_variant();
+    const std::string latest_path = snap.latest_snapshot_path();
+
+    fc::mutable_variant_object m;
+    m("as_of", now_iso());
+    m("dir", snap.snapshot_directory());
+    // While a restore runs the database is closed or being rebuilt; reading head there
+    // would either block or report a half-built value, so it is null during that window.
+    m("head_block_num", recovering ? fc::variant()
+                                   : fc::variant(static_cast<int64_t>(chain.db().head_block_num())));
+    m("snapshot_count", static_cast<int64_t>(files.size()));
+    m("in_progress", snap.is_snapshot_in_progress());
+    m("restoring", snap.is_restoring());
+    m("recovering", recovering);
+    m("latest_path", latest_path);
+    m("latest_name", latest_path.empty()
+                         ? fc::variant()
+                         : fc::variant(bfs::path(latest_path).filename().string()));
+    m("snapshots", files);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_snapshot_create(const fc::variant &) {
+    auto &snap = snapshot_started();
+    std::string path;
+    const std::string status = snap.request_snapshot_creation(path);
+
+    if (status == "empty") {
+        throw rpc_error{-32000, "no state", "node head is 0: nothing to snapshot",
+                        "load a snapshot or wait for the first block"};
+    }
+    if (status == "unavailable") {
+        throw rpc_error{-32004, "snapshot unavailable", "snapshot plugin is not initialized", ""};
+    }
+
+    fc::mutable_variant_object m;
+    m("status", status);
+    m("path", path);
+    if (status == "exists") {
+        m("note", "a snapshot for the current head block already exists; nothing was written");
+    } else if (status == "busy") {
+        m("note", "another snapshot creation or restore is running; retry when it finishes");
+    } else {
+        m("note", "snapshot creation runs on the node's snapshot thread; poll "
+                  "admin.snapshot.status until in_progress is false");
+    }
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_snapshot_restore(const fc::variant &params) {
+    if (!params.is_object() && !params.is_null()) {
+        throw rpc_error{-32602, "invalid params", "expected an object {name|path|latest}", ""};
+    }
+    const fc::variant_object empty;
+    const fc::variant_object &o = params.is_object() ? params.get_object() : empty;
+
+    const std::string name = trim(param_str(o, "name", ""));
+    const std::string given_path = trim(param_str(o, "path", ""));
+    bool latest = true;
+    auto l_it = o.find("latest");
+    if (l_it != o.end() && !l_it->value().is_null()) {
+        if (!l_it->value().is_bool()) {
+            throw rpc_error{-32602, "invalid params", "'latest' must be a boolean", ""};
+        }
+        latest = l_it->value().as_bool();
+    }
+
+    auto &snap = snapshot_started();
+    const bfs::path dir(snap.snapshot_directory());
+    std::string target;
+
+    if (!given_path.empty()) {
+        const bfs::path p(given_path);
+        boost::system::error_code ec;
+        if (!bfs::exists(p, ec) || ec || !bfs::is_regular_file(p, ec) || ec) {
+            throw rpc_error{-32602, "snapshot not found", given_path, "see admin.snapshot.status"};
+        }
+        // An absolute path is accepted only if it sits directly in the snapshot directory:
+        // the admin API must not import arbitrary files from the node's filesystem.
+        try {
+            const bfs::path canon_p = bfs::canonical(p);
+            const bfs::path canon_dir = bfs::canonical(dir);
+            if (canon_p.parent_path() != canon_dir) {
+                throw rpc_error{-32602, "path outside snapshot directory", given_path,
+                                "snapshot files live in " + dir.string()};
+            }
+            target = canon_p.string();
+        } catch (const rpc_error &) {
+            throw;
+        } catch (const std::exception &e) {
+            throw rpc_error{-32602, "cannot resolve snapshot path", given_path, e.what()};
+        }
+    } else if (!name.empty()) {
+        if (!is_plain_snapshot_name(name)) {
+            throw rpc_error{-32602, "invalid snapshot name", name,
+                            "expected a file name ending in .vizjson (see admin.snapshot.status)"};
+        }
+        target = (dir / name).string();
+        boost::system::error_code ec;
+        if (!bfs::exists(target, ec) || ec) {
+            throw rpc_error{-32602, "snapshot not found", name, "see admin.snapshot.status"};
+        }
+    } else if (!latest) {
+        throw rpc_error{-32602, "invalid params", "provide 'name'/'path' or set 'latest': true", ""};
+    }
+
+    std::string error;
+    if (!snap.restore_snapshot_now(target, error)) {
+        throw rpc_error{-32000, "restore not started", error, "see admin.snapshot.status"};
+    }
+
+    const std::string resolved = target.empty() ? snap.latest_snapshot_path() : target;
+    int64_t block = 0;
+    for (const auto &f : snap.list_snapshots()) {
+        if (f.path == resolved) { block = static_cast<int64_t>(f.block_num); break; }
+    }
+
+    fc::mutable_variant_object m;
+    m("status", "started");
+    m("snapshot", resolved);
+    m("snapshot_name", resolved.empty() ? std::string() : bfs::path(resolved).filename().string());
+    m("block_num", block);
+    m("process_restarted", false);
+    m("note", "in-process restore: P2P is paused, shared memory is wiped, the snapshot is "
+              "imported, dlt_block_log is replayed and P2P resumes. The OS process and its "
+              "uptime are unchanged. Progress: admin.snapshot.status (restoring).");
+    return fc::variant(m);
+}
+
 // ── MCP (Streamable HTTP) ────────────────────────────────────────────────────────────────
 // The MCP endpoint is the same loopback listener and the same bearer tokens as admin.*.
 // Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
@@ -1559,6 +2064,29 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Clear every soft ban and retry those peers immediately. "
                          "Needs the 'p2p' scope.",
                          no_args));
+
+    fc::variants restore_props;
+    restore_props.push_back(prop("string",
+        "Snapshot file name from admin.snapshot.status, e.g. snapshot-block-84360000.vizjson"));
+    restore_props.push_back(prop("string",
+        "Absolute path of a snapshot file located directly in the snapshot directory"));
+    restore_props.push_back(prop("boolean",
+        "Restore the highest-block snapshot in the snapshot directory (default when "
+        "neither name nor path is given)"));
+
+    tools.push_back(tool("admin.snapshot.status",
+                         "Snapshots on disk (newest block first) with size and age, the latest "
+                         "file, and whether a creation or restore is currently running.",
+                         no_args));
+    tools.push_back(tool("admin.snapshot.create",
+                         "Create a snapshot of the current head block in the snapshot directory, "
+                         "asynchronously. Needs the 'snapshot' scope.",
+                         no_args));
+    tools.push_back(tool("admin.snapshot.restore",
+                         "Restore node state from a snapshot file, or from the latest one, "
+                         "in-process: pauses P2P, wipes shared memory, imports the snapshot, "
+                         "replays dlt_block_log and resumes P2P. Needs the 'snapshot' scope.",
+                         schema(restore_props, fc::variants{})));
     return fc::variant(tools);
 }
 
@@ -1589,8 +2117,9 @@ fc::variant node_admin_plugin::impl::h_mcp_initialize(const fc::variant &params)
     m("instructions",
       "Administration of this VIZ node. Read-only tools need the 'read' scope; the mutating "
       "peer tools admin.p2p.add_node, admin.p2p.add_trusted and admin.p2p.clear_banned "
-      "additionally need the 'p2p' scope. A human-facing UI is served at /ui/ on this same "
-      "listener and uses the same bearer token.");
+      "additionally need the 'p2p' scope; admin.snapshot.create and admin.snapshot.restore "
+      "additionally need the 'snapshot' scope. A human-facing UI is served at /ui/ on this "
+      "same listener and uses the same bearer token.");
     return fc::variant(m);
 }
 

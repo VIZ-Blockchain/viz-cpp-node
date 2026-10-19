@@ -6,11 +6,13 @@ and AI agents holding a bearer token — not for end users, and not as a replace
 public API. The same listener also serves an **MCP** (Model Context Protocol) endpoint over
 HTTP and a small built-in web UI at `/ui/`.
 
-> **Mutating surface is limited to P2P peers.** `admin.p2p.add_node`, `admin.p2p.add_trusted`
-> and `admin.p2p.clear_banned` change whom the node dials; everything else is read-only.
-> They require a token with the `p2p` scope and are serialized onto the P2P thread. The
-> remaining mutating operations (config, plugins, process, chain) are a later stage and will
-> follow the same authentication/audit model with two-phase `plan`/`apply`.
+> **Mutating surface: P2P peers and snapshots.** `admin.p2p.add_node`, `admin.p2p.add_trusted`
+> and `admin.p2p.clear_banned` change whom the node dials; `admin.snapshot.create` and
+> `admin.snapshot.restore` write a snapshot file or replace the node's in-memory state. They
+> require a token with the `p2p` or `snapshot` scope respectively and are serialized onto the
+> P2P / snapshot threads. The remaining mutating operations (config, plugins, process, chain)
+> are a later stage and will follow the same authentication/audit model with two-phase
+> `plan`/`apply`.
 
 ---
 
@@ -53,9 +55,11 @@ unauthenticated admin port is never a valid state.
 A token is 32 random bytes, for example `openssl rand -hex 32`. Only its SHA-256 is stored
 in the configuration; comparison is constant-time. Scopes:
 
-* `read` — every method, including `admin.p2p.status`. Every token needs it.
+* `read` — every method, including `admin.p2p.status` and the snapshot download route. Every token needs it.
 * `p2p` — the mutating peer methods `admin.p2p.add_node`, `admin.p2p.add_trusted`,
   `admin.p2p.clear_banned`. A token with only `p2p` (without `read`) cannot call anything.
+* `snapshot` — `admin.snapshot.create` and `admin.snapshot.restore`. Listing and downloading
+  snapshots need only `read`.
 * `plugins`, `config`, `process`, `chain` — reserved for the mutating stages; a token that
   carries only these cannot call anything yet.
 
@@ -89,10 +93,18 @@ Body ≤ 64 KB. Responses are JSON-RPC 2.0:
 
 Authentication is checked **before** the body is parsed.
 
-The only non-`POST` route is `GET /ui/` (and `GET /ui`), which serves the built-in page
-described below. It carries no data and no secret; every actual call the page makes is a
-normal authenticated `POST` back to `/`. `HEAD` works on the same path; any other method or
-path still answers `405`.
+The non-`POST` routes are the built-in UI and snapshot downloads:
+
+* `GET /ui/` (and `GET /ui`) serves the built-in page described below. It carries no data and
+  no secret; every actual call the page makes is a normal authenticated `POST` back to `/`.
+* `GET /snapshot/latest` returns the newest snapshot as a file attachment. `GET /snapshot/<name>`
+  returns a named file from the snapshot directory. Both require `Authorization: Bearer …`
+  and the `read` scope — unlike `/ui/`, a snapshot is node state. `HEAD` works on both and
+  carries the same headers, including `Content-Length`. Any other method or path answers `405`.
+
+Download limits: the file must be a regular file directly in the snapshot directory (names
+come from `admin.snapshot.status`; traversal is rejected), and files larger than **512 MB**
+answer `413` — copy those with `scp` instead.
 
 ---
 
@@ -275,6 +287,88 @@ curl -s http://127.0.0.1:8099 -H "Authorization: Bearer $T" \
   -d '{"jsonrpc":"2.0","id":3,"method":"admin.p2p.clear_banned"}'
 ```
 
+### `admin.snapshot.status`
+
+No params. Requires `read` and the `snapshot` plugin to be loaded. Lists the snapshot files
+in the configured `snapshot-dir` and reports what the plugin is doing.
+
+| Field | Meaning |
+|---|---|
+| `as_of` | UTC timestamp of the reading |
+| `dir` | Snapshot directory in use |
+| `head_block_num` | Current head; `null` while a restore is rebuilding state |
+| `snapshot_count` | Number of files in `snapshots[]` |
+| `in_progress`, `restoring`, `recovering` | A snapshot is being written, a restore is running, the chain plugin is recovering |
+| `latest_path`, `latest_name` | Newest snapshot (highest block number); `latest_path` is an empty string and `latest_name` is `null` when there are none |
+| `snapshots[]` | `name`, `path`, `block_num` (0 when the name does not carry a block), `size_bytes`, `modified` (unixtime), `modified_iso`, `latest` |
+
+```json
+{"jsonrpc":"2.0","id":50,"method":"admin.snapshot.status"}
+```
+
+```json
+{"jsonrpc":"2.0","id":50,"result":{
+  "as_of":"2026-10-19T15:30:00Z","dir":"/var/lib/vizd/snapshots",
+  "head_block_num":22164,"snapshot_count":1,"in_progress":false,
+  "restoring":false,"recovering":false,
+  "latest_path":"/var/lib/vizd/snapshots/snapshot-block-22164.vizjson",
+  "latest_name":"snapshot-block-22164.vizjson",
+  "snapshots":[{"name":"snapshot-block-22164.vizjson",
+                "path":"/var/lib/vizd/snapshots/snapshot-block-22164.vizjson",
+                "block_num":22164,"size_bytes":4404019,
+                "modified":1792423800,"modified_iso":"2026-10-19T15:30:00Z","latest":true}]}}
+```
+
+### `admin.snapshot.create`
+
+No params. Requires `read` and `snapshot`. Writes `snapshot-block-<head>.vizjson` into
+`snapshot-dir` **asynchronously** on the plugin's snapshot thread; P2P block processing is
+paused for the duration of the database read and resumed before compression. Poll
+`admin.snapshot.status` until `in_progress` is false.
+
+```json
+{"jsonrpc":"2.0","id":51,"method":"admin.snapshot.create"}
+```
+
+```json
+{"jsonrpc":"2.0","id":51,"result":{
+  "status":"started","path":"/var/lib/vizd/snapshots/snapshot-block-22164.vizjson",
+  "note":"snapshot creation runs on the node's snapshot thread; poll admin.snapshot.status until in_progress is false"}}
+```
+
+`status` is `started`, `exists` (a file for this head is already on disk), or `busy`
+(another creation/restore is running). On an empty chain (head `0`) the call fails with
+`-32000` and writes nothing.
+
+### `admin.snapshot.restore`
+
+Params: `{}` (restore the latest), `{"latest":true}`, `{"name":"snapshot-block-22164.vizjson"}`
+or `{"path":"/var/lib/vizd/snapshots/<file>"}`. Requires `read` and `snapshot`.
+
+The restore is **in-process**, not a process restart: P2P block processing is paused, shared
+memory is closed and wiped, the snapshot is imported, `dlt_block_log` is replayed, peers are
+reset and P2P resumes. The OS process and its uptime are unchanged, so the listener keeps
+answering during the operation (with `restoring: true` and a `null` head). `path`, if given,
+must resolve to a regular file directly inside the snapshot directory.
+
+```json
+{"jsonrpc":"2.0","id":52,"method":"admin.snapshot.restore","params":{"latest":true}}
+```
+
+```json
+{"jsonrpc":"2.0","id":52,"result":{
+  "status":"started","snapshot":"/var/lib/vizd/snapshots/snapshot-block-22164.vizjson",
+  "snapshot_name":"snapshot-block-22164.vizjson","block_num":22164,
+  "process_restarted":false,
+  "note":"in-process restore: P2P is paused, shared memory is wiped, the snapshot is imported, dlt_block_log is replayed and P2P resumes. The OS process and its uptime are unchanged. Progress: admin.snapshot.status (restoring)."}}
+```
+
+A call that cannot start answers `-32000` (no snapshots, a creation is in progress, the file
+is not readable); invalid names, traversal and files outside the snapshot directory answer
+`-32602` before any state is touched. If the import itself fails, `do_snapshot_load` has
+already wiped the database and requested shutdown — inspect the node log; the admin API does
+not pretend the restore succeeded.
+
 ---
 
 ## MCP endpoint (Streamable HTTP)
@@ -295,11 +389,12 @@ MCP requests are ordinary JSON-RPC 2.0 `POST`s to the admin endpoint:
 
 Tools are 1:1 with the admin methods: `admin.ping`, `admin.node_info`, `admin.diagnostics`,
 `admin.plugins.list`, `admin.config.get`, `admin.logs.tail`, `admin.audit.tail`,
-`admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`.
-The last three additionally require the `p2p` scope, exactly as over plain JSON-RPC. Tool
-execution errors are returned **inside** the result (`"isError": true` with the message in
-`content[0].text`), as MCP expects; protocol errors (unknown tool, bad params, missing
-scope) remain JSON-RPC errors.
+`admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
+`admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore` (fourteen).
+The peer actions additionally require the `p2p` scope and the snapshot actions the `snapshot`
+scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
+result (`"isError": true` with the message in `content[0].text`), as MCP expects; protocol
+errors (unknown tool, bad params, missing scope) remain JSON-RPC errors.
 
 ```json
 {"jsonrpc":"2.0","id":7,"result":{"tools":[
@@ -313,8 +408,8 @@ scope) remain JSON-RPC errors.
 ```
 
 The endpoint is sessionless: no `Mcp-Session-Id` is issued, and `GET` on anything except
-`/ui/` (the optional SSE stream included) answers `405`. Clients that require SSE are not
-supported; JSON responses are.
+`/ui/` and the `/snapshot/…` routes (the optional SSE stream included) answers `405`. Clients
+that require SSE are not supported; JSON responses are.
 
 Client configuration (Streamable HTTP transport) points at the same loopback address:
 
@@ -351,20 +446,28 @@ the URL (that would land in history and access logs).
 * a table of every tracked peer: direction, lifecycle, head, lag, node/fork status, flags
   (`trusted`, `exchange`, `aligned`), connection age, and ban/retry note;
 * an action panel: add a peer by `IP:port`, add it as trusted, clear the banned list;
+* a snapshot panel: state (idle / creating / restoring), directory, count and newest file;
+  a table of files with block, size, age and per-row **Download** / **Restore**, plus
+  **Create snapshot** and **Restore latest** buttons. Downloads use the authenticated
+  `/snapshot/<name>` route and are saved by the browser under the file's own name;
 * a log pane with the outcome of every action and status error.
 
 The status view refreshes every five seconds while the tab is visible.
 
-**What it does not do.** No writes other than the three peer actions; no token management; no
-config editing. It is a thin view over the same JSON-RPC contract documented above — anything
-it can do, `curl` and an MCP client can do as well, and every call lands in the audit log
-under the token's label (the page's own `GET /ui/` is audited with outcome `ui`).
+**What it does not do.** No config editing, no token management, no deletion of snapshot
+files. The only writes are the three peer actions, snapshot creation and the in-process
+restore. It is a thin view over the same JSON-RPC contract documented above — anything it can
+do, `curl` and an MCP client can do as well, and every call lands in the audit log under the
+token's label (the page's own `GET /ui/` is audited with outcome `ui`, downloads as
+`snapshot_download`).
 
 **Token for the page.** Use a dedicated token with the scopes you want the page to have; a
-`read`-only token gives a live, read-only dashboard, adding `p2p` enables the action buttons:
+`read`-only token gives a live, read-only dashboard with snapshot download and listing,
+adding `p2p` enables the peer action buttons, and adding `snapshot` enables **Create** and
+**Restore**:
 
 ```ini
-admin-token = ui:read,p2p:<sha256 of a 32-byte random token>
+admin-token = ui:read,snapshot,p2p:<sha256 of a 32-byte random token>
 ```
 
 
@@ -395,8 +498,15 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
   audit log attributes calls correctly, and give each the smallest scope it needs.
 * `admin.config.get` masks secrets by key name, not by value shape. A secret stored under
   an innocuous key would be printed; do not invent such keys.
-* The admin API never returns WIF keys, and no method in this version writes to disk
-  except the audit log.
+* The admin API never returns WIF keys. Besides the audit log, the only method that writes
+  to disk is `admin.snapshot.create` (into the configured snapshot directory).
+* `admin.snapshot.restore` **replaces all chain state** with the chosen file. It pauses block
+  processing and wipes shared memory; a wrong or stale snapshot is destructive. Treat the
+  `snapshot` scope as equivalent to write access to the node's state, and prefer a snapshot
+  taken at or below the peers' LIB when the node is expected to re-sync.
+* Snapshot downloads are served by the admin listener only, never by the public webserver.
+  Do not copy them to a world-readable path; a snapshot contains full chain state and,
+  depending on the build, account metadata.
 * `GET /ui/` is unauthenticated by design and is the same bytes for every caller. It grants
   no access: without a token every call it makes gets `401`. It does not answer `OPTIONS`
   and sends no CORS headers, so another origin cannot drive it through a browser.
@@ -417,5 +527,7 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
 `plugins/node_admin/tests/acceptance.sh` starts a throwaway node, drives the listener with
 curl and checks this contract: authentication and scopes, config/log masking, the log
 allow-list, status codes, audit, rate limit, P2P peer actions (including the `p2p`-scope
-denial), MCP `initialize`/`tools/list`/`tools/call`, and the `/ui/` page. It is not part of
-CTest because it needs a built `vizd` and two free ports.
+denial), snapshot status/listing/download (including `HEAD`, traversal and missing-file
+cases, and the `snapshot`-scope denial on create/restore), MCP
+`initialize`/`tools/list`/`tools/call`, and the `/ui/` page. It is not part of CTest because
+it needs a built `vizd` and two free ports.

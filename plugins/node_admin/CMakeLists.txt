@@ -21,6 +21,7 @@ target_link_libraries(
         graphene_chain
         graphene::chain_plugin
         graphene::p2p
+        graphene::snapshot
         graphene::protocol
         graphene_utilities
         appbase
