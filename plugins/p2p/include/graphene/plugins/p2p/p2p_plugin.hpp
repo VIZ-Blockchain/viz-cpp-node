@@ -84,8 +84,20 @@ namespace graphene {
 
                 /**
                  * Get the number of currently active P2P connections.
+                 *
+                 * NOT thread-safe: it walks the peer map owned by the p2p thread. Call it
+                 * from the p2p thread (or a call serialized onto it); from any other thread
+                 * use get_connections_count_sync().
                  */
                 uint32_t get_connections_count() const;
+
+                /**
+                 * Thread-safe connection count: posts the read onto the p2p thread and waits.
+                 * Returns 0 when the p2p node is not up yet. Never call it from the p2p
+                 * thread itself — it would wait for itself.
+                 */
+                uint32_t get_connections_count_sync() const;
+
                 bool is_isolated_peers() const;
 
                 /**

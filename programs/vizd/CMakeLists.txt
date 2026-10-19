@@ -39,6 +39,7 @@ target_link_libraries(
         graphene::snapshot
         graphene::validator_guard
         graphene::testnet_plugin
+        graphene::node_admin
         graphene_protocol
         fc
         ${CMAKE_DL_LIBS}

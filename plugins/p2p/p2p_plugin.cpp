@@ -743,6 +743,14 @@ uint32_t p2p_plugin::get_connections_count() const {
     return my->node ? my->node->get_connection_count() : 0;
 }
 
+uint32_t p2p_plugin::get_connections_count_sync() const {
+    // The peer map belongs to the p2p thread; reading it from e.g. the node_admin HTTP
+    // thread would be a data race on a std::map that the p2p thread mutates.
+    return my->p2p_thread.async([this]() {
+        return my->node ? my->node->get_connection_count() : 0;
+    }).wait();
+}
+
 bool p2p_plugin::is_isolated_peers() const {
     return my->isolated_peers;
 }
