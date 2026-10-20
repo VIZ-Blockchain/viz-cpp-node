@@ -74,11 +74,13 @@ admin-log-file = node=/var/lib/vizd/logs/node.log
 
 Use the section form: flat `logger.default.*` keys are merged first and a later
 `[logger.default]` section wins, so a flat line added on top of an existing section is
-silently ignored. The file appender is bounded in time, not in size: vizd hard-codes
-`rotate = true`, a one-hour rotation interval and a one-day retention for every
-`[log.file_appender.*]` section, so no external logrotate is needed — but at `debug` that is
-still gigabytes per hour. For a hard size limit use the optional `capped_file` appender: one
-file holding only the last `max_lines` lines (default 10000, `0` = unlimited).
+silently ignored. The file appender is configured to rotate hourly with one-day retention,
+but that rotation does not actually happen in vizd: the chain runs on the fc fiber queue,
+and the node's main thread lives in `boost/asio` after startup and never services it
+(measured 2026-10-20 — one 37 MB file in nine hours, no hourly files). So the file is
+bounded by neither time nor size; on `debug` it can reach gigabytes. For a hard limit use
+the optional `capped_file` appender: one file holding only the last `max_lines` lines
+(default 10000, `0` = unlimited).
 
 ```ini
 [log.capped_file_appender.node]
