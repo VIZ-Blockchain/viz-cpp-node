@@ -350,10 +350,12 @@ BOOST_AUTO_TEST_CASE(plugin_lines_see_names_inside_a_multi_name_line) {
     BOOST_CHECK_EQUAL(none.lines[0], "plugin = chain p2p");
     BOOST_CHECK_EQUAL(none.lines[1], "[logger]");
 
-    // CRLF survives a rewrite.
-    const line_edit crlf = edit_plugin_lines({"plugin = chain p2p\r\n"}, {}, {"p2p"});
+    // CRLF survives a rewrite. A line as split_lines() produces it carries '\n' nowhere and
+    // keeps only the '\r' (join_lines() adds the newline back), so that is what the edit sees.
+    const line_edit crlf = edit_plugin_lines({"plugin = chain p2p\r", "[logger]"}, {}, {"p2p"});
     BOOST_CHECK(crlf.error.empty());
-    BOOST_CHECK_EQUAL(crlf.lines[0], "plugin = chain\r\n");
+    BOOST_CHECK_EQUAL(crlf.lines[0], "plugin = chain\r");
+    BOOST_CHECK_EQUAL(join_lines(crlf.lines, false), "plugin = chain\r\n[logger]");
 }
 
 BOOST_AUTO_TEST_CASE(inline_comments_do_not_become_plugin_names) {
@@ -368,10 +370,11 @@ BOOST_AUTO_TEST_CASE(inline_comments_do_not_become_plugin_names) {
 }
 
 BOOST_AUTO_TEST_CASE(config_set_keeps_an_inline_comment) {
+    // Same line contract as above: split_lines() keeps the '\r', join_lines() restores the '\n'.
     const line_edit e =
-        set_config_value({"p2p-max-connections = 50   # tuned\r\n"}, "p2p-max-connections", "60");
+        set_config_value({"p2p-max-connections = 50   # tuned\r"}, "p2p-max-connections", "60");
     BOOST_CHECK(e.error.empty());
-    BOOST_CHECK_EQUAL(e.lines[0], "p2p-max-connections = 60 # tuned\r\n");
+    BOOST_CHECK_EQUAL(e.lines[0], "p2p-max-connections = 60 # tuned\r");
 
     const line_edit s = set_config_value_in_section({"[logger.p2p]", "level = info # quiet"},
                                                     "logger.p2p", "level", "debug");
