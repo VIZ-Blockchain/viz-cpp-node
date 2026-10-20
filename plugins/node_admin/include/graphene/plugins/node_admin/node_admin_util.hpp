@@ -167,7 +167,7 @@ inline const std::vector<std::string> &log_level_values() {
 /// Which plugin a parameter belongs to, for grouping in the UI and in admin.plugins.list.
 /// `logging` is not a plugin: it is the runtime logging section of the same panel.
 inline std::string config_key_group(const std::string &name) {
-    if (name.compare(0, 2, "p2p-") == 0 || name.compare(0, 4, "dlt-") == 0 ||
+    if (name.compare(0, 4, "p2p-") == 0 || name.compare(0, 4, "dlt-") == 0 ||
         name == "auto-resync-on-wedge") return "p2p";
     if (name.compare(0, 10, "webserver-") == 0) return "webserver";
     if (name.compare(0, 16, "validator-guard-") == 0) return "validator_guard";
