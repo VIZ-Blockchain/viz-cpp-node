@@ -152,6 +152,23 @@ BOOST_AUTO_TEST_CASE(config_parses_entries_sections_and_comments) {
     BOOST_CHECK_EQUAL(e[3].value, "");
 }
 
+BOOST_AUTO_TEST_CASE(config_values_end_where_the_loader_ends_them) {
+    // appbase loads config.ini through boost's config parser, which treats '#' as a comment to
+    // the end of the line. A value that keeps the comment splits into names the loader never
+    // sees (`plugin = chain # why` -> "#", "why").
+    const std::string path = write_temp_config(
+        "plugin = chain p2p # two plugins\r\n"
+        "p2p-max-connections = 50   # tuned\r\n");
+    bool exists = false;
+    const std::vector<cfg_entry> e = parse_config_file(path, &exists);
+    std::remove(path.c_str());
+
+    BOOST_CHECK(exists);
+    BOOST_REQUIRE_EQUAL(e.size(), std::size_t(2));
+    BOOST_CHECK_EQUAL(e[0].value, "chain p2p");
+    BOOST_CHECK_EQUAL(e[1].value, "50");
+}
+
 BOOST_AUTO_TEST_CASE(config_missing_file_reports_absent) {
     bool exists = true;
     const std::vector<cfg_entry> e =
@@ -337,6 +354,29 @@ BOOST_AUTO_TEST_CASE(plugin_lines_see_names_inside_a_multi_name_line) {
     const line_edit crlf = edit_plugin_lines({"plugin = chain p2p\r\n"}, {}, {"p2p"});
     BOOST_CHECK(crlf.error.empty());
     BOOST_CHECK_EQUAL(crlf.lines[0], "plugin = chain\r\n");
+}
+
+BOOST_AUTO_TEST_CASE(inline_comments_do_not_become_plugin_names) {
+    // The loader cuts a value at '#'; a comment word must never count as a configured plugin,
+    // and a rewrite must not swallow the operator's note.
+    const std::vector<std::string> lines = {"plugin = chain p2p # two plugins", "[logger]"};
+    BOOST_CHECK(!edit_plugin_lines(lines, {}, {"two"}).error.empty());  // comment is not a name
+    const line_edit rm = edit_plugin_lines(lines, {}, {"p2p"});
+    BOOST_CHECK(rm.error.empty());
+    BOOST_CHECK_EQUAL(rm.changed, std::size_t(1));
+    BOOST_CHECK_EQUAL(rm.lines[0], "plugin = chain # two plugins");
+}
+
+BOOST_AUTO_TEST_CASE(config_set_keeps_an_inline_comment) {
+    const line_edit e =
+        set_config_value({"p2p-max-connections = 50   # tuned\r\n"}, "p2p-max-connections", "60");
+    BOOST_CHECK(e.error.empty());
+    BOOST_CHECK_EQUAL(e.lines[0], "p2p-max-connections = 60 # tuned\r\n");
+
+    const line_edit s = set_config_value_in_section({"[logger.p2p]", "level = info # quiet"},
+                                                    "logger.p2p", "level", "debug");
+    BOOST_CHECK(s.error.empty());
+    BOOST_CHECK_EQUAL(s.lines[1], "level = debug # quiet");
 }
 
 BOOST_AUTO_TEST_CASE(plugin_lines_refuse_bad_edits) {

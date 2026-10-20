@@ -126,8 +126,14 @@ inline std::vector<cfg_entry> parse_config_file(const std::string &path, bool *e
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        // Boost's config reader — the one appbase loads config.ini through — treats '#' as a
+        // comment to the end of the line, so the value must be cut at the same place. Otherwise
+        // `plugin = chain # why` reaches the plugin list as names "#" and "why", which the
+        // loader never sees.
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
         const std::string t = trim(line);
-        if (t.empty() || t[0] == '#' || t[0] == ';') continue;
+        if (t.empty() || t[0] == ';') continue;
         if (t[0] == '[' && t.back() == ']') {
             section = trim(t.substr(1, t.size() - 2));
             continue;
@@ -322,6 +328,9 @@ struct cfg_line {
     std::string section;  // section the entry belongs to (or the new section for a header)
     std::string key;
     std::string value;
+    /// Everything from the first '#' to the end of the line, kept so a rewritten line does not
+    /// swallow the operator's note. The value itself ends where the loader would end it.
+    std::string comment;
 };
 
 /// Classify one raw line (without its '\n', possibly with a trailing '\r'). `current_section`
@@ -331,8 +340,13 @@ inline cfg_line classify_config_line(const std::string &raw, const std::string &
     out.section = current_section;
     std::string line = raw;
     if (!line.empty() && line.back() == '\r') line.pop_back();
+    const std::size_t hash = line.find('#');
+    if (hash != std::string::npos) {
+        out.comment = line.substr(hash);
+        line.erase(hash);
+    }
     const std::string t = trim(line);
-    if (t.empty() || t[0] == '#' || t[0] == ';') return out;
+    if (t.empty() || t[0] == ';') return out;
     if (t[0] == '[' && t.back() == ']') {
         out.kind = cfg_line::header;
         out.section = trim(t.substr(1, t.size() - 2));
@@ -411,13 +425,14 @@ inline line_edit set_config_value(std::vector<std::string> lines, const std::str
         if (eq == std::string::npos) {
             std::size_t b = 0;
             while (b < raw.size() && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
-            out.lines[i] = raw.substr(0, b) + key + " = " + value + (cr ? "\r" : "");
+            out.lines[i] = raw.substr(0, b) + key + " = " + value +
+                           (l.comment.empty() ? "" : " " + l.comment) + (cr ? "\r" : "");
         } else {
             // Keep the original spacing around '=' so the diff is exactly the value.
             std::size_t ws = eq + 1;
             while (ws < raw.size() && (raw[ws] == ' ' || raw[ws] == '\t')) ++ws;
             out.lines[i] = raw.substr(0, eq + 1) + raw.substr(eq + 1, ws - (eq + 1)) + value +
-                           (cr ? "\r" : "");
+                           (l.comment.empty() ? "" : " " + l.comment) + (cr ? "\r" : "");
         }
         ++out.changed;
     }
@@ -464,12 +479,13 @@ inline line_edit set_config_value_in_section(std::vector<std::string> lines,
         if (eq == std::string::npos) {
             std::size_t b = 0;
             while (b < raw.size() && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
-            out.lines[i] = raw.substr(0, b) + key + " = " + value + (cr ? "\r" : "");
+            out.lines[i] = raw.substr(0, b) + key + " = " + value +
+                           (l.comment.empty() ? "" : " " + l.comment) + (cr ? "\r" : "");
         } else {
             std::size_t ws = eq + 1;
             while (ws < raw.size() && (raw[ws] == ' ' || raw[ws] == '\t')) ++ws;
             out.lines[i] = raw.substr(0, eq + 1) + raw.substr(eq + 1, ws - (eq + 1)) + value +
-                           (cr ? "\r" : "");
+                           (l.comment.empty() ? "" : " " + l.comment) + (cr ? "\r" : "");
         }
         ++out.changed;
         return out;
@@ -588,6 +604,7 @@ inline line_edit edit_plugin_lines(std::vector<std::string> lines,
                     if (n) line += " ";
                     line += keep_names[n];
                 }
+                if (!l.comment.empty()) line += " " + l.comment;
                 if (!raw.empty() && raw.back() == '\r') line += "\r";
                 kept.push_back(line);
                 continue;
