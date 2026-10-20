@@ -309,6 +309,10 @@ static dlt_hello_message unpack_hello_compat(const message& msg) {
     if (ds.remaining() >= sizeof(node_id_t)) {
         fc::raw::unpack(ds, hello.node_id);
     }
+    // capabilities (uint32) follows node_id; absent on peers that predate it.
+    if (ds.remaining() >= sizeof(uint32_t)) {
+        fc::raw::unpack(ds, hello.capabilities);
+    }
     // Any remaining bytes are future protocol fields — ignored for forward compat.
     return hello;
 }
@@ -641,7 +645,8 @@ inline uint32_t frame_msg_type(const std::vector<char>& frame) {
 // stall a peer's sync or leave a request unanswered.
 inline bool is_droppable_when_full(uint32_t msg_type) {
     return msg_type == dlt_fork_status_message_type
-        || msg_type == dlt_transaction_message_type;
+        || msg_type == dlt_transaction_message_type
+        || msg_type == dlt_block_vote_message_type;   // superseded by the QC / next round
 }
 } // anonymous namespace
 
@@ -1018,6 +1023,9 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_gap_fill_reply_type:
                 on_dlt_gap_fill_reply(peer, msg.as<dlt_gap_fill_reply>());
                 break;
+            case dlt_block_vote_message_type:
+                on_dlt_block_vote(peer, msg.as<dlt_block_vote_message>());
+                break;
             default:
                 auto ep_it_unk = _peer_states.find(peer);
                 auto ep_unk = (ep_it_unk != _peer_states.end()) ? std::string(ep_it_unk->second.endpoint) : std::to_string(peer);
@@ -1056,6 +1064,7 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
     hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
+    hello.capabilities = DLT_CAP_BLOCK_VOTE;
     return hello;
 }
 
@@ -1138,6 +1147,7 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
 
     // Persist node_id — used for dedup and peer-exchange identity.
     state.node_id = hello.node_id;
+    state.peer_capabilities = hello.capabilities;
 
     // ── Self-connection guard ───────────────────────────────────────────────
     // The hello carries OUR node_id ⇒ this socket ends at our own listener.
@@ -2503,19 +2513,63 @@ void dlt_p2p_node::broadcast_block_post_validation(
     const block_id_type& block_id,
     const std::string& witness_account,
     const signature_type& validator_signature) {
-    // For now, send as fork_status message with block_id
-    dlt_fork_status_message msg;
-    msg.fork_status = _fork_status;
-    msg.head_block_id = block_id;
-    msg.head_block_num = graphene::protocol::block_header::num_from_id(block_id);
-    if (_delegate) {
-        msg.lib_block_id = _delegate->get_lib_block_id();
-        msg.lib_block_num = _delegate->get_lib_block_num();
-        msg.dlt_earliest_block = _delegate->get_dlt_earliest_block();
-        msg.dlt_latest_block = _delegate->get_dlt_latest_block();
+    // The signature is a block vote (block_vote_digest, round 0) made by the
+    // validator plugin. Until the DLT redesign is fully QC-aware it travels as
+    // dlt_block_vote_message; before this the call sent a fork_status and the
+    // signature never left the node, so LIB fell back to the producer rule.
+    dlt_block_vote_message msg;
+    msg.block_num = graphene::protocol::block_header::num_from_id(block_id);
+    msg.block_id = block_id;
+    msg.round = 0;
+    msg.validator = witness_account;
+    msg.signature = validator_signature;
+    process_block_vote(msg, INVALID_PEER_ID);
+}
+
+void dlt_p2p_node::on_dlt_block_vote(peer_id peer, const dlt_block_vote_message& msg) {
+    process_block_vote(msg, peer);
+}
+
+void dlt_p2p_node::process_block_vote(const dlt_block_vote_message& msg, peer_id from) {
+    static constexpr int64_t DLT_BLOCK_VOTE_SEEN_SEC = 120;
+    const auto now = fc::time_point::now();
+
+    // Prune the relay-dedup map. Votes older than two minutes are far below LIB
+    // at any block interval we run, so re-accepting one is harmless (the pool
+    // already counted it or dropped it as stale).
+    for (auto it = _block_votes_seen.begin(); it != _block_votes_seen.end(); ) {
+        if (now - it->second > fc::seconds(DLT_BLOCK_VOTE_SEEN_SEC)) it = _block_votes_seen.erase(it);
+        else ++it;
     }
-    msg.node_status = _node_status;
-    send_to_all_our_fork_peers(message(msg));
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (!_block_votes_seen.emplace(key, now).second) return;   // already handled
+
+    // Verification lives in the chain: scheduled validator + signature over
+    // block_vote_digest. An invalid vote is neither counted nor relayed, so a
+    // peer cannot use us to amplify garbage.
+    if (!_delegate || !_delegate->accept_block_vote(msg)) {
+        if (from != INVALID_PEER_ID) {
+            dlog(DLT_LOG_DGRAY "Block vote #${n} by ${v} from peer ${p} not accepted" DLT_LOG_RESET,
+                 ("n", msg.block_num)("v", msg.validator)("p", from));
+        }
+        return;
+    }
+
+    // Gossip to capable fork peers only: a peer without DLT_CAP_BLOCK_VOTE
+    // would score the message as an unknown packet against us.
+    const message out(msg);
+    std::set<node_id_t> sent_to_node_ids;
+    static const node_id_t zero_id;
+    std::vector<peer_id> targets;
+    for (const auto& item : _peer_states) {
+        const auto& st = item.second;
+        if (item.first == from) continue;
+        if (st.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE || !st.exchange_enabled) continue;
+        if (!(st.peer_capabilities & DLT_CAP_BLOCK_VOTE)) continue;
+        if (st.node_id != zero_id && !sent_to_node_ids.insert(st.node_id).second) continue;
+        targets.push_back(item.first);
+    }
+    for (auto id : targets) send_message(id, out);
 }
 
 void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {

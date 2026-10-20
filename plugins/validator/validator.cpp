@@ -1,4 +1,5 @@
 
+#include <graphene/protocol/block_vote.hpp>
 #include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
 
@@ -1743,10 +1744,13 @@ namespace graphene {
                                            may_sign_post_validation(validator_account, block_post_validations[i].block_num,
                                                                     block_post_validations[i].block_id,
                                                                     db.get_dynamic_global_properties().last_irreversible_block_num)){
-                                            graphene::protocol::digest_type::encoder enc;
-                                            fc::raw::pack(enc, db.get_chain_id().str().append(block_post_validations[i].block_id.str()));
-                                            //sign the enc by validator_priv_key
-                                            graphene::protocol::signature_type bpv_signature = validator_priv_key.sign_compact(enc.result());
+                                            // Block vote, round 0 (block_vote_digest). The old
+                                            // chain_id+block_id digest had no domain tag and no
+                                            // round; nothing consumed it since the DLT redesign.
+                                            graphene::protocol::signature_type bpv_signature = validator_priv_key.sign_compact(
+                                                    graphene::protocol::block_vote_digest(db.get_chain_id(),
+                                                                                          block_post_validations[i].block_num,
+                                                                                          block_post_validations[i].block_id, 0));
                                             //ilog("Witness ${w} signed block post validation #${n} ${b} with signature ${s}", ("w", validator_account)("n", block_post_validations[i].block_num)("b", block_post_validations[i].block_id)("s", bpv_signature));
                                             p2p().post_broadcast_block_post_validation(block_post_validations[i].block_id, validator_account, bpv_signature);
                                         }

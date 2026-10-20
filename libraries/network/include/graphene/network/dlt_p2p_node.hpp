@@ -119,6 +119,10 @@ public:
     // ── Block/transaction handling ───────────────────────────────
     virtual dlt_block_accept_result accept_block(const signed_block& block, bool sync_mode) = 0;
     virtual bool           accept_transaction(const signed_transaction& trx) = 0;
+    // Verify a block vote (scheduled validator, signature over block_vote_digest)
+    // and record it. True = valid and not seen before, so it is worth relaying.
+    // Non-pure: test delegates that never see votes need not implement it.
+    virtual bool           accept_block_vote(const dlt_block_vote_message& vote) { return false; }
 
     // ── Fork resolution ──────────────────────────────────────────
     virtual int            compare_fork_branches(const block_id_type& a, const block_id_type& b) const = 0;
@@ -298,6 +302,9 @@ private:
     // ── Gap fill handlers (exchange-only) ────────────────────────
     void on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_request& req);
     void on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply& reply);
+    void on_dlt_block_vote(peer_id peer, const dlt_block_vote_message& msg);
+    // Accept a vote (local or relayed) and gossip it to capable fork peers.
+    void process_block_vote(const dlt_block_vote_message& msg, peer_id from);
     void request_gap_fill();
 
     // ── Hello construction ───────────────────────────────────────
@@ -489,6 +496,9 @@ private:
 
     // ── Mempool ──────────────────────────────────────────────────
     std::map<graphene::protocol::transaction_id_type, dlt_mempool_entry> _mempool_by_id;
+    // Relay dedup for block votes: digest of the vote message -> seen time.
+    // Bounded by pruning entries older than DLT_BLOCK_VOTE_SEEN_SEC.
+    std::map<fc::sha256, fc::time_point> _block_votes_seen;
     std::multimap<fc::time_point_sec, graphene::protocol::transaction_id_type> _mempool_by_expiry;
     uint32_t                        _mempool_total_bytes = 0;
 

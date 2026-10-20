@@ -315,6 +315,21 @@ public:
         }
     }
 
+    bool accept_block_vote(const graphene::network::dlt_block_vote_message& vote) override {
+        // account_name_type is fixed-width and truncates silently: refuse
+        // oversized names here instead of letting two names collapse into one.
+        if (vote.validator.empty() || vote.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) return false;
+        try {
+            return chain.db().with_weak_read_lock([&]() {
+                return chain.db().push_block_vote(vote.block_num, vote.block_id, vote.round,
+                                                  vote.validator, vote.signature);
+            });
+        } catch (const fc::exception& e) {
+            dlog("Block vote #${n} by ${v} rejected: ${e}", ("n", vote.block_num)("v", vote.validator)("e", e.what()));
+            return false;
+        }
+    }
+
     bool accept_transaction(const signed_transaction& trx) override {
         try {
             // The chain entrypoint owns recovery/shutdown policy for corruption.

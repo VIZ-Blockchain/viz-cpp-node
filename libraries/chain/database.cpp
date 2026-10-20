@@ -26,6 +26,7 @@
 #include <graphene/chain/pm_evaluator.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
+#include <graphene/protocol/block_vote.hpp>
 
 #include <fc/bitutil.hpp>
 #include <fc/smart_ref_impl.hpp>
@@ -7000,6 +7001,99 @@ namespace graphene { namespace chain {
         //create block post validation object with current shuffled validators
         //remove old block post validation objects
         //remove old blocks from post validation list if it is full (CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
+        uint32_t database::block_qc_quorum(uint32_t num_scheduled) {
+            const uint32_t two_thirds_plus = num_scheduled * 2 / 3 + 1;
+            const uint32_t threshold = uint32_t(uint64_t(num_scheduled) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT);
+            return std::max(two_thirds_plus, threshold);
+        }
+
+        bool database::push_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                       const account_name_type &validator, const signature_type &signature) {
+            // Bounds first: a scheduled validator's valid signature over an
+            // absurd (height, round) must still not buy unbounded memory.
+            static constexpr uint32_t MAX_VOTE_AHEAD_BLOCKS = 64;
+            static constexpr uint32_t MAX_VOTE_ROUND = 64;
+            if (block_num == 0 || block_id == block_id_type()) return false;
+            if (protocol::block_header::num_from_id(block_id) != block_num) return false;
+            if (round > MAX_VOTE_ROUND) return false;
+
+            const auto &dpo = get_dynamic_global_properties();
+            const uint32_t lib = dpo.last_irreversible_block_num;
+            if (block_num <= lib) return false;                               // already final
+            if (block_num > dpo.head_block_number + MAX_VOTE_AHEAD_BLOCKS) return false;
+
+            const auto &wso = get_validator_schedule_object();
+            bool scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
+            }
+            if (!scheduled) return false;
+
+            const auto *v = find_validator(validator);
+            if (!v || v->signing_key == public_key_type()) return false;
+
+            const auto digest = protocol::block_vote_digest(get_chain_id(), block_num, block_id, round);
+            try {
+                if (public_key_type(fc::ecc::public_key(signature, digest)) != v->signing_key) return false;
+            } catch (const fc::exception &) {
+                return false;                                                 // unrecoverable signature
+            }
+
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+
+            // Forget everything at or below LIB: those heights are settled.
+            for (auto it = _block_vote_tallies.begin(); it != _block_vote_tallies.end() && std::get<0>(it->first) <= lib; )
+                it = _block_vote_tallies.erase(it);
+            for (auto it = _block_vote_by_validator.begin(); it != _block_vote_by_validator.end(); ) {
+                if (std::get<1>(it->first) <= lib) it = _block_vote_by_validator.erase(it); else ++it;
+            }
+            // Keep certificates a little below LIB: the next block header (and
+            // a lagging peer) may still need the parent's QC.
+            for (auto it = _block_qcs.begin(); it != _block_qcs.end() && it->first + MAX_VOTE_AHEAD_BLOCKS <= lib; )
+                it = _block_qcs.erase(it);
+
+            // One vote per (validator, height, round). A second, different id is
+            // equivocation: never counted, logged as evidence (both signatures
+            // verify against the same signing key).
+            const auto vkey = std::make_tuple(validator, block_num, round);
+            auto prev = _block_vote_by_validator.find(vkey);
+            if (prev != _block_vote_by_validator.end()) {
+                if (prev->second != block_id) {
+                    wlog("Equivocation: validator ${v} voted for two blocks at #${n} round ${r}: ${a} and ${b}",
+                         ("v", validator)("n", block_num)("r", round)("a", prev->second)("b", block_id));
+                }
+                return false;
+            }
+            _block_vote_by_validator.emplace(vkey, block_id);
+
+            auto &tally = _block_vote_tallies[std::make_tuple(block_num, round, block_id)];
+            if (tally.votes.empty()) tally.first_seen = fc::time_point::now();
+            tally.votes.emplace(validator, signature);
+
+            if (tally.votes.size() >= quorum && _block_qcs.find(block_num) == _block_qcs.end()) {
+                block_qc qc;
+                qc.block_num = block_num;
+                qc.block_id = block_id;
+                qc.round = round;
+                qc.signatures.assign(tally.votes.begin(), tally.votes.end());
+                qc.formed_after = fc::time_point::now() - tally.first_seen;
+                ilog("QC formed for #${n} ${id} round ${r}: ${k}/${q} votes, ${ms} ms after first vote",
+                     ("n", block_num)("id", block_id)("r", round)("k", qc.signatures.size())("q", quorum)
+                     ("ms", qc.formed_after.count() / 1000));
+                _block_qcs.emplace(block_num, std::move(qc));
+            }
+            return true;
+        }
+
+        fc::optional<database::block_qc> database::get_block_qc(uint32_t block_num) const {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            auto it = _block_qcs.find(block_num);
+            if (it == _block_qcs.end()) return fc::optional<block_qc>();
+            return it->second;
+        }
+
         void database::create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type& validator_account){
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
             //remove blocks if they height is less than last irreversible block

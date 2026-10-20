@@ -17,6 +17,7 @@
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <thread>
 
 namespace graphene { namespace chain {
@@ -648,6 +649,33 @@ namespace graphene { namespace chain {
 
             void check_block_post_validation_chain();
 
+            // ── Block votes and quorum certificates (QC) ─────────────────
+            // In-memory, node-local: votes are gossiped (dlt_block_vote_message),
+            // not stored in chainbase, so they never enter undo sessions.
+            // Step 0 of the QC plan: verify, tally, detect a quorum and
+            // equivocation, and expose the certificate. Nothing in consensus
+            // reads it yet (LIB-from-QC and parent_qc in the header are the
+            // next steps), so behaviour is unchanged.
+            struct block_qc {
+                uint32_t block_num = 0;
+                block_id_type block_id;
+                uint32_t round = 0;
+                std::vector<std::pair<account_name_type, signature_type>> signatures;
+                fc::microseconds formed_after;   // first vote -> quorum, for measurement
+            };
+
+            /// Verify and tally a vote. Caller holds at least a weak read lock.
+            /// Returns true when the vote is valid and new (worth relaying).
+            bool push_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                 const account_name_type &validator, const signature_type &signature);
+
+            /// The certificate formed for a height, if any (node-local view).
+            fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
+
+            /// Votes needed for a QC with the given number of scheduled validators:
+            /// strictly more than 2/3 and not below the irreversibility threshold.
+            static uint32_t block_qc_quorum(uint32_t num_scheduled);
+
             /**
              * Compare two fork branches by vote weight (HF12 logic).
              * Sums wit_obj.votes (on-chain stake) for all unique validators in each branch,
@@ -725,6 +753,17 @@ namespace graphene { namespace chain {
             std::unique_ptr<database_impl> _my;
 
             fork_database _fork_db;
+
+            struct block_vote_tally {
+                fc::time_point first_seen;
+                std::map<account_name_type, signature_type> votes;
+            };
+            // (block_num, round, block_id) -> votes for exactly that triple
+            std::map<std::tuple<uint32_t, uint32_t, block_id_type>, block_vote_tally> _block_vote_tallies;
+            // (validator, block_num, round) -> the id it voted for (equivocation check)
+            std::map<std::tuple<account_name_type, uint32_t, uint32_t>, block_id_type> _block_vote_by_validator;
+            std::map<uint32_t, block_qc> _block_qcs;
+            mutable std::mutex _block_votes_mutex;
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];
 
