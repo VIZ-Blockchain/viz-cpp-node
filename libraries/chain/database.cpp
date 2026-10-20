@@ -7190,9 +7190,18 @@ namespace graphene { namespace chain {
                     if (it->first <= max_num) certified.emplace_back(it->first, it->second.block_id);
                 }
             }
-            // Highest first; stop at the first one on our branch.
-            for (const auto &c : certified) {
-                if (find_block_id_for_num(c.first) == c.second) return c.first;
+            // 2-chain rule: a certified block is final only when its child at the
+            // next height is certified too, both on our branch. One QC is not
+            // enough once voting has rounds: a validator that voted for X need
+            // not see X's QC, may vote for Y in a later round, and a second QC
+            // at the same height becomes possible. Requiring a certified child
+            // (whose header carries X's QC) closes that window. Highest first.
+            for (size_t i = 0; i + 1 < certified.size(); ++i) {
+                const auto &child = certified[i];
+                const auto &parent = certified[i + 1];
+                if (child.first != parent.first + 1) continue;
+                if (find_block_id_for_num(child.first) == child.second &&
+                    find_block_id_for_num(parent.first) == parent.second) return parent.first;
             }
             return 0;
         }
@@ -7340,7 +7349,7 @@ namespace graphene { namespace chain {
                 // no evaluator reads LIB, so state stays deterministic.
                 if (has_hardfork(CHAIN_HARDFORK_16) && !dpo.emergency_consensus_active &&
                     dpo.head_block_number > 1) {
-                    const uint32_t qc_lib = highest_qc_on_main_branch(dpo.head_block_number - 1);
+                    const uint32_t qc_lib = highest_qc_on_main_branch(dpo.head_block_number);
                     if (qc_lib > new_last_irreversible_block_num) {
                         new_last_irreversible_block_num = qc_lib;
                     }

@@ -672,8 +672,8 @@ namespace graphene { namespace chain {
             /// The certificate formed for a height, if any (node-local view).
             fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
 
-            /// Highest height <= max_num whose QC certifies the block on our main
-            /// branch; 0 if none. Feeds LIB under HF16.
+            /// Highest height H such that H and H+1 (both <= max_num) are certified
+            /// on our main branch (2-chain finality); 0 if none. Feeds LIB under HF16.
             uint32_t highest_qc_on_main_branch(uint32_t max_num) const;
 
             /// HF16 header rule: a handoff block carries a valid QC of its parent.
