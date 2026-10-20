@@ -2903,6 +2903,16 @@ namespace graphene { namespace chain {
                 pending_block.extensions.insert(block_header_extensions(CHAIN_VERSION));
             }
 
+            // HF16: hand the turn over only on a certified parent. The validator
+            // plugin waits for the QC before calling us; reaching here without
+            // one is a bug, and the block would be rejected anyway.
+            if (block_needs_parent_qc(validator_owner)) {
+                auto cert = parent_qc_for_next_block(validator_owner);
+                FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
+                          ("n", head_block_num()));
+                pending_block.extensions.insert(block_header_extensions(*cert));
+            }
+
             const auto &hfp = get_hardfork_property_object();
 
             // Emergency committee validator should NOT vote for future hardforks
@@ -5944,6 +5954,10 @@ namespace graphene { namespace chain {
 
                 const validator_object &signing_validator = validate_block_header(skip, next_block);
 
+                // HF16: must run before current_validator is set to this block's
+                // producer below — the handoff rule compares against the parent's.
+                validate_block_qc(next_block, skip);
+
                 _current_block_num = next_block_num;
                 _current_trx_in_block = 0;
                 _current_virtual_op = 0;
@@ -6096,6 +6110,8 @@ namespace graphene { namespace chain {
 
                         break;
                     }
+                    case 3: // block_qc_certificate — verified in validate_block_qc()
+                        break;
                     default:
                         FC_ASSERT(false, "Unknown extension in block header");
                 }
@@ -7007,6 +7023,99 @@ namespace graphene { namespace chain {
             return std::max(two_thirds_plus, threshold);
         }
 
+        bool database::verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                         const account_name_type &validator, const signature_type &signature) const {
+            const auto &wso = get_validator_schedule_object();
+            bool scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
+            }
+            if (!scheduled) return false;
+
+            const auto *v = find_validator(validator);
+            if (!v || v->signing_key == public_key_type()) return false;
+
+            const auto digest = protocol::block_vote_digest(get_chain_id(), block_num, block_id, round);
+            try {
+                return public_key_type(fc::ecc::public_key(signature, digest)) == v->signing_key;
+            } catch (const fc::exception &) {
+                return false;                                                 // unrecoverable signature
+            }
+        }
+
+        bool database::block_needs_parent_qc(const account_name_type &producer) const {
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dgp = get_dynamic_global_properties();
+            if (dgp.emergency_consensus_active) return false;      // committee alone cannot form a QC
+            if (dgp.head_block_number < 1) return false;
+            const auto &parent_producer = dgp.current_validator;    // producer of head
+            if (parent_producer == account_name_type()) return false;
+            if (parent_producer == producer) return false;          // same validator's series: no handoff
+            // First block after an emergency: committee blocks never get a QC
+            // (validators re-enter with fresh keys), so their child is exempt.
+            if (parent_producer == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) return false;
+            return true;
+        }
+
+        fc::optional<protocol::block_qc_certificate> database::parent_qc_for_next_block(const account_name_type &producer) const {
+            fc::optional<protocol::block_qc_certificate> result;
+            if (!block_needs_parent_qc(producer)) return result;
+            const auto qc = get_block_qc(head_block_num());
+            if (!qc || qc->block_id != head_block_id()) return result;
+
+            protocol::block_qc_certificate cert;
+            cert.block_num = qc->block_num;
+            cert.block_id = qc->block_id;
+            cert.round = qc->round;
+            // Re-verify against current state: the schedule or a signing key may
+            // have changed since the votes were tallied (round boundary), and the
+            // block must carry only signatures the consensus check will accept.
+            for (const auto &sv : qc->signatures) {
+                if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
+                    cert.signatures.emplace(sv.first, sv.second);
+            }
+            const auto &wso = get_validator_schedule_object();
+            if (cert.signatures.size() < block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT))
+                return result;
+            result = std::move(cert);
+            return result;
+        }
+
+        void database::validate_block_qc(const signed_block &next_block, uint32_t skip) const {
+            const protocol::block_qc_certificate *cert = nullptr;
+            for (const auto &e : next_block.extensions) {
+                if (e.which() == 3)   // block_qc_certificate (index in block_header_extensions)
+                    cert = &e.get<protocol::block_qc_certificate>();
+            }
+            if (!has_hardfork(CHAIN_HARDFORK_16)) {
+                FC_ASSERT(cert == nullptr, "Parent QC in block #${n} before HF16", ("n", next_block.block_num()));
+                return;
+            }
+            if (block_needs_parent_qc(next_block.validator)) {
+                FC_ASSERT(cert != nullptr,
+                          "Block #${n} by ${w} hands over the turn but carries no QC of its parent (produced by ${p})",
+                          ("n", next_block.block_num())("w", next_block.validator)
+                          ("p", get_dynamic_global_properties().current_validator));
+            }
+            if (cert == nullptr) return;
+
+            FC_ASSERT(cert->block_id == next_block.previous && cert->block_num + 1 == next_block.block_num(),
+                      "Parent QC certifies #${qn} ${qid}, not the parent ${pid}",
+                      ("qn", cert->block_num)("qid", cert->block_id)("pid", next_block.previous));
+            FC_ASSERT(cert->round <= 64, "Parent QC round out of range");
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
+            FC_ASSERT(cert->signatures.size() <= scheduled, "Parent QC has more signatures than scheduled validators");
+            FC_ASSERT(cert->signatures.size() >= block_qc_quorum(scheduled),
+                      "Parent QC has ${k} signatures, quorum is ${q}",
+                      ("k", cert->signatures.size())("q", block_qc_quorum(scheduled)));
+            if (skip & skip_validator_signature) return;
+            for (const auto &sv : cert->signatures) {
+                FC_ASSERT(verify_block_vote(cert->block_num, cert->block_id, cert->round, sv.first, sv.second),
+                          "Parent QC carries an invalid vote by ${v}", ("v", sv.first));
+            }
+        }
+
         bool database::push_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
                                        const account_name_type &validator, const signature_type &signature) {
             // Bounds first: a scheduled validator's valid signature over an
@@ -7022,23 +7131,9 @@ namespace graphene { namespace chain {
             if (block_num <= lib) return false;                               // already final
             if (block_num > dpo.head_block_number + MAX_VOTE_AHEAD_BLOCKS) return false;
 
+            if (!verify_block_vote(block_num, block_id, round, validator, signature)) return false;
+
             const auto &wso = get_validator_schedule_object();
-            bool scheduled = false;
-            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
-                if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
-            }
-            if (!scheduled) return false;
-
-            const auto *v = find_validator(validator);
-            if (!v || v->signing_key == public_key_type()) return false;
-
-            const auto digest = protocol::block_vote_digest(get_chain_id(), block_num, block_id, round);
-            try {
-                if (public_key_type(fc::ecc::public_key(signature, digest)) != v->signing_key) return false;
-            } catch (const fc::exception &) {
-                return false;                                                 // unrecoverable signature
-            }
-
             const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
 
             std::lock_guard<std::mutex> guard(_block_votes_mutex);

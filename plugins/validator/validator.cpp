@@ -2263,6 +2263,18 @@ namespace graphene {
                     }
                 } catch (...) {}
 
+                // HF16: a handoff block needs the parent's QC. Without it we skip
+                // the slot rather than fork: votes keep arriving, and the next
+                // producer (or we, next slot) builds once the quorum is there.
+                if (db.with_weak_read_lock([&]() {
+                        return db.block_needs_parent_qc(scheduled_validator) &&
+                               !db.parent_qc_for_next_block(scheduled_validator).valid();
+                    })) {
+                    ilog("Waiting for QC of head #${h} before producing slot ${s} as ${w}",
+                         ("h", db.head_block_num())("s", slot)("w", scheduled_validator));
+                    return block_validation_condition::not_time_yet;
+                }
+
                 if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_validator));
                 if (scheduled_validator == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     dlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",

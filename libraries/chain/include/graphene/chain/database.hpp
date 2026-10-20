@@ -676,9 +676,25 @@ namespace graphene { namespace chain {
             /// branch; 0 if none. Feeds LIB under HF16.
             uint32_t highest_qc_on_main_branch(uint32_t max_num) const;
 
+            /// HF16 header rule: a handoff block carries a valid QC of its parent.
+            void validate_block_qc(const signed_block &next_block, uint32_t skip) const;
+
             /// Votes needed for a QC with the given number of scheduled validators:
             /// strictly more than 2/3 and not below the irreversibility threshold.
             static uint32_t block_qc_quorum(uint32_t num_scheduled);
+
+            /// Consensus check of one vote against current state: validator is
+            /// scheduled, has a signing key, and the signature recovers to it.
+            bool verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                   const account_name_type &validator, const signature_type &signature) const;
+
+            /// HF16: does a block by `producer` on top of head need the parent's QC?
+            bool block_needs_parent_qc(const account_name_type &producer) const;
+
+            /// HF16: the parent certificate `producer` would put into its next
+            /// block, built from the node-local QC of head and re-verified against
+            /// state; empty when not needed or not formed yet.
+            fc::optional<protocol::block_qc_certificate> parent_qc_for_next_block(const account_name_type &producer) const;
 
             /**
              * Compare two fork branches by vote weight (HF12 logic).
