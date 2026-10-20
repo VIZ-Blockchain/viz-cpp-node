@@ -6,7 +6,15 @@
 # plugin:
 #   ./plugins/node_admin/tests/acceptance.sh [path/to/vizd]
 #
-# Exit code: 0 = every check passed, 1 = at least one failed, 2 = the node never came up.
+# The suite writes fixture files into the node's data dir (snapshots, config.ini edits, repair
+# markers), so the node must run as the SAME user as the script. With Docker, pass --user:
+#   docker run --rm --network host --user "$(id -u):$(id -g)" -v "$WORK:$WORK" \
+#       --entrypoint /usr/local/bin/vizd vizblockchain/vizd:pm --data-dir "$WORK"
+# Otherwise node-created files are root-owned and those fixtures fail with permission denied;
+# the guard below stops the run instead of reporting the resulting noise as product failures.
+#
+# Exit code: 0 = every check passed, 1 = at least one failed, 2 = the node never came up or the
+# data dir is not writable by this user (that is "not measured", not a regression).
 set -u
 
 VIZD=${1:-${VIZD:-build/programs/vizd/vizd}}
@@ -82,6 +90,15 @@ done
 if ! grep -q "node_admin: listening" "$WORK/console.log"; then
     echo "node_admin never listened on $PORT"
     tail -20 "$WORK/console.log"
+    exit 2
+fi
+
+# The node must run as this user: fixtures are written straight into its data dir below. A
+# root-owned run (a container without --user) makes every such write fail with permission
+# denied, and the resulting cascade would be reported as product failures.
+if [ ! -w "$WORK/state" ]; then
+    echo "FATAL: $WORK/state is not writable by $(id -un); the node runs as another user"
+    echo "       Run the node as this user (docker: --user $(id -u):$(id -g)) or use a local binary."
     exit 2
 fi
 
@@ -249,6 +266,9 @@ check "objects.list -> at least one object type" true \
 check "objects.list -> rows carry a type and a count" true \
     "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["result"]; print(str(bool(r["indexes"][0]["type"]) and isinstance(r["indexes"][0]["objects"], int)).lower())' "$OUT")"
 check "objects.list -> schema matches this binary" true "$(field result.schema.match)"
+# Both live under <data-dir>/state (next to shared_memory.bin); reading the app data dir
+# reported them absent on every healthy node.
+check "objects.list -> block log found where the chain keeps it" true "$(field result.block_log.present)"
 check "objects.list -> read lock answered" null "$(field result.lock_error)"
 check "objects.list -> index order is largest first" true \
     "$(python3 -c 'import json,sys; c=[i["objects"] for i in json.load(open(sys.argv[1]))["result"]["indexes"]]; print(str(c == sorted(c, reverse=True)).lower())' "$OUT")"
@@ -745,7 +765,7 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
-check "MCP tools/list -> thirty-seven tools" 37 \
+check "MCP tools/list -> forty-one tools" 41 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.auth.me present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.auth.me" for t in ts)).lower())' "$OUT")"
@@ -775,6 +795,14 @@ check "MCP tools/list -> admin.validator.list present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.validator.list" for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> admin.validator.plan present" true \
     "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.validator.plan" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.plugins.status present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.plugins.status" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.objects.list present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.objects.list" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.objects.check present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.objects.check" for t in ts)).lower())' "$OUT")"
+check "MCP tools/list -> admin.objects.repair present" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(any(t["name"]=="admin.objects.repair" for t in ts)).lower())' "$OUT")"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"admin.webserver.limits","arguments":{"per_minute":10}}}'
 check "MCP webserver.limits without 'webserver' scope -> isError" true "$(field result.isError)"
