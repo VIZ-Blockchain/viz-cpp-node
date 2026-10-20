@@ -7087,6 +7087,21 @@ namespace graphene { namespace chain {
             return true;
         }
 
+        uint32_t database::highest_qc_on_main_branch(uint32_t max_num) const {
+            std::vector<std::pair<uint32_t, block_id_type>> certified;
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                for (auto it = _block_qcs.rbegin(); it != _block_qcs.rend(); ++it) {
+                    if (it->first <= max_num) certified.emplace_back(it->first, it->second.block_id);
+                }
+            }
+            // Highest first; stop at the first one on our branch.
+            for (const auto &c : certified) {
+                if (find_block_id_for_num(c.first) == c.second) return c.first;
+            }
+            return 0;
+        }
+
         fc::optional<database::block_qc> database::get_block_qc(uint32_t block_num) const {
             std::lock_guard<std::mutex> guard(_block_votes_mutex);
             auto it = _block_qcs.find(block_num);
@@ -7216,6 +7231,26 @@ namespace graphene { namespace chain {
                         ? dpo.head_block_number - 1
                         : 0;
                 }
+
+                // === HARDFORK 16: LIB FROM QUORUM CERTIFICATES ===
+                // A QC is >2/3 of scheduled validators signing one block id at one
+                // height; the one-vote-per-height guard makes a conflicting QC at
+                // the same height impossible without equivocation, so the certified
+                // block and its ancestors are final. Take the highest certified
+                // height that is on OUR main branch (a QC for a block we do not
+                // have, or for a sibling, proves nothing about our chain).
+                // Capped at HEAD-1, same reason as the emergency cap: committing
+                // HEAD would drop the undo session of the block being applied.
+                // Node-local, like the pre-DLT post-validation LIB it replaces:
+                // no evaluator reads LIB, so state stays deterministic.
+                if (has_hardfork(CHAIN_HARDFORK_16) && !dpo.emergency_consensus_active &&
+                    dpo.head_block_number > 1) {
+                    const uint32_t qc_lib = highest_qc_on_main_branch(dpo.head_block_number - 1);
+                    if (qc_lib > new_last_irreversible_block_num) {
+                        new_last_irreversible_block_num = qc_lib;
+                    }
+                }
+                // === END HARDFORK 16 ===
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: update_last_irreversible_block: new_lib=${lib} old_lib=${old} head=${h}",
                      ("lib", new_last_irreversible_block_num)("old", dpo.last_irreversible_block_num)("h", dpo.head_block_number));

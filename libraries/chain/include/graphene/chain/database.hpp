@@ -653,9 +653,9 @@ namespace graphene { namespace chain {
             // In-memory, node-local: votes are gossiped (dlt_block_vote_message),
             // not stored in chainbase, so they never enter undo sessions.
             // Step 0 of the QC plan: verify, tally, detect a quorum and
-            // equivocation, and expose the certificate. Nothing in consensus
-            // reads it yet (LIB-from-QC and parent_qc in the header are the
-            // next steps), so behaviour is unchanged.
+            // equivocation, and expose the certificate. Under HF16 the
+            // highest QC on our branch also advances LIB (node-local, like the
+            // pre-DLT post-validation LIB); parent_qc in the header is next.
             struct block_qc {
                 uint32_t block_num = 0;
                 block_id_type block_id;
@@ -671,6 +671,10 @@ namespace graphene { namespace chain {
 
             /// The certificate formed for a height, if any (node-local view).
             fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
+
+            /// Highest height <= max_num whose QC certifies the block on our main
+            /// branch; 0 if none. Feeds LIB under HF16.
+            uint32_t highest_qc_on_main_branch(uint32_t max_num) const;
 
             /// Votes needed for a QC with the given number of scheduled validators:
             /// strictly more than 2/3 and not below the irreversibility threshold.
