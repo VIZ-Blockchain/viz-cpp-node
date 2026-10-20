@@ -44,12 +44,6 @@ uint64_t compaction_trigger(uint32_t max_lines) {
 // through a degenerate file that has no line breaks at all (a single 10 GB "line").
 const uint64_t kMaxScanBytes = 64ull * 1024 * 1024;
 
-uint64_t count_lines(const std::string &text) {
-    uint64_t n = static_cast<uint64_t>(std::count(text.begin(), text.end(), '\n'));
-    if (!text.empty() && text.back() != '\n') ++n;
-    return n;
-}
-
 /**
  * Offset right after the newline that starts the last `keep` lines, or 0 when the
  * whole file is that short. `have_boundary` distinguishes "cut at 0" from "cut at 0
@@ -210,7 +204,7 @@ public:
         }
     }
 
-    void error(const std::string &text) {
+    void error(const std::string &text) const {
         std::cerr << "capped_file_appender: " << text << "\n";
     }
 
@@ -221,11 +215,15 @@ public:
     }
 
     uint64_t count_lines_of_file() const {
-        std::ifstream in(cfg.filename.string().c_str(), std::ios::binary);
-        if (!in) return 0;
-        std::ostringstream os;
-        os << in.rdbuf();
-        return count_lines(os.str());
+        uint64_t n = 0;
+        std::string error_text;
+        if (!capped_file_appender::count_lines_in_file(cfg.filename, n, error_text)) {
+            // Counting is best-effort here: a wrong count only delays or advances the next
+            // compaction, so report it and keep logging rather than dropping the appender.
+            error(error_text);
+            return 0;
+        }
+        return n;
     }
 
     // Caller holds slock. Rewrites the file to its last max_lines lines and reopens.
@@ -256,6 +254,40 @@ capped_file_appender::capped_file_appender(const fc::variant &args) :
 }
 
 capped_file_appender::~capped_file_appender() = default;
+
+bool capped_file_appender::count_lines_in_file(const fc::path &path, uint64_t &lines, std::string &error) {
+    lines = 0;
+    error.clear();
+
+    const std::string name = path.string();
+    std::ifstream in(name.c_str(), std::ios::binary);
+    if (!in) {
+        if (errno == ENOENT) return true; // nothing written yet
+        error = "cannot open " + name + ": " + std::strerror(errno);
+        return false;
+    }
+
+    std::vector<char> buf(64 * 1024);
+    char last = 0;
+    bool any = false;
+    while (in) {
+        in.read(&buf[0], static_cast<std::streamsize>(buf.size()));
+        const std::streamsize got = in.gcount();
+        if (got <= 0) break;
+        lines += static_cast<uint64_t>(
+            std::count(buf.begin(), buf.begin() + static_cast<std::size_t>(got), '\n'));
+        last = buf[static_cast<std::size_t>(got) - 1];
+        any = true;
+    }
+    if (in.bad()) {
+        error = "read error on " + name;
+        lines = 0;
+        return false;
+    }
+    // A file that does not end in '\n' still has that last partial line.
+    if (any && last != '\n') ++lines;
+    return true;
+}
 
 bool capped_file_appender::trim_to_last_lines(const fc::path &path, uint32_t keep, std::string &error) {
     error.clear();

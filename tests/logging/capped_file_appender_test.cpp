@@ -149,6 +149,51 @@ BOOST_AUTO_TEST_CASE(boundary_is_found_across_chunks) {
     std::remove(path.c_str());
 }
 
+// The appender counts lines to know when to compact. That count must not read the file
+// into memory: it is also taken right after a FAILED trim, i.e. when the log is at its
+// largest and the disk is already unhappy.
+BOOST_AUTO_TEST_CASE(count_matches_the_written_lines) {
+    const std::string path = temp_path("count25k");
+    write_file(path, numbered_lines(1, 25000));
+
+    std::string error;
+    uint64_t lines = 0;
+    BOOST_REQUIRE(graphene::utilities::capped_file_appender::count_lines_in_file(path, lines, error));
+    BOOST_TEST(error == "");
+    BOOST_TEST(lines == 25000u);
+
+    // No trailing newline: the last partial line still counts.
+    write_file(path, "a\nb\nc");
+    BOOST_REQUIRE(graphene::utilities::capped_file_appender::count_lines_in_file(path, lines, error));
+    BOOST_TEST(lines == 3u);
+
+    std::remove(path.c_str());
+}
+
+BOOST_AUTO_TEST_CASE(counting_a_missing_file_is_zero_not_an_error) {
+    const std::string path = temp_path("count_missing");
+    std::remove(path.c_str());
+
+    std::string error;
+    uint64_t lines = 12345;
+    BOOST_REQUIRE(graphene::utilities::capped_file_appender::count_lines_in_file(path, lines, error));
+    BOOST_TEST(error == "");
+    BOOST_TEST(lines == 0u);
+}
+
+// The count streams in 64 KiB chunks; a line may straddle two of them.
+BOOST_AUTO_TEST_CASE(count_survives_chunk_boundaries) {
+    const std::string path = temp_path("count_chunks");
+    write_file(path, std::string(200 * 1024, 'x') + "\na\nb\nc\n");
+
+    std::string error;
+    uint64_t lines = 0;
+    BOOST_REQUIRE(graphene::utilities::capped_file_appender::count_lines_in_file(path, lines, error));
+    // One long line, then a, b, c — four lines, the first one spanning three chunks.
+    BOOST_TEST(lines == 4u);
+    std::remove(path.c_str());
+}
+
 BOOST_AUTO_TEST_CASE(appender_compacts_while_logging) {
     const std::string path = temp_path("live");
     std::remove(path.c_str());

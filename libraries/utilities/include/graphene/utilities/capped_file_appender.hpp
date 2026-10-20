@@ -59,6 +59,21 @@ public:
      */
     static bool trim_to_last_lines(const fc::path &path, uint32_t keep, std::string &error);
 
+    /**
+     * Count the lines of `path`, streaming it in fixed chunks.
+     *
+     * The appender needs the current line count to know when to compact. Counting by
+     * reading the whole file into memory is exactly wrong for this appender: it exists
+     * for files that may be gigabytes, and the count is also taken when a trim FAILED
+     * (e.g. disk full, so the temporary file cannot be written) — the worst moment to
+     * allocate a second copy of a huge log.
+     *
+     * A missing file counts as zero lines and is not an error (nothing was written yet).
+     *
+     * @return true when the file was read; false with a reason in `error` otherwise.
+     */
+    static bool count_lines_in_file(const fc::path &path, uint64_t &lines, std::string &error);
+
 private:
     class impl;
 
