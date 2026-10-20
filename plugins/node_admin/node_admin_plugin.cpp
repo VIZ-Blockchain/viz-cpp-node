@@ -1951,6 +1951,13 @@ struct node_admin_plugin::impl {
     std::mutex config_write_mutex;
     uint32_t plan_ttl_sec = 120;
     std::atomic<bool> restart_requested{false};
+    // Startup mode of the chain plugin, captured while node_admin still sees the option
+    // map. It decides what a repair marker really does: with --replay-from-snapshot the
+    // chain plugin takes the snapshot path before it ever looks at force_replay, so the
+    // marker's "replay from block 1" is superseded, and a force_resync comes back from the
+    // snapshot rather than from genesis. Reporting the generic effect there would be a lie.
+    bool snapshot_replay_from = false;
+    bool snapshot_configured = false;
 
     void store_plan(const pending_plan &p);
     pending_plan take_plan(const std::string &id, const token_info &token, const std::string &kind);
@@ -2118,6 +2125,13 @@ void node_admin_plugin::plugin_initialize(const bpo::variables_map &options) {
     }
 
     pimpl->allow_remote = options.at("admin-allow-remote").as<bool>();
+    // Same option map the chain plugin reads. Guarded with count(): node_admin must not make
+    // a snapshot option mandatory for nodes that start without one.
+    pimpl->snapshot_replay_from =
+            options.count("replay-from-snapshot") && options.at("replay-from-snapshot").as<bool>();
+    pimpl->snapshot_configured =
+            (options.count("snapshot-auto-latest") && options.at("snapshot-auto-latest").as<bool>()) ||
+            (options.count("snapshot") && !trim(options.at("snapshot").as<std::string>()).empty());
     // A zero TTL would make every plan unusable before it is returned; clamp like the
     // webserver limits do.
     pimpl->plan_ttl_sec = std::max<uint32_t>(1, options.at("admin-plan-ttl").as<uint32_t>());
@@ -4312,9 +4326,24 @@ fc::variant node_admin_plugin::impl::h_objects_repair(const fc::variant &params)
     m("restarting", true);
     m("mode", mode);
     m("marker", marker_path);
-    m("effect", mode == "replay"
-                    ? "next startup wipes shared memory and reindexes the existing block log from block 1"
-                    : "next startup wipes shared memory and the block log, then resyncs from peers");
+    // The effect text must match the startup the chain plugin will actually take. With
+    // --replay-from-snapshot it rebuilds from the snapshot first and only then replays the
+    // block log, so neither mode's generic wording is true for such a node.
+    std::string effect;
+    if (mode == "replay" && snapshot_replay_from) {
+        effect = "next startup rebuilds state from the configured snapshot and replays the "
+                 "block log on top of it: this node runs with --replay-from-snapshot, which the "
+                 "chain plugin takes before the marker's replay-from-block-1 path";
+    } else if (mode == "replay") {
+        effect = "next startup wipes shared memory and reindexes the existing block log from block 1";
+    } else if (snapshot_configured) {
+        effect = "next startup wipes shared memory and the block log, then rebuilds state from the "
+                 "configured snapshot and continues from the network (not from genesis)";
+    } else {
+        effect = "next startup wipes shared memory and the block log, then resyncs from peers";
+    }
+    m("effect", effect);
+    m("snapshot_replay", snapshot_replay_from);
     m("hint", "the process exits cleanly right after this reply. Bring-up belongs to the "
               "supervisor: docker --restart unless-stopped or systemd Restart=always.");
     return fc::variant(m);

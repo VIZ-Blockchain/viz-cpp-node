@@ -335,8 +335,16 @@ is refused with `-32000 no block log` when the log is absent or empty. If a `for
 marker from the wedge watchdog is already present, the startup performs the resync and drops
 the replay request instead of replaying an empty log.
 
-The response carries `marker` and `effect`; the supervisor must bring the node back
-(`--restart unless-stopped` / `Restart=always`), exactly as for a plain restart.
+**Snapshot-mode nodes.** The two marker effects above describe a node that starts on the
+normal path. A node started with `--replay-from-snapshot` never reaches it: the chain plugin
+rebuilds state from the snapshot and replays the block log on top, so a `replay` request ends
+up as a snapshot rebuild, and a `resync` request comes back from the snapshot instead of
+genesis. The repair is still a full state rebuild — which is what an operator wants — but
+the response says so instead of repeating the generic wording. `effect` is computed from the
+options the node was actually started with, and `snapshot_replay` is `true` on such a node.
+
+The response carries `marker`, `effect` and `snapshot_replay`; the supervisor must bring the
+node back (`--restart unless-stopped` / `Restart=always`), exactly as for a plain restart.
 
 ### `admin.config.get`
 
