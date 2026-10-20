@@ -16,3 +16,17 @@ target_include_directories(node_admin_util_tests
 # Static libboost_unit_test_framework — do NOT define BOOST_TEST_DYN_LINK.
 
 add_test(NAME node_admin_util COMMAND node_admin_util_tests)
+
+# The verdict branches of admin.objects.check: the judge invites an operator to wipe node
+# state, so a false "corrupted" and a false "ok" both matter. Header-only and fc-free.
+add_executable(node_admin_objects_tests node_admin_objects_test.cpp)
+
+target_link_libraries(node_admin_objects_tests
+    PRIVATE Boost::unit_test_framework
+)
+
+target_include_directories(node_admin_objects_tests
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/node_admin/include"
+)
+
+add_test(NAME node_admin_objects COMMAND node_admin_objects_tests)

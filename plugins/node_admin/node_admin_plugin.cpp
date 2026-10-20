@@ -1,5 +1,6 @@
 #include <graphene/plugins/node_admin/node_admin_plugin.hpp>
 #include <graphene/plugins/node_admin/node_admin_util.hpp>
+#include <graphene/plugins/node_admin/objects_check.hpp>
 
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
@@ -46,7 +47,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -124,30 +124,9 @@ bool read_uint_file(const bfs::path &p, uint32_t &out) {
     return true;
 }
 
-struct objects_state {
-    std::string state_dir;
-    bool state_dir_exists = false;
-    bool shm_exists = false;
-    uint64_t shm_bytes = 0;
-    uint64_t mapped_bytes = 0;
-    uint64_t free_bytes = 0;
-    uint64_t reserved_bytes = 0;
-    int64_t revision = 0;
-    uint32_t head_block_num = 0;
-    uint32_t stored_schema = 0;
-    bool schema_file_present = false;
-    bool block_log_present = false;
-    uint64_t block_log_bytes = 0;
-    bool recovering = false;
-    std::vector<std::string> markers;
-    // type, type_id, objects, revision
-    std::vector<std::tuple<std::string, int64_t, int64_t, int64_t>> indexes;
-    int64_t total_objects = 0;
-    int64_t dgp_objects = -1;
-    int64_t schedule_objects = -1;
-    int64_t account_objects = -1;
-    std::string lock_error;
-};
+// The facts live in objects_check.hpp together with the judge, so the verdict branches can be
+// driven by unit tests without chainbase: see tests/node_admin/node_admin_objects_test.cpp.
+using objects_state = objects_check::state;
 
 // ── limits ──────────────────────────────────────────────────────────────────────────────────
 const std::size_t kMaxBodyBytes = 64 * 1024;
@@ -4168,8 +4147,12 @@ objects_state node_admin_plugin::impl::collect_objects() const {
                 chainbase::abstract_index *idx = *it;
                 const int64_t n = static_cast<int64_t>(idx->size());
                 const std::string type = idx->name();
-                s.indexes.emplace_back(type, static_cast<int64_t>(idx->type_id()), n,
-                                       static_cast<int64_t>(idx->revision()));
+                objects_check::index_row row;
+                row.type = type;
+                row.type_id = static_cast<int64_t>(idx->type_id());
+                row.objects = n;
+                row.revision = static_cast<int64_t>(idx->revision());
+                s.indexes.push_back(row);
                 s.total_objects += n;
                 if (ends_with_text(type, "::dynamic_global_property_object")) s.dgp_objects = n;
                 else if (ends_with_text(type, "::validator_schedule_object")) s.schedule_objects = n;
@@ -4181,10 +4164,9 @@ objects_state node_admin_plugin::impl::collect_objects() const {
     }
 
     std::sort(s.indexes.begin(), s.indexes.end(),
-              [](const std::tuple<std::string, int64_t, int64_t, int64_t> &a,
-                 const std::tuple<std::string, int64_t, int64_t, int64_t> &b) {
-                  if (std::get<2>(a) != std::get<2>(b)) return std::get<2>(a) > std::get<2>(b);
-                  return std::get<0>(a) < std::get<0>(b);
+              [](const objects_check::index_row &a, const objects_check::index_row &b) {
+                  if (a.objects != b.objects) return a.objects > b.objects;
+                  return a.type < b.type;
               });
     return s;
 }
@@ -4201,10 +4183,10 @@ fc::variant node_admin_plugin::impl::h_objects_list(const fc::variant &) {
     fc::variants indexes;
     for (const auto &row : s.indexes) {
         fc::mutable_variant_object e;
-        e("type", std::get<0>(row));
-        e("type_id", std::get<1>(row));
-        e("objects", std::get<2>(row));
-        e("revision", std::get<3>(row));
+        e("type", row.type);
+        e("type_id", row.type_id);
+        e("objects", row.objects);
+        e("revision", row.revision);
         indexes.push_back(fc::variant(e));
     }
 
@@ -4247,115 +4229,25 @@ fc::variant node_admin_plugin::impl::h_objects_list(const fc::variant &) {
 
 fc::variant node_admin_plugin::impl::h_objects_check(const fc::variant &) {
     const objects_state s = collect_objects();
+    const objects_check::judgement j =
+        objects_check::judge(s, static_cast<uint32_t>(CHAIN_SCHEMA_VERSION));
 
     fc::variants findings;
-    int criticals = 0;
-    int warnings = 0;
-    auto add = [&](const char *severity, const char *code, const std::string &text) {
-        fc::mutable_variant_object f;
-        f("severity", severity);
-        f("code", code);
-        f("text", text);
-        findings.push_back(fc::variant(f));
-        if (std::strcmp(severity, "critical") == 0) ++criticals;
-        else if (std::strcmp(severity, "warn") == 0) ++warnings;
-    };
-    auto num = [](uint64_t v) { return std::to_string(v); };
-
-    if (!s.lock_error.empty()) {
-        add("critical", "read_lock_timeout",
-            "shared memory did not answer a read lock: " + s.lock_error);
+    for (const objects_check::finding &f : j.findings) {
+        fc::mutable_variant_object e;
+        e("severity", f.severity);
+        e("code", f.code);
+        e("text", f.text);
+        findings.push_back(fc::variant(e));
     }
-    if (!s.state_dir_exists) {
-        add("critical", "state_dir_missing", "shared-memory directory does not exist: " + s.state_dir);
-    } else if (!s.shm_exists) {
-        add("critical", "shared_memory_missing",
-            "shared_memory.bin is absent in " + s.state_dir + "; the node has no state");
-    } else {
-        if (s.mapped_bytes > 0 && s.shm_bytes < s.mapped_bytes) {
-            add("critical", "shared_memory_truncated",
-                "shared_memory.bin is " + num(s.shm_bytes) + " bytes but the node maps " +
-                num(s.mapped_bytes) + "; the file was truncated or replaced under a running process");
-        } else if (s.mapped_bytes > 0 && s.shm_bytes > s.mapped_bytes) {
-            add("warn", "shared_memory_larger_than_mapping",
-                "shared_memory.bin is " + num(s.shm_bytes) + " bytes, larger than the mapping this "
-                "process opened (" + num(s.mapped_bytes) + "); something else grew the file under "
-                "the running node, usually a second process pointed at the same state directory");
-        }
-    }
-    if (!s.markers.empty()) {
-        std::string list;
-        for (const std::string &x : s.markers) { if (!list.empty()) list += ", "; list += x; }
-        add("critical", "stale_marker",
-            "marker file(s) present from an interrupted operation: " + list +
-            "; the next startup will act on them, and until then the state is mid-operation");
-    }
-    if (s.shm_exists && (!s.schema_file_present || s.stored_schema != CHAIN_SCHEMA_VERSION)) {
-        add("critical", "schema_mismatch",
-            "schema_version " + std::string(s.schema_file_present ? num(s.stored_schema) : "missing") +
-            " does not match this binary (" + num(CHAIN_SCHEMA_VERSION) +
-            "); the next startup wipes shared memory and rebuilds it from a snapshot or block log");
-    }
-    if (s.shm_exists && s.revision != static_cast<int64_t>(s.head_block_num)) {
-        add("warn", "revision_behind_head",
-            "index revision " + std::to_string(s.revision) + " differs from head block " +
-            num(s.head_block_num) + "; the next startup replays the gap from the block log. "
-            "Normal after a crash, not corruption by itself");
-    }
-    if (s.mapped_bytes > 0 && s.free_bytes < 8ull * 1024 * 1024) {
-        add("critical", "shared_memory_exhausted",
-            "only " + num(s.free_bytes) + " bytes are free in the mapped file; the node cannot "
-            "write another block. Repair does not help: raise shared-file-size or the resize "
-            "limits and restart");
-    } else if (s.mapped_bytes > 0 && s.free_bytes * 20 < s.mapped_bytes) {
-        add("warn", "shared_memory_low",
-            "less than 5% of the mapped file is free (" + num(s.free_bytes) + " of " +
-            num(s.mapped_bytes) + " bytes)");
-    }
-    if (s.head_block_num > 0) {
-        if (s.dgp_objects != 1) {
-            add("critical", "global_properties_count",
-                "dynamic_global_property_object rows = " + std::to_string(s.dgp_objects) +
-                ", expected exactly 1");
-        }
-        if (s.schedule_objects != 1) {
-            add("critical", "validator_schedule_count",
-                "validator_schedule_object rows = " + std::to_string(s.schedule_objects) +
-                ", expected exactly 1");
-        }
-        if (s.account_objects == 0) {
-            add("critical", "account_index_empty",
-                "account_object rows = 0 while head is " + num(s.head_block_num));
-        }
-    }
-    if (!s.block_log_present && s.head_block_num > 0) {
-        add("warn", "block_log_missing",
-            "block_log is absent while head is " + num(s.head_block_num) +
-            "; a replay cannot rebuild state, only a full resync can");
-    }
-    if (s.recovering) {
-        add("warn", "recovery_in_progress", "the chain plugin reports an automatic recovery in progress");
-    }
-
-    std::string verdict = "ok";
-    if (!s.lock_error.empty()) verdict = "unreadable";
-    else if (criticals > 0) verdict = "corrupted";
-    else if (warnings > 0) verdict = "warn";
-
-    // A repair rewrites state, so it is recommended only when rewriting can fix the finding.
-    // Exhausted shared memory is the exception: the same size would fill up again.
-    bool repair_helps = verdict == "corrupted" &&
-                        !(criticals == 1 && s.free_bytes < 8ull * 1024 * 1024 && s.mapped_bytes > 0);
-    std::string recommended;
-    if (repair_helps) recommended = (s.block_log_present && s.block_log_bytes > 0) ? "replay" : "resync";
 
     fc::mutable_variant_object m;
-    m("verdict", verdict);
-    m("critical", static_cast<int64_t>(criticals));
-    m("warnings", static_cast<int64_t>(warnings));
+    m("verdict", j.verdict);
+    m("critical", static_cast<int64_t>(j.critical));
+    m("warnings", static_cast<int64_t>(j.warnings));
     m("findings", findings);
-    m("recommended_repair", recommended.empty() ? fc::variant() : fc::variant(recommended));
-    m("replay_available", s.block_log_present && s.block_log_bytes > 0);
+    m("recommended_repair", j.recommended_repair.empty() ? fc::variant() : fc::variant(j.recommended_repair));
+    m("replay_available", j.replay_available);
     m("state_dir", s.state_dir);
     m("checked_at", now_iso());
     return fc::variant(m);

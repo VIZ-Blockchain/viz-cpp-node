@@ -1130,6 +1130,16 @@ pending pool was cleared and the update was silently lost. The plugin now keeps 
 snapshot (seeded at startup, refreshed from applied block contents) and production signs with
 that key.
 
-`tests/node_admin/` is a CTest target (`node_admin_util`, Boost.Test) over the pure helpers:
-secret masking, token parsing, the config parser, the allow-list and normalization, and the
-raw-line editors (spacing, CRLF, sections, plugin add/remove guards).
+`tests/node_admin/` holds two CTest targets (Boost.Test). `node_admin_util` covers the pure
+helpers: secret masking, token parsing, the config parser, the allow-list and normalization, and
+the raw-line editors (spacing, CRLF, sections, plugin add/remove guards).
+
+`node_admin_objects` covers the verdict branches of `admin.objects.check` in
+`objects_check.hpp`, which is deliberately free of fc and chainbase so every arm can be driven
+by a hand-built state: healthy, crash-lag (warn, not corrupted), truncation (replay), no block
+log (resync), exhaustion alone (no repair offered — the same size fills again), exhaustion next
+to another critical (replay), stale markers, schema rules, core index cardinality above and at
+genesis, the 5% free-space boundary, a wedged read lock (unreadable, and no repair on the
+strength of a lock that was never answered), and recovery/block-log warnings. The judge is what
+invites an operator to wipe state, so a false `corrupted` and a false `ok` are both defects and
+both have a test.
