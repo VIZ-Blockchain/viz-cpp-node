@@ -206,7 +206,10 @@ gigabytes per hour. If all you need is the recent tail, use the optional capped 
 a single file that keeps only the last `max_lines` lines (default 10000, `0` = unlimited).
 It counts lines as it writes and compacts itself in place, so the file stays between
 `max_lines` and about 1.1 x `max_lines`, with no timer involved. Nodes whose config has no
-`log.capped_file_appender.*` section behave exactly as before.
+`log.capped_file_appender.*` section behave exactly as before, and the section itself is
+safe to roll out ahead of the upgrade: an older binary ignores it and keeps logging to
+stderr. If the configured path cannot be opened, the node still starts, prints one
+`capped_file_appender: cannot open log file …` line to stderr, and simply leaves no file.
 
 ```ini
 log.capped_file_appender.node.filename = logs/node/node.log

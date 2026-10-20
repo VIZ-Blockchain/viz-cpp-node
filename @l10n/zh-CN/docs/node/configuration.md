@@ -204,7 +204,9 @@ logger.p2p.appenders = p2p
 如果只需要最近的尾部，请使用可选的 capped appender：单个文件，只保留最后 `max_lines` 行
 （默认 10000，`0` 表示不限制）。它在写入时统计行数并在原文件上就地压缩，因此文件保持在
 `max_lines` 与约 1.1 x `max_lines` 之间，不依赖任何定时器。配置中没有
-`log.capped_file_appender.*` 节的节点行为与之前完全一致。
+`log.capped_file_appender.*` 节的节点行为与之前完全一致；该节也可以安全地先于二进制升级
+下发——旧版本会忽略它并继续写入 stderr。若配置的路径无法打开，节点仍会启动：向 stderr
+输出一行 `capped_file_appender: cannot open log file …`，只是不会创建文件。
 
 ```ini
 log.capped_file_appender.node.filename = logs/node/node.log
