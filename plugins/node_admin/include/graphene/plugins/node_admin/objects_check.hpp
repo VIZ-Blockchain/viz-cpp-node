@@ -71,6 +71,26 @@ inline bool schema_mismatch(const state &s, uint32_t compiled_schema) {
     return s.shm_exists && (!s.schema_file_present || s.stored_schema != compiled_schema);
 }
 
+/// What the next startup will really do with a repair marker. The chain plugin takes the
+/// snapshot path before it looks at force_replay, so on a --replay-from-snapshot node neither
+/// marker does what its name suggests: the state is rebuilt from the snapshot either way.
+inline std::string repair_effect(const std::string &mode, bool snapshot_replay_from,
+                                 bool snapshot_configured) {
+    if (mode == "replay" && snapshot_replay_from) {
+        return "next startup rebuilds state from the configured snapshot and replays the "
+               "block log on top of it: this node runs with --replay-from-snapshot, which the "
+               "chain plugin takes before the marker's replay-from-block-1 path";
+    }
+    if (mode == "replay") {
+        return "next startup wipes shared memory and reindexes the existing block log from block 1";
+    }
+    if (snapshot_configured) {
+        return "next startup wipes shared memory and the block log, then rebuilds state from the "
+               "configured snapshot and continues from the network (not from genesis)";
+    }
+    return "next startup wipes shared memory and the block log, then resyncs from peers";
+}
+
 inline judgement judge(const state &s, uint32_t compiled_schema) {
     judgement j;
     auto add = [&](const char *severity, const char *code, const std::string &text) {

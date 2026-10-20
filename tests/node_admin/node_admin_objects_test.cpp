@@ -267,4 +267,27 @@ BOOST_AUTO_TEST_CASE(empty_block_log_is_not_replayable) {
     BOOST_TEST(bad.recommended_repair == "resync");
 }
 
+BOOST_AUTO_TEST_CASE(repair_effect_names_snapshot_replay_where_it_applies) {
+    // Plain node: the marker means what its name says.
+    BOOST_TEST(repair_effect("replay", false, false) ==
+               "next startup wipes shared memory and reindexes the existing block log from block 1");
+    BOOST_TEST(repair_effect("resync", false, false) ==
+               "next startup wipes shared memory and the block log, then resyncs from peers");
+
+    // --replay-from-snapshot supersedes the block-log replay; the text must say so.
+    const std::string taken = repair_effect("replay", true, true);
+    BOOST_TEST(taken.find("snapshot") != std::string::npos);
+    BOOST_TEST(taken.find("block 1") == std::string::npos);
+    BOOST_TEST(taken != repair_effect("replay", false, false));
+
+    // A snapshot without --replay-from-snapshot still changes where a resync starts from:
+    // state comes back from the snapshot, not from genesis.
+    const std::string from_snapshot = repair_effect("resync", false, true);
+    BOOST_TEST(from_snapshot != repair_effect("resync", false, false));
+    BOOST_TEST(from_snapshot.find("not from genesis") != std::string::npos);
+
+    // replay on such a node is unaffected: it keeps its own wording.
+    BOOST_TEST(repair_effect("replay", false, true) == repair_effect("replay", false, false));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

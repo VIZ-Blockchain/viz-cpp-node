@@ -4326,23 +4326,9 @@ fc::variant node_admin_plugin::impl::h_objects_repair(const fc::variant &params)
     m("restarting", true);
     m("mode", mode);
     m("marker", marker_path);
-    // The effect text must match the startup the chain plugin will actually take. With
-    // --replay-from-snapshot it rebuilds from the snapshot first and only then replays the
-    // block log, so neither mode's generic wording is true for such a node.
-    std::string effect;
-    if (mode == "replay" && snapshot_replay_from) {
-        effect = "next startup rebuilds state from the configured snapshot and replays the "
-                 "block log on top of it: this node runs with --replay-from-snapshot, which the "
-                 "chain plugin takes before the marker's replay-from-block-1 path";
-    } else if (mode == "replay") {
-        effect = "next startup wipes shared memory and reindexes the existing block log from block 1";
-    } else if (snapshot_configured) {
-        effect = "next startup wipes shared memory and the block log, then rebuilds state from the "
-                 "configured snapshot and continues from the network (not from genesis)";
-    } else {
-        effect = "next startup wipes shared memory and the block log, then resyncs from peers";
-    }
-    m("effect", effect);
+    // The effect text must match the startup the chain plugin will actually take; see
+    // objects_check::repair_effect (unit-tested) for the snapshot-mode case.
+    m("effect", objects_check::repair_effect(mode, snapshot_replay_from, snapshot_configured));
     m("snapshot_replay", snapshot_replay_from);
     m("hint", "the process exits cleanly right after this reply. Bring-up belongs to the "
               "supervisor: docker --restart unless-stopped or systemd Restart=always.");
