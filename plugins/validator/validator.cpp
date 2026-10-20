@@ -19,6 +19,9 @@
 // included directly now.
 #include <boost/asio/deadline_timer.hpp>
 
+#include <cstdio>
+#include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -210,6 +213,89 @@ namespace graphene {
 
                 fc::time_point last_block_post_validation_time;
 
+                // ── one post-validation signature per height ──────────────────────────────
+                // A validator must never sign two different block ids at the same height:
+                // after a fork switch the signature for the dropped block has already left
+                // the node, and if enough validators sign both blocks of a height, both can
+                // reach the 2/3 threshold and different nodes advance LIB onto different
+                // blocks. Kept per validator for heights above LIB and persisted, so a
+                // restart does not forget what was signed. Re-signing the SAME id (the tick
+                // re-broadcasts the list every 250 ms) stays allowed.
+                std::string post_validation_signed_path_;
+                std::map<std::string, std::map<uint32_t, block_id_type>> post_validation_signed_;
+                std::set<std::pair<std::string, uint32_t>> post_validation_refused_logged_;
+
+                void load_post_validation_signed() {
+                    if (post_validation_signed_path_.empty()) return;
+                    std::ifstream in(post_validation_signed_path_);
+                    std::string name, id;
+                    uint32_t num = 0;
+                    size_t n = 0;
+                    // Format: "<validator> <block_num> <block_id>" per line.
+                    while (in >> name >> num >> id) {
+                        try {
+                            post_validation_signed_[name][num] = block_id_type(id);
+                            ++n;
+                        } catch (...) {
+                            wlog("Skipping malformed post-validation record for ${w} at #${n}", ("w", name)("n", num));
+                        }
+                    }
+                    if (n) ilog("Restored ${n} post-validation signature record(s) from ${p}",
+                                ("n", n)("p", post_validation_signed_path_));
+                }
+
+                void save_post_validation_signed() {
+                    if (post_validation_signed_path_.empty()) return;
+                    const std::string tmp = post_validation_signed_path_ + ".tmp";
+                    {
+                        std::ofstream out(tmp, std::ios::trunc);
+                        if (!out) {
+                            elog("Cannot write ${p}; post-validation records live in memory only",
+                                 ("p", post_validation_signed_path_));
+                            return;
+                        }
+                        for (const auto &v : post_validation_signed_)
+                            for (const auto &h : v.second)
+                                out << v.first << ' ' << h.first << ' ' << h.second.str() << '\n';
+                        out.flush();
+                        if (!out) {
+                            elog("Failed writing ${p}", ("p", post_validation_signed_path_));
+                            std::remove(tmp.c_str());
+                            return;
+                        }
+                    }
+                    if (std::rename(tmp.c_str(), post_validation_signed_path_.c_str()) != 0) {
+                        elog("Failed replacing ${p}", ("p", post_validation_signed_path_));
+                        std::remove(tmp.c_str());
+                    }
+                }
+
+                // True when `validator` may sign `id` at `num`: nothing signed at that height
+                // yet (the record is written before the signature leaves) or the same id.
+                bool may_sign_post_validation(const std::string &validator, uint32_t num,
+                                              const block_id_type &id, uint32_t lib) {
+                    auto &heights = post_validation_signed_[validator];
+                    bool pruned = false;
+                    while (!heights.empty() && heights.begin()->first <= lib) {
+                        heights.erase(heights.begin());
+                        pruned = true;
+                    }
+                    for (auto it = post_validation_refused_logged_.begin(); it != post_validation_refused_logged_.end();)
+                        it = it->second <= lib ? post_validation_refused_logged_.erase(it) : std::next(it);
+                    auto h = heights.find(num);
+                    if (h != heights.end()) {
+                        if (pruned) save_post_validation_signed();
+                        if (h->second == id) return true;
+                        if (post_validation_refused_logged_.insert({validator, num}).second)
+                            wlog("Not signing post-validation of ${id} at #${n} for ${w}: ${old} was already signed at this height",
+                                 ("id", id)("n", num)("w", validator)("old", h->second));
+                        return false;
+                    }
+                    heights[num] = id;
+                    save_post_validation_signed();
+                    return true;
+                }
+
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
                 uint32_t _fork_collision_timeout_blocks = 21;  // one full validator round (21 blocks = 63s)
@@ -345,6 +431,9 @@ namespace graphene {
 
                     pimpl->total_hashes_.store(0, std::memory_order_relaxed);
                     pimpl->_options = &options;
+                    pimpl->post_validation_signed_path_ =
+                        (appbase::app().data_dir() / "post-validation-signed.txt").string();
+                    pimpl->load_post_validation_signed();
                     LOAD_VALUE_SET(options, "validator", pimpl->_validators, string)
                     if (options.count("witness")) {
                         // Deprecated: --witness / config 'witness' is kept for backward compatibility.
@@ -1650,7 +1739,10 @@ namespace graphene {
                                 //check if we have a block
                                 for(uint8_t i = 0; i < block_post_validations.size(); i++) {
                                     if(0 != block_post_validations[i].block_num){
-                                        if(block_post_validations[i].block_id != block_id_type()){
+                                        if(block_post_validations[i].block_id != block_id_type() &&
+                                           may_sign_post_validation(validator_account, block_post_validations[i].block_num,
+                                                                    block_post_validations[i].block_id,
+                                                                    db.get_dynamic_global_properties().last_irreversible_block_num)){
                                             graphene::protocol::digest_type::encoder enc;
                                             fc::raw::pack(enc, db.get_chain_id().str().append(block_post_validations[i].block_id.str()));
                                             //sign the enc by validator_priv_key

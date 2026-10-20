@@ -298,6 +298,7 @@ Classic DPOS path (~63 s) remains active as a fallback if confirmation messages 
 ### Constraints
 
 - Only validators in the **current shuffled schedule** count toward the 2/3 threshold; off-schedule validators are skipped.
+- **One signature per height.** A validator never signs post-validation for two different block ids at the same height: the validator plugin records the id it signed per height above LIB in `<data-dir>/post-validation-signed.txt` (survives restarts) and refuses a different id at that height, logging `Not signing post-validation of …`. Without this, after a fork switch the signature for the dropped block is already in the network, and two blocks of one height could both reach 2/3 so that nodes advance LIB onto different blocks. Re-broadcasting the same id stays allowed.
 - During **emergency consensus** (`emergency_consensus_active = true`), `check_block_post_validation_chain()` returns immediately — LIB is advanced solely by the classic path to avoid deadlocking recovery.
 - The confirmation list is capped at **20 entries** (`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`). Entries below the current LIB are pruned after every block.
 
