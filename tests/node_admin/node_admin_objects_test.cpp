@@ -267,6 +267,22 @@ BOOST_AUTO_TEST_CASE(empty_block_log_is_not_replayable) {
     BOOST_TEST(bad.recommended_repair == "resync");
 }
 
+BOOST_AUTO_TEST_CASE(placeholder_only_block_log_is_not_replayable) {
+    // block_log::open() creates the file with a single NUL byte, so a fresh node — and a node
+    // right after a resync wipe — has a "present" log of exactly one byte and zero blocks.
+    // Offering replay there would promise a rebuild that reindexes nothing.
+    state s = healthy();
+    s.block_log_bytes = 1;
+    BOOST_TEST(!has_replayable_blocks(s));
+    BOOST_TEST(!judge(s, kSchema).replay_available);
+    s.shm_bytes = s.mapped_bytes - 1;
+    BOOST_TEST(judge(s, kSchema).recommended_repair == "resync");
+
+    // One real record is far larger than the placeholder; the boundary itself counts as empty.
+    s.block_log_bytes = 2;
+    BOOST_TEST(has_replayable_blocks(s));
+}
+
 BOOST_AUTO_TEST_CASE(repair_effect_names_snapshot_replay_where_it_applies) {
     // Plain node: the marker means what its name says.
     BOOST_TEST(repair_effect("replay", false, false) ==

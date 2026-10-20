@@ -279,7 +279,7 @@ its row count and the index revision, plus how much of the mapped file is used.
  "shared_memory_bytes":34183577600,"mapped_bytes":34183577600,"free_bytes":12648009654,
  "revision":1234567,"head_block_num":1234567,"recovering":false,
  "schema":{"file_present":true,"stored":15,"compiled":15,"match":true},
- "block_log":{"path":"/var/lib/vizd/block_log","present":true,"bytes":2147483648},
+ "block_log":{"path":"/var/lib/vizd/state/block_log","present":true,"bytes":2147483648},
  "markers":[],"index_count":36,"total_objects":9876543,
  "indexes":[{"type":"graphene::chain::account_object","type_id":7,"objects":812345,
              "revision":1234567}],
@@ -291,6 +291,12 @@ not yield in time the call returns the file facts plus `lock_error` instead of s
 
 The block log is reported as a file or a directory — the chain plugin wipes it with
 `remove_all`, so a directory is a legal shape there.
+
+`schema_version` and `block_log` live in the chain's state directory (`<data-dir>/state` by
+default, next to `shared_memory.bin`), not in the application data dir: the chain plugin opens
+the database with the state directory as its data dir. A log holding only chainbase's one-byte
+placeholder counts as empty — `replay_available` is false and a `replay` repair is refused,
+because it would reindex zero blocks.
 
 ### `admin.objects.check`
 

@@ -282,7 +282,7 @@ max_lines = 10000
  "shared_memory_bytes":34183577600,"mapped_bytes":34183577600,"free_bytes":12648009654,
  "revision":1234567,"head_block_num":1234567,"recovering":false,
  "schema":{"file_present":true,"stored":15,"compiled":15,"match":true},
- "block_log":{"path":"/var/lib/vizd/block_log","present":true,"bytes":2147483648},
+ "block_log":{"path":"/var/lib/vizd/state/block_log","present":true,"bytes":2147483648},
  "markers":[],"index_count":36,"total_objects":9876543,
  "indexes":[{"type":"graphene::chain::account_object","type_id":7,"objects":812345,
              "revision":1234567}],
@@ -294,6 +294,12 @@ max_lines = 10000
 
 Блок-лог показывается и файлом, и каталогом: chain-плагин стирает его через `remove_all`,
 поэтому каталог там — законная форма.
+
+`schema_version` и `block_log` лежат в state-каталоге цепи (`<data-dir>/state` по умолчанию,
+рядом с `shared_memory.bin`), а не в каталоге данных приложения: chain-плагин открывает БД,
+передавая state-каталог как свой data dir. Лог, в котором только однобайтовая заглушка
+chainbase, считается пустым — `replay_available` false, а `replay`-ремонт отвергается, потому
+что проиндексировал бы ноль блоков.
 
 ### `admin.objects.check`
 

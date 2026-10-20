@@ -91,6 +91,14 @@ inline std::string repair_effect(const std::string &mode, bool snapshot_replay_f
     return "next startup wipes shared memory and the block log, then resyncs from peers";
 }
 
+/// A block log that only carries chainbase's one-byte placeholder has nothing to replay.
+/// block_log::open() writes that byte when it creates the files, so on a fresh node (and after
+/// a resync wipe) "the file exists" is true while it holds zero blocks. Treating it as a
+/// replay source would promise a rebuild that would reindex nothing.
+inline bool has_replayable_blocks(const state &s) {
+    return s.block_log_present && s.block_log_bytes > 1;
+}
+
 inline judgement judge(const state &s, uint32_t compiled_schema) {
     judgement j;
     auto add = [&](const char *severity, const char *code, const std::string &text) {
@@ -194,9 +202,8 @@ inline judgement judge(const state &s, uint32_t compiled_schema) {
     const bool repair_helps =
         j.verdict == "corrupted" &&
         !(j.critical == 1 && s.free_bytes < 8ull * 1024 * 1024 && s.mapped_bytes > 0);
-    if (repair_helps) j.recommended_repair = (s.block_log_present && s.block_log_bytes > 0) ? "replay"
-                                                                                            : "resync";
-    j.replay_available = s.block_log_present && s.block_log_bytes > 0;
+    if (repair_helps) j.recommended_repair = has_replayable_blocks(s) ? "replay" : "resync";
+    j.replay_available = has_replayable_blocks(s);
     return j;
 }
 

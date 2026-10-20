@@ -2856,7 +2856,8 @@ fc::variant node_admin_plugin::impl::h_diagnostics(const fc::variant &) {
 
     // shared memory file
     boost::system::error_code ec;
-    const bfs::path shm = bfs::path(data_dir()) / "shared_memory.bin";
+    // shared_memory.bin follows shared-file-dir, which the chain plugin resolves at startup.
+    const bfs::path shm = bfs::path(chain.get_state_dir()) / "shared_memory.bin";
     const uintmax_t shm_size = bfs::file_size(shm, ec);
     if (!ec) m("shared_memory_bytes", static_cast<int64_t>(shm_size));
 
@@ -4122,9 +4123,15 @@ objects_state node_admin_plugin::impl::collect_objects() const {
     const bfs::path dir(s.state_dir);
     s.state_dir_exists = !s.state_dir.empty() && bfs::exists(dir, ec) && bfs::is_directory(dir, ec);
 
+    // The chain plugin opens the database with <data-dir>/state as its data dir, so block_log
+    // and schema_version live NEXT TO shared_memory.bin, not in the application data dir.
+    // Reading the app data dir reported both as absent on every healthy node, and the judge
+    // then called that state "corrupted" and offered a resync.
+    const bfs::path chain_state = bfs::path(data_dir()) / "state";
+
     // The block log is a file in graphene, but the chain plugin wipes it with remove_all, so
     // both shapes are read: a directory here would silently report "no block log" otherwise.
-    const bfs::path block_log = bfs::path(data_dir()) / "block_log";
+    const bfs::path block_log = chain_state / "block_log";
     s.block_log_present = bfs::exists(block_log, ec);
     if (s.block_log_present) {
         if (bfs::is_regular_file(block_log, ec)) {
@@ -4150,7 +4157,7 @@ objects_state node_admin_plugin::impl::collect_objects() const {
         }
     }
 
-    s.schema_file_present = read_uint_file(bfs::path(data_dir()) / "schema_version", s.stored_schema);
+    s.schema_file_present = read_uint_file(chain_state / "schema_version", s.stored_schema);
 
     graphene::chain::database &db = chain.db();
     s.recovering = chain.is_recovering();
@@ -4217,7 +4224,7 @@ fc::variant node_admin_plugin::impl::h_objects_list(const fc::variant &) {
     schema("match", s.schema_file_present && s.stored_schema == CHAIN_SCHEMA_VERSION);
 
     fc::mutable_variant_object block_log;
-    block_log("path", (bfs::path(data_dir()) / "block_log").string());
+    block_log("path", (bfs::path(data_dir()) / "state" / "block_log").string());
     block_log("present", s.block_log_present);
     block_log("bytes", static_cast<int64_t>(s.block_log_bytes));
 
@@ -4243,7 +4250,9 @@ fc::variant node_admin_plugin::impl::h_objects_list(const fc::variant &) {
     m("total_objects", s.total_objects);
     m("indexes", indexes);
     m("generated_at", now_iso());
-    if (!s.lock_error.empty()) m("lock_error", s.lock_error);
+    // Always present: a client asks "did the lock answer?" and must be able to tell null from
+    // a missing field without knowing this server's omissions.
+    m("lock_error", s.lock_error.empty() ? fc::variant() : fc::variant(s.lock_error));
     return fc::variant(m);
 }
 
@@ -4294,7 +4303,7 @@ fc::variant node_admin_plugin::impl::h_objects_repair(const fc::variant &params)
                         "shared-memory directory does not exist: " + s.state_dir,
                         "start the node once so it creates its state directory"};
     }
-    if (mode == "replay" && !(s.block_log_present && s.block_log_bytes > 0)) {
+    if (mode == "replay" && !objects_check::has_replayable_blocks(s)) {
         throw rpc_error{-32000, "no block log",
                         "replay rebuilds state from the block log, and the block log is absent or empty",
                         "use mode=resync: it wipes state and blocks and rebuilds from the network"};
