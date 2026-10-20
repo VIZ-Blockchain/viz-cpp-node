@@ -238,6 +238,10 @@ Two further fields exist for the operator panel:
   panel should say so instead of showing an empty form. Logging keys are grouped under
   `logging`, which is not a plugin: they live in `admin.config.get`.
 
+The result also carries `known`: every plugin name the binary can load, which is the set
+`admin.plugins.plan` validates `add` against. Configured names appear there too; a client
+subtracts them to build the "add a plugin" selector.
+
 ### `admin.config.get`
 
 Returns `config.ini` as ordered sections, preserving duplicate keys (needed for the
@@ -258,6 +262,9 @@ It also returns `allow`: the editable subset, ready to render. Each item is
   inside `[logger.default]` — so a client never has to know which keys are sectioned.
 * `value` is `null` and `defaulted` is `true` when the file does not set the key: the node
   uses its code default, and the panel should show that instead of an empty field.
+  A value read from the file is returned **normalized** (`yes`/`on`/`1` → `true`), so it
+  matches the option list; `valid:false` means the line could not be normalized and should
+  be flagged.
 * `type` is `boolean`, `unsigned_int` (with `min`/`max`) or `log_level` (with `values`).
 * `group` is the plugin the key belongs to (`p2p`, `webserver`, `validator_guard`) or
   `logging` for logger and appender settings.
@@ -837,7 +844,7 @@ the URL (that would land in history and access logs).
 
 **What it shows**
 
-The page is organised as five tabs; the last one is remembered per tab session.
+The page is organised as six tabs; the last one is remembered per tab session.
 
 * **Status** — node state, emergency consensus (`ACTIVE` with the starting block, or `normal`),
   whether an emergency key is configured, head/LIB, head age, version, uptime, peer counts,
@@ -858,21 +865,33 @@ The page is organised as five tabs; the last one is remembered per tab session.
   seconds and appends only the new lines at the bottom, colouring them by severity. When the
   operator scrolls up, the pane stops auto-scrolling; scrolling back to the bottom resumes
   it.
+* **Plugins** — the plugins listed in `config.ini` with their observed state and how many
+  editable parameters each one has, a **Disable** button per row (`chain` and `node_admin`
+  show a disabled **protected** button instead) and a selector that adds a plugin the binary
+  can load. Every change goes through `plugins.plan` → a confirmation that spells out the
+  consequence → `plugins.apply`. Below the table, **Parameters** renders the allow-listed
+  keys grouped by plugin and **Logging** renders the logger and appender keys; each group
+  saves through `config.plan`/`config.apply`. Values that come from code (the key is absent
+  from `config.ini`) are marked `code default` rather than shown as blank. After any apply a
+  banner says the file changed and offers **Restart node**, which calls `admin.restart` after
+  two confirmations and works only with the `process` scope.
 * **Validators** — the names in the current validator schedule (public chain data, no keys),
   the schedule size and the emergency state; below it, the validators this node operates via
   `validator_guard`, when the plugin is live.
 
 **Scopes drive the page.** On load the page calls `admin.auth.me` and hides every action the
 token cannot perform: without `snapshot` the Create/Restore buttons and the per-row Restore
-disappear, without `p2p` the peer action panel disappears. A read-only token therefore sees a
+disappear, without `p2p` the peer action panel disappears, without `plugins` the Disable/Add
+controls disappear, without `config` the parameter inputs are locked, and without `process`
+the Restart button is disabled. A read-only token therefore sees a
 dashboard with listing and downloads only, and the page says so instead of offering buttons
 that would be refused with `-32002`.
 
 The status view refreshes every five seconds while the tab is visible.
 
-**What it does not do.** No config editing, no token management, no deletion of snapshot
-files. The only writes are the three peer actions, snapshot creation and the in-process
-restore. It is a thin view over the same JSON-RPC contract documented above — anything it can
+**What it does not do.** No token management and no deletion of snapshot files. Writes are
+the three peer actions, snapshot creation, the in-process restore, `config.ini` edits through
+the plan/apply pair and a restart request. It is a thin view over the same JSON-RPC contract documented above — anything it can
 do, `curl` and an MCP client can do as well, and every call lands in the audit log under the
 token's label (the page's own `GET /ui/` is audited with outcome `ui`, downloads as
 `snapshot_download`).

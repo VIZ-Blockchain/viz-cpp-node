@@ -452,6 +452,7 @@ const char *ui_page() {
   <button data-tab="peers">Peers</button>
   <button data-tab="snapshots">Snapshots</button>
   <button data-tab="logs">Logs</button>
+  <button data-tab="plugins">Plugins</button>
   <button data-tab="validators">Validators</button>
 </nav>
 <main>
@@ -515,6 +516,42 @@ const char *ui_page() {
     <pre id="logView" class="logview"><span class="dim">no token — enter one above</span></pre>
   </section>
 
+  <section id="tab-plugins" hidden>
+    <h2>Plugins</h2>
+    <div class="actions" id="plugBanner" hidden style="margin-bottom:10px">
+      <span id="plugBannerText" class="warn"></span>
+      <button id="plugRestart" class="danger">Restart node</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Plugin</th><th>Configured</th><th>Observed</th><th>Parameters</th><th></th></tr></thead>
+        <tbody id="plugRows"></tbody>
+      </table>
+    </div>
+    <div class="actions" id="plugAddBox" style="margin-top:10px" hidden>
+      <select id="plugAddName"></select>
+      <button id="plugAdd">Add plugin</button>
+      <span class="dim">writes config.ini; the plugin starts on the next node restart</span>
+    </div>
+    <div id="plugRo" class="dim" style="margin-top:10px" hidden>
+      read-only token — plugin changes need the plugins scope
+    </div>
+
+    <h2 style="margin-top:18px">Parameters</h2>
+    <div id="paramBox" class="dim">no token — enter one above</div>
+    <div class="actions" id="paramActions" style="margin-top:10px" hidden>
+      <button id="paramSave">Save parameters</button>
+      <span id="paramState" class="dim"></span>
+    </div>
+
+    <h2 style="margin-top:18px">Logging</h2>
+    <div id="logSettings" class="dim">no token — enter one above</div>
+    <div class="actions" id="logSettingsActions" style="margin-top:10px" hidden>
+      <button id="logSettingsSave">Save log settings</button>
+      <span id="logSettingsState" class="dim"></span>
+    </div>
+  </section>
+
   <section id="tab-validators" hidden>
     <h2>Active validators</h2>
     <div class="cards" id="valCards"></div>
@@ -551,6 +588,8 @@ const char *ui_page() {
   var logTimer = null;
   var logBusy = false;
   var logPendingReset = false;
+  var cfgAllow = [];          // admin.config.get allow[] — what the parameter panels render
+  var cfgAllowKnown = false;  // false until config.get answers (older builds omit allow)
 
   function hasScope(s) { return !!(scopes && scopes.indexOf(s) >= 0); }
 
@@ -658,6 +697,9 @@ const char *ui_page() {
     $('peerRo').hidden = !known || canP2p;
     $('snapCreate').disabled = !canSnap;
     $('snapRestoreLatest').disabled = !canSnap;
+    // The banner outlives a token change: it reports a file that was already written, so only
+    // the button is gated. Hiding the banner would hide the fact that a restart is pending.
+    $('plugRestart').disabled = !hasScope('process');
   }
 
   function refreshAuth() {
@@ -1211,12 +1253,292 @@ const char *ui_page() {
     return v;
   }
 
+  // ── plugins, parameters and logging ───────────────────────────────────────────────────
+  // Plugins whose loss changes what the node DOES, not just how fast it answers. They get a
+  // second confirmation that names the consequence, because "disable p2p" reads like a
+  // harmless checkbox until the chain stops moving.
+  var DANGEROUS_PLUGINS = { p2p: 1, webserver: 1, json_rpc: 1, validator: 1,
+                            validator_api: 1, validator_guard: 1 };
+  var PLUGIN_IMPACT = {
+    p2p: 'The node stops syncing with the network; peers go silent.',
+    webserver: 'The HTTP API on the webserver plugin stops answering.',
+    json_rpc: 'JSON-RPC clients lose their endpoint.',
+    validator: 'The node stops signing blocks and votes.',
+    validator_api: 'Validator API calls fail.',
+    validator_guard: 'Runaway-validator protection turns off.'
+  };
+
+  function cellText(row, text, cls) {
+    var c = document.createElement('td');
+    c.textContent = text;
+    if (cls) c.className = cls;
+    row.appendChild(c);
+    return c;
+  }
+
+  function needsRestartBanner(text) {
+    $('plugBannerText').textContent = text;
+    $('plugBanner').hidden = false;
+  }
+
+  function clearRestartBanner() { $('plugBanner').hidden = true; }
+
+  function specInput(s) {
+    var el;
+    if (s.type === 'boolean' || s.type === 'log_level') {
+      el = document.createElement('select');
+      var opts = s.type === 'boolean' ? ['true', 'false'] : (s.values || []);
+      for (var i = 0; i < opts.length; i++) {
+        var o = document.createElement('option');
+        o.value = opts[i];
+        o.textContent = opts[i];
+        el.appendChild(o);
+      }
+    } else {
+      el = document.createElement('input');
+      el.type = 'number';
+      if (s.min != null) el.min = s.min;
+      if (s.max != null) el.max = s.max;
+      el.style.width = '9em';
+    }
+    // The key is the address config.plan takes, so the panel never reconstructs sections.
+    el.setAttribute('data-key', s.key);
+    el.setAttribute('data-type', s.type);
+    el.value = s.value == null ? '' : String(s.value);
+    el.setAttribute('data-initial', el.value);
+    if (s.valid === false) el.className = 'bad';
+    return el;
+  }
+
+  function renderSettings(container, groups) {
+    container.textContent = '';
+    if (!cfgAllowKnown) {
+      container.textContent = 'this node does not expose the allow-list (older build)';
+      container.className = 'dim';
+      return;
+    }
+    var shown = 0;
+    for (var gi = 0; gi < groups.length; gi++) {
+      var group = groups[gi];
+      var items = cfgAllow.filter(function (s) { return s.group === group; });
+      if (!items.length) continue;
+      shown++;
+      var label = document.createElement('div');
+      label.className = 'dim';
+      label.style.cssText =
+        'margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em;font-size:11px';
+      label.textContent = group;
+      container.appendChild(label);
+      var wrap = document.createElement('div');
+      wrap.className = 'tablewrap';
+      var table = document.createElement('table');
+      var body = document.createElement('tbody');
+      for (var i = 0; i < items.length; i++) {
+        var s = items[i];
+        var tr = document.createElement('tr');
+        cellText(tr, s.key);
+        var vc = document.createElement('td');
+        vc.appendChild(specInput(s));
+        tr.appendChild(vc);
+        cellText(tr, s.needs_restart ? 'restart' : 'live', 'dim');
+        cellText(tr, s.defaulted ? 'code default' : (s.valid === false ? 'unreadable' : ''), 'dim');
+        body.appendChild(tr);
+      }
+      table.appendChild(body);
+      wrap.appendChild(table);
+      container.appendChild(wrap);
+    }
+    container.className = '';
+    if (!shown) {
+      container.textContent = 'nothing to configure';
+      container.className = 'dim';
+    }
+  }
+
+  function lockInputs(container, locked) {
+    var els = container.querySelectorAll('input,select,button');
+    for (var i = 0; i < els.length; i++) els[i].disabled = locked;
+  }
+
+  function renderPlugins(res) {
+    var body = $('plugRows');
+    body.textContent = '';
+    var configured = Object.create(null);
+    var list = (res && res.plugins) || [];
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      configured[p.name] = true;
+      var tr = document.createElement('tr');
+      cellText(tr, p.name);
+      cellText(tr, 'yes');
+      cellText(tr, p.state ? (p.state + (p.state_source === 'observed' ? '' : ' (inferred)'))
+                           : 'inferred',
+               p.state === 'started' ? 'ok' : 'dim');
+      var n = (p.params || []).length;
+      cellText(tr, n ? String(n) : 'none', n ? '' : 'dim');
+      var cell = document.createElement('td');
+      if (p.removable === false) {
+        var fixed = document.createElement('button');
+        fixed.textContent = 'protected';
+        fixed.disabled = true;
+        fixed.title = 'chain and node_admin cannot be disabled through the admin API';
+        cell.appendChild(fixed);
+      } else if (hasScope('plugins')) {
+        cell.appendChild(button('Disable', 'danger', (function (name) {
+          return function () { planPluginChange({ remove: [name] }, 'disable ' + name); };
+        })(p.name)));
+      }
+      tr.appendChild(cell);
+      body.appendChild(tr);
+    }
+    if (!list.length) {
+      var empty = document.createElement('tr');
+      cellText(empty, 'config.ini lists no plugins', 'dim');
+      body.appendChild(empty);
+    }
+    var sel = $('plugAddName');
+    sel.textContent = '';
+    var known = (res && res.known) || [];
+    for (var k = 0; k < known.length; k++) {
+      if (configured[known[k]]) continue;
+      var o = document.createElement('option');
+      o.value = known[k];
+      o.textContent = known[k];
+      sel.appendChild(o);
+    }
+    var canAdd = hasScope('plugins') && sel.options.length > 0;
+    $('plugAddBox').hidden = scopes === null;
+    $('plugAdd').disabled = !canAdd;
+    sel.disabled = !canAdd;
+    $('plugRo').hidden = scopes === null || hasScope('plugins');
+  }
+
+  function refreshPlugins() {
+    if (!token) {
+      clearRestartBanner();
+      $('plugRows').textContent = '';
+      $('plugAddBox').hidden = true;
+      $('plugRo').hidden = true;
+      $('paramBox').textContent = 'no token — enter one above';
+      $('paramBox').className = 'dim';
+      $('logSettings').textContent = 'no token — enter one above';
+      $('logSettings').className = 'dim';
+      $('paramActions').hidden = true;
+      $('logSettingsActions').hidden = true;
+      return Promise.resolve();
+    }
+    return Promise.all([rpc('admin.plugins.list'), rpc('admin.config.get')])
+      .then(function (res) {
+        renderPlugins(res[0]);
+        cfgAllow = res[1] && res[1].allow ? res[1].allow : [];
+        cfgAllowKnown = !!(res[1] && res[1].allow);
+        renderSettings($('paramBox'), ['p2p', 'webserver', 'validator_guard']);
+        renderSettings($('logSettings'), ['logging']);
+        var canCfg = hasScope('config');
+        lockInputs($('paramBox'), !canCfg);
+        lockInputs($('logSettings'), !canCfg);
+        $('paramActions').hidden = !canCfg || !cfgAllowKnown;
+        $('logSettingsActions').hidden = !canCfg || !cfgAllowKnown;
+      })
+      .catch(function (e) {
+        $('plugRows').textContent = '';
+        var tr = document.createElement('tr');
+        cellText(tr, 'plugins unavailable: ' + e.message, 'bad');
+        $('plugRows').appendChild(tr);
+      });
+  }
+
+  function planPluginChange(change, label) {
+    if (!hasScope('plugins')) { notice('plugin changes need the plugins scope', 'bad'); return; }
+    var names = change.remove || change.add || [];
+    var dangerous = names.some(function (n) { return DANGEROUS_PLUGINS[n]; });
+    var verb = change.remove ? 'Disable ' : 'Enable ';
+    var text = verb + names.join(', ') + '?\n\n';
+    if (change.remove) {
+      text += names.map(function (n) {
+        return PLUGIN_IMPACT[n] || 'The plugin stops at the next restart.';
+      }).join('\n');
+    } else {
+      text += 'The plugin starts at the next node restart.';
+    }
+    text += '\n\nThis writes config.ini; the change takes effect after a restart.';
+    if (!confirm(text)) return;
+    if (dangerous && !confirm('Second check: ' + verb.toLowerCase() + names.join(', ') +
+                              ' on this node?')) return;
+    rpc('admin.plugins.plan', change).then(function (plan) {
+      var lines = (plan.diff || []).map(function (d) { return d.op + ' ' + d.name; }).join('\n');
+      if (!confirm('Plan ' + plan.plan_id + ':\n' + lines + '\n\nApply it now?')) {
+        rpc('admin.plan.cancel', { plan_id: plan.plan_id }).catch(function () {});
+        notice('plan cancelled');
+        return;
+      }
+      return rpc('admin.plugins.apply', { plan_id: plan.plan_id }).then(function (r) {
+        notice(label + ' written; backup ' + (r.backup || '?'), 'ok');
+        needsRestartBanner('config.ini changed (' + label + '). Restart the node to apply it.');
+        refreshPlugins();
+      });
+    }).catch(function (e) {
+      notice('plugin change failed: ' + e.message, 'bad');
+    });
+  }
+
+  function collectSettings(container) {
+    var set = {};
+    var inputs = container.querySelectorAll('[data-key]');
+    for (var i = 0; i < inputs.length; i++) {
+      var el = inputs[i];
+      var cur = el.value;
+      if (cur === '' || cur === el.getAttribute('data-initial')) continue;
+      if (el.getAttribute('data-type') === 'unsigned_int') {
+        var n = Number(cur);
+        if (!isFinite(n) || Math.floor(n) !== n || n < 0) {
+          notice('not a whole number: ' + el.getAttribute('data-key'), 'bad');
+          return null;
+        }
+      }
+      set[el.getAttribute('data-key')] = cur;
+    }
+    return set;
+  }
+
+  function saveSettings(container, label, stateEl) {
+    if (!hasScope('config')) { notice('config edits need the config scope', 'bad'); return; }
+    var set = collectSettings(container);
+    if (set === null) return;
+    var keys = Object.keys(set);
+    if (!keys.length) { stateEl.textContent = 'no changes'; return; }
+    var shown = keys.map(function (k) { return k + ' = ' + set[k]; }).join('\n');
+    if (!confirm('Write ' + keys.length + ' setting(s) to config.ini?\n\n' + shown +
+                 '\n\nA backup is kept; the node reads config.ini at startup.')) return;
+    stateEl.textContent = 'planning…';
+    rpc('admin.config.plan', { set: set }).then(function (plan) {
+      var lines = (plan.diff || []).map(function (d) {
+        return d.key + ': ' + (d.from == null ? '(unset)' : d.from) + ' -> ' + d.to;
+      }).join('\n');
+      if (!confirm('Plan ' + plan.plan_id + ':\n' + lines + '\n\nApply it now?')) {
+        rpc('admin.plan.cancel', { plan_id: plan.plan_id }).catch(function () {});
+        stateEl.textContent = 'cancelled';
+        return;
+      }
+      return rpc('admin.config.apply', { plan_id: plan.plan_id }).then(function (r) {
+        stateEl.textContent = 'written';
+        notice(label + ' written; backup ' + (r.backup || '?'), 'ok');
+        needsRestartBanner('config.ini changed (' + label + '). Restart the node to apply it.');
+        refreshPlugins();
+      });
+    }).catch(function (e) {
+      stateEl.textContent = 'failed';
+      notice(label + ' failed: ' + e.message, 'bad');
+    });
+  }
+
   // ── tabs and timers ────────────────────────────────────────────────────────────────────
   function refreshActiveTab() {
     if (!token) return Promise.resolve();
     if (activeTab === 'status' || activeTab === 'peers') return refreshStatus();
     if (activeTab === 'snapshots') { snapPaged = false; return refreshSnapshots(true); }
     if (activeTab === 'logs') return loadLogList();
+    if (activeTab === 'plugins') return refreshPlugins();
     if (activeTab === 'validators') return refreshValidators();
     return Promise.resolve();
   }
@@ -1224,7 +1546,7 @@ const char *ui_page() {
   function activate(name) {
     activeTab = name;
     sessionStorage.setItem('vizAdminTab', name);
-    ['status', 'peers', 'snapshots', 'logs', 'validators'].forEach(function (t) {
+    ['status', 'peers', 'snapshots', 'logs', 'plugins', 'validators'].forEach(function (t) {
       $('tab-' + t).hidden = t !== name;
     });
     var tabs = document.querySelectorAll('nav.tabs button');
@@ -1240,6 +1562,9 @@ const char *ui_page() {
         // Page 1 is refreshed on a timer; once the operator asked for older pages we leave
         // the list alone instead of appending the next page every tick.
         else if (activeTab === 'snapshots') { if (!snapPaged) refreshSnapshots(true); }
+        // Plugins is deliberately not on the timer: a refresh re-renders the parameter inputs
+        // and would throw away values the operator is in the middle of typing. It reloads on
+        // activation and after every apply instead.
         else if (activeTab === 'validators') refreshValidators();
       }, 5000);
     }
@@ -1292,12 +1617,40 @@ const char *ui_page() {
     setPlaying(false);
     tailOnce(true);
   });
+  $('plugAdd').addEventListener('click', function () {
+    var name = $('plugAddName').value;
+    if (!name) { notice('no plugin selected', 'bad'); return; }
+    planPluginChange({ add: [name] }, 'enable ' + name);
+  });
+  $('paramSave').addEventListener('click', function () {
+    saveSettings($('paramBox'), 'parameters', $('paramState'));
+  });
+  $('logSettingsSave').addEventListener('click', function () {
+    saveSettings($('logSettings'), 'log settings', $('logSettingsState'));
+  });
+  $('plugRestart').addEventListener('click', function () {
+    if (!hasScope('process')) { notice('restart needs the process scope', 'bad'); return; }
+    if (!confirm('Restart the node now?\n\nThe process exits and a supervisor ' +
+                 '(docker --restart / systemd Restart=always) starts it again. ' +
+                 'Without a supervisor the node stays down.')) return;
+    if (!confirm('Second check: restart this node?')) return;
+    rpc('admin.restart', { confirm: 'restart' }).then(function () {
+      notice('restart requested — waiting for the node to come back', 'warn');
+      clearRestartBanner();
+      setTimeout(function () { if (token) refreshAuth().then(refreshActiveTab); }, 5000);
+    }).catch(function (e) {
+      notice('restart failed: ' + e.message, 'bad');
+    });
+  });
 
   if (token) { $('token').value = token; }
   applyScopes();
   activate(activeTab);
   refreshAuth().then(function (ok) {
     if (!ok && token) setState('token rejected or unreachable', 'bad');
+    // Re-render once the scopes are known: the plugins tab draws toggles from them, and the
+    // fetch that activate() started ran with scopes === null.
+    if (ok) refreshActiveTab();
   });
   window.addEventListener('beforeunload', function () {
     if (tickTimer) clearInterval(tickTimer);
@@ -2352,9 +2705,16 @@ fc::variant node_admin_plugin::impl::h_plugins_list(const fc::variant &) {
         plugins.push_back(fc::variant(item));
     }
 
+    // The catalogue the binary can load, so the panel can offer an enable action. It is the
+    // same set admin.plugins.plan validates `add` against; a name that is already configured
+    // still appears here, and the client subtracts the configured ones itself.
+    fc::variants known;
+    for (const std::string &name : util::known_plugins()) known.push_back(fc::variant(name));
+
     fc::mutable_variant_object m;
     m("config_path", config_path());
     m("config_exists", exists);
+    m("known", known);
     m("note", "Entries come from config.ini. Appbase keeps its plugin registry private, so "
               "lifecycle state is observed only for chain, p2p and node_admin; for the others "
               "loaded=true is implied by startup (an unknown plugin name aborts the node).");
@@ -2403,6 +2763,17 @@ fc::variant node_admin_plugin::impl::h_config_get(const fc::variant &) {
     for (const util::config_spec &spec : util::config_allowlist()) {
         std::string value;
         const bool found = allowed_config_value(all, spec.name, value);
+        // Report the value in the form the editor accepts, not as written on disk: config.ini
+        // may say `yes` or `1` where the panel renders a true/false select, and an input that
+        // does not match any option would silently show as blank. A value that fails
+        // normalization is returned raw with valid=false so the panel can flag the line.
+        bool valid = found;
+        if (found) {
+            std::string norm;
+            std::string why;
+            if (util::normalize_config_value(spec.name, value, norm, why)) value = norm;
+            else valid = false;
+        }
         fc::mutable_variant_object a;
         a("key", spec.name);
         a("group", util::config_key_group(spec.name));
@@ -2412,6 +2783,7 @@ fc::variant node_admin_plugin::impl::h_config_get(const fc::variant &) {
                                                             : "unsigned_int");
         a("value", found ? fc::variant(value) : fc::variant());
         a("defaulted", !found);
+        a("valid", valid);
         if (spec.type == util::config_type::unsigned_int) {
             a("min", spec.min_value);
             a("max", spec.max_value);
