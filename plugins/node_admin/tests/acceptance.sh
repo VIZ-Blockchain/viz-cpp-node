@@ -1002,6 +1002,49 @@ check "objects.repair -> marker consumed at startup" 0 \
 auth "$GOOD" '{"jsonrpc":"2.0","id":132,"method":"admin.objects.check"}'
 check "objects.repair -> state is healthy after the resync" '"ok"' "$(field result.verdict)"
 
+# ── a marker from the other mode must not outrank the confirmed choice ─────────────────────
+# Startup precedence is resync > replay: with force_resync present the chain plugin removes a
+# force_replay marker. So a stale opposite marker would silently turn "replay (keeps blocks)"
+# into a full resync. Reproducible here without a block log by the symmetric direction: a
+# stale force_replay must be cleared and named in the reply, not left to outlive the request.
+touch "$WORK/state/force_replay"
+auth "$ADM" '{"jsonrpc":"2.0","id":140,"method":"admin.objects.repair","params":{"mode":"resync","confirm":"repair"}}'
+check "objects.repair -> stale opposite marker is named" 1 \
+    "$(python3 -c 'import json,sys; print(int(bool(json.load(open(sys.argv[1]))["result"].get("removed_marker"))))' "$OUT")"
+check "objects.repair -> stale opposite marker is gone" 0 \
+    "$(ls "$WORK/state/force_replay" 2>/dev/null | wc -l)"
+check "objects.repair -> the requested marker is written" 1 \
+    "$(ls "$WORK/state/force_resync" 2>/dev/null | wc -l)"
+
+for _ in $(seq 1 80); do
+    kill -0 "$NODE_PID" 2>/dev/null || break
+    sleep 0.25
+done
+wait "$NODE_PID"; NODE_RC=$?
+NODE_PID=
+check "objects.repair -> clean exit on the second cycle" 0 "$NODE_RC"
+
+"$VIZD" --data-dir "$WORK" > "$WORK/console4.log" 2>&1 &
+NODE_PID=$!
+for _ in $(seq 1 120); do
+    grep -q "node_admin: listening" "$WORK/console4.log" && break
+    kill -0 "$NODE_PID" 2>/dev/null || break
+    sleep 0.25
+done
+if grep -q "node_admin: listening" "$WORK/console4.log"; then
+    echo "ok   objects.repair -> the node is back after the second cycle"
+else
+    echo "FAIL objects.repair -> the node did not come back after the second cycle"
+    tail -20 "$WORK/console4.log"
+    FAIL=$((FAIL + 1))
+fi
+check "objects.repair -> only the requested marker was honoured" 1 \
+    "$(grep -c 'Detected force_resync marker' "$WORK/console4.log")"
+check "objects.repair -> no replay marker reached startup" 0 \
+    "$(grep -c 'Detected force_replay marker' "$WORK/console4.log")"
+auth "$GOOD" '{"jsonrpc":"2.0","id":141,"method":"admin.objects.check"}'
+check "objects.repair -> state is healthy after the second cycle" '"ok"' "$(field result.verdict)"
+
 echo
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: all node_admin acceptance checks"

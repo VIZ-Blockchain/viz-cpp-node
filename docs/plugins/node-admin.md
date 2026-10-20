@@ -334,8 +334,12 @@ The marker is honoured by the chain plugin at the next startup, before it maps s
 
 `confirm` must be exactly `repair` and the mode is re-validated against the files: `replay`
 is refused with `-32000 no block log` when the log is absent or empty. If a `force_resync`
-marker from the wedge watchdog is already present, the startup performs the resync and drops
-the replay request instead of replaying an empty log.
+marker from the wedge watchdog is already present, the startup would perform the resync and
+drop the replay request instead of replaying an empty log — so the handler clears the opposite
+marker before writing its own, and names it in `removed_marker`. Without that step a confirmed
+"replay (keeps blocks)" would silently drop the block log, because startup precedence is
+`resync > replay`. A marker that cannot be cleared is a `-32000` refusal, not a promise the
+node cannot keep.
 
 **Snapshot-mode nodes.** The two marker effects above describe a node that starts on the
 normal path. A node started with `--replay-from-snapshot` never reaches it: the chain plugin
@@ -345,8 +349,9 @@ genesis. The repair is still a full state rebuild — which is what an operator 
 the response says so instead of repeating the generic wording. `effect` is computed from the
 options the node was actually started with, and `snapshot_replay` is `true` on such a node.
 
-The response carries `marker`, `effect` and `snapshot_replay`; the supervisor must bring the
-node back (`--restart unless-stopped` / `Restart=always`), exactly as for a plain restart.
+The response carries `marker`, `removed_marker`, `effect` and `snapshot_replay`; the supervisor
+must bring the node back (`--restart unless-stopped` / `Restart=always`), exactly as for a plain
+restart.
 
 ### `admin.config.get`
 

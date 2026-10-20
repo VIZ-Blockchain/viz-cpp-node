@@ -4299,6 +4299,23 @@ fc::variant node_admin_plugin::impl::h_objects_repair(const fc::variant &params)
                         "replay rebuilds state from the block log, and the block log is absent or empty",
                         "use mode=resync: it wipes state and blocks and rebuilds from the network"};
     }
+
+    // Startup precedence is resync > replay: the chain plugin removes a force_replay marker
+    // when force_resync is also present. Honouring the mode the operator confirmed therefore
+    // means clearing the marker that would otherwise outrank it, and naming it in the reply —
+    // otherwise "replay (keeps blocks)" would silently drop the block log. The chain plugin is
+    // the other producer of force_resync (the p2p wedge watchdog), so this case is reachable.
+    const char *opposite = mode == "replay" ? "force_resync" : "force_replay";
+    const std::string opposite_path = state_dir_marker_path(s, opposite);
+    boost::system::error_code rm_ec;
+    const bool removed_opposite = bfs::remove(opposite_path, rm_ec);
+    if (rm_ec) {
+        throw rpc_error{-32000, "cannot clear conflicting marker",
+                        opposite_path + ": " + rm_ec.message(),
+                        "the opposite marker outranks the requested mode at startup; "
+                        "repair refused rather than promising an effect it cannot deliver"};
+    }
+
     if (restart_requested.exchange(true)) {
         throw rpc_error{-32000, "restart already requested", "the process is already shutting down", ""};
     }
@@ -4332,6 +4349,7 @@ fc::variant node_admin_plugin::impl::h_objects_repair(const fc::variant &params)
     m("restarting", true);
     m("mode", mode);
     m("marker", marker_path);
+    m("removed_marker", removed_opposite ? fc::variant(opposite_path) : fc::variant());
     // The effect text must match the startup the chain plugin will actually take; see
     // objects_check::repair_effect (unit-tested) for the snapshot-mode case.
     m("effect", objects_check::repair_effect(mode, snapshot_replay_from, snapshot_configured));
