@@ -109,7 +109,10 @@ max_lines = 10000
 * `config` — `admin.config.plan` и `admin.config.apply` (правка разрешённых ключей
   `config.ini`). `admin.config.backups` требует только `read`.
 * `plugins` — `admin.plugins.plan` и `admin.plugins.apply` (правка списка `plugin =`).
-* `process` — `admin.restart`. Он гасит процесс; поднять его обратно обязан супервизор.
+* `process` — `admin.restart` и `admin.objects.repair`. Оба гасят процесс; поднять его
+  обратно обязан супервизор. Repair вдобавок оставляет маркер, который переписывает
+  состояние на следующем старте, так что это скоуп записи в состояние, а не только
+  доступности.
 * `chain` — `admin.validator.plan` и `admin.validator.apply` (включение/выключение
   валидаторов и смена их signing-ключей). Эти вызовы принимаются **только пока
   `validator_guard` загружен, запущен и сконфигурирован с active-ключом** — именно этот
@@ -223,9 +226,10 @@ max_lines = 10000
 
 У каждой записи есть `loaded`, `state` и `state_source`:
 
-* `state_source: "observed"` — состояние прочитано у живого плагина (`chain`, `p2p`, `snapshot`, `webserver`,
-  `node_admin`). `state` — `registered`, `initialized`, `started` или `stopped`; `loaded`
-  равен false только пока плагин в состоянии `registered`.
+* `state_source: "observed"` — состояние прочитано у живого плагина (`chain`, `p2p`,
+  `snapshot`, `webserver`, `validator`, `validator_guard`, `node_admin`). `state` —
+  `registered`, `initialized`, `started` или `stopped`; `loaded` равен false только пока
+  плагин в состоянии `registered`.
 * `state_source: "inferred"` — AppBase инициализирует каждую строку `plugin =` и падает на
   старте при неизвестном имени, значит на работающей ноде сконфигурированный плагин загружен.
   `state` при этом `null`, а не догадка.
@@ -238,10 +242,106 @@ max_lines = 10000
   массив значит «редактируемых параметров нет», и панель должна это сказать, а не показать
   пустую форму. Ключи логов сгруппированы под `logging` — это не плагин, они в
   `admin.config.get`.
+* `status_method` — метод, отдающий **собственный** статус этого плагина
+  (`admin.p2p.status`, `admin.webserver.status`, `admin.snapshot.status`,
+  `admin.validator.list` для `validator_guard`), либо `null`, если своего статуса у плагина
+  нет. `null` — не ошибка: панель должна сказать «статуса нет», а не рисовать пустой ящик.
 
 В ответе также есть `known` — все имена плагинов, которые умеет загружать бинарь; ровно это
 множество проверяет `admin.plugins.plan` для `add`. Сконфигурированные имена там тоже есть,
 клиент вычитает их, собирая выбор «добавить плагин».
+
+### `admin.plugins.status`
+
+`{"name":"p2p"}` возвращает состояние жизненного цикла и то, чем плагин занят на самом деле:
+
+| Поле | Смысл |
+|---|---|
+| `configured` | В `config.ini` есть строка `plugin =` с этим именем |
+| `state`, `state_source` | Как в `admin.plugins.list`; `state` = `null`, если тип плагина не слинкован в этот бинарь |
+| `detail_available`, `detail_method` | Есть ли у плагина свой метод статуса и какой именно был вызван |
+| `detail` | Ответ этого метода как есть (`admin.p2p.status`, `admin.webserver.status`, `admin.snapshot.status`, `admin.validator.list` для `validator_guard`) |
+| `reason` | Почему детали нет: тип не наблюдается, плагин не запущен или своего статуса нет |
+
+Метод детали зовётся только у **запущенного** плагина: его обработчики читают состояние,
+принадлежащее чужому потоку (карта пиров, счётчики соединений), и на остановленном плагине
+бросят исключение.
+
+Плагин, тип которого не слинкован в этот бинарь (`snapshot` в сборке без него, скажем),
+отвечает `state: null` и `reason` — не пустым объектом и не выдуманным «started».
+
+### `admin.objects.list`
+
+Граф объектов chainbase, как его видит живой процесс: по строке на индекс (тип объекта),
+число объектов и ревизия индекса, плюс сколько отображённого файла занято.
+
+```json
+{"state_dir":"/var/lib/vizd/state","shared_memory_path":"/var/lib/vizd/state/shared_memory.bin",
+ "shared_memory_bytes":34183577600,"mapped_bytes":34183577600,"free_bytes":12648009654,
+ "revision":1234567,"head_block_num":1234567,"recovering":false,
+ "schema":{"file_present":true,"stored":15,"compiled":15,"match":true},
+ "block_log":{"path":"/var/lib/vizd/block_log","present":true,"bytes":2147483648},
+ "markers":[],"index_count":36,"total_objects":9876543,
+ "indexes":[{"type":"graphene::chain::account_object","type_id":7,"objects":812345,
+             "revision":1234567}],
+ "generated_at":"2026-10-20T13:40:00Z"}
+```
+
+Счётчики читаются под тем же weak read lock, что и chain API; если поток блоков не уступил
+вовремя, вызов вернёт файловые факты и `lock_error`, а не зависнет.
+
+Блок-лог показывается и файлом, и каталогом: chain-плагин стирает его через `remove_all`,
+поэтому каталог там — законная форма.
+
+### `admin.objects.check`
+
+Тот же снимок, но с судом. `verdict` — `ok`, `warn`, `corrupted` или `unreadable`; в ответе
+именованные `findings` (`severity`, `code`, `text`), счётчики, `replay_available` и
+`recommended_repair` (`replay`, `resync` или `null`).
+
+| Код | Severity | Что значит |
+|---|---|---|
+| `read_lock_timeout` | critical | Shared memory не ответила на read lock; процесс завис |
+| `state_dir_missing` / `shared_memory_missing` | critical | У ноды нет каталога состояния или образа |
+| `shared_memory_truncated` | critical | Файл меньше отображения: обрезан или подменён под работающим процессом |
+| `shared_memory_larger_than_mapping` | warn | Файл вырос под этим процессом — обычно вторая нода на том же каталоге |
+| `stale_marker` | critical | `undo_all_in_progress`, `resize_in_progress`, `force_resync` или `force_replay` пережили прерванную операцию |
+| `schema_mismatch` | critical | `state/schema_version` нет или он не равен `CHAIN_SCHEMA_VERSION` бинаря; следующий старт всё сотрёт и пересоберёт |
+| `revision_behind_head` | warn | Ревизия индексов не равна head; следующий старт доиграет разрыв. После краша это норма |
+| `shared_memory_exhausted` | critical | Свободно меньше 8 МиБ: нода не запишет следующий блок |
+| `shared_memory_low` | warn | Свободно меньше 5% |
+| `global_properties_count` / `validator_schedule_count` | critical | Ожидается ровно одна строка в каждом |
+| `account_index_empty` | critical | Head выше нуля, а индекс аккаунтов пуст |
+| `block_log_missing` | warn | Реплей состояние не пересоберёт, поможет только полный resync |
+| `recovery_in_progress` | warn | Chain-плагин выполняет автовосстановление |
+
+`corrupted` — только жёсткие улики (critical выше); расхождение ревизии после краша — это
+`warn`, а не порча. `recommended_repair` заполняется, только когда переписывание состояния
+может починить находку; исчерпанная shared memory исключена — тот же размер забьётся снова.
+
+**Чего проверка не видит.** Порчу страниц, контрольные суммы и environment-штамп chainbase
+можно проверить только с закрытым файлом, так что это структурная проверка живого
+процесса, а не `fsck`. Чистый вердикт не обещает, что реплей пройдёт.
+
+### `admin.objects.repair`
+
+`{"mode":"replay"|"resync","confirm":"repair"}` (скоуп `process`) пишет маркер рядом с
+`shared_memory.bin`, отвечает и через 300 мс завершает процесс — тот же жизненный цикл, что
+у `admin.restart`. Маркер читает chain-плагин на следующем старте, до отображения shared
+memory:
+
+* `force_replay` — стереть состояние, оставить блок-лог и переиндексировать его с блока 1.
+  Дешевле сетевого resync и достаточно, когда сам блок-лог цел.
+* `force_resync` — стереть состояние **и** блок-лог, подняться пустым и синхронизироваться
+  с сетью.
+
+`confirm` обязан быть ровно `repair`, а режим ещё раз сверяется с файлами: `replay`
+отклоняется с `-32000 no block log`, если лога нет или он пуст. Если уже лежит маркер
+`force_resync` от wedge-сторожа, старт выполнит resync и отбросит просьбу реплея, вместо
+того чтобы реплеить пустой лог.
+
+В ответе есть `marker` и `effect`; вернуть ноду обратно обязан супервизор
+(`--restart unless-stopped` / `Restart=always`) — ровно как при обычном рестарте.
 
 ### `admin.config.get`
 
@@ -780,7 +880,8 @@ Protocol поверх HTTP — на хосте ничего дополнител
 | `tools/call` | `{"name":"admin.node_info","arguments":{…}}` — выполняет соответствующий метод `admin.*`. |
 
 Инструменты 1:1 с методами admin: `admin.ping`, `admin.auth.me`, `admin.node_info`,
-`admin.diagnostics`, `admin.plugins.list`, `admin.config.get`, `admin.logs.list`,
+`admin.diagnostics`, `admin.plugins.list`, `admin.plugins.status`, `admin.objects.list`,
+`admin.objects.check`, `admin.objects.repair`, `admin.config.get`, `admin.logs.list`,
 `admin.logs.tail`, `admin.audit.tail`, `admin.validators.active`,
 `admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
 `admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore`,
@@ -790,11 +891,11 @@ Protocol поверх HTTP — на хосте ничего дополнител
 `admin.webserver.reload`, `admin.validator.list`, `admin.validator.plan`,
 `admin.validator.apply`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
 `admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
-(тридцать семь).
+(сорок один).
 Действия над пирами дополнительно требуют скоупа `p2p`, действия над снапшотами — `snapshot`,
 действия над валидаторами — `chain` (и живого `validator_guard` с active-ключом), действия
 над webserver — `webserver`, правки конфига и плагинов — `config` или `plugins`,
-перезапуск — `process`, ровно как и по обычному JSON-RPC. Ошибки исполнения инструмента возвращаются **внутри**
+перезапуск и починка состояния — `process`, ровно как и по обычному JSON-RPC. Ошибки исполнения инструмента возвращаются **внутри**
 результата (`"isError": true`, текст в `content[0].text`), как требует MCP; протокольные
 ошибки (неизвестный инструмент, плохие параметры, нет скоупа) остаются ошибками JSON-RPC.
 
@@ -848,7 +949,7 @@ http://127.0.0.1:8099/ui/
 
 **Что показывает**
 
-Страница разбита на шесть вкладок; последняя выбранная запоминается на сессию вкладки.
+Страница разбита на семь вкладок; последняя выбранная запоминается на сессию вкладки.
 
 * **Status** — состояние ноды, аварийный консенсус (`ACTIVE` с блоком начала или `normal`),
   настроен ли аварийный ключ, голова/LIB, возраст головы, версия, аптайм, счётчики пиров,
@@ -879,6 +980,19 @@ http://127.0.0.1:8099/ui/
   Значения, взятые из кода (ключа нет в `config.ini`), помечены `code default`, а не пустым
   полем. После любого apply появляется баннер «файл изменён» с кнопкой **Restart node**:
   она зовёт `admin.restart` после двух подтверждений и работает только со скоупом `process`.
+  Кнопка **Status** в каждой строке, у плагина которой есть свой статус, зовёт
+  `admin.plugins.status` и показывает ответ как есть над таблицей; у строк без статуса
+  кнопки нет — отсутствие видно, а не превращается в пустую панель.
+* **Objects** — взгляд chainbase: путь и размер shared memory, отображено/свободно/
+  зарезервировано, ревизия индексов против head, версии схемы, размер блок-лога, маркеры
+  починки и таблица типов объектов с числом строк и ревизией индекса, от большего к
+  меньшему. **Check** зовёт `admin.objects.check` и красит вердикт (`ok` / `warn` /
+  `corrupted` / `unreadable`), каждая находка — строкой
+  `<code>SEVERITY [code] text</code>`; рекомендованный режим починки подставляет селектор.
+  **Restart with repair** шлёт `admin.objects.repair` после двух подтверждений, где прямо
+  сказана разница между replay (блоки остаются) и resync (блоки стираются), и требует скоуп
+  `process`. Как и Plugins, вкладка вне пятисекундного таймера, чтобы ожидающий вердикт не
+  перерисовывался под оператором.
 * **Validators** — имена из текущего расписания валидаторов (публичные данные цепи, без
   ключей), размер расписания и аварийное состояние; ниже — валидаторы, которыми управляет
   эта нода через `validator_guard`, если плагин жив.
@@ -886,8 +1000,8 @@ http://127.0.0.1:8099/ui/
 **Страницей управляют скоупы.** При загрузке страница вызывает `admin.auth.me` и скрывает
 каждое действие, которое токену недоступно: без `snapshot` пропадают кнопки Create/Restore
 и Restore в строках, без `p2p` — панель действий над пирами, без `plugins` — кнопки
-Disable/Add, без `config` поля параметров заблокированы, без `process` недоступна кнопка
-Restart. Поэтому read-only токен видит
+Disable/Add, без `config` поля параметров заблокированы, без `process` недоступны кнопки
+Restart и Repair. Поэтому read-only токен видит
 дашборд только со списком и скачиванием, и страница говорит об этом прямо, вместо кнопок,
 на которые API ответил бы `-32002`.
 
@@ -895,7 +1009,8 @@ Restart. Поэтому read-only токен видит
 
 **Чего оно не делает.** Нет управления токенами и удаления файлов снапшотов. Записи — три
 действия над пирами, создание снапшота, восстановление в процессе, правка `config.ini`
-парой plan/apply и запрос перезапуска. Это тонкий вид поверх того же JSON-RPC-контракта, описанного
+парой plan/apply, запрос перезапуска и запрос починки состояния (это маркер плюс рестарт:
+сам пересбор делает chain-плагин на следующем старте, а не админский плагин). Это тонкий вид поверх того же JSON-RPC-контракта, описанного
 выше — всё, что умеет страница, умеют и `curl`, и MCP-клиент, а каждый вызов попадает в
 журнал аудита под меткой токена (собственный `GET /ui/` пишется в аудит с исходом `ui`,
 скачивание — с `snapshot_download`).
@@ -964,6 +1079,11 @@ admin-token = ui:read,snapshot,p2p:<sha256 от 32 случайных байт>
   путь.
 * Скоуп `process` останавливает ноду. Без супервизора нода не вернётся; админский API
   намеренно не умеет перезапускать себя в обход жизненного цикла процесса.
+* `admin.objects.repair` — это право записи, замаскированное под обслуживание.
+  `mode=replay` выбрасывает всё состояние и собирает его заново из блок-лога;
+  `mode=resync` **вдобавок удаляет блок-лог**, и нода сможет подняться только синхронизацией
+  с пирами. Сначала гоняйте `admin.objects.check`, а скоуп считайте равным удалению
+  каталога состояния руками.
 
 ---
 

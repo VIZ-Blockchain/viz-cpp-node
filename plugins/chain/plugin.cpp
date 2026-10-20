@@ -568,9 +568,11 @@ namespace chain {
         // state so head becomes 0, then come up on empty state.  This is the exact
         // recovery a manual `docker compose up -d --force-recreate` performs, minus
         // the operator.
+        bool resync_marker_seen = false;
         {
             auto force_resync_marker = my->shared_memory_dir / "force_resync";
             if (boost::filesystem::exists(force_resync_marker)) {
+                resync_marker_seen = true;
                 wlog("Detected force_resync marker (P2P wedge watchdog). Wiping state for a clean "
                      "re-bootstrap (network resync or fresh operator-supplied snapshot).");
                 std::cerr << "   force_resync marker found — wiping state for clean re-bootstrap.\n";
@@ -613,6 +615,37 @@ namespace chain {
                          ("e", _rm_ec.message()));
                 ilog("force_resync marker cleared; state wiped. Node will come up on empty state and "
                      "resync from the network (local snapshot auto-import disabled for this boot).");
+            }
+        }
+
+        // ========== force_replay marker (admin repair) ==========
+        // node_admin's Objects tab writes this marker and exits when an operator asks to
+        // rebuild state while keeping the block log: replay reindexes every block, which is
+        // far cheaper than a network resync and is enough whenever the block log itself is
+        // intact. The marker is removed before the work starts; a crash mid-replay leaves an
+        // empty state plus an intact block log, and the normal "revision != head" replay picks
+        // it up on the next boot.
+        {
+            auto force_replay_marker = my->shared_memory_dir / "force_replay";
+            if (boost::filesystem::exists(force_replay_marker)) {
+                boost::system::error_code _fr_ec;
+                if (resync_marker_seen) {
+                    // Both markers asked for a rebuild. The resync above has already wiped state
+                    // AND the block log; replaying an empty log would fail, so the resync wins
+                    // and the stale request is dropped rather than left to crash the next boot.
+                    boost::filesystem::remove(force_replay_marker, _fr_ec);
+                    wlog("force_replay ignored and removed: force_resync already wiped state and "
+                         "the block log in this same startup.");
+                } else {
+                    wlog("Detected force_replay marker (admin repair). Wiping state and replaying the block log.");
+                    std::cerr << "   force_replay marker found — rebuilding state from the block log.\n";
+                    my->force_replay = true;
+                    my->replay = true;
+                    boost::filesystem::remove(force_replay_marker, _fr_ec);
+                    if (_fr_ec)
+                        wlog("force_replay: failed to remove marker (${e}); may re-trigger next boot.",
+                             ("e", _fr_ec.message()));
+                }
             }
         }
 

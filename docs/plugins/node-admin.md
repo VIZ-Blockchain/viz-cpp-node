@@ -107,7 +107,9 @@ in the configuration; comparison is constant-time. Scopes:
 * `config` — `admin.config.plan` and `admin.config.apply` (editing allow-listed `config.ini`
   keys). `admin.config.backups` needs only `read`.
 * `plugins` — `admin.plugins.plan` and `admin.plugins.apply` (editing the `plugin =` list).
-* `process` — `admin.restart`. It shuts the process down; a supervisor must start it again.
+* `process` — `admin.restart` and `admin.objects.repair`. Both shut the process down; a
+  supervisor must start it again. Repair additionally leaves a marker that rewrites state at
+  the next startup, so the scope is state-write, not just availability.
 * `chain` — `admin.validator.plan` and `admin.validator.apply` (enabling/disabling validators
   and changing their signing keys). These calls are **only accepted while `validator_guard`
   is loaded, started and configured with an active key** — that plugin holds the key that
@@ -223,8 +225,9 @@ are not listed.
 Each entry carries `loaded`, `state` and `state_source`:
 
 * `state_source: "observed"` — the lifecycle state was read from the running plugin
-  (`chain`, `p2p`, `snapshot`, `webserver`, `node_admin`). `state` is one of `registered`, `initialized`, `started`,
-  `stopped`; `loaded` is false only while the plugin is still merely `registered`.
+  (`chain`, `p2p`, `snapshot`, `webserver`, `validator`, `validator_guard`, `node_admin`).
+  `state` is one of `registered`, `initialized`, `started`, `stopped`; `loaded` is false only
+  while the plugin is still merely `registered`.
 * `state_source: "inferred"` — AppBase initializes every `plugin =` line and aborts startup
   when a name is unknown, so a configured plugin on a running node is loaded. `state` is
   `null` rather than a guess.
@@ -237,10 +240,103 @@ Two further fields exist for the operator panel:
   `validator_guard`); an empty array means the plugin has no editable parameters and the
   panel should say so instead of showing an empty form. Logging keys are grouped under
   `logging`, which is not a plugin: they live in `admin.config.get`.
+* `status_method` — the method that returns this plugin's **own** status (`admin.p2p.status`,
+  `admin.webserver.status`, `admin.snapshot.status`, `admin.validator.list` for
+  `validator_guard`), or `null` when the plugin exposes none. `null` is not an error: the
+  panel should say "no status" instead of drawing an empty drawer.
 
 The result also carries `known`: every plugin name the binary can load, which is the set
 `admin.plugins.plan` validates `add` against. Configured names appear there too; a client
 subtracts them to build the "add a plugin" selector.
+
+### `admin.plugins.status`
+
+`{"name":"p2p"}` returns the lifecycle state plus what the plugin is actually doing:
+
+| Field | Meaning |
+|---|---|
+| `configured` | A `plugin =` line for this name exists in `config.ini` |
+| `state`, `state_source` | As in `admin.plugins.list`; `state` is `null` when the plugin type is not linked into this binary |
+| `detail_available`, `detail_method` | Whether a dedicated status method exists and which one was called |
+| `detail` | The verbatim result of that method (`admin.p2p.status`, `admin.webserver.status`, `admin.snapshot.status`, `admin.validator.list` for `validator_guard`) |
+| `reason` | Why there is no detail: unobserved type, plugin not running, or no status API of its own |
+
+The detail method is called only for a **started** plugin: those handlers read
+thread-owned state (peer map, connection counters) and would throw on a stopped one.
+
+A plugin whose type is not linked into this binary (`snapshot` on a build without it, say)
+answers `state: null` with `reason` — not an empty object and not a fabricated "started".
+
+### `admin.objects.list`
+
+The chainbase object graph as the running process sees it: one row per index (object type),
+its row count and the index revision, plus how much of the mapped file is used.
+
+```json
+{"state_dir":"/var/lib/vizd/state","shared_memory_path":"/var/lib/vizd/state/shared_memory.bin",
+ "shared_memory_bytes":34183577600,"mapped_bytes":34183577600,"free_bytes":12648009654,
+ "revision":1234567,"head_block_num":1234567,"recovering":false,
+ "schema":{"file_present":true,"stored":15,"compiled":15,"match":true},
+ "block_log":{"path":"/var/lib/vizd/block_log","present":true,"bytes":2147483648},
+ "markers":[],"index_count":36,"total_objects":9876543,
+ "indexes":[{"type":"graphene::chain::account_object","type_id":7,"objects":812345,
+             "revision":1234567}],
+ "generated_at":"2026-10-20T13:40:00Z"}
+```
+
+Counts are read under the same weak read lock the chain API uses; if the block thread does
+not yield in time the call returns the file facts plus `lock_error` instead of stalling.
+
+The block log is reported as a file or a directory — the chain plugin wipes it with
+`remove_all`, so a directory is a legal shape there.
+
+### `admin.objects.check`
+
+The same view, judged. `verdict` is `ok`, `warn`, `corrupted` or `unreadable`; the result
+carries named `findings` (`severity`, `code`, `text`), counts, `replay_available` and
+`recommended_repair` (`replay`, `resync` or `null`).
+
+| Code | Severity | What it means |
+|---|---|---|
+| `read_lock_timeout` | critical | Shared memory did not answer a read lock; the process is wedged |
+| `state_dir_missing` / `shared_memory_missing` | critical | The node has no state directory or no image |
+| `shared_memory_truncated` | critical | The file is smaller than the mapping: truncated or replaced under a running process |
+| `shared_memory_larger_than_mapping` | warn | Something grew the file under this process — usually a second node on the same state dir |
+| `stale_marker` | critical | `undo_all_in_progress`, `resize_in_progress`, `force_resync` or `force_replay` survived an interrupted operation |
+| `schema_mismatch` | critical | `state/schema_version` is absent or differs from the binary's `CHAIN_SCHEMA_VERSION`; the next startup wipes and rebuilds |
+| `revision_behind_head` | warn | Index revision differs from head; the next startup replays the gap. Normal after a crash |
+| `shared_memory_exhausted` | critical | Less than 8 MiB free: the node cannot write another block |
+| `shared_memory_low` | warn | Less than 5% free |
+| `global_properties_count` / `validator_schedule_count` | critical | Exactly one row expected in each |
+| `account_index_empty` | critical | Head is above zero but the account index is empty |
+| `block_log_missing` | warn | A replay cannot rebuild state; only a full resync can |
+| `recovery_in_progress` | warn | The chain plugin is running an automatic recovery |
+
+`corrupted` means hard evidence only (the criticals above); a revision mismatch after a
+crash is `warn`, not corruption. `recommended_repair` is filled only when rewriting state can
+fix the finding — exhausted shared memory is excluded, because the same size would fill again.
+
+**What the check cannot see.** Page-level corruption, checksums and chainbase's own
+environment stamp can only be verified with the file closed, so this is a structural check of
+a live process, not `fsck`. A clean verdict does not promise that a replay will succeed.
+
+### `admin.objects.repair`
+
+`{"mode":"replay"|"resync","confirm":"repair"}` (scope `process`) writes a marker next to
+`shared_memory.bin`, replies, and quits after 300 ms — the same lifecycle as `admin.restart`.
+The marker is honoured by the chain plugin at the next startup, before it maps shared memory:
+
+* `force_replay` — wipe state, keep the block log, reindex it from block 1. Cheaper than a
+  network resync and enough whenever the block log itself is intact.
+* `force_resync` — wipe state **and** block log, come up empty and sync from peers.
+
+`confirm` must be exactly `repair` and the mode is re-validated against the files: `replay`
+is refused with `-32000 no block log` when the log is absent or empty. If a `force_resync`
+marker from the wedge watchdog is already present, the startup performs the resync and drops
+the replay request instead of replaying an empty log.
+
+The response carries `marker` and `effect`; the supervisor must bring the node back
+(`--restart unless-stopped` / `Restart=always`), exactly as for a plain restart.
 
 ### `admin.config.get`
 
@@ -776,7 +872,8 @@ MCP requests are ordinary JSON-RPC 2.0 `POST`s to the admin endpoint:
 | `tools/call` | `{"name":"admin.node_info","arguments":{…}}` — executes the matching `admin.*` method. |
 
 Tools are 1:1 with the admin methods: `admin.ping`, `admin.auth.me`, `admin.node_info`,
-`admin.diagnostics`, `admin.plugins.list`, `admin.config.get`, `admin.logs.list`,
+`admin.diagnostics`, `admin.plugins.list`, `admin.plugins.status`, `admin.objects.list`,
+`admin.objects.check`, `admin.objects.repair`, `admin.config.get`, `admin.logs.list`,
 `admin.logs.tail`, `admin.audit.tail`, `admin.validators.active`,
 `admin.p2p.status`, `admin.p2p.add_node`, `admin.p2p.add_trusted`, `admin.p2p.clear_banned`,
 `admin.snapshot.status`, `admin.snapshot.create`, `admin.snapshot.restore`,
@@ -786,11 +883,12 @@ Tools are 1:1 with the admin methods: `admin.ping`, `admin.auth.me`, `admin.node
 `admin.webserver.reload`, `admin.validator.list`, `admin.validator.plan`,
 `admin.validator.apply`, `admin.config.plan`, `admin.config.apply`, `admin.config.backups`,
 `admin.plugins.plan`, `admin.plugins.apply`, `admin.plan.cancel`, `admin.restart`
-(thirty-seven).
+(forty-one).
 The peer actions additionally require the `p2p` scope, the snapshot actions the `snapshot`
 scope, validator operations the `chain` scope (and a live `validator_guard` with an active
 key), the webserver actions the `webserver` scope, config/plugin edits the `config` or
-`plugins` scope and restart the `process` scope, exactly as over plain JSON-RPC. Tool execution errors are returned **inside** the
+`plugins` scope, and restart and state repair the `process` scope, exactly as over plain
+JSON-RPC. Tool execution errors are returned **inside** the
 result (`"isError": true` with the message in `content[0].text`), as MCP expects; protocol
 errors (unknown tool, bad params, missing scope) remain JSON-RPC errors.
 
@@ -844,7 +942,7 @@ the URL (that would land in history and access logs).
 
 **What it shows**
 
-The page is organised as six tabs; the last one is remembered per tab session.
+The page is organised as seven tabs; the last one is remembered per tab session.
 
 * **Status** — node state, emergency consensus (`ACTIVE` with the starting block, or `normal`),
   whether an emergency key is configured, head/LIB, head age, version, uptime, peer counts,
@@ -874,7 +972,19 @@ The page is organised as six tabs; the last one is remembered per tab session.
   saves through `config.plan`/`config.apply`. Values that come from code (the key is absent
   from `config.ini`) are marked `code default` rather than shown as blank. After any apply a
   banner says the file changed and offers **Restart node**, which calls `admin.restart` after
-  two confirmations and works only with the `process` scope.
+  two confirmations and works only with the `process` scope. A **Status** button on every row
+  whose plugin has a status API calls `admin.plugins.status` and shows the result verbatim
+  above the table; rows without one have no button, so the absence is visible rather than an
+  empty panel.
+* **Objects** — the chainbase view: shared-memory path and size, mapped/free/reserved bytes,
+  index revision versus head, schema versions, block-log size, repair markers, and a table of
+  object types with row counts and per-index revision, largest first. **Check** runs
+  `admin.objects.check` and paints the verdict (`ok` / `warn` / `corrupted` / `unreadable`)
+  with each finding as `<code>SEVERITY [code] text</code>`; a recommended repair mode
+  preselects the selector. **Restart with repair** sends `admin.objects.repair` after two
+  confirmations that spell out the difference between replay (keeps blocks) and resync
+  (drops them), and needs the `process` scope. Like Plugins, this tab is outside the 5-second
+  timer so a pending verdict is not repainted under the operator.
 * **Validators** — the names in the current validator schedule (public chain data, no keys),
   the schedule size and the emergency state; below it, the validators this node operates via
   `validator_guard`, when the plugin is live.
@@ -883,7 +993,7 @@ The page is organised as six tabs; the last one is remembered per tab session.
 token cannot perform: without `snapshot` the Create/Restore buttons and the per-row Restore
 disappear, without `p2p` the peer action panel disappears, without `plugins` the Disable/Add
 controls disappear, without `config` the parameter inputs are locked, and without `process`
-the Restart button is disabled. A read-only token therefore sees a
+the Restart and Repair buttons are disabled. A read-only token therefore sees a
 dashboard with listing and downloads only, and the page says so instead of offering buttons
 that would be refused with `-32002`.
 
@@ -891,7 +1001,9 @@ The status view refreshes every five seconds while the tab is visible.
 
 **What it does not do.** No token management and no deletion of snapshot files. Writes are
 the three peer actions, snapshot creation, the in-process restore, `config.ini` edits through
-the plan/apply pair and a restart request. It is a thin view over the same JSON-RPC contract documented above — anything it can
+the plan/apply pair, a restart request and a state-repair request (which is a marker plus a
+restart — the actual rebuild happens at the next startup, inside the chain plugin, not in the
+admin plugin). It is a thin view over the same JSON-RPC contract documented above — anything it can
 do, `curl` and an MCP client can do as well, and every call lands in the audit log under the
 token's label (the page's own `GET /ui/` is audited with outcome `ui`, downloads as
 `snapshot_download`).
@@ -960,6 +1072,11 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
   are created with the original file's permissions; do not copy them to a world-readable path.
 * The `process` scope stops the node. Without a supervisor the node does not come back; the
   admin API deliberately cannot restart itself outside the process lifecycle.
+* `admin.objects.repair` is a write credential disguised as a maintenance action.
+  `mode=replay` discards all state and rebuilds it from the block log;
+  `mode=resync` **also deletes the block log**, and the node can then only resync from peers.
+  Run `admin.objects.check` first, and treat the scope as equivalent to deleting the state
+  directory by hand.
 
 ---
 

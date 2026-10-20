@@ -46,6 +46,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -98,9 +99,55 @@ const appbase::abstract_plugin *observe_plugin(const std::string &name) {
     if (name == "p2p") return appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
     if (name == "snapshot") return appbase::app().find_plugin<graphene::plugins::snapshot::snapshot_plugin>();
     if (name == "webserver") return appbase::app().find_plugin<graphene::plugins::webserver::webserver_plugin>();
+    if (name == "validator_guard") return appbase::app().find_plugin<graphene::plugins::validator_guard::validator_guard_plugin>();
+    if (name == "validator") return appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
     if (name == node_admin_plugin::name()) return appbase::app().find_plugin<node_admin_plugin>();
     return nullptr;
 }
+
+// ── chainbase introspection ─────────────────────────────────────────────────────────────────
+// The shared-memory image is the node's whole state. Its file size and the index list are the
+// two facts an operator can see from inside a running process; anything deeper (page checks,
+// checksum) needs the file closed, so "repair" is a marker honoured at the next startup.
+bool ends_with_text(const std::string &s, const char *suffix) {
+    const std::size_t n = std::strlen(suffix);
+    return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+bool read_uint_file(const bfs::path &p, uint32_t &out) {
+    std::ifstream f(p.string());
+    if (!f) return false;
+    uint32_t v = 0;
+    f >> v;
+    if (f.fail()) return false;
+    out = v;
+    return true;
+}
+
+struct objects_state {
+    std::string state_dir;
+    bool state_dir_exists = false;
+    bool shm_exists = false;
+    uint64_t shm_bytes = 0;
+    uint64_t mapped_bytes = 0;
+    uint64_t free_bytes = 0;
+    uint64_t reserved_bytes = 0;
+    int64_t revision = 0;
+    uint32_t head_block_num = 0;
+    uint32_t stored_schema = 0;
+    bool schema_file_present = false;
+    bool block_log_present = false;
+    uint64_t block_log_bytes = 0;
+    bool recovering = false;
+    std::vector<std::string> markers;
+    // type, type_id, objects, revision
+    std::vector<std::tuple<std::string, int64_t, int64_t, int64_t>> indexes;
+    int64_t total_objects = 0;
+    int64_t dgp_objects = -1;
+    int64_t schedule_objects = -1;
+    int64_t account_objects = -1;
+    std::string lock_error;
+};
 
 // ── limits ──────────────────────────────────────────────────────────────────────────────────
 const std::size_t kMaxBodyBytes = 64 * 1024;
@@ -453,6 +500,7 @@ const char *ui_page() {
   <button data-tab="snapshots">Snapshots</button>
   <button data-tab="logs">Logs</button>
   <button data-tab="plugins">Plugins</button>
+  <button data-tab="objects">Objects</button>
   <button data-tab="validators">Validators</button>
 </nav>
 <main>
@@ -549,6 +597,39 @@ const char *ui_page() {
     <div class="actions" id="logSettingsActions" style="margin-top:10px" hidden>
       <button id="logSettingsSave">Save log settings</button>
       <span id="logSettingsState" class="dim"></span>
+    </div>
+
+    <div id="plugStatus" hidden
+         style="margin-top:12px;white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:320px;overflow:auto"></div>
+  </section>
+
+  <section id="tab-objects" hidden>
+    <h2>Objects</h2>
+    <div class="actions" style="margin-bottom:10px">
+      <button id="objCheck">Check</button>
+      <span id="objVerdict" class="dim">not checked yet</span>
+    </div>
+    <div id="objSummary" class="dim">no token — enter one above</div>
+    <div id="objFindings" hidden style="margin-top:10px"></div>
+    <div class="tablewrap" style="margin-top:10px">
+      <table>
+        <thead><tr><th>Object type</th><th>type_id</th><th>Objects</th><th>Index revision</th></tr></thead>
+        <tbody id="objRows"></tbody>
+      </table>
+    </div>
+
+    <h2 style="margin-top:18px">Repair</h2>
+    <div class="dim" id="objRepairHint">
+      Repair writes a marker and restarts the node; the next startup rebuilds state.
+      Check first: the verdict names which mode fits.
+    </div>
+    <div class="actions" style="margin-top:8px">
+      <select id="objRepairMode">
+        <option value="replay">replay from block log (keeps blocks)</option>
+        <option value="resync">full resync (drops state and blocks)</option>
+      </select>
+      <button id="objRepair" class="danger">Restart with repair</button>
+      <span id="objRepairState" class="dim"></span>
     </div>
   </section>
 
@@ -700,6 +781,7 @@ const char *ui_page() {
     // The banner outlives a token change: it reports a file that was already written, so only
     // the button is gated. Hiding the banner would hide the fact that a restart is pending.
     $('plugRestart').disabled = !hasScope('process');
+    $('objRepair').disabled = !hasScope('process');
   }
 
   function refreshAuth() {
@@ -1377,6 +1459,12 @@ const char *ui_page() {
       var n = (p.params || []).length;
       cellText(tr, n ? String(n) : 'none', n ? '' : 'dim');
       var cell = document.createElement('td');
+      if (p.status_method) {
+        cell.appendChild(button('Status', '', (function (name) {
+          return function () { showPluginStatus(name); };
+        })(p.name)));
+        cell.appendChild(document.createTextNode(' '));
+      }
       if (p.removable === false) {
         var fixed = document.createElement('button');
         fixed.textContent = 'protected';
@@ -1425,6 +1513,8 @@ const char *ui_page() {
       $('logSettings').className = 'dim';
       $('paramActions').hidden = true;
       $('logSettingsActions').hidden = true;
+      $('plugStatus').hidden = true;
+      $('plugStatus').textContent = '';
       return Promise.resolve();
     }
     return Promise.all([rpc('admin.plugins.list'), rpc('admin.config.get')])
@@ -1532,6 +1622,128 @@ const char *ui_page() {
     });
   }
 
+  // ── objects (chainbase) ────────────────────────────────────────────────────────────────
+  function renderObjects(res) {
+    var box = $('objSummary');
+    var lines = [
+      'shared memory: ' + (res.shared_memory_path || '-') + ' — ' + sizeText(res.shared_memory_bytes),
+      'mapped ' + sizeText(res.mapped_bytes) + ' · free ' + sizeText(res.free_bytes) +
+        ' · reserved ' + sizeText(res.reserved_bytes),
+      'revision ' + res.revision + ' · head block ' + res.head_block_num +
+        ' · ' + res.total_objects + ' objects in ' + res.index_count + ' indexes',
+      'schema ' + (res.schema ? (res.schema.stored + ' / ' + res.schema.compiled +
+        (res.schema.match ? ' (match)' : ' (MISMATCH)')) : '-') +
+        ' · block log ' + (res.block_log && res.block_log.present ? sizeText(res.block_log.bytes) : 'absent') +
+        (res.markers && res.markers.length ? ' · markers: ' + res.markers.join(', ') : '')
+    ];
+    if (res.lock_error) lines.push('LOCK ERROR: ' + res.lock_error);
+    box.textContent = lines.join('\n');
+    box.style.whiteSpace = 'pre-wrap';
+
+    var body = $('objRows');
+    body.textContent = '';
+    var rows = res.indexes || [];
+    for (var i = 0; i < rows.length; i++) {
+      var tr = document.createElement('tr');
+      cellText(tr, rows[i].type);
+      cellText(tr, String(rows[i].type_id), 'dim');
+      cellText(tr, String(rows[i].objects));
+      cellText(tr, String(rows[i].revision), 'dim');
+      body.appendChild(tr);
+    }
+    if (!rows.length) {
+      var empty = document.createElement('tr');
+      cellText(empty, 'no indexes reported', 'dim');
+      body.appendChild(empty);
+    }
+  }
+
+  function refreshObjects() {
+    if (!token) {
+      $('objSummary').textContent = 'no token — enter one above';
+      $('objRows').textContent = '';
+      $('objVerdict').textContent = 'not checked yet';
+      $('objVerdict').className = 'dim';
+      return Promise.resolve();
+    }
+    return rpc('admin.objects.list').then(renderObjects).catch(function (e) {
+      $('objSummary').textContent = 'objects unavailable: ' + e.message;
+    });
+  }
+
+  function showFindings(res) {
+    var box = $('objFindings');
+    box.textContent = '';
+    box.hidden = false;
+    var list = res.findings || [];
+    if (!list.length) {
+      var ok = document.createElement('div');
+      ok.className = 'ok';
+      ok.textContent = 'no findings: state, schema, markers and head/revision agree.';
+      box.appendChild(ok);
+      return;
+    }
+    for (var i = 0; i < list.length; i++) {
+      var d = document.createElement('div');
+      d.style.margin = '4px 0';
+      d.className = list[i].severity === 'critical' ? 'bad' : 'warn';
+      d.textContent = list[i].severity.toUpperCase() + ' [' + list[i].code + '] ' + list[i].text;
+      box.appendChild(d);
+    }
+  }
+
+  function checkObjects() {
+    if (!token) { notice('enter a token first', 'bad'); return; }
+    $('objVerdict').textContent = 'checking…';
+    $('objVerdict').className = 'dim';
+    rpc('admin.objects.check').then(function (res) {
+      var cls = { ok: 'ok', warn: 'warn', corrupted: 'bad', unreadable: 'bad' }[res.verdict] || 'dim';
+      $('objVerdict').textContent = res.verdict + ' — critical ' + res.critical +
+        ', warnings ' + res.warnings +
+        (res.recommended_repair ? ' · recommended repair: ' + res.recommended_repair : '');
+      $('objVerdict').className = cls;
+      if (res.recommended_repair) $('objRepairMode').value = res.recommended_repair;
+      showFindings(res);
+      refreshObjects();
+    }).catch(function (e) {
+      $('objVerdict').textContent = 'check failed: ' + e.message;
+      $('objVerdict').className = 'bad';
+    });
+  }
+
+  function repairObjects() {
+    var mode = $('objRepairMode').value;
+    if (!hasScope('process')) { notice('repair needs the process scope', 'bad'); return; }
+    var text = mode === 'replay'
+      ? 'Restart and rebuild state from the block log?\n\nShared memory is wiped; the block log is kept and reindexed. The node is unavailable until the replay finishes.'
+      : 'Restart and wipe state AND block log?\n\nThe node comes up empty and resyncs from peers, which takes far longer than a replay.';
+    if (!confirm(text)) return;
+    if (!confirm('Second check: ' + (mode === 'replay' ? 'replay' : 'full resync') + ' on this node?')) return;
+    $('objRepairState').textContent = 'requesting…';
+    rpc('admin.objects.repair', { mode: mode, confirm: 'repair' }).then(function (r) {
+      $('objRepairState').textContent = r.mode + ': ' + r.effect;
+      notice('repair requested; the node is restarting', 'warn');
+      setTimeout(function () { if (token) refreshAuth().then(refreshObjects); }, 5000);
+    }).catch(function (e) {
+      $('objRepairState').textContent = 'failed: ' + e.message;
+      notice('repair failed: ' + e.message, 'bad');
+    });
+  }
+
+  function showPluginStatus(name) {
+    var box = $('plugStatus');
+    box.hidden = false;
+    box.textContent = 'loading ' + name + '…';
+    rpc('admin.plugins.status', { name: name }).then(function (r) {
+      var head = r.name + ' — state: ' + (r.state || 'unobserved') + ' (' + r.state_source + ')\n';
+      box.textContent = r.detail_available
+        ? head + r.detail_method + ':\n' + JSON.stringify(r.detail, null, 2)
+        : head + (r.reason || 'no status available');
+    }).catch(function (e) {
+      box.textContent = 'status of ' + name + ' failed: ' + e.message;
+    });
+  }
+
   // ── tabs and timers ────────────────────────────────────────────────────────────────────
   function refreshActiveTab() {
     if (!token) return Promise.resolve();
@@ -1539,6 +1751,7 @@ const char *ui_page() {
     if (activeTab === 'snapshots') { snapPaged = false; return refreshSnapshots(true); }
     if (activeTab === 'logs') return loadLogList();
     if (activeTab === 'plugins') return refreshPlugins();
+    if (activeTab === 'objects') return refreshObjects();
     if (activeTab === 'validators') return refreshValidators();
     return Promise.resolve();
   }
@@ -1546,7 +1759,7 @@ const char *ui_page() {
   function activate(name) {
     activeTab = name;
     sessionStorage.setItem('vizAdminTab', name);
-    ['status', 'peers', 'snapshots', 'logs', 'plugins', 'validators'].forEach(function (t) {
+    ['status', 'peers', 'snapshots', 'logs', 'plugins', 'objects', 'validators'].forEach(function (t) {
       $('tab-' + t).hidden = t !== name;
     });
     var tabs = document.querySelectorAll('nav.tabs button');
@@ -1562,9 +1775,10 @@ const char *ui_page() {
         // Page 1 is refreshed on a timer; once the operator asked for older pages we leave
         // the list alone instead of appending the next page every tick.
         else if (activeTab === 'snapshots') { if (!snapPaged) refreshSnapshots(true); }
-        // Plugins is deliberately not on the timer: a refresh re-renders the parameter inputs
-        // and would throw away values the operator is in the middle of typing. It reloads on
-        // activation and after every apply instead.
+        // Plugins and Objects are deliberately not on the timer: a plugins refresh re-renders
+        // the parameter inputs and would throw away values the operator is in the middle of
+        // typing, and an objects refresh would repaint the index table under the Check verdict.
+        // Both reload on activation, and plugins also after every apply.
         else if (activeTab === 'validators') refreshValidators();
       }, 5000);
     }
@@ -1622,6 +1836,8 @@ const char *ui_page() {
     if (!name) { notice('no plugin selected', 'bad'); return; }
     planPluginChange({ add: [name] }, 'enable ' + name);
   });
+  $('objCheck').addEventListener('click', checkObjects);
+  $('objRepair').addEventListener('click', repairObjects);
   $('paramSave').addEventListener('click', function () {
     saveSettings($('paramBox'), 'parameters', $('paramState'));
   });
@@ -1782,7 +1998,12 @@ struct node_admin_plugin::impl {
     fc::variant h_node_info(const fc::variant &params);
     fc::variant h_diagnostics(const fc::variant &params);
     fc::variant h_plugins_list(const fc::variant &params);
+    fc::variant h_plugins_status(const fc::variant &params);
     fc::variant h_config_get(const fc::variant &params);
+    fc::variant h_objects_list(const fc::variant &params);
+    fc::variant h_objects_check(const fc::variant &params);
+    fc::variant h_objects_repair(const fc::variant &params);
+    objects_state collect_objects() const;
     fc::variant h_logs_list(const fc::variant &params);
     fc::variant h_logs_tail(const fc::variant &params);
     fc::variant h_audit_tail(const fc::variant &params);
@@ -2411,7 +2632,12 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
     if (method == "admin.node_info") return h_node_info(params);
     if (method == "admin.diagnostics") return h_diagnostics(params);
     if (method == "admin.plugins.list") return h_plugins_list(params);
+    if (method == "admin.plugins.status") return h_plugins_status(params);
     if (method == "admin.config.get") return h_config_get(params);
+    // Chainbase introspection: which object types exist, how many rows each holds, and how
+    // much of the mapped file is used. Read-only; the check is the same view plus a verdict.
+    if (method == "admin.objects.list") return h_objects_list(params);
+    if (method == "admin.objects.check") return h_objects_check(params);
     if (method == "admin.logs.list") return h_logs_list(params);
     if (method == "admin.logs.tail") return h_logs_tail(params);
     if (method == "admin.audit.tail") return h_audit_tail(params);
@@ -2497,12 +2723,13 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
 
     if (method == "admin.plan.cancel") return h_plan_cancel(params, token);
 
-    if (method == "admin.restart") {
+    if (method == "admin.restart" || method == "admin.objects.repair") {
         if (token.scopes.find("process") == token.scopes.end()) {
             throw rpc_error{-32002, "forbidden",
                             "token '" + token.label + "' has no 'process' scope",
-                            "restart needs a token with scopes 'read,process'"};
+                            "restart and state repair need a token with scopes 'read,process'"};
         }
+        if (method == "admin.objects.repair") return h_objects_repair(params);
         return h_restart(params);
     }
 
@@ -2694,6 +2921,14 @@ fc::variant node_admin_plugin::impl::h_plugins_list(const fc::variant &) {
         // must not render as merely "off", and a plugin with no allow-listed keys must say so
         // instead of showing an empty panel.
         item("removable", !util::plugin_removal_forbidden(e.value));
+        // Plugins that answer a status question of their own. Null means the plugin exposes
+        // no operator status: the panel should say so instead of drawing an empty drawer.
+        const char *status_method = nullptr;
+        if (e.value == "p2p") status_method = "admin.p2p.status";
+        else if (e.value == "webserver") status_method = "admin.webserver.status";
+        else if (e.value == "snapshot") status_method = "admin.snapshot.status";
+        else if (e.value == "validator_guard") status_method = "admin.validator.list";
+        item("status_method", status_method ? fc::variant(std::string(status_method)) : fc::variant());
         fc::variants params;
         for (const util::config_spec &spec : util::config_allowlist()) {
             if (util::config_key_group(spec.name) != e.value) continue;
@@ -2716,9 +2951,69 @@ fc::variant node_admin_plugin::impl::h_plugins_list(const fc::variant &) {
     m("config_exists", exists);
     m("known", known);
     m("note", "Entries come from config.ini. Appbase keeps its plugin registry private, so "
-              "lifecycle state is observed only for chain, p2p and node_admin; for the others "
-              "loaded=true is implied by startup (an unknown plugin name aborts the node).");
+              "lifecycle state is observed only for the plugin types this binary's node_admin "
+              "links (chain, p2p, snapshot, webserver, validator, validator_guard, node_admin); "
+              "for the others loaded=true is implied by startup (an unknown plugin name aborts "
+              "the node). status_method names the method that returns that plugin's own status.");
     m("plugins", plugins);
+    return fc::variant(m);
+}
+
+// A plugin's lifecycle state says whether it is running; it does not say what it is doing.
+// This method answers the second question for every plugin that has a status API of its own,
+// and says so plainly when there is none instead of returning an empty object.
+fc::variant node_admin_plugin::impl::h_plugins_status(const fc::variant &params) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {name: \"p2p\"}", ""};
+    }
+    const std::string name = trim(param_str(params.get_object(), "name", ""));
+    if (name.empty()) {
+        throw rpc_error{-32602, "invalid params", "name is required", ""};
+    }
+
+    bool exists = false;
+    const std::vector<cfg_entry> cfg = parse_config_file(config_path(), &exists);
+    bool configured = false;
+    for (const cfg_entry &e : cfg) {
+        if (e.key == "plugin" && e.value == name) { configured = true; break; }
+    }
+
+    const appbase::abstract_plugin *p = observe_plugin(name);
+    std::string state = "unobserved";
+    if (p) {
+        switch (p->get_state()) {
+            case appbase::abstract_plugin::registered: state = "registered"; break;
+            case appbase::abstract_plugin::initialized: state = "initialized"; break;
+            case appbase::abstract_plugin::started: state = "started"; break;
+            case appbase::abstract_plugin::stopped: state = "stopped"; break;
+            default: state = "unknown"; break;
+        }
+    }
+    const bool started = p && p->get_state() == appbase::abstract_plugin::started;
+
+    fc::mutable_variant_object m;
+    m("name", name);
+    m("configured", configured);
+    m("state", p ? fc::variant(state) : fc::variant());
+    m("state_source", p ? std::string("observed") : std::string("unobserved"));
+
+    // Only call into a plugin that is actually started: these handlers touch thread-owned
+    // state (peer map, connection counters) and would throw on a stopped plugin.
+    fc::variant detail;
+    std::string detail_method;
+    if (started) {
+        if (name == "p2p") { detail = h_p2p_status(params); detail_method = "admin.p2p.status"; }
+        else if (name == "webserver") { detail = h_webserver_status(params); detail_method = "admin.webserver.status"; }
+        else if (name == "snapshot") { detail = h_snapshot_status(params); detail_method = "admin.snapshot.status"; }
+        else if (name == "validator_guard") { detail = h_validator_list(params); detail_method = "admin.validator.list"; }
+    }
+    m("detail_available", !detail_method.empty());
+    m("detail_method", detail_method.empty() ? fc::variant() : fc::variant(detail_method));
+    if (!detail_method.empty()) m("detail", detail);
+    else if (!p) m("reason", "this binary does not link this plugin, so its lifecycle cannot be "
+                             "observed; a configured plugin is loaded or startup would have aborted");
+    else if (!started) m("reason", "the plugin is not running, so it has no status to report");
+    else m("reason", "this plugin exposes no status of its own; only its lifecycle state is known");
     return fc::variant(m);
 }
 
@@ -3820,6 +4115,319 @@ fc::variant node_admin_plugin::impl::h_restart(const fc::variant &params) {
     return fc::variant(m);
 }
 
+// ── shared-memory objects (chainbase) ───────────────────────────────────────────────────
+objects_state node_admin_plugin::impl::collect_objects() const {
+    objects_state s;
+    s.state_dir = chain.get_state_dir();
+    boost::system::error_code ec;
+    const bfs::path dir(s.state_dir);
+    s.state_dir_exists = !s.state_dir.empty() && bfs::exists(dir, ec) && bfs::is_directory(dir, ec);
+
+    // The block log is a file in graphene, but the chain plugin wipes it with remove_all, so
+    // both shapes are read: a directory here would silently report "no block log" otherwise.
+    const bfs::path block_log = bfs::path(data_dir()) / "block_log";
+    s.block_log_present = bfs::exists(block_log, ec);
+    if (s.block_log_present) {
+        if (bfs::is_regular_file(block_log, ec)) {
+            s.block_log_bytes = bfs::file_size(block_log, ec);
+        } else if (bfs::is_directory(block_log, ec)) {
+            for (bfs::directory_iterator it(block_log), end; it != end; ++it) {
+                if (bfs::is_regular_file(it->path(), ec)) s.block_log_bytes += bfs::file_size(it->path(), ec);
+            }
+        }
+    }
+
+    if (s.state_dir_exists) {
+        const bfs::path shm = dir / "shared_memory.bin";
+        s.shm_exists = bfs::exists(shm, ec);
+        if (s.shm_exists) s.shm_bytes = bfs::file_size(shm, ec);
+
+        // Files that a successful startup or a successful resize removes. Finding one while
+        // the node is running means an operation was interrupted, which is exactly the state
+        // a repair has to clear.
+        for (const char *marker : {"undo_all_in_progress", "resize_in_progress",
+                                   "force_resync", "force_replay"}) {
+            if (bfs::exists(dir / marker, ec)) s.markers.push_back(marker);
+        }
+    }
+
+    s.schema_file_present = read_uint_file(bfs::path(data_dir()) / "schema_version", s.stored_schema);
+
+    graphene::chain::database &db = chain.db();
+    s.recovering = chain.is_recovering();
+    try {
+        // Sizes are read under the same weak read lock the chain API uses: without it the
+        // multi-index containers would be walked while the block thread mutates them.
+        db.with_weak_read_lock([&]() {
+            s.revision = static_cast<int64_t>(db.revision());
+            s.head_block_num = db.head_block_num();
+            s.mapped_bytes = static_cast<uint64_t>(db.max_memory());
+            s.reserved_bytes = static_cast<uint64_t>(db.reserved_memory());
+            s.free_bytes = static_cast<uint64_t>(db.segment_manager()->get_free_memory());
+            for (auto it = db.index_list_begin(); it != db.index_list_end(); ++it) {
+                chainbase::abstract_index *idx = *it;
+                const int64_t n = static_cast<int64_t>(idx->size());
+                const std::string type = idx->name();
+                s.indexes.emplace_back(type, static_cast<int64_t>(idx->type_id()), n,
+                                       static_cast<int64_t>(idx->revision()));
+                s.total_objects += n;
+                if (ends_with_text(type, "::dynamic_global_property_object")) s.dgp_objects = n;
+                else if (ends_with_text(type, "::validator_schedule_object")) s.schedule_objects = n;
+                else if (ends_with_text(type, "::account_object")) s.account_objects = n;
+            }
+        });
+    } catch (const std::exception &e) {
+        s.lock_error = e.what();
+    }
+
+    std::sort(s.indexes.begin(), s.indexes.end(),
+              [](const std::tuple<std::string, int64_t, int64_t, int64_t> &a,
+                 const std::tuple<std::string, int64_t, int64_t, int64_t> &b) {
+                  if (std::get<2>(a) != std::get<2>(b)) return std::get<2>(a) > std::get<2>(b);
+                  return std::get<0>(a) < std::get<0>(b);
+              });
+    return s;
+}
+
+namespace {
+std::string state_dir_marker_path(const objects_state &s, const char *name) {
+    return (bfs::path(s.state_dir) / name).string();
+}
+} // namespace
+
+fc::variant node_admin_plugin::impl::h_objects_list(const fc::variant &) {
+    const objects_state s = collect_objects();
+
+    fc::variants indexes;
+    for (const auto &row : s.indexes) {
+        fc::mutable_variant_object e;
+        e("type", std::get<0>(row));
+        e("type_id", std::get<1>(row));
+        e("objects", std::get<2>(row));
+        e("revision", std::get<3>(row));
+        indexes.push_back(fc::variant(e));
+    }
+
+    fc::mutable_variant_object schema;
+    schema("file_present", s.schema_file_present);
+    schema("stored", static_cast<int64_t>(s.stored_schema));
+    schema("compiled", static_cast<int64_t>(CHAIN_SCHEMA_VERSION));
+    schema("match", s.schema_file_present && s.stored_schema == CHAIN_SCHEMA_VERSION);
+
+    fc::mutable_variant_object block_log;
+    block_log("path", (bfs::path(data_dir()) / "block_log").string());
+    block_log("present", s.block_log_present);
+    block_log("bytes", static_cast<int64_t>(s.block_log_bytes));
+
+    fc::mutable_variant_object m;
+    m("state_dir", s.state_dir);
+    m("state_dir_exists", s.state_dir_exists);
+    m("shared_memory_path", (bfs::path(s.state_dir) / "shared_memory.bin").string());
+    m("shared_memory_exists", s.shm_exists);
+    m("shared_memory_bytes", static_cast<int64_t>(s.shm_bytes));
+    m("mapped_bytes", static_cast<int64_t>(s.mapped_bytes));
+    m("free_bytes", static_cast<int64_t>(s.free_bytes));
+    m("used_bytes", static_cast<int64_t>(s.mapped_bytes > s.free_bytes ? s.mapped_bytes - s.free_bytes : 0));
+    m("reserved_bytes", static_cast<int64_t>(s.reserved_bytes));
+    m("revision", s.revision);
+    m("head_block_num", static_cast<int64_t>(s.head_block_num));
+    m("recovering", s.recovering);
+    m("schema", schema);
+    m("block_log", block_log);
+    fc::variants markers;
+    for (const std::string &x : s.markers) markers.push_back(fc::variant(x));
+    m("markers", markers);
+    m("index_count", static_cast<int64_t>(s.indexes.size()));
+    m("total_objects", s.total_objects);
+    m("indexes", indexes);
+    m("generated_at", now_iso());
+    if (!s.lock_error.empty()) m("lock_error", s.lock_error);
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_objects_check(const fc::variant &) {
+    const objects_state s = collect_objects();
+
+    fc::variants findings;
+    int criticals = 0;
+    int warnings = 0;
+    auto add = [&](const char *severity, const char *code, const std::string &text) {
+        fc::mutable_variant_object f;
+        f("severity", severity);
+        f("code", code);
+        f("text", text);
+        findings.push_back(fc::variant(f));
+        if (std::strcmp(severity, "critical") == 0) ++criticals;
+        else if (std::strcmp(severity, "warn") == 0) ++warnings;
+    };
+    auto num = [](uint64_t v) { return std::to_string(v); };
+
+    if (!s.lock_error.empty()) {
+        add("critical", "read_lock_timeout",
+            "shared memory did not answer a read lock: " + s.lock_error);
+    }
+    if (!s.state_dir_exists) {
+        add("critical", "state_dir_missing", "shared-memory directory does not exist: " + s.state_dir);
+    } else if (!s.shm_exists) {
+        add("critical", "shared_memory_missing",
+            "shared_memory.bin is absent in " + s.state_dir + "; the node has no state");
+    } else {
+        if (s.mapped_bytes > 0 && s.shm_bytes < s.mapped_bytes) {
+            add("critical", "shared_memory_truncated",
+                "shared_memory.bin is " + num(s.shm_bytes) + " bytes but the node maps " +
+                num(s.mapped_bytes) + "; the file was truncated or replaced under a running process");
+        } else if (s.mapped_bytes > 0 && s.shm_bytes > s.mapped_bytes) {
+            add("warn", "shared_memory_larger_than_mapping",
+                "shared_memory.bin is " + num(s.shm_bytes) + " bytes, larger than the mapping this "
+                "process opened (" + num(s.mapped_bytes) + "); something else grew the file under "
+                "the running node, usually a second process pointed at the same state directory");
+        }
+    }
+    if (!s.markers.empty()) {
+        std::string list;
+        for (const std::string &x : s.markers) { if (!list.empty()) list += ", "; list += x; }
+        add("critical", "stale_marker",
+            "marker file(s) present from an interrupted operation: " + list +
+            "; the next startup will act on them, and until then the state is mid-operation");
+    }
+    if (s.shm_exists && (!s.schema_file_present || s.stored_schema != CHAIN_SCHEMA_VERSION)) {
+        add("critical", "schema_mismatch",
+            "schema_version " + std::string(s.schema_file_present ? num(s.stored_schema) : "missing") +
+            " does not match this binary (" + num(CHAIN_SCHEMA_VERSION) +
+            "); the next startup wipes shared memory and rebuilds it from a snapshot or block log");
+    }
+    if (s.shm_exists && s.revision != static_cast<int64_t>(s.head_block_num)) {
+        add("warn", "revision_behind_head",
+            "index revision " + std::to_string(s.revision) + " differs from head block " +
+            num(s.head_block_num) + "; the next startup replays the gap from the block log. "
+            "Normal after a crash, not corruption by itself");
+    }
+    if (s.mapped_bytes > 0 && s.free_bytes < 8ull * 1024 * 1024) {
+        add("critical", "shared_memory_exhausted",
+            "only " + num(s.free_bytes) + " bytes are free in the mapped file; the node cannot "
+            "write another block. Repair does not help: raise shared-file-size or the resize "
+            "limits and restart");
+    } else if (s.mapped_bytes > 0 && s.free_bytes * 20 < s.mapped_bytes) {
+        add("warn", "shared_memory_low",
+            "less than 5% of the mapped file is free (" + num(s.free_bytes) + " of " +
+            num(s.mapped_bytes) + " bytes)");
+    }
+    if (s.head_block_num > 0) {
+        if (s.dgp_objects != 1) {
+            add("critical", "global_properties_count",
+                "dynamic_global_property_object rows = " + std::to_string(s.dgp_objects) +
+                ", expected exactly 1");
+        }
+        if (s.schedule_objects != 1) {
+            add("critical", "validator_schedule_count",
+                "validator_schedule_object rows = " + std::to_string(s.schedule_objects) +
+                ", expected exactly 1");
+        }
+        if (s.account_objects == 0) {
+            add("critical", "account_index_empty",
+                "account_object rows = 0 while head is " + num(s.head_block_num));
+        }
+    }
+    if (!s.block_log_present && s.head_block_num > 0) {
+        add("warn", "block_log_missing",
+            "block_log is absent while head is " + num(s.head_block_num) +
+            "; a replay cannot rebuild state, only a full resync can");
+    }
+    if (s.recovering) {
+        add("warn", "recovery_in_progress", "the chain plugin reports an automatic recovery in progress");
+    }
+
+    std::string verdict = "ok";
+    if (!s.lock_error.empty()) verdict = "unreadable";
+    else if (criticals > 0) verdict = "corrupted";
+    else if (warnings > 0) verdict = "warn";
+
+    // A repair rewrites state, so it is recommended only when rewriting can fix the finding.
+    // Exhausted shared memory is the exception: the same size would fill up again.
+    bool repair_helps = verdict == "corrupted" &&
+                        !(criticals == 1 && s.free_bytes < 8ull * 1024 * 1024 && s.mapped_bytes > 0);
+    std::string recommended;
+    if (repair_helps) recommended = (s.block_log_present && s.block_log_bytes > 0) ? "replay" : "resync";
+
+    fc::mutable_variant_object m;
+    m("verdict", verdict);
+    m("critical", static_cast<int64_t>(criticals));
+    m("warnings", static_cast<int64_t>(warnings));
+    m("findings", findings);
+    m("recommended_repair", recommended.empty() ? fc::variant() : fc::variant(recommended));
+    m("replay_available", s.block_log_present && s.block_log_bytes > 0);
+    m("state_dir", s.state_dir);
+    m("checked_at", now_iso());
+    return fc::variant(m);
+}
+
+fc::variant node_admin_plugin::impl::h_objects_repair(const fc::variant &params) {
+    if (!params.is_object()) {
+        throw rpc_error{-32602, "invalid params", "expected {mode: \"replay\"|\"resync\", confirm: \"repair\"}", ""};
+    }
+    const std::string mode = trim(param_str(params.get_object(), "mode", "replay"));
+    if (mode != "replay" && mode != "resync") {
+        throw rpc_error{-32602, "invalid params", "mode must be 'replay' or 'resync'", ""};
+    }
+    const std::string confirm = trim(param_str(params.get_object(), "confirm", ""));
+    if (confirm != "repair") {
+        throw rpc_error{-32602, "invalid params",
+                        "confirm must be exactly the word 'repair'",
+                        "repair rewrites node state; the whole point is that it cannot happen by accident"};
+    }
+
+    const objects_state s = collect_objects();
+    if (!s.state_dir_exists) {
+        throw rpc_error{-32000, "state dir missing",
+                        "shared-memory directory does not exist: " + s.state_dir,
+                        "start the node once so it creates its state directory"};
+    }
+    if (mode == "replay" && !(s.block_log_present && s.block_log_bytes > 0)) {
+        throw rpc_error{-32000, "no block log",
+                        "replay rebuilds state from the block log, and the block log is absent or empty",
+                        "use mode=resync: it wipes state and blocks and rebuilds from the network"};
+    }
+    if (restart_requested.exchange(true)) {
+        throw rpc_error{-32000, "restart already requested", "the process is already shutting down", ""};
+    }
+
+    // The chain plugin reads these markers at startup, before it maps shared memory:
+    //   force_replay -> wipe state, keep the block log, reindex it from block 1
+    //   force_resync -> wipe state and block log, come up empty and resync from peers
+    // Writing them now and quitting is safer than acting on a live mapping: the file is
+    // closed by an ordinary shutdown, so the repair starts from a consistent file handle.
+    const char *marker = mode == "replay" ? "force_replay" : "force_resync";
+    const std::string marker_path = state_dir_marker_path(s, marker);
+    {
+        std::ofstream f(marker_path.c_str(), std::ios::trunc);
+        f << "node_admin repair request at " << now_iso() << " mode=" << mode << "\n";
+        f.flush();
+        if (!f) {
+            restart_requested.store(false);
+            throw rpc_error{-32000, "cannot write repair marker", marker_path,
+                            "check the state directory permissions"};
+        }
+    }
+
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        ilog("node_admin: repair requested through the admin API; asking appbase to quit");
+        appbase::app().quit();
+    }).detach();
+
+    fc::mutable_variant_object m;
+    m("ok", true);
+    m("restarting", true);
+    m("mode", mode);
+    m("marker", marker_path);
+    m("effect", mode == "replay"
+                    ? "next startup wipes shared memory and reindexes the existing block log from block 1"
+                    : "next startup wipes shared memory and the block log, then resyncs from peers");
+    m("hint", "the process exits cleanly right after this reply. Bring-up belongs to the "
+              "supervisor: docker --restart unless-stopped or systemd Restart=always.");
+    return fc::variant(m);
+}
+
 // ── validator chain operations (validator_guard) ─────────────────────────────────────────
 // Decision q#3051=D: node_admin does not keep its own key. The guard already holds
 // signing+active keys per validator, signs validator_update inside its own plugin, and
@@ -4166,7 +4774,39 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Node info plus data dir, peer count, disk/RSS/loadavg and plugin counters.",
                          no_args));
     tools.push_back(tool("admin.plugins.list",
-                         "Plugins configured in config.ini with observed lifecycle state.", no_args));
+                         "Plugins configured in config.ini with observed lifecycle state and the "
+                         "name of the method that reports each plugin's own status.", no_args));
+
+    fc::variants plugin_name_props;
+    plugin_name_props.push_back(prop("string", "Plugin name exactly as written in config.ini, e.g. p2p"));
+    fc::variants plugin_name_required;
+    plugin_name_required.push_back(fc::variant(std::string("name")));
+    tools.push_back(tool("admin.plugins.status",
+                         "Lifecycle state plus the plugin's own status for p2p, webserver, "
+                         "snapshot and validator_guard. For other plugins it says why no "
+                         "status exists instead of returning an empty object.",
+                         schema(plugin_name_props, plugin_name_required)));
+
+    tools.push_back(tool("admin.objects.list",
+                         "Chainbase object types with row counts per index, the mapped file "
+                         "size, free space, revision vs head and state-repair markers.", no_args));
+    tools.push_back(tool("admin.objects.check",
+                         "Same view as admin.objects.list, judged: verdict ok/warn/corrupted/"
+                         "unreadable, named findings, and the repair mode that would fix them.",
+                         no_args));
+
+    fc::variants repair_props;
+    repair_props.push_back(prop("string", "'replay' rebuilds state from the block log; "
+                                          "'resync' wipes state and blocks and syncs from peers"));
+    repair_props.push_back(prop("string", "Must be exactly 'repair'"));
+    fc::variants repair_required;
+    repair_required.push_back(fc::variant(std::string("mode")));
+    repair_required.push_back(fc::variant(std::string("confirm")));
+    tools.push_back(tool("admin.objects.repair",
+                         "Write the repair marker and restart: replay keeps the block log, "
+                         "resync drops it. Needs the 'process' scope; the supervisor must "
+                         "bring the node back.",
+                         schema(repair_props, repair_required)));
     tools.push_back(tool("admin.config.get",
                          "Effective config.ini by sections with secret values masked.", no_args));
     tools.push_back(tool("admin.logs.list",
