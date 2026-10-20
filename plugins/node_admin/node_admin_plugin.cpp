@@ -1421,6 +1421,26 @@ const char *ui_page() {
     for (var i = 0; i < els.length; i++) els[i].disabled = locked;
   }
 
+  // Documentation lives on GitHub Pages (built from master). Plugins with a page of their
+  // own link to it; the rest link to their section of the overview (vitepress turns the
+  // heading `account_by_key` into the anchor "account-by-key"); a plugin the overview does
+  // not describe links to the overview itself rather than to an anchor that does not exist.
+  var DOCS = 'https://viz-blockchain.github.io/viz-cpp-node/';
+  var DOC_PAGES = {
+    chain: 'plugins/chain', snapshot: 'plugins/snapshot', block_archive: 'plugins/block-archive',
+    database_api: 'plugins/database-api', prediction_market_api: 'plugins/prediction-market-api',
+    validator: 'plugins/validator', webserver: 'plugins/webserver', node_admin: 'plugins/node-admin',
+    validator_guard: 'node/validator-guard'
+  };
+  var DOC_ANCHORS = ['json_rpc', 'p2p', 'network_broadcast_api', 'validator_api', 'account_by_key',
+    'operation_history', 'account_history', 'committee_api', 'invite_api', 'paid_subscription_api'];
+
+  function pluginDocUrl(name) {
+    if (DOC_PAGES[name]) return DOCS + DOC_PAGES[name];
+    if (DOC_ANCHORS.indexOf(name) >= 0) return DOCS + 'plugins/overview#' + name.replace(/_/g, '-');
+    return DOCS + 'plugins/overview';
+  }
+
   function renderPlugins(res) {
     var body = $('plugRows');
     body.textContent = '';
@@ -1430,7 +1450,14 @@ const char *ui_page() {
       var p = list[i];
       configured[p.name] = true;
       var tr = document.createElement('tr');
-      cellText(tr, p.name);
+      var nameCell = cellText(tr, p.name + ' ');
+      var doc = document.createElement('a');
+      doc.href = pluginDocUrl(p.name);
+      doc.target = '_blank';
+      doc.rel = 'noopener';
+      doc.textContent = 'docs';
+      doc.className = 'dim';
+      nameCell.appendChild(doc);
       cellText(tr, 'yes');
       cellText(tr, p.state ? (p.state + (p.state_source === 'observed' ? '' : ' (inferred)'))
                            : 'inferred',

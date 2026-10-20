@@ -855,6 +855,7 @@ check_contains "GET /ui/ -> has the add-trusted action" 'admin.p2p.add_trusted' 
 check_contains "GET /ui/ -> has the clear-banned action" 'admin.p2p.clear_banned' "$(cat "$WORK/ui.html")"
 check_contains "GET /ui/ -> reads snapshot status" 'admin.snapshot.status' "$(cat "$WORK/ui.html")"
 check_contains "GET /ui/ -> has the create-snapshot action" 'admin.snapshot.create' "$(cat "$WORK/ui.html")"
+check_contains "GET /ui/ -> links plugins to their docs on GitHub Pages" 'https://viz-blockchain.github.io/viz-cpp-node/' "$(cat "$WORK/ui.html")"
 check_contains "GET /ui/ -> has the restore action" 'admin.snapshot.restore' "$(cat "$WORK/ui.html")"
 check_contains "GET /ui/ -> downloads snapshots by name" '/snapshot/' "$(cat "$WORK/ui.html")"
 CODE=$(curl -s -o "$OUT" -w '%{http_code}' "$BASE/ui")
