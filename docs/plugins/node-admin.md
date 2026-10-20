@@ -1093,7 +1093,12 @@ rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
 curl and checks this contract: authentication and scopes, config/log masking, the log
 allow-list, status codes, audit, rate limit, P2P peer actions (including the `p2p`-scope
 denial), snapshot status/listing/download (including `HEAD`, traversal and missing-file
-cases, and the `snapshot`-scope denial on create/restore), MCP
+cases, and the `snapshot`-scope denial on create/restore), per-plugin status (a started
+plugin with its own view, an unlinked type answering `state: null` with a reason, a started
+plugin without a status API, and the missing-name refusal), chainbase objects (index count
+matches the array, largest first, schema matches the binary, a clean verdict on a fresh node,
+and the repair refusals — read scope, missing `confirm`, unknown mode, and `replay` with an
+empty block log, which must leave no marker behind), MCP
 `initialize`/`tools/list`/`tools/call`, webserver stats/limits (burst → `429`, whitelist
 bypass, blacklist `403`, hot limits change, persistence and reload), config/plugin
 plan-and-apply (allow-list, scope and token binding, single use, expiry, stale-hash refusal,

@@ -198,6 +198,77 @@ check "plugins.list -> chain state" '"started"' "$(field 'result.plugins.0.state
 check "plugins.list -> chain observed" '"observed"' "$(field 'result.plugins.0.state_source')"
 check "plugins.list -> json_rpc inferred" '"inferred"' "$(field 'result.plugins.1.state_source')"
 
+# ── per-plugin status ──────────────────────────────────────────────────────────────────────
+# The page must be able to answer "what is this plugin doing", not just "is it configured".
+auth "$GOOD" '{"jsonrpc":"2.0","id":171,"method":"admin.plugins.status","params":{"name":"p2p"}}'
+check "plugins.status -> HTTP 200" 200 "$CODE"
+check "plugins.status -> names the plugin" '"p2p"' "$(field result.name)"
+check "plugins.status -> observed state" '"started"' "$(field result.state)"
+check "plugins.status -> detail available" true "$(field result.detail_available)"
+check "plugins.status -> names the detail method" '"admin.p2p.status"' "$(field result.detail_method)"
+check "plugins.status -> detail is the p2p view" true \
+    "$(python3 -c 'import json,sys; print(str(isinstance(json.load(open(sys.argv[1]))["result"]["detail"]["peers"], list)).lower())' "$OUT")"
+
+# json_rpc is configured but its type is not linked into this binary: state is null with a
+# reason, never an invented lifecycle.
+auth "$GOOD" '{"jsonrpc":"2.0","id":172,"method":"admin.plugins.status","params":{"name":"json_rpc"}}'
+check "plugins.status -> unobserved state is null" null "$(field result.state)"
+check "plugins.status -> unobserved says why" true \
+    "$(python3 -c 'import json,sys; print(str(bool(json.load(open(sys.argv[1]))["result"].get("reason"))).lower())' "$OUT")"
+check "plugins.status -> unobserved has no detail" false "$(field result.detail_available)"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":173,"method":"admin.plugins.status","params":{"name":"node_admin"}}'
+check "plugins.status -> started without own status" '"started"' "$(field result.state)"
+check "plugins.status -> no own status API" false "$(field result.detail_available)"
+check "plugins.status -> absence is explained" true \
+    "$(python3 -c 'import json,sys; print(str(bool(json.load(open(sys.argv[1]))["result"].get("reason"))).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":174,"method":"admin.plugins.status"}'
+check "plugins.status -> name is required" -32602 "$(field error.code)"
+
+# ── chainbase objects ─────────────────────────────────────────────────────────────────────
+# One row per object type, plus the judge that may invite an operator to wipe state.
+auth "$GOOD" '{"jsonrpc":"2.0","id":175,"method":"admin.objects.list"}'
+check "objects.list -> HTTP 200" 200 "$CODE"
+check "objects.list -> index count matches the array" true \
+    "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["result"]; print(str(r["index_count"] == len(r["indexes"])).lower())' "$OUT")"
+check "objects.list -> at least one object type" true \
+    "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["result"]["index_count"] > 0).lower())' "$OUT")"
+check "objects.list -> rows carry a type and a count" true \
+    "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["result"]; print(str(bool(r["indexes"][0]["type"]) and isinstance(r["indexes"][0]["objects"], int)).lower())' "$OUT")"
+check "objects.list -> schema matches this binary" true "$(field result.schema.match)"
+check "objects.list -> read lock answered" null "$(field result.lock_error)"
+check "objects.list -> index order is largest first" true \
+    "$(python3 -c 'import json,sys; c=[i["objects"] for i in json.load(open(sys.argv[1]))["result"]["indexes"]]; print(str(c == sorted(c, reverse=True)).lower())' "$OUT")"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":176,"method":"admin.objects.check"}'
+check "objects.check -> HTTP 200" 200 "$CODE"
+check "objects.check -> healthy scratch node is ok" '"ok"' "$(field result.verdict)"
+check "objects.check -> no findings" 0 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["findings"]))' "$OUT")"
+check "objects.check -> no repair recommended" null "$(field result.recommended_repair)"
+
+# Repair is a write disguised as maintenance: the read token must not reach it, and the
+# confirm word is not decoration. Both refusals happen before a marker is written, so this
+# block is safe to run against the throwaway node.
+auth "$GOOD" '{"jsonrpc":"2.0","id":87,"method":"admin.objects.repair","params":{"mode":"replay","confirm":"repair"}}'
+check "objects.repair -> read token refused" -32002 "$(field error.code)"
+# ADM carries read+process, so these reach the handler's own validation.
+auth "$ADM" '{"jsonrpc":"2.0","id":181,"method":"admin.objects.repair","params":{"mode":"replay"}}'
+check "objects.repair -> confirm is required" -32602 "$(field error.code)"
+auth "$ADM" '{"jsonrpc":"2.0","id":182,"method":"admin.objects.repair","params":{"mode":"sideways","confirm":"repair"}}'
+check "objects.repair -> unknown mode refused" -32602 "$(field error.code)"
+auth "$ADM" '{"jsonrpc":"2.0","id":183,"method":"admin.objects.repair","params":{"mode":"replay","confirm":"repair"}}'
+check "objects.repair -> replay without blocks refused, no marker written" -32000 "$(field error.code)"
+check "objects.repair -> the refusal names the block log" true \
+    "$(python3 -c 'import json,sys; print(str("block log" in json.load(open(sys.argv[1]))["error"]["message"]).lower())' "$OUT")"
+if [ -e "$WORK/force_replay" ] || [ -e "$WORK/state/force_replay" ]; then
+    echo "FAIL objects.repair -> a refused repair left a marker behind"
+    FAIL=$((FAIL + 1))
+else
+    echo "ok   objects.repair -> no marker after a refusal"
+fi
+
 auth "$GOOD" '{"jsonrpc":"2.0","id":9,"method":"admin.config.get"}'
 check_contains "config.get -> private-key masked" 'private-key.*\*\*\*' \
     "$(tr -d '\n' < "$OUT")"
