@@ -137,6 +137,16 @@ jobs:
   # touching PM consensus math, evaluators, crons, or chain properties. Builds only the
   # tests/pm targets (chain/protocol/fc compile as make-dependencies); the consensus_sim
   # harness is configured by BUILD_CONSENSUS_TESTS but never built here.
+  #
+  # 2026-10-20: this job is now a SUBSET of tests.yml and is kept only as a fast manual
+  # run. tests.yml discovers every binary named by add_test (so it builds all six pm_*
+  # targets plus node_admin_util and capped_file_appender), configures with the same
+  # flags, and runs the whole ctest — a superset of `ctest -R '^pm_'` here. Measured:
+  # the six binaries below are all in tests.yml's list. It skips only docs-only PRs,
+  # where there is nothing to test. Missing coverage is therefore NOT pm-tests but
+  # check-boost-range (the only job that builds `vizd` itself on Boost 1.83) and
+  # testnet-config (the only job that runs consensus_sim against testnet constants).
+  # A skipped gate is not a passing gate: a PR with 0 labels reports these as skipped.
   pm_tests:
     name: PM unit tests (ctest)
     runs-on: ubuntu-latest
