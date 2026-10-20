@@ -427,6 +427,20 @@ const char *ui_page() {
   nav.tabs button.active { background:var(--bg); color:var(--fg);
                            border-color:var(--line); border-bottom:1px solid var(--bg);
                            margin-bottom:-1px; }
+  /* Per-plugin panel under the plugins table: one tab per plugin that has a status or
+     editable parameters. Own class, so activate() (nav.tabs) never touches it. */
+  nav.ptabs { display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid var(--line); }
+  nav.ptabs button { background:transparent; border:1px solid transparent; border-bottom:0;
+                     border-radius:8px 8px 0 0; color:var(--dim); padding:7px 12px; }
+  nav.ptabs button:hover { color:var(--fg); border-color:var(--line); }
+  nav.ptabs button.active { background:var(--panel); color:var(--fg); border-color:var(--line);
+                            border-bottom:1px solid var(--panel); margin-bottom:-1px; }
+  .ppanel { background:var(--panel); border:1px solid var(--line); border-top:0;
+            border-radius:0 0 8px 8px; padding:12px; }
+  .ppanel h2 { margin:16px 0 8px; }
+  .statusview { margin-top:8px; white-space:pre-wrap; font-size:12px; max-height:320px;
+                overflow:auto; }
+  tr.sel td { background:#1f2733; }
   .chip { border:1px solid var(--line); border-radius:999px; padding:3px 10px; font-size:12px;
           color:var(--dim); }
   .chip.ok { color:var(--ok); border-color:var(--ok); }
@@ -564,11 +578,25 @@ const char *ui_page() {
       read-only token — plugin changes need the plugins scope
     </div>
 
-    <h2 style="margin-top:18px">Parameters</h2>
-    <div id="paramBox" class="dim">no token — enter one above</div>
-    <div class="actions" id="paramActions" style="margin-top:10px" hidden>
-      <button id="paramSave">Save parameters</button>
-      <span id="paramState" class="dim"></span>
+    <div id="plugDetail" style="margin-top:18px" hidden>
+      <nav class="ptabs" id="plugTabs"></nav>
+      <div class="ppanel">
+        <div class="actions" id="plugHead"></div>
+        <div id="plugStatusBlock">
+          <h2>Status</h2>
+          <div class="actions"><button id="plugStatusRefresh">Refresh</button>
+            <span id="plugStatusNote" class="dim"></span></div>
+          <div id="plugStatus" class="statusview"></div>
+        </div>
+        <div id="plugParamBlock">
+          <h2>Parameters</h2>
+          <div id="paramBox" class="dim">no token — enter one above</div>
+          <div class="actions" id="paramActions" style="margin-top:10px" hidden>
+            <button id="paramSave">Save parameters</button>
+            <span id="paramState" class="dim"></span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <h2 style="margin-top:18px">Logging</h2>
@@ -577,9 +605,6 @@ const char *ui_page() {
       <button id="logSettingsSave">Save log settings</button>
       <span id="logSettingsState" class="dim"></span>
     </div>
-
-    <div id="plugStatus" hidden
-         style="margin-top:12px;white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:320px;overflow:auto"></div>
   </section>
 
   <section id="tab-objects" hidden>
@@ -650,6 +675,8 @@ const char *ui_page() {
   var logPendingReset = false;
   var cfgAllow = [];          // admin.config.get allow[] — what the parameter panels render
   var cfgAllowKnown = false;  // false until config.get answers (older builds omit allow)
+  var plugInfo = Object.create(null);  // admin.plugins.list entries by name
+  var plugSel = sessionStorage.getItem('vizAdminPlugin') || '';  // plugin open in the panel
 
   function hasScope(s) { return !!(scopes && scopes.indexOf(s) >= 0); }
 
@@ -1445,6 +1472,7 @@ const char *ui_page() {
     var body = $('plugRows');
     body.textContent = '';
     var configured = Object.create(null);
+    plugInfo = Object.create(null);
     var list = (res && res.plugins) || [];
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
@@ -1464,13 +1492,24 @@ const char *ui_page() {
                p.state === 'started' ? 'ok' : 'dim');
       var n = (p.params || []).length;
       cellText(tr, n ? String(n) : 'none', n ? '' : 'dim');
+      tr.setAttribute('data-plugin', p.name);
+      plugInfo[p.name] = p;
+      // Both buttons on every row, disabled when the plugin has nothing to show, so the
+      // column lines up and the operator sees "no status" instead of a missing button.
+      // They open the panel under the table on this plugin and scroll to the section.
       var cell = document.createElement('td');
-      if (p.status_method) {
-        cell.appendChild(button('Status', '', (function (name) {
-          return function () { showPluginStatus(name); };
-        })(p.name)));
-        cell.appendChild(document.createTextNode(' '));
-      }
+      var sb = button('Status', '', (function (name) {
+        return function () { openPlugin(name, 'status'); };
+      })(p.name));
+      if (!p.status_method) { sb.disabled = true; sb.title = 'this plugin exposes no status'; }
+      cell.appendChild(sb);
+      cell.appendChild(document.createTextNode(' '));
+      var pb = button('Parameters', '', (function (name) {
+        return function () { openPlugin(name, 'params'); };
+      })(p.name));
+      if (!n) { pb.disabled = true; pb.title = 'no parameters of this plugin are editable here'; }
+      cell.appendChild(pb);
+      cell.appendChild(document.createTextNode(' '));
       if (p.removable === false) {
         var fixed = document.createElement('button');
         fixed.textContent = 'protected';
@@ -1519,7 +1558,7 @@ const char *ui_page() {
       $('logSettings').className = 'dim';
       $('paramActions').hidden = true;
       $('logSettingsActions').hidden = true;
-      $('plugStatus').hidden = true;
+      $('plugDetail').hidden = true;
       $('plugStatus').textContent = '';
       return Promise.resolve();
     }
@@ -1528,12 +1567,10 @@ const char *ui_page() {
         renderPlugins(res[0]);
         cfgAllow = res[1] && res[1].allow ? res[1].allow : [];
         cfgAllowKnown = !!(res[1] && res[1].allow);
-        renderSettings($('paramBox'), ['p2p', 'webserver', 'validator_guard']);
+        renderPlugTabs();
         renderSettings($('logSettings'), ['logging']);
         var canCfg = hasScope('config');
-        lockInputs($('paramBox'), !canCfg);
         lockInputs($('logSettings'), !canCfg);
-        $('paramActions').hidden = !canCfg || !cfgAllowKnown;
         $('logSettingsActions').hidden = !canCfg || !cfgAllowKnown;
       })
       .catch(function (e) {
@@ -1736,16 +1773,124 @@ const char *ui_page() {
     });
   }
 
+  // ── per-plugin panel ───────────────────────────────────────────────────────────────────
+  // A tab per plugin that has something to show (a status method or editable parameters);
+  // plugins with neither are still listed in the table, their buttons disabled.
+  function panelPlugins() {
+    return Object.keys(plugInfo).filter(function (name) {
+      var p = plugInfo[name];
+      return p.status_method || (p.params || []).length;
+    });
+  }
+
+  function settingsDirty(container) {
+    var inputs = container.querySelectorAll('[data-key]');
+    for (var i = 0; i < inputs.length; i++) {
+      var v = inputs[i].value;
+      if (v !== '' && v !== inputs[i].getAttribute('data-initial')) return true;
+    }
+    return false;
+  }
+
+  function renderPlugTabs() {
+    var names = panelPlugins();
+    var bar = $('plugTabs');
+    bar.textContent = '';
+    $('plugDetail').hidden = !names.length;
+    if (!names.length) return;
+    if (names.indexOf(plugSel) < 0) plugSel = names[0];
+    names.forEach(function (name) {
+      var b = button(name, '', function () { selectPlugin(name); });
+      b.setAttribute('data-plugin', name);
+      bar.appendChild(b);
+    });
+    renderPlugPanel();
+  }
+
+  // Switching plugins re-renders the parameter inputs; values typed but not saved would
+  // vanish silently, so ask first.
+  function selectPlugin(name) {
+    if (name !== plugSel && settingsDirty($('paramBox')) &&
+        !confirm('Discard unsaved parameter changes of ' + plugSel + '?')) return false;
+    if (name !== plugSel) $('paramState').textContent = '';
+    plugSel = name;
+    sessionStorage.setItem('vizAdminPlugin', name);
+    renderPlugPanel();
+    return true;
+  }
+
+  function openPlugin(name, section) {
+    if (!selectPlugin(name)) return;
+    $(section === 'status' ? 'plugStatusBlock' : 'plugParamBlock')
+      .scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderPlugPanel() {
+    var p = plugInfo[plugSel];
+    if (!p) return;
+    var tabs = $('plugTabs').querySelectorAll('button');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].className = tabs[i].getAttribute('data-plugin') === plugSel ? 'active' : '';
+    }
+    var rows = $('plugRows').querySelectorAll('tr[data-plugin]');
+    for (var r = 0; r < rows.length; r++) {
+      rows[r].className = rows[r].getAttribute('data-plugin') === plugSel ? 'sel' : '';
+    }
+    var head = $('plugHead');
+    head.textContent = '';
+    var title = document.createElement('strong');
+    title.textContent = p.name;
+    head.appendChild(title);
+    var st = document.createElement('span');
+    st.className = p.state === 'started' ? 'chip ok' : 'chip';
+    st.textContent = p.state || 'unobserved';
+    head.appendChild(st);
+    var doc = document.createElement('a');
+    doc.href = pluginDocUrl(p.name);
+    doc.target = '_blank';
+    doc.rel = 'noopener';
+    doc.className = 'dim';
+    doc.textContent = 'documentation';
+    head.appendChild(doc);
+
+    $('plugStatusRefresh').hidden = !p.status_method;
+    if (p.status_method) {
+      showPluginStatus(p.name);
+    } else {
+      $('plugStatusNote').textContent = '';
+      $('plugStatus').textContent = 'this plugin exposes no status';
+      $('plugStatus').className = 'statusview dim';
+    }
+
+    var hasParams = (p.params || []).length > 0;
+    var canCfg = hasScope('config');
+    if (hasParams) {
+      renderSettings($('paramBox'), [p.name]);
+      lockInputs($('paramBox'), !canCfg);
+    } else {
+      $('paramBox').textContent = 'no parameters of this plugin are editable here';
+      $('paramBox').className = 'dim';
+    }
+    $('paramActions').hidden = !hasParams || !canCfg || !cfgAllowKnown;
+  }
+
   function showPluginStatus(name) {
     var box = $('plugStatus');
-    box.hidden = false;
+    box.className = 'statusview dim';
     box.textContent = 'loading ' + name + '…';
+    $('plugStatusNote').textContent = '';
     rpc('admin.plugins.status', { name: name }).then(function (r) {
-      var head = r.name + ' — state: ' + (r.state || 'unobserved') + ' (' + r.state_source + ')\n';
+      if (name !== plugSel) return;  // the operator moved to another plugin meanwhile
+      box.className = 'statusview';
+      $('plugStatusNote').textContent = 'loaded ' + new Date().toLocaleTimeString() +
+        (r.detail_available ? ' · ' + r.detail_method : '');
       box.textContent = r.detail_available
-        ? head + r.detail_method + ':\n' + JSON.stringify(r.detail, null, 2)
-        : head + (r.reason || 'no status available');
+        ? JSON.stringify(r.detail, null, 2)
+        : 'state: ' + (r.state || 'unobserved') + ' (' + r.state_source + ')\n' +
+          (r.reason || 'no status available');
     }).catch(function (e) {
+      if (name !== plugSel) return;
+      box.className = 'statusview bad';
       box.textContent = 'status of ' + name + ' failed: ' + e.message;
     });
   }
@@ -1845,7 +1990,10 @@ const char *ui_page() {
   $('objCheck').addEventListener('click', checkObjects);
   $('objRepair').addEventListener('click', repairObjects);
   $('paramSave').addEventListener('click', function () {
-    saveSettings($('paramBox'), 'parameters', $('paramState'));
+    saveSettings($('paramBox'), plugSel + ' parameters', $('paramState'));
+  });
+  $('plugStatusRefresh').addEventListener('click', function () {
+    if (plugSel) showPluginStatus(plugSel);
   });
   $('logSettingsSave').addEventListener('click', function () {
     saveSettings($('logSettings'), 'log settings', $('logSettingsState'));
