@@ -229,6 +229,15 @@ Each entry carries `loaded`, `state` and `state_source`:
   when a name is unknown, so a configured plugin on a running node is loaded. `state` is
   `null` rather than a guess.
 
+Two further fields exist for the operator panel:
+
+* `removable` — `false` for `chain` and `node_admin`, which `admin.plugins.plan` refuses to
+  remove anyway. A client must render those as non-toggleable, not as merely "off".
+* `params` — the allow-listed keys that belong to this plugin (`p2p`, `webserver`,
+  `validator_guard`); an empty array means the plugin has no editable parameters and the
+  panel should say so instead of showing an empty form. Logging keys are grouped under
+  `logging`, which is not a plugin: they live in `admin.config.get`.
+
 ### `admin.config.get`
 
 Returns `config.ini` as ordered sections, preserving duplicate keys (needed for the
@@ -241,6 +250,17 @@ anything containing `private-key`, `private_key`, `password`, `secret`, `token`,
   {"name":"","entries":[{"key":"plugin","value":"chain"},
                         {"key":"private-key","value":"***"}]}]}
 ```
+
+It also returns `allow`: the editable subset, ready to render. Each item is
+`{key, group, section, type, value, defaulted, min, max, values, needs_restart}`.
+
+* `key` is the full address `admin.config.plan` accepts — `logger.default.level` for a key
+  inside `[logger.default]` — so a client never has to know which keys are sectioned.
+* `value` is `null` and `defaulted` is `true` when the file does not set the key: the node
+  uses its code default, and the panel should show that instead of an empty field.
+* `type` is `boolean`, `unsigned_int` (with `min`/`max`) or `log_level` (with `values`).
+* `group` is the plugin the key belongs to (`p2p`, `webserver`, `validator_guard`) or
+  `logging` for logger and appender settings.
 
 ### `admin.logs.list`
 
@@ -621,9 +641,10 @@ leaving a truncated file.
 ### Atomic write and backups
 
 Both appliers edit the file as **raw lines**, so comments, ordering, spacing and CRLF are
-preserved. A key that is absent is inserted before the first `[section]` (top-level); an
-existing top-level key is changed in place, and a key that only exists inside a section is
-not touched — a top-level one is added instead.
+preserved. A top-level key that is absent is inserted before the first `[section]`; an
+existing top-level key is changed in place. An allow-listed key whose spec names a section
+(see the logging row in the table below) is edited inside that section, and inserted
+directly under its header when the section exists but the key does not.
 
 Each successful apply writes one backup next to the config — `<config.ini>.bak-<unixtime>`
 (with a `-n` suffix on collision) — then a temp file in the same directory, `fsync`s it,
@@ -663,6 +684,15 @@ The admin API edits only these keys. Everything else — identity, keys, data di
 | `validator-guard-enabled`, `validator-guard-disable`, `validator-guard-disable-on-shutdown` | bool | — |
 | `validator-guard-interval`, `validator-guard-shutdown-grace` | uint | 1–3600 |
 | `validator-guard-disable-max` | uint | 0–1000 |
+| `logger.default.level`, `logger.p2p.level` | log level | `all`, `debug`, `info`, `warn`, `error`, `off` |
+| `log.capped_file_appender.node.max_lines` | uint | 0–10000000 |
+| `log.capped_file_appender.node.flush` | bool | — |
+
+The logging keys are addressed with their section: `logger.default.level` edits `level`
+inside `[logger.default]`, not a top-level option. A section that is absent from
+`config.ini` is an error rather than an insert — the node never declares it, so the value
+would be silently ignored at the next start. Appender filenames and rotation windows stay
+operator-only: a typo'd path is a lost log, not a tunable.
 
 ### Example
 
