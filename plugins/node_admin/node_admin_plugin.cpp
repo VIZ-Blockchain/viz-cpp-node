@@ -1882,12 +1882,13 @@ const char *ui_page() {
     rpc('admin.plugins.status', { name: name }).then(function (r) {
       if (name !== plugSel) return;  // the operator moved to another plugin meanwhile
       box.className = 'statusview';
-      $('plugStatusNote').textContent = 'loaded ' + new Date().toLocaleTimeString() +
-        (r.detail_available ? ' · ' + r.detail_method : '');
+      $('plugStatusNote').textContent = 'loaded ' + new Date().toLocaleTimeString();
+      // The lifecycle line and the answering method stay inside the box: they are what the
+      // operator reads first and what a copied status needs to carry.
+      var head = 'state: ' + (r.state || 'unobserved') + ' (' + r.state_source + ')\n';
       box.textContent = r.detail_available
-        ? JSON.stringify(r.detail, null, 2)
-        : 'state: ' + (r.state || 'unobserved') + ' (' + r.state_source + ')\n' +
-          (r.reason || 'no status available');
+        ? head + r.detail_method + ':\n' + JSON.stringify(r.detail, null, 2)
+        : head + (r.reason || 'no status available');
     }).catch(function (e) {
       if (name !== plugSel) return;
       box.className = 'statusview bad';
