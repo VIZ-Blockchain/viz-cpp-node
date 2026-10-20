@@ -132,7 +132,7 @@ inline std::vector<cfg_entry> parse_config_file(const std::string &path, bool *e
 // deliberately absent: those are operator decisions made by hand (design §4.6). Everything
 // here is read in plugin_initialize(), so each change needs a restart; the flag stays explicit
 // because live-applied keys may be added later.
-enum class config_type { boolean, unsigned_int };
+enum class config_type { boolean, unsigned_int, log_level };
 
 struct config_spec {
     const char *name;
@@ -140,7 +140,40 @@ struct config_spec {
     uint64_t min_value;
     uint64_t max_value;
     bool needs_restart;
+    /// Empty for a top-level `key = value`; otherwise the key lives inside `[section]`
+    /// (`logger.default.level` -> section "logger.default", key "level").
+    const char *section = "";
 };
+
+/// Split an allow-list name into its ini section and leaf key. A name without a section is a
+/// top-level option: section empty, key unchanged. `section` must match config_spec::section,
+/// which is what the editor uses to address the line.
+inline void config_name_parts(const config_spec &spec, std::string &section, std::string &key) {
+    section = spec.section;
+    key = spec.name;
+    if (!section.empty() && key.size() > section.size() + 1 &&
+        key.compare(0, section.size(), section) == 0 && key[section.size()] == '.') {
+        key = key.substr(section.size() + 1);
+    }
+}
+
+/// Accepted logger levels, in the order the UI shows them (quiet last is deliberate: an operator
+/// raising verbosity should not be one stray click from `off`, which silences the log).
+inline const std::vector<std::string> &log_level_values() {
+    static const std::vector<std::string> levels = {"all", "debug", "info", "warn", "error", "off"};
+    return levels;
+}
+
+/// Which plugin a parameter belongs to, for grouping in the UI and in admin.plugins.list.
+/// `logging` is not a plugin: it is the runtime logging section of the same panel.
+inline std::string config_key_group(const std::string &name) {
+    if (name.compare(0, 2, "p2p-") == 0 || name.compare(0, 4, "dlt-") == 0 ||
+        name == "auto-resync-on-wedge") return "p2p";
+    if (name.compare(0, 10, "webserver-") == 0) return "webserver";
+    if (name.compare(0, 16, "validator-guard-") == 0) return "validator_guard";
+    if (name.compare(0, 7, "logger.") == 0 || name.compare(0, 4, "log.") == 0) return "logging";
+    return "other";
+}
 
 inline const std::vector<config_spec> &config_allowlist() {
     static const std::vector<config_spec> specs = {
@@ -172,7 +205,16 @@ inline const std::vector<config_spec> &config_allowlist() {
         {"validator-guard-disable", config_type::boolean, 0, 0, true},
         {"validator-guard-disable-max", config_type::unsigned_int, 0, 1000, true},
         {"validator-guard-disable-on-shutdown", config_type::boolean, 0, 0, true},
-        {"validator-guard-shutdown-grace", config_type::unsigned_int, 1, 3600, true}
+        {"validator-guard-shutdown-grace", config_type::unsigned_int, 1, 3600, true},
+        // Logging (owner decision 20.10.2026, Q#3081=A: the parameters panel plus log settings).
+        // Levels only: appender filenames and rotation windows stay operator decisions, while the
+        // capped appender's bounds are exactly the knobs against a log that fills the disk.
+        {"logger.default.level", config_type::log_level, 0, 0, true, "logger.default"},
+        {"logger.p2p.level", config_type::log_level, 0, 0, true, "logger.p2p"},
+        {"log.capped_file_appender.node.max_lines", config_type::unsigned_int, 0, 10000000, true,
+         "log.capped_file_appender.node"},
+        {"log.capped_file_appender.node.flush", config_type::boolean, 0, 0, true,
+         "log.capped_file_appender.node"}
     };
     return specs;
 }
@@ -194,6 +236,17 @@ inline bool normalize_config_value(const std::string &key, const std::string &ra
         return false;
     }
     const std::string value = trim(raw);
+    if (spec->type == config_type::log_level) {
+        const std::string v = to_lower(value);
+        for (const std::string &level : log_level_values()) {
+            if (v == level) {
+                normalized = v;
+                return true;
+            }
+        }
+        why = "'" + key + "' expects one of: all, debug, info, warn, error, off";
+        return false;
+    }
     if (spec->type == config_type::boolean) {
         const std::string v = to_lower(value);
         if (v == "true" || v == "yes" || v == "on" || v == "1") {
@@ -362,6 +415,77 @@ inline line_edit set_config_value(std::vector<std::string> lines, const std::str
         out.changed = 1;
     }
     return out;
+}
+
+/// Replace the value of `key = value` INSIDE `[section]`. A missing section is an error, not an
+/// insert: inventing `[logger.foo]` would configure a logger the node never declares, and the
+/// next start would silently ignore it. A missing key inside an existing section is inserted
+/// directly under its header, which is where the shipped configs keep single-line options.
+inline line_edit set_config_value_in_section(std::vector<std::string> lines,
+                                             const std::string &section, const std::string &key,
+                                             const std::string &value) {
+    line_edit out{std::move(lines), 0, ""};
+    if (section.empty()) {
+        out.error = "internal: empty section";
+        return out;
+    }
+    const bool crlf = text_uses_crlf(out.lines);
+    std::string current;
+    std::size_t header_at = std::string::npos;
+    for (std::size_t i = 0; i < out.lines.size(); ++i) {
+        const cfg_line l = classify_config_line(out.lines[i], current);
+        if (l.kind == cfg_line::header) {
+            current = l.section;
+            if (current == section) header_at = i;
+            continue;
+        }
+        if (current != section || l.kind != cfg_line::entry || l.key != key) continue;
+
+        std::string raw = out.lines[i];
+        const bool cr = !raw.empty() && raw.back() == '\r';
+        if (cr) raw.pop_back();
+        const std::size_t eq = raw.find('=');
+        if (eq == std::string::npos) {
+            std::size_t b = 0;
+            while (b < raw.size() && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
+            out.lines[i] = raw.substr(0, b) + key + " = " + value + (cr ? "\r" : "");
+        } else {
+            std::size_t ws = eq + 1;
+            while (ws < raw.size() && (raw[ws] == ' ' || raw[ws] == '\t')) ++ws;
+            out.lines[i] = raw.substr(0, eq + 1) + raw.substr(eq + 1, ws - (eq + 1)) + value +
+                           (cr ? "\r" : "");
+        }
+        ++out.changed;
+        return out;
+    }
+    if (header_at == std::string::npos) {
+        out.error = "section [" + section + "] is not present in config.ini";
+        return out;
+    }
+    out.lines.insert(out.lines.begin() + static_cast<std::ptrdiff_t>(header_at) + 1,
+                     key + " = " + value + (crlf ? "\r" : ""));
+    out.changed = 1;
+    return out;
+}
+
+/// Current value of `key` inside `[section]`, for the plan diff.
+inline bool config_value_in_section(const std::vector<std::string> &lines,
+                                    const std::string &section, const std::string &key,
+                                    std::string &value) {
+    std::string current;
+    bool found = false;
+    for (const std::string &raw : lines) {
+        const cfg_line l = classify_config_line(raw, current);
+        if (l.kind == cfg_line::header) {
+            current = l.section;
+            continue;
+        }
+        if (current == section && l.kind == cfg_line::entry && l.key == key) {
+            value = l.value;
+            found = true;
+        }
+    }
+    return found;
 }
 
 /// Add and remove `plugin = <name>` lines. Validation is part of the transform: an unknown,

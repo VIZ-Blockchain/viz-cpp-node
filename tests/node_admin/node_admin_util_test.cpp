@@ -311,6 +311,93 @@ BOOST_AUTO_TEST_CASE(plugin_lines_refuse_bad_edits) {
     BOOST_CHECK(!edit_plugin_lines(lines, {"snapshot"}, {"snapshot"}).error.empty());
 }
 
+// ─── sectioned config editor (logging settings) ───────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(log_level_accepts_only_known_levels) {
+    std::string norm;
+    std::string why;
+    BOOST_CHECK(normalize_config_value("logger.default.level", " INFO ", norm, why));
+    BOOST_CHECK_EQUAL(norm, "info");
+    BOOST_CHECK(normalize_config_value("logger.p2p.level", "off", norm, why));
+    BOOST_CHECK_EQUAL(norm, "off");
+    BOOST_CHECK(!normalize_config_value("logger.default.level", "verbose", norm, why));
+    BOOST_CHECK(why.find("all, debug, info, warn, error, off") != std::string::npos);
+    // A level is not a number: the unsigned-int branch must not swallow it.
+    BOOST_CHECK(!normalize_config_value("logger.default.level", "3", norm, why));
+}
+
+BOOST_AUTO_TEST_CASE(allowlist_names_split_into_section_and_key) {
+    std::string section;
+    std::string key;
+    const config_spec *top = config_spec_for("p2p-max-connections");
+    BOOST_REQUIRE(top);
+    config_name_parts(*top, section, key);
+    BOOST_CHECK_EQUAL(section, "");
+    BOOST_CHECK_EQUAL(key, "p2p-max-connections");
+
+    const config_spec *nested = config_spec_for("logger.default.level");
+    BOOST_REQUIRE(nested);
+    config_name_parts(*nested, section, key);
+    BOOST_CHECK_EQUAL(section, "logger.default");
+    BOOST_CHECK_EQUAL(key, "level");
+}
+
+BOOST_AUTO_TEST_CASE(section_editor_replaces_value_in_place) {
+    const std::vector<std::string> lines = {
+        "plugin = chain", "[logger.default]", "level=warn", "appenders=stderr",
+        "[logger.p2p]", "level = error"};
+    const line_edit e = set_config_value_in_section(lines, "logger.p2p", "level", "info");
+    BOOST_CHECK(e.error.empty());
+    BOOST_CHECK_EQUAL(e.changed, std::size_t(1));
+    BOOST_CHECK_EQUAL(e.lines[5], "level = info");
+    // The other logger's level is a different section and must not move.
+    BOOST_CHECK_EQUAL(e.lines[2], "level=warn");
+}
+
+BOOST_AUTO_TEST_CASE(section_editor_inserts_under_the_header) {
+    const std::vector<std::string> lines = {"[logger.default]", "level = warn", "[logger.p2p]"};
+    const line_edit e = set_config_value_in_section(lines, "log.capped_file_appender.node",
+                                                   "max_lines", "5000");
+    // Missing section is refused, not invented: the node never declares it.
+    BOOST_CHECK(!e.error.empty());
+    BOOST_CHECK(e.lines == lines);
+
+    const line_edit add = set_config_value_in_section(lines, "logger.p2p", "level", "info");
+    BOOST_CHECK(add.error.empty());
+    BOOST_CHECK_EQUAL(add.lines.size(), std::size_t(4));
+    BOOST_CHECK_EQUAL(add.lines[3], "level = info");
+}
+
+BOOST_AUTO_TEST_CASE(section_editor_keeps_crlf) {
+    const std::vector<std::string> lines = {"[logger.default]\r", "level = warn\r"};
+    const line_edit e = set_config_value_in_section(lines, "logger.default", "level", "debug");
+    BOOST_CHECK(e.error.empty());
+    BOOST_CHECK_EQUAL(e.lines[1], "level = debug\r");
+}
+
+BOOST_AUTO_TEST_CASE(section_value_reader_scopes_by_section) {
+    const std::vector<std::string> lines = {
+        "level = top-level", "[logger.default]", "level = warn", "[logger.p2p]", "level = error"};
+    std::string v;
+    BOOST_CHECK(config_value_in_section(lines, "logger.p2p", "level", v));
+    BOOST_CHECK_EQUAL(v, "error");
+    BOOST_CHECK(config_value_in_section(lines, "logger.default", "level", v));
+    BOOST_CHECK_EQUAL(v, "warn");
+    // A key that only exists at top level is not visible inside a section.
+    BOOST_CHECK(!config_value_in_section(lines, "logger.p2p", "appenders", v));
+}
+
+BOOST_AUTO_TEST_CASE(config_groups_map_to_plugins) {
+    BOOST_CHECK_EQUAL(config_key_group("p2p-max-connections"), "p2p");
+    BOOST_CHECK_EQUAL(config_key_group("dlt-stats-interval-sec"), "p2p");
+    BOOST_CHECK_EQUAL(config_key_group("auto-resync-on-wedge"), "p2p");
+    BOOST_CHECK_EQUAL(config_key_group("webserver-cache-size"), "webserver");
+    BOOST_CHECK_EQUAL(config_key_group("validator-guard-interval"), "validator_guard");
+    BOOST_CHECK_EQUAL(config_key_group("logger.default.level"), "logging");
+    BOOST_CHECK_EQUAL(config_key_group("log.capped_file_appender.node.max_lines"), "logging");
+    BOOST_CHECK_EQUAL(config_key_group("something-else"), "other");
+}
+
 // ─── snapshot names ───────────────────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(snapshot_names_accept_plain_files_only) {

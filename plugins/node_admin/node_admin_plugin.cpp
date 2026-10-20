@@ -178,6 +178,36 @@ bool top_level_value(const std::vector<std::string> &lines, const std::string &k
     return found;
 }
 
+/// Apply one allow-listed key to the candidate lines, choosing the namespace by the spec: the 29
+/// top-level options keep their old behaviour, and the logging keys (`logger.*`, `log.*`) are
+/// edited inside their ini section. Both plan and apply go through here, so the diff shown to the
+/// operator and the file that is actually written cannot disagree.
+line_edit set_allowed_config_value(std::vector<std::string> lines, const std::string &key,
+                                   const std::string &value) {
+    const util::config_spec *spec = util::config_spec_for(key);
+    if (!spec) {
+        line_edit out{std::move(lines), 0, "key '" + key + "' is not in the admin allow-list"};
+        return out;
+    }
+    std::string section;
+    std::string leaf;
+    util::config_name_parts(*spec, section, leaf);
+    if (section.empty()) return util::set_config_value(std::move(lines), leaf, value);
+    return util::set_config_value_in_section(std::move(lines), section, leaf, value);
+}
+
+/// Current value of an allow-listed key in whichever namespace its spec names.
+bool allowed_config_value(const std::vector<std::string> &lines, const std::string &key,
+                          std::string &value) {
+    const util::config_spec *spec = util::config_spec_for(key);
+    if (!spec) return false;
+    std::string section;
+    std::string leaf;
+    util::config_name_parts(*spec, section, leaf);
+    if (section.empty()) return top_level_value(lines, leaf, value);
+    return util::config_value_in_section(lines, section, leaf, value);
+}
+
 /// Replace config.ini atomically: copy the current file to `<path>.bak-<unixtime>`, write the
 /// candidate to a sibling temp file, fsync it, rename over the original and fsync the directory.
 /// A failure before the rename leaves the original untouched; a crash after it leaves either
@@ -2307,6 +2337,18 @@ fc::variant node_admin_plugin::impl::h_plugins_list(const fc::variant &) {
         item("loaded", p ? p->get_state() != appbase::abstract_plugin::registered : true);
         item("state", p ? fc::variant(std::string(state)) : fc::variant());
         item("state_source", std::string(source));
+        // The UI needs both facts before it can draw a toggle: a plugin that cannot be disabled
+        // must not render as merely "off", and a plugin with no allow-listed keys must say so
+        // instead of showing an empty panel.
+        item("removable", !util::plugin_removal_forbidden(e.value));
+        fc::variants params;
+        for (const util::config_spec &spec : util::config_allowlist()) {
+            if (util::config_key_group(spec.name) != e.value) continue;
+            fc::mutable_variant_object pitem;
+            pitem("key", spec.name);
+            params.push_back(fc::variant(pitem));
+        }
+        item("params", params);
         plugins.push_back(fc::variant(item));
     }
 
@@ -2350,10 +2392,44 @@ fc::variant node_admin_plugin::impl::h_config_get(const fc::variant &) {
     }
     if (have_section) flush();
 
+    // The editable subset, with its current value: this is what the parameters panel renders.
+    // Keys are the same full addresses admin.config.plan accepts (`logger.default.level`), so the
+    // UI never has to know which keys are sectioned.
+    std::string raw_text;
+    std::string raw_why;
+    std::vector<std::string> all;
+    if (read_text_file(config_path(), raw_text, raw_why)) all = split_lines(raw_text);
+    fc::variants allow;
+    for (const util::config_spec &spec : util::config_allowlist()) {
+        std::string value;
+        const bool found = allowed_config_value(all, spec.name, value);
+        fc::mutable_variant_object a;
+        a("key", spec.name);
+        a("group", util::config_key_group(spec.name));
+        a("section", spec.section);
+        a("type", spec.type == util::config_type::boolean ? "boolean"
+                 : spec.type == util::config_type::log_level ? "log_level"
+                                                            : "unsigned_int");
+        a("value", found ? fc::variant(value) : fc::variant());
+        a("defaulted", !found);
+        if (spec.type == util::config_type::unsigned_int) {
+            a("min", spec.min_value);
+            a("max", spec.max_value);
+        }
+        if (spec.type == util::config_type::log_level) {
+            fc::variants levels;
+            for (const std::string &l : util::log_level_values()) levels.push_back(fc::variant(l));
+            a("values", levels);
+        }
+        a("needs_restart", spec.needs_restart);
+        allow.push_back(fc::variant(a));
+    }
+
     fc::mutable_variant_object m;
     m("path", config_path());
     m("exists", exists);
     m("sections", sections);
+    m("allow", allow);
     return fc::variant(m);
 }
 
@@ -3054,9 +3130,9 @@ fc::variant node_admin_plugin::impl::h_config_plan(const fc::variant &params,
     fc::variants diff;
     for (const auto &kv : set) {
         std::string old;
-        const bool found = top_level_value(lines, kv.first, old);
+        const bool found = allowed_config_value(lines, kv.first, old);
         if (found && old == kv.second) continue;
-        line_edit e = set_config_value(lines, kv.first, kv.second);
+        line_edit e = set_allowed_config_value(lines, kv.first, kv.second);
         if (!e.error.empty()) throw rpc_error{-32602, "invalid params", e.error, ""};
         lines = std::move(e.lines);
         fc::mutable_variant_object d;
@@ -3119,7 +3195,7 @@ fc::variant node_admin_plugin::impl::h_config_apply(const fc::variant &params,
         if (!normalize_config_value(kv.first, kv.second, norm, why2)) {
             throw rpc_error{-32602, "invalid params", why2, ""};
         }
-        line_edit e = set_config_value(lines, kv.first, norm);
+        line_edit e = set_allowed_config_value(lines, kv.first, norm);
         if (!e.error.empty()) throw rpc_error{-32602, "invalid params", e.error, ""};
         lines = std::move(e.lines);
     }
