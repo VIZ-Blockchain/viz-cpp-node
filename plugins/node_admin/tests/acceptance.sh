@@ -941,6 +941,55 @@ check "restart -> MCP validator.list -> not an error" false "$(field result.isEr
 check_contains "restart -> MCP validator.list returns the guard block" 'no validator is configured with an active key' \
     "$(field 'result.content.0.text')"
 
+# ── objects.repair: the action itself, not only its refusals ───────────────────────────────
+# Everything above proves the gate; a gate that refused every repair would pass all of it.
+# This node is throwaway and has no supervisor, so the script plays one: repair, wait for
+# the clean exit, start it again and check that the marker drove the startup.
+auth "$ADM" '{"jsonrpc":"2.0","id":131,"method":"admin.objects.repair","params":{"mode":"resync","confirm":"repair"}}'
+check "objects.repair resync -> HTTP 200" 200 "$CODE"
+check "objects.repair resync -> accepted" true "$(field result.ok)"
+check "objects.repair resync -> effect names the resync" true \
+    "$(python3 -c 'import json,sys; print(str("resyncs from peers" in json.load(open(sys.argv[1]))["result"]["effect"]).lower())' "$OUT")"
+check "objects.repair resync -> snapshot mode reported off" false "$(field result.snapshot_replay)"
+check "objects.repair resync -> force_resync marker written" 1 \
+    "$(ls "$WORK/state/force_resync" 2>/dev/null | wc -l)"
+
+for _ in $(seq 1 80); do
+    kill -0 "$NODE_PID" 2>/dev/null || break
+    sleep 0.25
+done
+if kill -0 "$NODE_PID" 2>/dev/null; then
+    echo "FAIL objects.repair -> the process is still running after 20 s"; FAIL=$((FAIL + 1))
+    kill "$NODE_PID" 2>/dev/null
+else
+    echo "ok   objects.repair -> the process exited"
+fi
+wait "$NODE_PID"; NODE_RC=$?
+NODE_PID=
+check "objects.repair -> clean exit code" 0 "$NODE_RC"
+
+"$VIZD" --data-dir "$WORK" > "$WORK/console3.log" 2>&1 &
+NODE_PID=$!
+for _ in $(seq 1 120); do
+    grep -q "node_admin: listening" "$WORK/console3.log" && break
+    kill -0 "$NODE_PID" 2>/dev/null || break
+    sleep 0.25
+done
+if grep -q "node_admin: listening" "$WORK/console3.log"; then
+    echo "ok   objects.repair -> the node is back after the supervisor-style start"
+else
+    echo "FAIL objects.repair -> the node did not come back"
+    tail -20 "$WORK/console3.log"
+    FAIL=$((FAIL + 1))
+fi
+# The marker must be what the startup acted on, not a leftover that happens to be harmless.
+check "objects.repair -> startup honoured the marker" 1 \
+    "$(grep -c 'Detected force_resync marker' "$WORK/console3.log")"
+check "objects.repair -> marker consumed at startup" 0 \
+    "$(ls "$WORK/state/force_resync" 2>/dev/null | wc -l)"
+auth "$GOOD" '{"jsonrpc":"2.0","id":132,"method":"admin.objects.check"}'
+check "objects.repair -> state is healthy after the resync" '"ok"' "$(field result.verdict)"
+
 echo
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: all node_admin acceptance checks"
