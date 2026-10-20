@@ -30,6 +30,7 @@
 #include <fc/log/console_appender.hpp>
 #include <fc/log/json_console_appender.hpp>
 #include <fc/log/file_appender.hpp>
+#include <graphene/utilities/capped_file_appender.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string.hpp>
 
@@ -117,6 +118,13 @@ int main( int argc, char** argv ) {
         graphene::plugins::register_plugins();
         appbase::app().set_version_string(version_string());
 
+        // Optional bounded file appender ("log.capped_file_appender.*" in config.ini).
+        // Registered before configure_logging; if no config section names it, nothing
+        // changes for existing nodes.
+        static bool reg_capped_file_appender =
+                fc::appender::register_appender<graphene::utilities::capped_file_appender>("capped_file");
+        (void)reg_capped_file_appender;
+
         // Setup logging config
         boost::program_options::options_description options;
         graphene::utilities::set_logging_program_options(options);
@@ -192,6 +200,12 @@ void set_logging_program_options(bpo::options_description &options) {
         // ("log.file_appender.p2p.rotation_interval", bpo::value<int64_t>()->default_value(fc::hours(1).to_seconds()), "rotation interval in seconds")
         // ("log.file_appender.p2p.rotation_limit", bpo::value<int64_t>()->default_value(fc::days(1).to_seconds()), "rotation limit in seconds")
 
+        // Optional bounded file appender: one file, always the last max_lines lines.
+        // Nodes that do not configure this section behave exactly as before.
+        ("log.capped_file_appender.node.", "declare an appender named \"node\" that keeps only the last max_lines lines")
+        ("log.capped_file_appender.node.filename", bpo::value<string>()->default_value("logs/node/node.log"), "filename can be absolute or relative to this config file")
+        ("log.capped_file_appender.node.max_lines", bpo::value<uint32_t>()->default_value(10000), "keep at most this many lines in the file (0 = unlimited)")
+
         ("logger.default.", "route any messages logged to the default logger to the \"stderr\" logger we declared above, if they are info level are higher")
         ("logger.default.level", bpo::value<string>()->default_value("warn"), "log level of \"default\" logger (all|debug|info|warn|error|off)")
         ("logger.default.appenders", bpo::value<string>()->default_value("stderr"), "appender(s) of \"default\" logger")
@@ -230,6 +244,7 @@ fc::optional<fc::logging_config> load_logging_config(const boost::filesystem::pa
         const std::string console_appender_section_prefix = "log.console_appender.";
         const std::string json_console_appender_section_prefix = "log.json_console_appender.";
         const std::string file_appender_section_prefix = "log.file_appender.";
+        const std::string capped_file_appender_section_prefix = "log.capped_file_appender.";
         const std::string logger_section_prefix = "logger.";
 
         auto sections = load_config_sections(pwd);
@@ -280,6 +295,44 @@ fc::optional<fc::logging_config> load_logging_config(const boost::filesystem::pa
                 file_appender_config.rotation_interval = fc::hours(1);
                 file_appender_config.rotation_limit = fc::days(1);
                 logging_config.appenders.emplace_back(file_appender_name, "file", fc::variant(file_appender_config));
+                found_logging_config = true;
+            } else if (boost::starts_with(section_name, capped_file_appender_section_prefix)) {
+                std::string capped_appender_name = section_name.substr(capped_file_appender_section_prefix.length());
+                auto filename_opt = options.find("filename");
+                FC_ASSERT(filename_opt != options.end(),
+                          "log.capped_file_appender.${a}.filename is required", ("a", capped_appender_name));
+
+                fc::path file_name = filename_opt->second;
+                if (file_name.is_relative()) {
+                    file_name = fc::absolute(pwd).parent_path() / file_name;
+                }
+
+                graphene::utilities::capped_file_appender::config capped_config;
+                capped_config.filename = file_name;
+                capped_config.max_lines = 10000;
+
+                auto max_lines_opt = options.find("max_lines");
+                if (max_lines_opt != options.end()) {
+                    char *end = nullptr;
+                    const unsigned long parsed = std::strtoul(max_lines_opt->second.c_str(), &end, 10);
+                    if (end == max_lines_opt->second.c_str() || (end && *end != '\0') || parsed > 10000000UL) {
+                        // A typo must not cost the operator the whole logging config: keep the
+                        // default and say so, instead of clearing the logger map in configure_logging.
+                        std::cerr << "log.capped_file_appender." << capped_appender_name
+                                  << ".max_lines: invalid value '" << max_lines_opt->second
+                                  << "', using 10000\n";
+                    } else {
+                        capped_config.max_lines = static_cast<uint32_t>(parsed);
+                    }
+                }
+
+                auto flush_opt = options.find("flush");
+                if (flush_opt != options.end()) {
+                    capped_config.flush = !(flush_opt->second == "false" || flush_opt->second == "0" ||
+                                            flush_opt->second == "no");
+                }
+
+                logging_config.appenders.emplace_back(capped_appender_name, "capped_file", fc::variant(capped_config));
                 found_logging_config = true;
             } else if (boost::starts_with(section_name, logger_section_prefix)) {
                 std::string logger_name = section_name.substr(logger_section_prefix.length());

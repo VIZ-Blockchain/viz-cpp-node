@@ -197,6 +197,21 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
+The `file` appender rotates by time (a new file every hour, kept for a day), so a node
+running with `logger.default.level = debug` can write gigabytes per hour. If all you need
+is the recent tail, use the optional capped appender: a single file that keeps only the
+last `max_lines` lines (default 10000, `0` = unlimited). It compacts itself in place, so
+the file never grows past about 1.1 x `max_lines`. Nodes whose config has no
+`log.capped_file_appender.*` section behave exactly as before.
+
+```ini
+log.capped_file_appender.node.filename = logs/node/node.log
+log.capped_file_appender.node.max_lines = 10000
+
+# Route whatever you want into it; the appender alone writes nothing.
+logger.default.appenders = stderr, node
+```
+
 ---
 
 ## Complete Reference

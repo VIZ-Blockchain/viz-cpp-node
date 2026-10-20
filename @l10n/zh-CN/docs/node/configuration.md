@@ -197,6 +197,20 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
+`file` appender 按时间轮转（每小时一个新文件，保留一天），因此在
+`logger.default.level = debug` 下节点每小时可能写出数 GB 日志。如果只需要最近的尾部，
+请使用可选的 capped appender：单个文件，只保留最后 `max_lines` 行（默认 10000，`0`
+表示不限制）。它在原文件上就地压缩，因此文件不会超过约 1.1 x `max_lines`。配置中没有
+`log.capped_file_appender.*` 节的节点行为与之前完全一致。
+
+```ini
+log.capped_file_appender.node.filename = logs/node/node.log
+log.capped_file_appender.node.max_lines = 10000
+
+# 写哪些日志由 logger 决定；appender 本身不写任何东西。
+logger.default.appenders = stderr, node
+```
+
 ---
 
 ## 完整参考

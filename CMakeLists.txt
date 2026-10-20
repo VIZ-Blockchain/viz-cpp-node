@@ -281,6 +281,7 @@ if(BUILD_CONSENSUS_TESTS)
     add_subdirectory(tests/consensus_sim)
     add_subdirectory(tests/pm)
     add_subdirectory(tests/node_admin)
+    add_subdirectory(tests/logging)
 endif()
 
 if(ENABLE_INSTALLER)

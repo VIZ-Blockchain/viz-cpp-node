@@ -197,6 +197,21 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
+Аппендер `file` ротируется по времени (новый файл каждый час, хранится сутки), поэтому
+нода с `logger.default.level = debug` может писать гигабайты в час. Если нужен только
+свежий хвост, используйте опциональный capped-аппендер: один файл, в котором остаются
+последние `max_lines` строк (по умолчанию 10000, `0` — без ограничения). Файл сжимается
+на месте, поэтому не растёт сверх ~1.1 x `max_lines`. Ноды, в конфиге которых нет секции
+`log.capped_file_appender.*`, ведут себя ровно как раньше.
+
+```ini
+log.capped_file_appender.node.filename = logs/node/node.log
+log.capped_file_appender.node.max_lines = 10000
+
+# Куда именно писать — решает логгер; сам аппендер ничего не пишет.
+logger.default.appenders = stderr, node
+```
+
 ---
 
 ## Полный справочник

@@ -17,6 +17,7 @@ endif(NOT GRAPHENE_GIT_REVISION_DESCRIPTION)
 file(GLOB HEADERS "include/graphene/utilities/*.hpp")
 
 set(sources
+        capped_file_appender.cpp
         key_conversion.cpp
         string_escape.cpp
         tempdir.cpp
