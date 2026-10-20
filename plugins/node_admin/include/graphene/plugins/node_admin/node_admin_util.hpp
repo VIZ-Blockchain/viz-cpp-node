@@ -49,6 +49,22 @@ inline std::vector<std::string> split(const std::string &s, char sep) {
     }
 }
 
+/// Names carried by one `plugin = ...` line. appbase splits that value on whitespace and
+/// loads every name, so `plugin = chain p2p` is two plugins; everything that reads the file
+/// (the list, the editor, the group filter) has to see the same set or it disagrees with the
+/// loader — a live config.ini is written that way.
+inline std::vector<std::string> plugin_names_in_value(const std::string &value) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < value.size()) {
+        while (i < value.size() && std::isspace(static_cast<unsigned char>(value[i]))) ++i;
+        const std::size_t start = i;
+        while (i < value.size() && !std::isspace(static_cast<unsigned char>(value[i]))) ++i;
+        if (i > start) out.push_back(value.substr(start, i - start));
+    }
+    return out;
+}
+
 /// A snapshot file name as accepted from HTTP paths and JSON params: one path component,
 /// no traversal, and a snapshot extension. Names come from list_snapshots(), so anything
 /// else is a client mistake (or an attempt to reach outside the snapshot directory).
@@ -503,7 +519,7 @@ inline line_edit edit_plugin_lines(std::vector<std::string> lines,
             section = l.section;
         } else if (l.kind == cfg_line::entry && l.section.empty() && l.key == "plugin" &&
                    !l.value.empty()) {
-            configured.insert(l.value);
+            for (const std::string &name : plugin_names_in_value(l.value)) configured.insert(name);
         }
     }
 
@@ -555,9 +571,27 @@ inline line_edit edit_plugin_lines(std::vector<std::string> lines,
         const cfg_line l = classify_config_line(raw, section);
         if (l.kind == cfg_line::header) section = l.section;
         if (l.kind == cfg_line::entry && l.section.empty() && l.key == "plugin" &&
-            remove_set.count(l.value)) {
-            ++out.changed;
-            continue;
+            !l.value.empty()) {
+            // One line can carry several names (`plugin = chain p2p`), so removal is a rewrite
+            // when some names survive: dropping the whole line would disable a plugin the
+            // operator never asked to touch.
+            const std::vector<std::string> names = plugin_names_in_value(l.value);
+            std::vector<std::string> keep_names;
+            for (const std::string &name : names) {
+                if (!remove_set.count(name)) keep_names.push_back(name);
+            }
+            if (keep_names.size() != names.size()) {
+                ++out.changed;
+                if (keep_names.empty()) continue;
+                std::string line = "plugin = ";
+                for (std::size_t n = 0; n < keep_names.size(); ++n) {
+                    if (n) line += " ";
+                    line += keep_names[n];
+                }
+                if (!raw.empty() && raw.back() == '\r') line += "\r";
+                kept.push_back(line);
+                continue;
+            }
         }
         kept.push_back(raw);
     }

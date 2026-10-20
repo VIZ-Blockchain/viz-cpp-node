@@ -300,6 +300,45 @@ BOOST_AUTO_TEST_CASE(plugin_lines_insert_before_section_when_none) {
     BOOST_CHECK_EQUAL(e.lines[2], "[logger]");
 }
 
+BOOST_AUTO_TEST_CASE(plugin_names_split_like_the_loader) {
+    BOOST_CHECK_EQUAL(join_lines(plugin_names_in_value("chain p2p")), "chain\np2p\n");
+    const std::vector<std::string> padded = plugin_names_in_value("  chain\t p2p  ");
+    BOOST_REQUIRE_EQUAL(padded.size(), std::size_t(2));
+    BOOST_CHECK_EQUAL(padded[0], "chain");
+    BOOST_CHECK_EQUAL(padded[1], "p2p");
+    BOOST_CHECK(plugin_names_in_value("   ").empty());
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lines_see_names_inside_a_multi_name_line) {
+    const std::vector<std::string> lines = {
+        "plugin = chain p2p",
+        "plugin = json_rpc webserver",
+        "[logger]"
+    };
+    // Configured means "appbase would load it", not "the line equals this name".
+    BOOST_CHECK(!edit_plugin_lines(lines, {"p2p"}, {}).error.empty());   // already configured
+
+    // Removing one name rewrites the line; the neighbour on the same line stays.
+    const line_edit rm = edit_plugin_lines(lines, {}, {"p2p"});
+    BOOST_CHECK(rm.error.empty());
+    BOOST_CHECK_EQUAL(rm.changed, std::size_t(1));
+    BOOST_CHECK_EQUAL(rm.lines[0], "plugin = chain");
+    BOOST_CHECK_EQUAL(rm.lines[1], "plugin = json_rpc webserver");
+
+    // Removing the only name drops the line; removing from a two-name line keeps both others.
+    const line_edit none = edit_plugin_lines(lines, {}, {"json_rpc", "webserver"});
+    BOOST_CHECK(none.error.empty());
+    BOOST_CHECK_EQUAL(none.changed, std::size_t(1));
+    BOOST_REQUIRE_EQUAL(none.lines.size(), std::size_t(2));
+    BOOST_CHECK_EQUAL(none.lines[0], "plugin = chain p2p");
+    BOOST_CHECK_EQUAL(none.lines[1], "[logger]");
+
+    // CRLF survives a rewrite.
+    const line_edit crlf = edit_plugin_lines({"plugin = chain p2p\r\n"}, {}, {"p2p"});
+    BOOST_CHECK(crlf.error.empty());
+    BOOST_CHECK_EQUAL(crlf.lines[0], "plugin = chain\r\n");
+}
+
 BOOST_AUTO_TEST_CASE(plugin_lines_refuse_bad_edits) {
     const std::vector<std::string> lines = {"plugin = chain", "plugin = node_admin"};
     BOOST_CHECK(!edit_plugin_lines(lines, {"bogus"}, {}).error.empty());

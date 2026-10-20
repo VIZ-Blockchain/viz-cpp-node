@@ -2844,7 +2844,8 @@ fc::variant node_admin_plugin::impl::h_diagnostics(const fc::variant &) {
     const std::vector<cfg_entry> cfg = parse_config_file(config_path(), &cfg_exists);
     std::set<std::string> configured;
     for (const auto &e : cfg) {
-        if (e.key == "plugin" && !e.value.empty()) configured.insert(e.value);
+        if (e.key != "plugin" || e.value.empty()) continue;
+        for (const std::string &name : util::plugin_names_in_value(e.value)) configured.insert(name);
     }
     std::size_t observed_count = 0;
     for (const auto &name : configured) {
@@ -2888,49 +2889,54 @@ fc::variant node_admin_plugin::impl::h_plugins_list(const fc::variant &) {
     std::set<std::string> seen;
     for (const auto &e : cfg) {
         if (e.key != "plugin" || e.value.empty()) continue;
-        if (!seen.insert(e.value).second) continue;
+        // A line may name several plugins (`plugin = chain p2p`); appbase loads each of them,
+        // so each gets its own row. Keeping the line as one name made state, status_method and
+        // parameter grouping unreachable for every plugin on such a line.
+        for (const std::string &name : util::plugin_names_in_value(e.value)) {
+            if (!seen.insert(name).second) continue;
 
-        const appbase::abstract_plugin *p = observe_plugin(e.value);
-        const char *state = "unknown";
-        const char *source = "inferred";
-        if (p) {
-            source = "observed";
-            switch (p->get_state()) {
-                case appbase::abstract_plugin::registered: state = "registered"; break;
-                case appbase::abstract_plugin::initialized: state = "initialized"; break;
-                case appbase::abstract_plugin::started: state = "started"; break;
-                case appbase::abstract_plugin::stopped: state = "stopped"; break;
-                default: state = "unknown"; break;
+            const appbase::abstract_plugin *p = observe_plugin(name);
+            const char *state = "unknown";
+            const char *source = "inferred";
+            if (p) {
+                source = "observed";
+                switch (p->get_state()) {
+                    case appbase::abstract_plugin::registered: state = "registered"; break;
+                    case appbase::abstract_plugin::initialized: state = "initialized"; break;
+                    case appbase::abstract_plugin::started: state = "started"; break;
+                    case appbase::abstract_plugin::stopped: state = "stopped"; break;
+                    default: state = "unknown"; break;
+                }
             }
+            fc::mutable_variant_object item;
+            item("name", name);
+            // A configured plugin is always loaded: appbase calls get_plugin(name) for every
+            // `plugin =` line and aborts startup when the name is unknown.
+            item("loaded", p ? p->get_state() != appbase::abstract_plugin::registered : true);
+            item("state", p ? fc::variant(std::string(state)) : fc::variant());
+            item("state_source", std::string(source));
+            // The UI needs both facts before it can draw a toggle: a plugin that cannot be disabled
+            // must not render as merely "off", and a plugin with no allow-listed keys must say so
+            // instead of showing an empty panel.
+            item("removable", !util::plugin_removal_forbidden(name));
+            // Plugins that answer a status question of their own. Null means the plugin exposes
+            // no operator status: the panel should say so instead of drawing an empty drawer.
+            const char *status_method = nullptr;
+            if (name == "p2p") status_method = "admin.p2p.status";
+            else if (name == "webserver") status_method = "admin.webserver.status";
+            else if (name == "snapshot") status_method = "admin.snapshot.status";
+            else if (name == "validator_guard") status_method = "admin.validator.list";
+            item("status_method", status_method ? fc::variant(std::string(status_method)) : fc::variant());
+            fc::variants params;
+            for (const util::config_spec &spec : util::config_allowlist()) {
+                if (util::config_key_group(spec.name) != name) continue;
+                fc::mutable_variant_object pitem;
+                pitem("key", spec.name);
+                params.push_back(fc::variant(pitem));
+            }
+            item("params", params);
+            plugins.push_back(fc::variant(item));
         }
-        fc::mutable_variant_object item;
-        item("name", e.value);
-        // A configured plugin is always loaded: appbase calls get_plugin(name) for every
-        // `plugin =` line and aborts startup when the name is unknown.
-        item("loaded", p ? p->get_state() != appbase::abstract_plugin::registered : true);
-        item("state", p ? fc::variant(std::string(state)) : fc::variant());
-        item("state_source", std::string(source));
-        // The UI needs both facts before it can draw a toggle: a plugin that cannot be disabled
-        // must not render as merely "off", and a plugin with no allow-listed keys must say so
-        // instead of showing an empty panel.
-        item("removable", !util::plugin_removal_forbidden(e.value));
-        // Plugins that answer a status question of their own. Null means the plugin exposes
-        // no operator status: the panel should say so instead of drawing an empty drawer.
-        const char *status_method = nullptr;
-        if (e.value == "p2p") status_method = "admin.p2p.status";
-        else if (e.value == "webserver") status_method = "admin.webserver.status";
-        else if (e.value == "snapshot") status_method = "admin.snapshot.status";
-        else if (e.value == "validator_guard") status_method = "admin.validator.list";
-        item("status_method", status_method ? fc::variant(std::string(status_method)) : fc::variant());
-        fc::variants params;
-        for (const util::config_spec &spec : util::config_allowlist()) {
-            if (util::config_key_group(spec.name) != e.value) continue;
-            fc::mutable_variant_object pitem;
-            pitem("key", spec.name);
-            params.push_back(fc::variant(pitem));
-        }
-        item("params", params);
-        plugins.push_back(fc::variant(item));
     }
 
     // The catalogue the binary can load, so the panel can offer an enable action. It is the

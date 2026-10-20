@@ -217,7 +217,9 @@ above 2^32-1 and every double, which would turn byte counts and load averages in
 
 ### `admin.plugins.list`
 
-Lists the deduplicated `plugin = …` entries from `config.ini`. AppBase keeps its plugin
+Lists the deduplicated plugins named by `plugin = …` lines in `config.ini`. A line may carry
+several names (`plugin = chain p2p`), exactly as AppBase reads it, so each name gets its own
+row. AppBase keeps its plugin
 registry private (name-based lookup is protected and there is no enumeration API), so the
 config file is the population this method can see; plugins enabled only on the command line
 are not listed.

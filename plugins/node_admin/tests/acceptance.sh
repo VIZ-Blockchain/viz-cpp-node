@@ -29,11 +29,9 @@ EXPIRED=accept-expired-token
 sha() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
 
 cat > "$WORK/config.ini" <<EOF
-plugin = chain
-plugin = json_rpc
-plugin = p2p
+plugin = chain p2p
+plugin = json_rpc webserver
 plugin = snapshot
-plugin = webserver
 plugin = node_admin
 
 admin-endpoint = 127.0.0.1:$PORT
@@ -194,9 +192,23 @@ check "diagnostics -> disk_free_bytes is a number" true \
 check "diagnostics -> p2p is loaded" true "$(field result.p2p_loaded)"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":8,"method":"admin.plugins.list"}'
-check "plugins.list -> chain state" '"started"' "$(field 'result.plugins.0.state')"
-check "plugins.list -> chain observed" '"observed"' "$(field 'result.plugins.0.state_source')"
-check "plugins.list -> json_rpc inferred" '"inferred"' "$(field 'result.plugins.1.state_source')"
+# The fixture writes two names on one line, as the live config.ini does. Rows are looked up
+# by name, not by position: a positional check silently changed meaning the moment the
+# fixture stopped using one name per line.
+check "plugins.list -> chain state" '"started"' \
+    "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["result"]["plugins"]; print(json.dumps([x["state"] for x in p if x["name"]=="chain"][0]))' "$OUT")"
+check "plugins.list -> chain observed" '"observed"' \
+    "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["result"]["plugins"]; print(json.dumps([x["state_source"] for x in p if x["name"]=="chain"][0]))' "$OUT")"
+check "plugins.list -> json_rpc inferred" '"inferred"' \
+    "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["result"]["plugins"]; print(json.dumps([x["state_source"] for x in p if x["name"]=="json_rpc"][0]))' "$OUT")"
+check "plugins.list -> multi-name line yields one row per name" true \
+    "$(python3 -c 'import json,sys; n=[x["name"] for x in json.load(open(sys.argv[1]))["result"]["plugins"]]; print(str("chain" in n and "p2p" in n and "json_rpc" in n and "webserver" in n).lower())' "$OUT")"
+check "plugins.list -> no row name contains a space" true \
+    "$(python3 -c 'import json,sys; n=[x["name"] for x in json.load(open(sys.argv[1]))["result"]["plugins"]]; print(str(all(" " not in x for x in n)).lower())' "$OUT")"
+check "plugins.list -> p2p names its status method" '"admin.p2p.status"' \
+    "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["result"]["plugins"]; print(json.dumps([x["status_method"] for x in p if x["name"]=="p2p"][0]))' "$OUT")"
+check "plugins.list -> p2p carries its grouped parameters" true \
+    "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["result"]["plugins"]; print(str(len([x for x in p if x["name"]=="p2p"][0]["params"]) > 0).lower())' "$OUT")"
 
 # ── per-plugin status ──────────────────────────────────────────────────────────────────────
 # The page must be able to answer "what is this plugin doing", not just "is it configured".
@@ -709,7 +721,7 @@ if grep -qE '^plugin = snapshot$' "$CFG"; then
 else
     echo "ok   plugins.apply -> snapshot removed"
 fi
-check "plugins.apply -> seven plugin lines" 7 "$(grep -cE '^plugin = ' "$CFG")"
+check "plugins.apply -> five plugin lines" 5 "$(grep -cE '^plugin = ' "$CFG")"
 auth "$GOOD" '{"jsonrpc":"2.0","id":107,"method":"admin.config.backups"}'
 check "plugins.apply -> wrote a second backup" 2 "$(field result.count)"
 
