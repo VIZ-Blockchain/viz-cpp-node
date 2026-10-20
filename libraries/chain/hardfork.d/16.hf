@@ -19,7 +19,7 @@
 // (CHAIN_HARDFORK_REQUIRED_VALIDATORS=1), so this timestamp IS the whole coordination: the
 // validator's auto-vote in _generate_block reaches quorum by itself and the fork applies on the
 // first block at or after this time.
-#define CHAIN_HARDFORK_16_TIME 1794700800      // 2026-11-15 00:00:00 UTC (PLACEHOLDER — not announced)
+#define CHAIN_HARDFORK_16_TIME 1793404800      // 2026-10-31 00:00:00 UTC (same as production)
 #define CHAIN_HARDFORK_16_VERSION hardfork_version( version(4, 2, 0) )
 #else
 // Production-config activation. This branch is what the shelter testnet runs too — that node is a
@@ -29,12 +29,12 @@
 // (database.cpp _generate_block injects hardfork_version_vote while current_hardfork_version <
 // CHAIN_HARDFORK_VERSION); the fork then applies on the first block at or after this time.
 //
-// PLACEHOLDER — NOT ANNOUNCED. The owner names the mainnet date; this value exists only so the
-// binary has a future milestone to compile and test against. It MUST stay in the FUTURE for the
-// announced moment to exist at all — with a past date the fork activates in whatever block the
-// 17th validator happens to upgrade in, with no announceable moment (same warning as 14.hf/15.hf).
-// Change this value together with any announcement text, never after one is published.
-#define CHAIN_HARDFORK_16_TIME 1796083200      // 2026-12-01 00:00:00 UTC (PLACEHOLDER — not announced)
+// SET by the owner (2026-10-20): 2026-10-31 00:00:00 UTC is the mainnet date, and the validator
+// announcement must name this value. It MUST stay in the FUTURE for the announced moment to exist at
+// all — with a past date the fork activates in whatever block the 17th validator happens to upgrade
+// in, with no announceable moment (same warning as 14.hf/15.hf). Change this value together with
+// the announcement text, never after one is published.
+#define CHAIN_HARDFORK_16_TIME 1793404800      // 2026-10-31 00:00:00 UTC
 #define CHAIN_HARDFORK_16_VERSION hardfork_version( version(4, 2, 0) )
 #endif
 // Registration itself is unconditional in both configs (the hardfork arrays are sized
