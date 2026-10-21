@@ -2939,7 +2939,7 @@ namespace graphene { namespace chain {
                 // Double-vote proofs: newest round per validator that the chain has
                 // not punished yet; a few per block keeps headers small.
                 std::lock_guard<std::mutex> guard(_block_votes_mutex);
-                const uint32_t own_round = when.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                const uint32_t own_round = round_of(when);
                 std::map<account_name_type, const protocol::block_equivocation_proof *> pick;
                 for (auto it = _pending_equivocations.begin(); it != _pending_equivocations.end(); ) {
                     const auto &p = it->second;
@@ -6562,7 +6562,7 @@ namespace graphene { namespace chain {
                     // dgp.time is advanced to b.timestamp), so it is identical on
                     // every node and during every replay. No block_log fetch,
                     // config flag, wall-clock time, or skip-flag gates it.
-                    uint32_t gap_sec = (missed_blocks + 1) * CHAIN_BLOCK_INTERVAL;
+                    uint32_t gap_sec = (missed_blocks + 1) * block_interval();
 
                     {
                         if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
@@ -7137,7 +7137,7 @@ namespace graphene { namespace chain {
             // Same window as block votes: bounded memory for valid-but-absurd rounds.
             static constexpr uint32_t MAX_VOTE_AHEAD_ROUNDS = 64;
             static constexpr uint32_t MAX_VOTE_ROUND_BEHIND = 1200;     // ~1 h at 3 s
-            const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            const uint32_t head_round = round_of(head_block_time());
             if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
             if (round > head_round + MAX_VOTE_AHEAD_ROUNDS) return false;
 
@@ -7182,7 +7182,7 @@ namespace graphene { namespace chain {
             FC_ASSERT(proofs.size() <= 5, "Block #${n} carries ${k} double-vote proofs, at most 5",
                       ("n", b.block_num())("k", proofs.size()));
 
-            const uint32_t own_round = b.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            const uint32_t own_round = round_of(b.timestamp);
             std::set<account_name_type> seen;
             const auto &props = get_validator_schedule_object().median_props;
             for (const auto *p : proofs) {
@@ -7283,7 +7283,7 @@ namespace graphene { namespace chain {
                 const account_name_type &producer, uint32_t own_round) const {
             fc::optional<protocol::block_qc_certificate> result;
             if (!block_needs_parent_qc(producer) || head_block_num() < 2) return result;
-            const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            const uint32_t head_round = round_of(head_block_time());
             if (head_round + 1 != own_round) return result;          // rounds must run on, no gap
             const auto head = fetch_block_by_number(head_block_num());
             if (!head) return result;
@@ -7349,7 +7349,7 @@ namespace graphene { namespace chain {
                       ("n", next_block.block_num()));
             if (cert == nullptr) return;
 
-            const uint32_t parent_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            const uint32_t parent_round = round_of(head_block_time());
             if (cert->block_id == next_block.previous) {
                 FC_ASSERT(cert->block_num + 1 == next_block.block_num(),
                           "Parent QC certifies #${qn}, not the parent", ("qn", cert->block_num));
@@ -7361,7 +7361,7 @@ namespace graphene { namespace chain {
                 // (grandparent r-2, parent r-1, this block r). The parent must itself
                 // carry this very QC, so nothing certified is skipped. Safety rests on
                 // one QC per round and the commit rule needing consecutive rounds.
-                const uint32_t own_round = next_block.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                const uint32_t own_round = round_of(next_block.timestamp);
                 FC_ASSERT(tc == nullptr, "The late-QC fallback carries no TC");
                 FC_ASSERT(parent_round + 1 == own_round && cert->round + 1 == parent_round &&
                           cert->block_num + 2 == next_block.block_num(),
@@ -7390,7 +7390,7 @@ namespace graphene { namespace chain {
             // round and ours, and our parent QC is at least as high as every QC a
             // timeout voter reported (nobody saw a newer certified block we skip).
             if (tc != nullptr) {
-                const uint32_t own_round = next_block.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                const uint32_t own_round = round_of(next_block.timestamp);
                 FC_ASSERT(tc->round > cert->round && tc->round < own_round,
                           "TC round ${t} not between parent round ${p} and block round ${o}",
                           ("t", tc->round)("p", cert->round)("o", own_round));
@@ -7430,7 +7430,7 @@ namespace graphene { namespace chain {
             if (protocol::block_header::num_from_id(block_id) != block_num) return false;
 
             const auto &dpo = get_dynamic_global_properties();
-            const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            const uint32_t head_round = round_of(head_block_time());
             if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
             if (round > head_round + MAX_VOTE_AHEAD_BLOCKS) return false;
             // With a tiny schedule (one validator: testnet, consensus_sim) the

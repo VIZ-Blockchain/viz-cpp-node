@@ -1328,8 +1328,8 @@ namespace graphene {
                     int64_t time_since_lag_ms = (fc::time_point::now() - fc::time_point(_last_lag_slot_time)).count() / 1000;
                     // If less than one full slot interval has passed since the lag, skip ahead
                     // to avoid rechecking the same missed slot.
-                    if (time_since_lag_ms < (int64_t)CHAIN_BLOCK_INTERVAL * 1000) {
-                        int64_t skip_ms = (CHAIN_BLOCK_INTERVAL * 1000) - time_since_lag_ms;
+                    if (time_since_lag_ms < (int64_t)database().block_interval() * 1000) {
+                        int64_t skip_ms = (database().block_interval() * 1000) - time_since_lag_ms;
                         if (skip_ms > 0) {
                             if (database()._debug_block_production) {
                                 ilog("DEBUG_CRASH: skipping ${ms}ms to avoid rechecking lagged slot", ("ms", skip_ms));
@@ -1774,7 +1774,7 @@ namespace graphene {
                                     if (bpv.block_num == 0 || bpv.block_id == block_id_type()) continue;
                                     const auto blk = db.fetch_block_by_id(bpv.block_id);
                                     if (!blk) continue;          // not applied here: nothing to vote for yet
-                                    candidates.push_back({blk->timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL,
+                                    candidates.push_back({db.round_of(blk->timestamp),
                                                           bpv.block_num, bpv.block_id});
                                 }
                                 std::sort(candidates.begin(), candidates.end(),
@@ -1825,8 +1825,8 @@ namespace graphene {
                 // Sent once per round; a lost timeout is not resent (gossip relays it).
                 if (!emergency_active && db.has_hardfork(CHAIN_HARDFORK_16) && db.head_block_num() > 0) {
                     const uint32_t head_num = db.head_block_num();
-                    const uint32_t head_round = db.head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
-                    const uint32_t now_round = now.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                    const uint32_t head_round = db.round_of(db.head_block_time());
+                    const uint32_t now_round = db.round_of(now);
                     const auto head_qc = db.get_block_qc(head_num);
                     const bool certified = head_qc && head_qc->block_id == db.head_block_id();
                     // Time out the last fully passed round t = now-1 once no block of a
@@ -2370,7 +2370,7 @@ namespace graphene {
                 // TC(r-1); so after any empty or QC-less round we attach TC(r-1).
                 fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
                 bool waiting_for_qc = false;
-                const uint32_t own_round = scheduled_time.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                const uint32_t own_round = db.round_of(scheduled_time);
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
                     auto tc = db.get_timeout_cert(own_round - 1);
