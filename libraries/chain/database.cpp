@@ -7050,7 +7050,10 @@ namespace graphene { namespace chain {
             if (dgp.head_block_number < 1) return false;
             const auto &parent_producer = dgp.current_validator;    // producer of head
             if (parent_producer == account_name_type()) return false;
-            if (parent_producer == producer) return false;          // same validator's series: no handoff
+            // No exemption for a validator's own series: the Jolteon commit rule
+            // needs every block certified, or a series could build past a parent
+            // that never gathered a quorum and LIB would stall on it.
+            (void)producer;
             // First block after an emergency: committee blocks never get a QC
             // (validators re-enter with fresh keys), so their child is exempt.
             if (parent_producer == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) return false;
@@ -7093,7 +7096,7 @@ namespace graphene { namespace chain {
             }
             if (block_needs_parent_qc(next_block.validator)) {
                 FC_ASSERT(cert != nullptr,
-                          "Block #${n} by ${w} hands over the turn but carries no QC of its parent (produced by ${p})",
+                          "Block #${n} by ${w} carries no QC of its parent (produced by ${p})",
                           ("n", next_block.block_num())("w", next_block.validator)
                           ("p", get_dynamic_global_properties().current_validator));
             }
