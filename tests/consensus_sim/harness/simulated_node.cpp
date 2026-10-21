@@ -60,18 +60,19 @@ graphene::protocol::signed_block simulated_node::produce_block(
     const fc::ecc::private_key& key,
     fc::time_point_sec when) {
     try {
-        auto b = db_->generate_block(when, witness, key,
-                                     graphene::chain::database::skip_nothing);
         // HF16 needs a QC of the parent before the next block. There is no p2p
-        // here, so the producer's own vote is tallied directly; with a single
-        // scheduled validator that vote alone is the quorum.
-        if (db_->has_hardfork(CHAIN_HARDFORK_16)) {
-            const uint32_t round = b.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+        // here, so the producer votes for head right before producing (head may
+        // predate the fork switch); with one scheduled validator that is a quorum.
+        if (db_->has_hardfork(CHAIN_HARDFORK_16) && db_->head_block_num() > 0 &&
+            !db_->get_block_qc(db_->head_block_num())) {
+            const auto head = db_->fetch_block_by_number(db_->head_block_num());
+            const uint32_t round = head->timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
             const auto digest = graphene::protocol::block_vote_digest(
-                db_->get_chain_id(), b.block_num(), b.id(), round);
-            db_->push_block_vote(b.block_num(), b.id(), round, witness, key.sign_compact(digest));
+                db_->get_chain_id(), head->block_num(), head->id(), round);
+            db_->push_block_vote(head->block_num(), head->id(), round, witness, key.sign_compact(digest));
         }
-        return b;
+        return db_->generate_block(when, witness, key,
+                                   graphene::chain::database::skip_nothing);
     } catch (const fc::exception& e) {
         throw std::runtime_error(
             "simulated_node::produce_block failed: " + e.to_detail_string());
