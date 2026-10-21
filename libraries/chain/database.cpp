@@ -7200,8 +7200,17 @@ namespace graphene { namespace chain {
                 const auto &child = certified[i];
                 const auto &parent = certified[i + 1];
                 if (child.first != parent.first + 1) continue;
-                if (find_block_id_for_num(child.first) == child.second &&
-                    find_block_id_for_num(parent.first) == parent.second) return parent.first;
+                if (find_block_id_for_num(child.first) != child.second ||
+                    find_block_id_for_num(parent.first) != parent.second) continue;
+                // Jolteon commit rule: the two certified blocks must also be in
+                // consecutive ROUNDS (round = slot). A child after skipped slots
+                // was built on a timeout certificate, and a parent certified
+                // before that timeout is not yet safe to commit.
+                const auto pb = fetch_block_by_id(parent.second);
+                const auto cb = fetch_block_by_id(child.second);
+                if (!pb || !cb) continue;
+                if (cb->timestamp != pb->timestamp + CHAIN_BLOCK_INTERVAL) continue;
+                return parent.first;
             }
             return 0;
         }
