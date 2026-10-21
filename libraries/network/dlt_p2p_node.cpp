@@ -1101,6 +1101,18 @@ bool dlt_p2p_node::check_fork_alignment(const dlt_hello_message& hello,
         return true;
     }
 
+    // ── We are empty, peer serves the chain from genesis ────────
+    // Mirror of the rule above. A node started from genesis (fresh testnet, no snapshot)
+    // has no block to recognise the peer by, so every peer was "not fork-aligned": exchange
+    // stayed off, blocks #1..#2 were never requested and every later block was unlinkable.
+    // Only nodes that were connected while #1 was being produced ever got the chain (6 of 21
+    // on the HF16 QC stand, #6741). Every block will still be fully validated from genesis on
+    // apply, so accepting the peer costs nothing; a peer that cannot serve from #1 (a DLT node
+    // with a pruned range) still needs a snapshot and is not accepted here.
+    if (_delegate->get_head_block_num() == 0 && hello.dlt_earliest_block <= 1) {
+        return true;
+    }
+
     uint32_t our_earliest = _delegate->get_dlt_earliest_block();
     uint32_t our_latest = _delegate->get_dlt_latest_block();
 
