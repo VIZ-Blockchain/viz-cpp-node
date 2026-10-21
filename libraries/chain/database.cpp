@@ -2127,7 +2127,24 @@ namespace graphene { namespace chain {
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
                         try {
-                        if (has_hardfork(CHAIN_HARDFORK_12)) {
+                        // HF16: the branch whose tip carries the certificate of the
+                        // later round wins, even at the same height. The certificate
+                        // is only claimed here; switch_forks applies the block and
+                        // validate_block_qc rejects a forged one, which reverts the
+                        // switch. Equal rounds fall through to the HF12 rule.
+                        int cert_cmp = 0;
+                        if (has_hardfork(CHAIN_HARDFORK_16) &&
+                            !get_dynamic_global_properties().emergency_consensus_active) {
+                            const auto head_blk = fetch_block_by_id(head_block_id());
+                            if (head_blk) {
+                                const uint32_t new_r = block_cert_round(new_head->data);
+                                const uint32_t head_r = block_cert_round(*head_blk);
+                                cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
+                            }
+                        }
+                        if (cert_cmp != 0) {
+                            should_switch = cert_cmp > 0;
+                        } else if (has_hardfork(CHAIN_HARDFORK_12)) {
                             // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
                             if (new_head->data.block_num() >= head_block_num() &&
                                 _fork_db.is_known_block(head_block_id())) {
@@ -7082,6 +7099,14 @@ namespace graphene { namespace chain {
                 return result;
             result = std::move(cert);
             return result;
+        }
+
+        uint32_t database::block_cert_round(const signed_block &b) {
+            for (const auto &e : b.extensions) {
+                if (e.which() == 3)   // block_qc_certificate (index in block_header_extensions)
+                    return e.get<protocol::block_qc_certificate>().round;
+            }
+            return 0;
         }
 
         void database::validate_block_qc(const signed_block &next_block, uint32_t skip) const {
