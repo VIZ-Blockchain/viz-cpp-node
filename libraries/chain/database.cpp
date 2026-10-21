@@ -7161,7 +7161,11 @@ namespace graphene { namespace chain {
             const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
             if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
             if (round > head_round + MAX_VOTE_AHEAD_BLOCKS) return false;
-            const uint32_t lib = dpo.last_irreversible_block_num;
+            // With a tiny schedule (one validator: testnet, consensus_sim) the
+            // classic LIB reaches head itself, yet head still needs a QC before
+            // the next block can be produced. Settle only what lies below head.
+            const uint32_t lib = std::min(dpo.last_irreversible_block_num,
+                                          dpo.head_block_number > 0 ? dpo.head_block_number - 1 : 0);
             if (block_num <= lib) return false;                               // already final
             if (block_num > dpo.head_block_number + MAX_VOTE_AHEAD_BLOCKS) return false;
 
