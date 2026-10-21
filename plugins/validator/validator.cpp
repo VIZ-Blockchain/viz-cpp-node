@@ -2383,6 +2383,7 @@ namespace graphene {
                 // TC(r-1); so after any empty or QC-less round we attach TC(r-1).
                 fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
                 bool waiting_for_qc = false;
+                bool rebuild_on_anchor = false;
                 const uint32_t own_round = db.round_of(scheduled_time);
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
@@ -2403,9 +2404,25 @@ namespace graphene {
                     const graphene::protocol::block_qc_certificate *parent_qc = nullptr;
                     for (const auto &e : head->extensions)
                         if (e.which() == 3) parent_qc = &e.get<graphene::protocol::block_qc_certificate>();
+                    // Head's parent is the HF16 activation block (the round anchor): head is
+                    // exempt from a parent QC and so is its replacement. If head's round timed
+                    // out (validators sent timeout votes before head arrived, so they will
+                    // never vote for it), drop head and rebuild on the anchor with no TC.
+                    // Without this the chain stalls for good right after activation
+                    // (21-validator stand, 22.10: TC 15/15 every slot, head #67 forever).
+                    if (!parent_qc) {
+                        const auto &dgp = db.get_dynamic_global_properties();
+                        const auto parent = db.fetch_block_by_id(head->previous);
+                        if (parent && dgp.round_anchor_time != fc::time_point_sec() &&
+                            parent->timestamp <= dgp.round_anchor_time) {
+                            skip_tc = tc;
+                            rebuild_on_anchor = true;
+                        }
+                        return;
+                    }
                     // The parent must be certified, and nobody who timed out may
                     // have seen a QC above it (else our block would be invalid).
-                    if (!parent_qc || parent_qc->block_id != head->previous) return;
+                    if (parent_qc->block_id != head->previous) return;
                     for (const auto &tv : tc->votes)
                         if (tv.second.high_qc_round > parent_qc->round) return;
                     skip_tc = tc;
@@ -2420,6 +2437,10 @@ namespace graphene {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;
                     }
+                    // Our block now sits on the anchor: it needs no parent QC and may
+                    // carry no TC ("A TC goes only next to a parent QC").
+                    if (rebuild_on_anchor) skip_tc.reset();
+                    waiting_for_qc = false;
                 }
                 // Late-QC fallback. `now` is whole seconds with a +250 ms look-ahead, so the
                 // lag check above lets us produce until ~750 ms after the slot, on 250 ms
