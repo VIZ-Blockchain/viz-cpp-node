@@ -1781,6 +1781,23 @@ namespace graphene {
                                           [](const candidate &a, const candidate &b) { return a.round < b.round; });
                                 const uint32_t lib = db.get_dynamic_global_properties().last_irreversible_block_num;
                                 for (const auto &c : candidates) {
+                                    // Jolteon: vote for round r only on QC(r-1) or TC(r-1), so a
+                                    // block that jumped over rounds without a TC gets no QC. A block
+                                    // without a parent QC (HF16 start, after emergency) is exempt.
+                                    if (db.has_hardfork(CHAIN_HARDFORK_16)) {
+                                        const auto blk = db.fetch_block_by_id(c.id);
+                                        uint32_t qc_round = 0, tc_round = 0;
+                                        bool has_qc = false;
+                                        for (const auto &e : blk->extensions) {
+                                            if (e.which() == 3) { has_qc = true; qc_round = e.get<graphene::protocol::block_qc_certificate>().round; }
+                                            else if (e.which() == 4) tc_round = e.get<graphene::protocol::block_timeout_certificate>().round;
+                                        }
+                                        if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round) {
+                                            dlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
+                                                 ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
+                                            continue;
+                                        }
+                                    }
                                     if (!may_vote(validator_account, c.round, c.num, c.id, lib)) continue;
                                     graphene::protocol::signature_type vote_signature = validator_priv_key.sign_compact(
                                             graphene::protocol::block_vote_digest(db.get_chain_id(), c.num, c.id, c.round));
@@ -1803,9 +1820,15 @@ namespace graphene {
                     const uint32_t now_round = now.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
                     const auto head_qc = db.get_block_qc(head_num);
                     const bool certified = head_qc && head_qc->block_id == db.head_block_id();
-                    if (!certified && now_round >= head_round + 2) {
+                    // Time out the last fully passed round t = now-1 once no block of a
+                    // later round than head has come: head certified -> the slot after it
+                    // stayed empty; head QC-less -> head is being given up on too.
+                    if (now_round >= head_round + 2) {
+                        const uint32_t t = now_round - 1;
                         const auto head_block = db.fetch_block_by_number(head_num);
-                        const uint32_t high_qc_round = head_block ? graphene::chain::database::block_cert_round(*head_block) : 0;
+                        // Highest QC we hold: head's own if certified, else the one head carries.
+                        const uint32_t high_qc_round = certified ? head_qc->round
+                                : (head_block ? graphene::chain::database::block_cert_round(*head_block) : 0);
                         const auto &wso = db.get_validator_schedule_object();
                         const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                         for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
@@ -1815,13 +1838,14 @@ namespace graphene {
                             if (w_itr == by_name.end() || w_itr->signing_key == graphene::protocol::public_key_type()) continue;
                             auto key_itr = _private_keys.find(w_itr->signing_key);
                             if (key_itr == _private_keys.end()) continue;
-                            if (high_qc_round >= head_round) continue;   // malformed head; push would refuse it
-                            if (!may_timeout(v, head_round)) continue;
+                            if (high_qc_round >= t) continue;   // malformed head; push would refuse it
+                            if (!may_timeout(v, t)) continue;
                             const auto sig = key_itr->second.sign_compact(
-                                    graphene::protocol::block_timeout_digest(db.get_chain_id(), head_round, high_qc_round));
-                            ilog("Timeout: ${w} gives up on round ${r} (head #${h} has no QC; high QC round ${q})",
-                                 ("w", v)("r", head_round)("h", head_num)("q", high_qc_round));
-                            p2p().post_broadcast_timeout_vote(head_round, high_qc_round, v, sig);
+                                    graphene::protocol::block_timeout_digest(db.get_chain_id(), t, high_qc_round));
+                            ilog("Timeout: ${w} gives up on round ${r} (head #${h} round ${hr}, ${c}; high QC round ${q})",
+                                 ("w", v)("r", t)("h", head_num)("hr", head_round)
+                                 ("c", certified ? "certified" : "no QC")("q", high_qc_round));
+                            p2p().post_broadcast_timeout_vote(t, high_qc_round, v, sig);
                         }
                     }
                 }
@@ -2333,14 +2357,24 @@ namespace graphene {
                 // producer (or we, next slot) builds once the quorum is there.
                 // If a TC for head's round is here instead, head was given up on:
                 // drop it and build on its (certified) parent with the TC (Jolteon).
+                // Validators vote for a block of round r only if it carries QC(r-1) or
+                // TC(r-1); so after any empty or QC-less round we attach TC(r-1).
                 fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
                 bool waiting_for_qc = false;
+                const uint32_t own_round = scheduled_time.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
                 db.with_weak_read_lock([&]() {
-                    if (!db.block_needs_parent_qc(scheduled_validator) ||
-                        db.parent_qc_for_next_block(scheduled_validator).valid()) return;
+                    if (!db.block_needs_parent_qc(scheduled_validator)) return;
+                    auto tc = db.get_timeout_cert(own_round - 1);
+                    const auto parent_cert = db.parent_qc_for_next_block(scheduled_validator);
+                    if (parent_cert.valid()) {
+                        // Head certified. A gap after it needs TC(r-1) for our block to get votes.
+                        if (parent_cert->round + 1 >= own_round || !tc) return;
+                        for (const auto &tv : tc->votes)
+                            if (tv.second.high_qc_round > parent_cert->round) return;
+                        skip_tc = tc;
+                        return;
+                    }
                     waiting_for_qc = true;
-                    const uint32_t head_round = db.head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
-                    auto tc = db.get_timeout_cert(head_round);
                     if (!tc) return;
                     const auto head = db.fetch_block_by_number(db.head_block_num());
                     if (!head) return;
