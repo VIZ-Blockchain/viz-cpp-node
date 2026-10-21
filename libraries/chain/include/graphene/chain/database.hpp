@@ -439,6 +439,16 @@ namespace graphene { namespace chain {
              */
             uint32_t get_slot_at_time(fc::time_point_sec when) const;
 
+            /** Slot length in seconds for slots after the head (HF16: 3 -> 1). */
+            uint32_t block_interval() const;
+
+            /**
+             * Consensus round of a slot time, contiguous across the HF16 switch:
+             * t/3 up to the switch block S, then S/3 + (t - S). Rounds of QC/TC must use this,
+             * never t / CHAIN_BLOCK_INTERVAL, or round r-1 does not exist on the first 1 s slot.
+             */
+            uint32_t round_of(fc::time_point_sec t) const;
+
             void shares_sender_recalc_energy(const account_object &receiver, asset tokens);
 
             asset create_vesting(const account_object &to_account, asset tokens);

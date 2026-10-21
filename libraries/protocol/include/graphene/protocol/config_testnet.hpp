@@ -32,6 +32,7 @@
 #define CHAIN_CLEAR_CLOSED_COMMITTEE_REQUEST_DELAY        fc::minutes(10)
 
 #define CHAIN_BLOCK_INTERVAL                  3
+#define CHAIN_BLOCK_INTERVAL_HF16             1 // HF16 (#6737, Q#3103=A): slot after the fork block; database::block_interval()
 #define CHAIN_BLOCK_VALIDATOR_REPEAT            1
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)

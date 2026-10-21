@@ -1046,6 +1046,14 @@ inline u256 to256(const fc::uint128_t &t) {
                     // on get<pm_lazy_pool_object>. All balances start at zero (empty pool).
                     create<pm_lazy_pool_object>([](pm_lazy_pool_object&) {});
                     break;
+                case CHAIN_HARDFORK_16:
+                    // #6737: this block is the last 3 s slot (dgpo.time is already this block's
+                    // timestamp: update_global_dynamic_data runs before process_hardforks), every
+                    // later slot is CHAIN_BLOCK_INTERVAL_HF16. See database::round_of().
+                    modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
+                        p.block_interval_switch_time = p.time;
+                    });
+                    break;
                 default:
                     break;
             }

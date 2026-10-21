@@ -3144,7 +3144,7 @@ namespace graphene { namespace chain {
                 return fc::time_point_sec();
             }
 
-            auto interval = CHAIN_BLOCK_INTERVAL;
+            auto interval = block_interval();
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
 
             if (head_block_num() == 0) {
@@ -3169,7 +3169,21 @@ namespace graphene { namespace chain {
                 return 0;
             }
             return (when - first_slot_time).to_seconds() /
-                   CHAIN_BLOCK_INTERVAL + 1;
+                   block_interval() + 1;
+        }
+
+        uint32_t database::block_interval() const {
+            return get_dynamic_global_properties().block_interval_switch_time == fc::time_point_sec()
+                ? CHAIN_BLOCK_INTERVAL : CHAIN_BLOCK_INTERVAL_HF16;
+        }
+
+        uint32_t database::round_of(fc::time_point_sec t) const {
+            const auto s = get_dynamic_global_properties().block_interval_switch_time;
+            if (s == fc::time_point_sec() || t <= s) {
+                return t.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            }
+            return s.sec_since_epoch() / CHAIN_BLOCK_INTERVAL +
+                   (t.sec_since_epoch() - s.sec_since_epoch()) / CHAIN_BLOCK_INTERVAL_HF16;
         }
 
         void database::shares_sender_recalc_energy(const account_object &sender, asset tokens) {

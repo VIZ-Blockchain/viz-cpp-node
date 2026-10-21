@@ -195,6 +195,15 @@ namespace graphene {
              * by epoch) would become unreachable.
              */
             uint64_t pm_batch_settle_bet_cursor = 0;
+
+            /**
+             * HF16 (#6737): timestamp of the block that applied HF16, i.e. the last 3-second slot.
+             * Slots after it are CHAIN_BLOCK_INTERVAL_HF16 long. The scheduled fork time is not
+             * enough: the fork applies on the first block at or after it once 17/21 voted, which
+             * may be later, and rounds must stay contiguous across the switch (Jolteon r-1 rule).
+             * Zero = HF16 not applied yet.
+             */
+            fc::time_point_sec block_interval_switch_time;
         };
 
         typedef multi_index_container <
@@ -248,5 +257,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (pm_oracle_gauges_seeded)
                 (pm_batch_settle_cursor)
                 (pm_batch_settle_bet_cursor)
+                (block_interval_switch_time)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)
