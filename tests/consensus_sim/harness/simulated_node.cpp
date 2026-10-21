@@ -1,6 +1,8 @@
 #include "simulated_node.hpp"
 
 #include <graphene/chain/database_exceptions.hpp>
+#include <graphene/chain/hardfork.hpp>
+#include <graphene/protocol/block_vote.hpp>
 #include <fc/exception/exception.hpp>
 
 #include <chainbase/chainbase.hpp>
@@ -58,8 +60,18 @@ graphene::protocol::signed_block simulated_node::produce_block(
     const fc::ecc::private_key& key,
     fc::time_point_sec when) {
     try {
-        return db_->generate_block(when, witness, key,
-                                   graphene::chain::database::skip_nothing);
+        auto b = db_->generate_block(when, witness, key,
+                                     graphene::chain::database::skip_nothing);
+        // HF16 needs a QC of the parent before the next block. There is no p2p
+        // here, so the producer's own vote is tallied directly; with a single
+        // scheduled validator that vote alone is the quorum.
+        if (db_->has_hardfork(CHAIN_HARDFORK_16)) {
+            const uint32_t round = b.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            const auto digest = graphene::protocol::block_vote_digest(
+                db_->get_chain_id(), b.block_num(), b.id(), round);
+            db_->push_block_vote(b.block_num(), b.id(), round, witness, key.sign_compact(digest));
+        }
+        return b;
     } catch (const fc::exception& e) {
         throw std::runtime_error(
             "simulated_node::produce_block failed: " + e.to_detail_string());
