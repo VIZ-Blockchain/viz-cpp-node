@@ -1053,6 +1053,28 @@ inline u256 to256(const fc::uint128_t &t) {
                     modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
                         p.block_interval_switch_time = p.time;
                     });
+                    {
+                        // #6737, Q#3108=A: block-denominated chain props keep their wall-time
+                        // meaning at 1 s slots. The median is recomputed from every validator's
+                        // own props each schedule round, so scaling only median_props would be
+                        // undone within one round: scale every stored vote, then the median.
+                        const auto scale = [](chain_properties& c) {
+                            const auto x3 = [](uint32_t v) {
+                                return uint32_t(std::min<uint64_t>(uint64_t(v) * 3, std::numeric_limits<uint32_t>::max()));
+                            };
+                            c.inflation_recalc_period   = x3(c.inflation_recalc_period);
+                            c.distribution_epoch_length = x3(c.distribution_epoch_length);
+                            c.pm_batch_epoch_blocks     = x3(c.pm_batch_epoch_blocks);
+                            c.pm_reveal_window_blocks   = x3(c.pm_reveal_window_blocks);
+                        };
+                        const auto& vidx = get_index<validator_index>().indices();
+                        for (auto it = vidx.begin(); it != vidx.end(); ++it) {
+                            modify(*it, [&](validator_object& v) { scale(v.props); });
+                        }
+                        modify(get_validator_schedule_object(), [&](validator_schedule_object& w) {
+                            scale(w.median_props);
+                        });
+                    }
                     break;
                 default:
                     break;
