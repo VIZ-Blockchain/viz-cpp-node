@@ -7259,6 +7259,12 @@ namespace graphene { namespace chain {
             // First block after an emergency: committee blocks never get a QC
             // (validators re-enter with fresh keys), so their child is exempt.
             if (parent_producer == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) return false;
+            // Child of the HF16 activation block (the round anchor, the last 3 s slot):
+            // nothing below it carries a QC, so if its own QC does not form (votes lost to
+            // a network-wide restart, a hiccup at the switch) a TC cannot rescue it either
+            // (a TC needs the head's parent certified) and the chain stalls for good.
+            // 21-validator stand, 22.10: head #65 waited for a QC over 100+ slots.
+            if (dgp.round_anchor_time != fc::time_point_sec() && dgp.time <= dgp.round_anchor_time) return false;
             return true;
         }
 
