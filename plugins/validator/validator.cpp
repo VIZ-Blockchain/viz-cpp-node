@@ -1792,7 +1792,16 @@ namespace graphene {
                                             if (e.which() == 3) { has_qc = true; qc_round = e.get<graphene::protocol::block_qc_certificate>().round; }
                                             else if (e.which() == 4) tc_round = e.get<graphene::protocol::block_timeout_certificate>().round;
                                         }
-                                        if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round) {
+                                        // Late-QC fallback (grandparent QC, consecutive rounds) is
+                                        // valid too, unless we hold a QC for a SIBLING of the parent
+                                        // (another block at its height): voting past a certified
+                                        // block we know of is what Jolteon's rule forbids.
+                                        bool late_ok = false;
+                                        if (has_qc && qc_round + 2 == c.round) {
+                                            const auto held = db.get_block_qc(c.num - 1);
+                                            late_ok = !held || held->block_id == blk->previous;
+                                        }
+                                        if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round && !late_ok) {
                                             dlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
                                                  ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
                                             continue;
@@ -2398,7 +2407,22 @@ namespace graphene {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;
                     }
-                } else if (waiting_for_qc) {
+                }
+                // Late-QC fallback. `now` is whole seconds with a +250 ms look-ahead, so the
+                // lag check above lets us produce until ~750 ms after the slot, on 250 ms
+                // ticks; the last one lands ~500 ms in. There, rather than lose the slot,
+                // carry the grandparent QC head already carries; finality slips one slot.
+                fc::optional<graphene::protocol::block_qc_certificate> late_qc;
+                if (waiting_for_qc && !skip_tc &&
+                    now_fine - fc::time_point(scheduled_time) >= fc::milliseconds(400)) {
+                    late_qc = db.with_weak_read_lock([&]() {
+                        return db.grandparent_qc_for_next_block(scheduled_validator, own_round);
+                    });
+                    if (late_qc)
+                        ilog("Late QC: head #${h} still uncertified at the end of slot ${s}; ${w} carries QC of #${g} instead",
+                             ("h", db.head_block_num())("s", slot)("w", scheduled_validator)("g", late_qc->block_num));
+                }
+                if (waiting_for_qc && !skip_tc && !late_qc) {
                     ilog("Waiting for QC of head #${h} before producing slot ${s} as ${w}",
                          ("h", db.head_block_num())("s", slot)("w", scheduled_validator));
                     return block_validation_condition::not_time_yet;
@@ -2420,7 +2444,8 @@ namespace graphene {
                                 scheduled_validator,
                                 private_key_itr->second,
                                 _production_skip_flags,
-                                skip_tc
+                                skip_tc,
+                                late_qc
                         );
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_validator)("tx", block.transactions.size());
                         p2p().broadcast_block(block);

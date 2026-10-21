@@ -314,7 +314,10 @@ namespace graphene { namespace chain {
                     uint32_t skip,
                     // HF16: TC of the skipped round when building past a QC-less head
                     const fc::optional<protocol::block_timeout_certificate> &tc =
-                            fc::optional<protocol::block_timeout_certificate>()
+                            fc::optional<protocol::block_timeout_certificate>(),
+                    // HF16 late-QC fallback: certificate to carry instead of QC(head)
+                    const fc::optional<protocol::block_qc_certificate> &qc_override =
+                            fc::optional<protocol::block_qc_certificate>()
             );
 
             signed_block _generate_block(
@@ -324,7 +327,10 @@ namespace graphene { namespace chain {
                     uint32_t skip,
                     // HF16: TC of the skipped round when building past a QC-less head
                     const fc::optional<protocol::block_timeout_certificate> &tc =
-                            fc::optional<protocol::block_timeout_certificate>()
+                            fc::optional<protocol::block_timeout_certificate>(),
+                    // HF16 late-QC fallback: certificate to carry instead of QC(head)
+                    const fc::optional<protocol::block_qc_certificate> &qc_override =
+                            fc::optional<protocol::block_qc_certificate>()
             );
 
             void pop_block();
@@ -707,6 +713,13 @@ namespace graphene { namespace chain {
             /// Returns true when the vote is valid and new (worth relaying).
             bool push_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                    const account_name_type &validator, const signature_type &signature);
+
+            /// HF16 late-QC fallback. QC(head) has not formed in time, but head is of
+            /// round own_round-1 and certifies its own parent of round own_round-2:
+            /// then a block of own_round may carry that grandparent QC instead, so a
+            /// late quorum costs one slot of finality rather than the slot itself.
+            fc::optional<protocol::block_qc_certificate> grandparent_qc_for_next_block(
+                    const account_name_type &producer, uint32_t own_round) const;
 
             /// Keep a parent QC that arrived inside a validated block header, so a
             /// node that missed the votes still knows the height is certified

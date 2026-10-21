@@ -2714,11 +2714,12 @@ namespace graphene { namespace chain {
                 const account_name_type &validator_owner,
                 const fc::ecc::private_key &block_signing_private_key,
                 uint32_t skip /* = 0 */,
-                const fc::optional<protocol::block_timeout_certificate> &tc
+                const fc::optional<protocol::block_timeout_certificate> &tc,
+                const fc::optional<protocol::block_qc_certificate> &qc_override
         ) {
             signed_block result;
             try {
-                result = _generate_block(when, validator_owner, block_signing_private_key, skip, tc);
+                result = _generate_block(when, validator_owner, block_signing_private_key, skip, tc, qc_override);
             }
             FC_CAPTURE_AND_RETHROW((validator_owner))
             return result;
@@ -2730,7 +2731,8 @@ namespace graphene { namespace chain {
                 const account_name_type &validator_owner,
                 const fc::ecc::private_key &block_signing_private_key,
                 uint32_t skip,
-                const fc::optional<protocol::block_timeout_certificate> &tc
+                const fc::optional<protocol::block_timeout_certificate> &tc,
+                const fc::optional<protocol::block_qc_certificate> &qc_override
         ) {
             // Apply any deferred resize BEFORE the lockless reads below.
             // This is critical: get_slot_at_time(), get_validator(), find_account()
@@ -2926,9 +2928,11 @@ namespace graphene { namespace chain {
             // plugin waits for the QC before calling us; reaching here without
             // one is a bug, and the block would be rejected anyway.
             if (block_needs_parent_qc(validator_owner)) {
-                auto cert = parent_qc_for_next_block(validator_owner);
+                fc::optional<protocol::block_qc_certificate> cert = qc_override;
+                if (!cert) cert = parent_qc_for_next_block(validator_owner);
                 FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
                           ("n", head_block_num()));
+                FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
                 pending_block.extensions.insert(block_header_extensions(*cert));
                 if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
             }
@@ -7191,6 +7195,34 @@ namespace graphene { namespace chain {
             return result;
         }
 
+        fc::optional<protocol::block_qc_certificate> database::grandparent_qc_for_next_block(
+                const account_name_type &producer, uint32_t own_round) const {
+            fc::optional<protocol::block_qc_certificate> result;
+            if (!block_needs_parent_qc(producer) || head_block_num() < 2) return result;
+            const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            if (head_round + 1 != own_round) return result;          // rounds must run on, no gap
+            const auto head = fetch_block_by_number(head_block_num());
+            if (!head) return result;
+            const protocol::block_qc_certificate *gp = nullptr;
+            for (const auto &e : head->extensions)
+                if (e.which() == 3) gp = &e.get<protocol::block_qc_certificate>();
+            if (!gp || gp->block_id != head->previous || gp->round + 1 != head_round) return result;
+
+            protocol::block_qc_certificate cert;
+            cert.block_num = gp->block_num;
+            cert.block_id = gp->block_id;
+            cert.round = gp->round;
+            for (const auto &sv : gp->signatures) {
+                if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
+                    cert.signatures.emplace(sv.first, sv.second);
+            }
+            const auto &wso = get_validator_schedule_object();
+            if (cert.signatures.size() < block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT))
+                return result;
+            result = std::move(cert);
+            return result;
+        }
+
         uint32_t database::block_cert_round(const signed_block &b) {
             // Highest round a block proves: its parent QC, or a TC it carries
             // (a TC for round r outranks any QC below r). Validity is checked
@@ -7233,12 +7265,35 @@ namespace graphene { namespace chain {
                       ("n", next_block.block_num()));
             if (cert == nullptr) return;
 
-            FC_ASSERT(cert->block_id == next_block.previous && cert->block_num + 1 == next_block.block_num(),
-                      "Parent QC certifies #${qn} ${qid}, not the parent ${pid}",
-                      ("qn", cert->block_num)("qid", cert->block_id)("pid", next_block.previous));
-            // Round = slot of the certified block. The parent is head here.
-            FC_ASSERT(cert->round == head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL,
-                      "Parent QC round ${r} is not the parent's slot", ("r", cert->round));
+            const uint32_t parent_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            if (cert->block_id == next_block.previous) {
+                FC_ASSERT(cert->block_num + 1 == next_block.block_num(),
+                          "Parent QC certifies #${qn}, not the parent", ("qn", cert->block_num));
+                // Round = slot of the certified block. The parent is head here.
+                FC_ASSERT(cert->round == parent_round,
+                          "Parent QC round ${r} is not the parent's slot", ("r", cert->round));
+            } else {
+                // Late-QC fallback: QC of the grandparent, three consecutive rounds
+                // (grandparent r-2, parent r-1, this block r). The parent must itself
+                // carry this very QC, so nothing certified is skipped. Safety rests on
+                // one QC per round and the commit rule needing consecutive rounds.
+                const uint32_t own_round = next_block.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                FC_ASSERT(tc == nullptr, "The late-QC fallback carries no TC");
+                FC_ASSERT(parent_round + 1 == own_round && cert->round + 1 == parent_round &&
+                          cert->block_num + 2 == next_block.block_num(),
+                          "QC #${qn} round ${r} is neither the parent's nor a consecutive grandparent's",
+                          ("qn", cert->block_num)("r", cert->round));
+                const auto parent = fetch_block_by_id(next_block.previous);
+                FC_ASSERT(parent.valid(), "Parent of block #${n} not found", ("n", next_block.block_num()));
+                bool parent_carries = false;
+                for (const auto &e : parent->extensions)
+                    if (e.which() == 3) {
+                        const auto &pc = e.get<protocol::block_qc_certificate>();
+                        parent_carries = pc.block_id == cert->block_id && pc.round == cert->round;
+                    }
+                FC_ASSERT(parent_carries && parent->previous == cert->block_id,
+                          "Grandparent QC #${qn} is not the one the parent carries", ("qn", cert->block_num));
+            }
             const auto &wso = get_validator_schedule_object();
             const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
             FC_ASSERT(cert->signatures.size() <= scheduled, "Parent QC has more signatures than scheduled validators");
