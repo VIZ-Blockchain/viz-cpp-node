@@ -302,6 +302,29 @@ namespace graphene {
                     return true;
                 }
 
+                // HF16 timeout: `validator` gives up on `round` (head without a QC).
+                // Jolteon safety: after timing out round r we never vote for a block of
+                // round r, so the round is recorded (block id zero) BEFORE the timeout
+                // leaves, same as a vote. Having already voted for the block of round r
+                // does not forbid the timeout. False = do not send.
+                bool may_timeout(const std::string &validator, uint32_t round) {
+                    auto sent = timeout_sent_.find(validator);
+                    if (sent != timeout_sent_.end() && sent->second >= round) return false;   // once per round
+                    auto it = block_vote_state_.find(validator);
+                    if (it != block_vote_state_.end() && it->second.round > round) return false; // moved on
+                    if (it == block_vote_state_.end() || it->second.round < round) {
+                        const auto prev = it != block_vote_state_.end() ? fc::optional<vote_record>(it->second) : fc::optional<vote_record>();
+                        block_vote_state_[validator] = vote_record{round, 0, block_id_type()};
+                        if (!save_block_vote_state()) {
+                            if (prev) block_vote_state_[validator] = *prev; else block_vote_state_.erase(validator);
+                            return false;
+                        }
+                    }
+                    timeout_sent_[validator] = round;
+                    return true;
+                }
+                std::map<std::string, uint32_t> timeout_sent_;   // in memory: a restart may resend, which is harmless
+
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
                 uint32_t _fork_collision_timeout_blocks = 21;  // one full validator round (21 blocks = 63s)
@@ -1764,6 +1787,41 @@ namespace graphene {
                                     p2p().post_broadcast_block_post_validation(c.id, validator_account, vote_signature, c.round);
                                 }
                             }
+                        }
+                    }
+                }
+
+                // HF16 timeout votes. The head's round is r; the producer of r+1 needs
+                // QC(head). If the whole slot r+1 has passed and that QC still is not
+                // here, each of our scheduled validators times out round r, naming the
+                // round of the highest QC it holds (the one head carries). A quorum of
+                // timeouts forms TC(r), which lets the next producer skip the QC-less head.
+                // Sent once per round; a lost timeout is not resent (gossip relays it).
+                if (!emergency_active && db.has_hardfork(CHAIN_HARDFORK_16) && db.head_block_num() > 0) {
+                    const uint32_t head_num = db.head_block_num();
+                    const uint32_t head_round = db.head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                    const uint32_t now_round = now.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                    const auto head_qc = db.get_block_qc(head_num);
+                    const bool certified = head_qc && head_qc->block_id == db.head_block_id();
+                    if (!certified && now_round >= head_round + 2) {
+                        const auto head_block = db.fetch_block_by_number(head_num);
+                        const uint32_t high_qc_round = head_block ? graphene::chain::database::block_cert_round(*head_block) : 0;
+                        const auto &wso = db.get_validator_schedule_object();
+                        const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
+                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                            const std::string v = wso.current_shuffled_validators[i];
+                            if (!_validators.count(v)) continue;
+                            auto w_itr = by_name.find(v);
+                            if (w_itr == by_name.end() || w_itr->signing_key == graphene::protocol::public_key_type()) continue;
+                            auto key_itr = _private_keys.find(w_itr->signing_key);
+                            if (key_itr == _private_keys.end()) continue;
+                            if (high_qc_round >= head_round) continue;   // malformed head; push would refuse it
+                            if (!may_timeout(v, head_round)) continue;
+                            const auto sig = key_itr->second.sign_compact(
+                                    graphene::protocol::block_timeout_digest(db.get_chain_id(), head_round, high_qc_round));
+                            ilog("Timeout: ${w} gives up on round ${r} (head #${h} has no QC; high QC round ${q})",
+                                 ("w", v)("r", head_round)("h", head_num)("q", high_qc_round));
+                            p2p().post_broadcast_timeout_vote(head_round, high_qc_round, v, sig);
                         }
                     }
                 }
