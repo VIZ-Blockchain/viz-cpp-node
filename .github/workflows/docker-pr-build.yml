@@ -89,6 +89,19 @@ jobs:
           cache-from: type=gha,scope=pr-${{ github.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
 
+      # HF16 QC stand (#6618): 21-validator testnet image for the tc-netem bench. Only built
+      # for PRs from `pm`, where the QC work lives; other PRs skip it.
+      - uses: docker/build-push-action@v7
+        if: github.head_ref == 'pm'
+        with:
+          context: .
+          file: ./share/vizd/docker/Dockerfile-testnet
+          build-args: TESTNET_VALIDATORS=21
+          push: true
+          tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}-testnet21
+          cache-from: type=gha,scope=pr-testnet21
+          cache-to:   type=gha,scope=pr-testnet21,mode=max
+
   # The Docker build above proves the top of the supported Boost range (1.91,
   # from the vizblockchain/vizd:boost-base base image). The tree is also supposed to build
   # against the 1.83 that Ubuntu 24.04 ships, and nothing else covers that end.
