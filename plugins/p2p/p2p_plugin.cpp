@@ -112,6 +112,16 @@ public:
             auto blocks = fdb.fetch_block_by_number(block_num);
             if (!blocks.empty()) return blocks.front()->data;
         } catch (...) {}
+        // Non-DLT node (full block_log, e.g. a chain started from genesis): irreversible blocks
+        // leave fork_db and live only in block_log. get_dlt_earliest_block() advertises 0 for
+        // such a node, so peers ask it from #1 - without this fallback it answered with nothing
+        // for #1..LIB and new peers could never link (21-validator QC stand, #6741).
+        if (!db._dlt_mode) {
+            try {
+                auto block = db.get_block_log().read_block_by_num(block_num);
+                if (block.valid()) return block;
+            } catch (...) {}
+        }
         return {};
     }
 
@@ -137,6 +147,15 @@ public:
                 return true;
             }
         } catch (...) {}
+        if (!db._dlt_mode) {
+            try {
+                auto block = db.get_block_log().read_block_by_num(block_num);
+                if (block.valid()) {
+                    id_out = block->id();
+                    return true;
+                }
+            } catch (...) {}
+        }
         return false;
     }
 
