@@ -13,6 +13,7 @@
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/validator_objects.hpp>
+#include <graphene/protocol/block_vote.hpp>
 #include <graphene/chain/pm_objects.hpp>
 #include <graphene/protocol/pm_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -31,7 +32,25 @@ fc::ecc::private_key key_for(const genesis_params& gp, const account_name_type& 
     return (v == gp.initiator_name) ? gp.initiator_key : gp.genesis_witness_key;
 }
 
+// HF16 requires a QC of head before the next block. The harness has no p2p,
+// so every scheduled validator (initiator + genesis) votes for head directly;
+// with two scheduled the quorum is two.
+void vote_for_head(simulated_node& n, const genesis_params& gp) {
+    auto& db = n.db();
+    if (!db.has_hardfork(CHAIN_HARDFORK_16) || db.head_block_num() == 0 || db.get_block_qc(db.head_block_num()))
+        return;
+    const auto head = db.fetch_block_by_number(db.head_block_num());
+    const uint32_t round = head->timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+    const auto digest = graphene::protocol::block_vote_digest(db.get_chain_id(), head->block_num(), head->id(), round);
+    const auto& wso = db.get_validator_schedule_object();
+    for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+        const auto v = wso.current_shuffled_validators[i];
+        db.push_block_vote(head->block_num(), head->id(), round, v, key_for(gp, v).sign_compact(digest));
+    }
+}
+
 void produce(simulated_node& n, const genesis_params& gp, fc::time_point_sec& when) {
+    vote_for_head(n, gp);
     when += fc::seconds(CHAIN_BLOCK_INTERVAL);
     const auto v = next_validator(n);
     n.produce_block(v, key_for(gp, v), when);
