@@ -692,6 +692,19 @@ namespace graphene { namespace chain {
             bool verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
                                    const account_name_type &validator, const signature_type &signature) const;
 
+            /// Consensus check of one timeout vote: validator is scheduled, has a
+            /// signing key, and the signature over block_timeout_digest recovers to it.
+            bool verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                     const account_name_type &validator, const signature_type &signature) const;
+
+            /// Verify and tally a timeout vote (validator gave up on `round`).
+            /// Returns true when the vote is valid and new (worth relaying).
+            bool push_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                   const account_name_type &validator, const signature_type &signature);
+
+            /// The timeout certificate formed for a round, if any (node-local view).
+            fc::optional<protocol::block_timeout_certificate> get_timeout_cert(uint32_t round) const;
+
             /// HF16: does a block by `producer` on top of head need the parent's QC?
             bool block_needs_parent_qc(const account_name_type &producer) const;
 
@@ -788,6 +801,9 @@ namespace graphene { namespace chain {
             // per round, so a second id in the same round is equivocation.
             std::map<std::pair<account_name_type, uint32_t>, std::pair<uint32_t, block_id_type>> _block_vote_by_validator;
             std::map<uint32_t, block_qc> _block_qcs;
+            // HF16 timeouts: round -> (validator -> vote); one vote per (validator, round)
+            std::map<uint32_t, std::map<account_name_type, protocol::block_timeout_vote>> _timeout_votes;
+            std::map<uint32_t, protocol::block_timeout_certificate> _timeout_certs;
             mutable std::mutex _block_votes_mutex;
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];

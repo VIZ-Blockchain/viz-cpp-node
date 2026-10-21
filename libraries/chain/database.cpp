@@ -7060,6 +7060,76 @@ namespace graphene { namespace chain {
             }
         }
 
+        bool database::verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                           const account_name_type &validator, const signature_type &signature) const {
+            // A QC seen while timing out round r is from an earlier round.
+            if (high_qc_round >= round) return false;
+            const auto &wso = get_validator_schedule_object();
+            bool scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
+            }
+            if (!scheduled) return false;
+
+            const auto *v = find_validator(validator);
+            if (!v || v->signing_key == public_key_type()) return false;
+
+            const auto digest = protocol::block_timeout_digest(get_chain_id(), round, high_qc_round);
+            try {
+                return public_key_type(fc::ecc::public_key(signature, digest)) == v->signing_key;
+            } catch (const fc::exception &) {
+                return false;                                                 // unrecoverable signature
+            }
+        }
+
+        bool database::push_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                         const account_name_type &validator, const signature_type &signature) {
+            // Same window as block votes: bounded memory for valid-but-absurd rounds.
+            static constexpr uint32_t MAX_VOTE_AHEAD_ROUNDS = 64;
+            static constexpr uint32_t MAX_VOTE_ROUND_BEHIND = 1200;     // ~1 h at 3 s
+            const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
+            if (round > head_round + MAX_VOTE_AHEAD_ROUNDS) return false;
+
+            if (!verify_timeout_vote(round, high_qc_round, validator, signature)) return false;
+
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+
+            const uint32_t floor_round = head_round > MAX_VOTE_ROUND_BEHIND ? head_round - MAX_VOTE_ROUND_BEHIND : 0;
+            for (auto it = _timeout_votes.begin(); it != _timeout_votes.end() && it->first < floor_round; )
+                it = _timeout_votes.erase(it);
+            for (auto it = _timeout_certs.begin(); it != _timeout_certs.end() && it->first < floor_round; )
+                it = _timeout_certs.erase(it);
+
+            // One timeout vote per (validator, round); a repeat (even with another
+            // high_qc_round) is ignored, the first one stands.
+            auto &votes = _timeout_votes[round];
+            if (votes.count(validator)) return false;
+            protocol::block_timeout_vote tv;
+            tv.high_qc_round = high_qc_round;
+            tv.signature = signature;
+            votes.emplace(validator, tv);
+
+            if (votes.size() >= quorum && _timeout_certs.find(round) == _timeout_certs.end()) {
+                protocol::block_timeout_certificate tc;
+                tc.round = round;
+                tc.votes.insert(votes.begin(), votes.end());
+                ilog("TC formed for round ${r}: ${k}/${q} timeout votes", ("r", round)("k", votes.size())("q", quorum));
+                _timeout_certs.emplace(round, std::move(tc));
+            }
+            return true;
+        }
+
+        fc::optional<protocol::block_timeout_certificate> database::get_timeout_cert(uint32_t round) const {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            auto it = _timeout_certs.find(round);
+            if (it == _timeout_certs.end()) return {};
+            return it->second;
+        }
+
         bool database::block_needs_parent_qc(const account_name_type &producer) const {
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             const auto &dgp = get_dynamic_global_properties();
