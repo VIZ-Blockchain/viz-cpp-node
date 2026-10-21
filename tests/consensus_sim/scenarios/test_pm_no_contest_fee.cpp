@@ -40,7 +40,7 @@ void vote_for_head(simulated_node& n, const genesis_params& gp) {
     if (!db.has_hardfork(CHAIN_HARDFORK_16) || db.head_block_num() == 0 || db.get_block_qc(db.head_block_num()))
         return;
     const auto head = db.fetch_block_by_number(db.head_block_num());
-    const uint32_t round = head->timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+    const uint32_t round = db.round_of(head->timestamp);
     const auto digest = graphene::protocol::block_vote_digest(db.get_chain_id(), head->block_num(), head->id(), round);
     const auto& wso = db.get_validator_schedule_object();
     for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
