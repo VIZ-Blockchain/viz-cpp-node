@@ -318,8 +318,24 @@ namespace graphene { namespace protocol {
             account_name_type stakeholder;
             asset shares;   ///< SHARES credited to stakeholder
         };
+
+        // HF16: a block carried proof that `validator` voted for two blocks in
+        // `round`; the validator is penalised like for a missed block.
+        struct validator_equivocation_operation : public virtual_operation {
+            validator_equivocation_operation() {}
+
+            validator_equivocation_operation(const account_name_type& v, uint32_t r,
+                                             const block_id_type& a, const block_id_type& b)
+                : validator(v), round(r), first_block_id(a), second_block_id(b) {}
+
+            account_name_type validator;
+            uint32_t round = 0;
+            block_id_type first_block_id;
+            block_id_type second_block_id;
+        };
 } } //graphene::protocol
 
+FC_REFLECT((graphene::protocol::validator_equivocation_operation), (validator)(round)(first_block_id)(second_block_id))
 FC_REFLECT((graphene::protocol::author_reward_operation), (author)(permlink)(token_payout)(vesting_payout))
 FC_REFLECT((graphene::protocol::curation_reward_operation), (curator)(reward)(content_author)(content_permlink))
 FC_REFLECT((graphene::protocol::content_reward_operation), (author)(permlink)(payout))

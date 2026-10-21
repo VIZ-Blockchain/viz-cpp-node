@@ -2935,6 +2935,28 @@ namespace graphene { namespace chain {
                 FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
                 pending_block.extensions.insert(block_header_extensions(*cert));
                 if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
+
+                // Double-vote proofs: newest round per validator that the chain has
+                // not punished yet; a few per block keeps headers small.
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                const uint32_t own_round = when.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                std::map<account_name_type, const protocol::block_equivocation_proof *> pick;
+                for (auto it = _pending_equivocations.begin(); it != _pending_equivocations.end(); ) {
+                    const auto &p = it->second;
+                    const auto *v = find_validator(p.validator);
+                    if (!v || p.round <= v->last_equivocation_round || p.round + 1200 < own_round) {
+                        it = _pending_equivocations.erase(it);          // punished already or too old
+                        continue;
+                    }
+                    auto &slot = pick[p.validator];
+                    if (!slot || slot->round < p.round) slot = &p;
+                    ++it;
+                }
+                size_t n = 0;
+                for (const auto &kv : pick) {
+                    if (n++ >= 5) break;
+                    pending_block.extensions.insert(block_header_extensions(*kv.second));
+                }
             }
             FC_ASSERT(!tc || block_needs_parent_qc(validator_owner),
                       "A TC goes only next to a parent QC");
@@ -5983,6 +6005,7 @@ namespace graphene { namespace chain {
                 // HF16: must run before current_validator is set to this block's
                 // producer below — the handoff rule compares against the parent's.
                 validate_block_qc(next_block, skip);
+                apply_equivocation_proofs(next_block, skip);
                 for (const auto &e : next_block.extensions) {
                     if (e.which() == 3) remember_block_qc(e.get<protocol::block_qc_certificate>());
                 }
@@ -6141,6 +6164,7 @@ namespace graphene { namespace chain {
                     }
                     case 3: // block_qc_certificate — verified in validate_block_qc()
                     case 4: // block_timeout_certificate — verified in validate_block_qc()
+                    case 5: // block_equivocation_proof — verified in apply_equivocation_proofs()
                         break;
                     default:
                         FC_ASSERT(false, "Unknown extension in block header");
@@ -7136,6 +7160,53 @@ namespace graphene { namespace chain {
             return true;
         }
 
+        void database::apply_equivocation_proofs(const signed_block &b, uint32_t skip) {
+            std::vector<const protocol::block_equivocation_proof *> proofs;
+            for (const auto &e : b.extensions)
+                if (e.which() == 5) proofs.push_back(&e.get<protocol::block_equivocation_proof>());
+            if (proofs.empty()) return;
+            FC_ASSERT(has_hardfork(CHAIN_HARDFORK_16), "Double-vote proof in block #${n} before HF16", ("n", b.block_num()));
+            FC_ASSERT(proofs.size() <= 5, "Block #${n} carries ${k} double-vote proofs, at most 5",
+                      ("n", b.block_num())("k", proofs.size()));
+
+            const uint32_t own_round = b.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            std::set<account_name_type> seen;
+            const auto &props = get_validator_schedule_object().median_props;
+            for (const auto *p : proofs) {
+                FC_ASSERT(seen.insert(p->validator).second, "Two double-vote proofs for ${v} in one block", ("v", p->validator));
+                FC_ASSERT(p->first.block_id != p->second.block_id, "Double-vote proof for ${v}: same block twice", ("v", p->validator));
+                FC_ASSERT(p->round < own_round && p->round + 1200 >= own_round,
+                          "Double-vote proof for ${v}: round ${r} outside the window", ("v", p->validator)("r", p->round));
+                const auto &w = get_validator(p->validator);
+                FC_ASSERT(p->round > w.last_equivocation_round,
+                          "Double vote of ${v} in round ${r} is already punished", ("v", p->validator)("r", p->round));
+                if (!(skip & skip_validator_signature)) {
+                    FC_ASSERT(verify_block_vote(p->first.block_num, p->first.block_id, p->round, p->validator, p->first.signature) &&
+                              verify_block_vote(p->second.block_num, p->second.block_id, p->round, p->validator, p->second.signature),
+                              "Double-vote proof for ${v} does not verify", ("v", p->validator));
+                }
+
+                // Same punishment as a missed block (owner 20.10): penalty for the
+                // configured duration and one more total_missed.
+                modify(w, [&](validator_object &v) {
+                    v.last_equivocation_round = p->round;
+                    v.total_missed++;
+                    v.penalty_percent += props.validator_miss_penalty_percent;
+                    v.counted_votes = (fc::uint128_t(v.votes) - (fc::uint128_t(v.votes) *
+                            std::min(v.penalty_percent, uint32_t(CHAIN_100_PERCENT)) / CHAIN_100_PERCENT)).to_uint64();
+                });
+                create<validator_penalty_expire_object>([&](validator_penalty_expire_object &wpe) {
+                    wpe.validator = p->validator;
+                    wpe.penalty_percent = props.validator_miss_penalty_percent;
+                    wpe.expires = b.timestamp + fc::seconds(props.validator_miss_penalty_duration);
+                });
+                push_virtual_operation(protocol::validator_equivocation_operation(
+                        p->validator, p->round, p->first.block_id, p->second.block_id));
+                wlog("Validator ${v} punished for a double vote in round ${r} (block #${n})",
+                     ("v", p->validator)("r", p->round)("n", b.block_num()));
+            }
+        }
+
         void database::remember_block_qc(const protocol::block_qc_certificate &cert) {
             std::lock_guard<std::mutex> guard(_block_votes_mutex);
             if (_block_qcs.find(cert.block_num) != _block_qcs.end()) return;   // tallied (or seen) already
@@ -7368,7 +7439,8 @@ namespace graphene { namespace chain {
             for (auto it = _block_vote_tallies.begin(); it != _block_vote_tallies.end() && std::get<0>(it->first) <= lib; )
                 it = _block_vote_tallies.erase(it);
             for (auto it = _block_vote_by_validator.begin(); it != _block_vote_by_validator.end(); ) {
-                if (it->second.first <= lib) it = _block_vote_by_validator.erase(it); else ++it;
+                if (it->second.first <= lib) { _block_vote_sigs.erase(it->first); it = _block_vote_by_validator.erase(it); }
+                else ++it;
             }
             // Keep certificates a little below LIB: the next block header (and
             // a lagging peer) may still need the parent's QC.
@@ -7385,10 +7457,23 @@ namespace graphene { namespace chain {
                     wlog("Equivocation: validator ${v} voted for two blocks in round ${r}: #${an} ${a} and #${n} ${b}",
                          ("v", validator)("r", round)("an", prev->second.first)("a", prev->second.second)
                          ("n", block_num)("b", block_id));
+                    // Both signatures verified against the same key: keep the pair as
+                    // a proof for the next block we produce.
+                    auto sig = _block_vote_sigs.find(vkey);
+                    if (sig != _block_vote_sigs.end() && _pending_equivocations.size() < 256 &&
+                        !_pending_equivocations.count(vkey)) {
+                        protocol::block_equivocation_proof proof;
+                        proof.validator = validator;
+                        proof.round = round;
+                        proof.first = protocol::block_vote_evidence{prev->second.first, prev->second.second, sig->second};
+                        proof.second = protocol::block_vote_evidence{block_num, block_id, signature};
+                        _pending_equivocations.emplace(vkey, std::move(proof));
+                    }
                 }
                 return false;
             }
             _block_vote_by_validator.emplace(vkey, std::make_pair(block_num, block_id));
+            _block_vote_sigs.emplace(vkey, signature);
 
             auto &tally = _block_vote_tallies[std::make_tuple(block_num, round, block_id)];
             if (tally.votes.empty()) tally.first_seen = fc::time_point::now();

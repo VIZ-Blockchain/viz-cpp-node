@@ -726,6 +726,10 @@ namespace graphene { namespace chain {
             /// (LIB, and a producer building past a QC-less child of it).
             void remember_block_qc(const protocol::block_qc_certificate &cert);
 
+            /// HF16: check double-vote proofs a block carries and punish each validator
+            /// like for a missed block (once per validator and round, newest first).
+            void apply_equivocation_proofs(const signed_block &b, uint32_t skip);
+
             /// The timeout certificate formed for a round, if any (node-local view).
             fc::optional<protocol::block_timeout_certificate> get_timeout_cert(uint32_t round) const;
 
@@ -824,6 +828,10 @@ namespace graphene { namespace chain {
             // (validator, round) -> (height, id) it voted for. Round = slot: one vote
             // per round, so a second id in the same round is equivocation.
             std::map<std::pair<account_name_type, uint32_t>, std::pair<uint32_t, block_id_type>> _block_vote_by_validator;
+            // Signature of each counted vote (same key), kept to build double-vote proofs
+            std::map<std::pair<account_name_type, uint32_t>, signature_type> _block_vote_sigs;
+            // Double votes seen and not yet carried in a block (one per validator, round)
+            std::map<std::pair<account_name_type, uint32_t>, protocol::block_equivocation_proof> _pending_equivocations;
             std::map<uint32_t, block_qc> _block_qcs;
             // HF16 timeouts: round -> (validator -> vote); one vote per (validator, round)
             std::map<uint32_t, std::map<account_name_type, protocol::block_timeout_vote>> _timeout_votes;

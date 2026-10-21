@@ -308,6 +308,9 @@ inline uint32_t import_validators(
                 obj.sharing_rate = static_cast<uint16_t>(v["sharing_rate"].as_uint64());
             if (v.get_object().contains("pending_stakeholder_reward"))
                 obj.pending_stakeholder_reward = v["pending_stakeholder_reward"].as<share_type>();
+            // HF16 QC: default 0 for older snapshots
+            if (v.get_object().contains("last_equivocation_round"))
+                obj.last_equivocation_round = static_cast<uint32_t>(v["last_equivocation_round"].as_uint64());
         });
         ++count;
     }

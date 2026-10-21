@@ -157,7 +157,9 @@ namespace graphene { namespace protocol {
                 // #442/#681=D: LP income paid at settlement -> LP's own history (virtual)
                 pm_lp_payout_operation,
                 // HF15 agent access (Onix): account-level delegation of an explicit operation list
-                set_agent_permission_operation
+                set_agent_permission_operation,
+                // HF16 QC: double vote proven in a block header (virtual)
+                validator_equivocation_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,

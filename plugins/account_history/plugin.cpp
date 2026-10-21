@@ -532,6 +532,10 @@ if( options.count(name) ) { \
             impacted.insert(op.stakeholder);
         }
 
+        void operator()(const validator_equivocation_operation& op) {
+            impacted.insert(op.validator);
+        }
+
         // --- Prediction markets (HF14, Onix) ---
         // Signed ops: the generic handler already records the signer through the
         // required authorities, so these overloads add the *other* material
