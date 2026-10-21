@@ -2512,15 +2512,16 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
 void dlt_p2p_node::broadcast_block_post_validation(
     const block_id_type& block_id,
     const std::string& witness_account,
-    const signature_type& validator_signature) {
-    // The signature is a block vote (block_vote_digest, round 0) made by the
-    // validator plugin. Until the DLT redesign is fully QC-aware it travels as
+    const signature_type& validator_signature,
+    uint32_t round) {
+    // The signature is a block vote (block_vote_digest; round = slot of the
+    // block) made by the validator plugin. Until the DLT redesign is fully QC-aware it travels as
     // dlt_block_vote_message; before this the call sent a fork_status and the
     // signature never left the node, so LIB fell back to the producer rule.
     dlt_block_vote_message msg;
     msg.block_num = graphene::protocol::block_header::num_from_id(block_id);
     msg.block_id = block_id;
-    msg.round = 0;
+    msg.round = round;
     msg.validator = witness_account;
     msg.signature = validator_signature;
     process_block_vote(msg, INVALID_PEER_ID);

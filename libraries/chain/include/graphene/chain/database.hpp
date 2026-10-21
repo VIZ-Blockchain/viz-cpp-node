@@ -780,8 +780,9 @@ namespace graphene { namespace chain {
             };
             // (block_num, round, block_id) -> votes for exactly that triple
             std::map<std::tuple<uint32_t, uint32_t, block_id_type>, block_vote_tally> _block_vote_tallies;
-            // (validator, block_num, round) -> the id it voted for (equivocation check)
-            std::map<std::tuple<account_name_type, uint32_t, uint32_t>, block_id_type> _block_vote_by_validator;
+            // (validator, round) -> (height, id) it voted for. Round = slot: one vote
+            // per round, so a second id in the same round is equivocation.
+            std::map<std::pair<account_name_type, uint32_t>, std::pair<uint32_t, block_id_type>> _block_vote_by_validator;
             std::map<uint32_t, block_qc> _block_qcs;
             mutable std::mutex _block_votes_mutex;
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];

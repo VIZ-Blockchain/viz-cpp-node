@@ -298,7 +298,7 @@ struct block_post_validation_message {
 ### 约束条件
 
 - 只有**当前打乱排列的调度**中的验证者才计入 2/3 阈值；调度外的验证者被跳过。
-- **每个高度只签一次。** 验证者绝不会在同一高度为两个不同的 block id 签署后验证：验证者插件把 LIB 以上每个高度已签的 id 记录在 `<data-dir>/post-validation-signed.txt`（重启后保留），拒绝在该高度签署其他 id，并在日志中记录 `Not signing post-validation of …`。否则在分叉切换后，被弃区块的签名已经发出，同一高度的两个区块可能都达到 2/3，导致不同节点把 LIB 推进到不同区块。重复广播同一 id 仍然允许。
+- **每轮只投一票（Jolteon 安全规则）。** 验证者只在 *r* 高于其已投票的最高轮次时，才为第 *r* 轮的区块投票（轮次 = 区块的时隙，`timestamp / CHAIN_BLOCK_INTERVAL`）。验证者插件把每个验证者的该轮次保存在 `<data-dir>/block-vote-round.txt`，在投票发出**之前**写入（无法持久化轮次的投票不会发送），并在同一轮出现另一个区块时记录日志 `Not voting for … already voted for … in round …`。与“每个高度只签一次”不同，验证者可以在更晚的轮次为同一高度的另一个区块投票——正是这一点让分裂的投票得以解决而不是卡住。同一轮中两个冲突的法定人数证书需要有验证者投票两次；节点会把这类投票记录为 `Equivocation: …`。重复广播同一投票仍然允许。
 - 在**紧急共识**期间（`emergency_consensus_active = true`），`check_block_post_validation_chain()` 立即返回——LIB 仅通过经典路径推进，以避免恢复过程死锁。
 - 确认列表上限为 **20 条**（`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`）。低于当前 LIB 的条目在每个区块后删除。
 

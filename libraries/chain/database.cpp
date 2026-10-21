@@ -7102,7 +7102,9 @@ namespace graphene { namespace chain {
             FC_ASSERT(cert->block_id == next_block.previous && cert->block_num + 1 == next_block.block_num(),
                       "Parent QC certifies #${qn} ${qid}, not the parent ${pid}",
                       ("qn", cert->block_num)("qid", cert->block_id)("pid", next_block.previous));
-            FC_ASSERT(cert->round <= 64, "Parent QC round out of range");
+            // Round = slot of the certified block. The parent is head here.
+            FC_ASSERT(cert->round == head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL,
+                      "Parent QC round ${r} is not the parent's slot", ("r", cert->round));
             const auto &wso = get_validator_schedule_object();
             const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
             FC_ASSERT(cert->signatures.size() <= scheduled, "Parent QC has more signatures than scheduled validators");
@@ -7121,12 +7123,16 @@ namespace graphene { namespace chain {
             // Bounds first: a scheduled validator's valid signature over an
             // absurd (height, round) must still not buy unbounded memory.
             static constexpr uint32_t MAX_VOTE_AHEAD_BLOCKS = 64;
-            static constexpr uint32_t MAX_VOTE_ROUND = 64;
+            // Round = slot (block timestamp / interval). Accept a window around
+            // head: far-past rounds are below LIB anyway, far-future ones are junk.
+            static constexpr uint32_t MAX_VOTE_ROUND_BEHIND = 1200;     // ~1 h at 3 s
             if (block_num == 0 || block_id == block_id_type()) return false;
             if (protocol::block_header::num_from_id(block_id) != block_num) return false;
-            if (round > MAX_VOTE_ROUND) return false;
 
             const auto &dpo = get_dynamic_global_properties();
+            const uint32_t head_round = head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
+            if (round > head_round + MAX_VOTE_AHEAD_BLOCKS) return false;
             const uint32_t lib = dpo.last_irreversible_block_num;
             if (block_num <= lib) return false;                               // already final
             if (block_num > dpo.head_block_number + MAX_VOTE_AHEAD_BLOCKS) return false;
@@ -7142,26 +7148,27 @@ namespace graphene { namespace chain {
             for (auto it = _block_vote_tallies.begin(); it != _block_vote_tallies.end() && std::get<0>(it->first) <= lib; )
                 it = _block_vote_tallies.erase(it);
             for (auto it = _block_vote_by_validator.begin(); it != _block_vote_by_validator.end(); ) {
-                if (std::get<1>(it->first) <= lib) it = _block_vote_by_validator.erase(it); else ++it;
+                if (it->second.first <= lib) it = _block_vote_by_validator.erase(it); else ++it;
             }
             // Keep certificates a little below LIB: the next block header (and
             // a lagging peer) may still need the parent's QC.
             for (auto it = _block_qcs.begin(); it != _block_qcs.end() && it->first + MAX_VOTE_AHEAD_BLOCKS <= lib; )
                 it = _block_qcs.erase(it);
 
-            // One vote per (validator, height, round). A second, different id is
-            // equivocation: never counted, logged as evidence (both signatures
-            // verify against the same signing key).
-            const auto vkey = std::make_tuple(validator, block_num, round);
+            // One vote per (validator, round). A second, different id in the same
+            // round is equivocation: never counted, logged as evidence (both
+            // signatures verify against the same signing key).
+            const auto vkey = std::make_pair(validator, round);
             auto prev = _block_vote_by_validator.find(vkey);
             if (prev != _block_vote_by_validator.end()) {
-                if (prev->second != block_id) {
-                    wlog("Equivocation: validator ${v} voted for two blocks at #${n} round ${r}: ${a} and ${b}",
-                         ("v", validator)("n", block_num)("r", round)("a", prev->second)("b", block_id));
+                if (prev->second.second != block_id) {
+                    wlog("Equivocation: validator ${v} voted for two blocks in round ${r}: #${an} ${a} and #${n} ${b}",
+                         ("v", validator)("r", round)("an", prev->second.first)("a", prev->second.second)
+                         ("n", block_num)("b", block_id));
                 }
                 return false;
             }
-            _block_vote_by_validator.emplace(vkey, block_id);
+            _block_vote_by_validator.emplace(vkey, std::make_pair(block_num, block_id));
 
             auto &tally = _block_vote_tallies[std::make_tuple(block_num, round, block_id)];
             if (tally.votes.empty()) tally.first_seen = fc::time_point::now();

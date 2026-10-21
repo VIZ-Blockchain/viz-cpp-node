@@ -215,85 +215,90 @@ namespace graphene {
                 fc::time_point last_block_post_validation_time;
 
                 // ── one post-validation signature per height ──────────────────────────────
-                // A validator must never sign two different block ids at the same height:
-                // after a fork switch the signature for the dropped block has already left
-                // the node, and if enough validators sign both blocks of a height, both can
-                // reach the 2/3 threshold and different nodes advance LIB onto different
-                // blocks. Kept per validator for heights above LIB and persisted, so a
-                // restart does not forget what was signed. Re-signing the SAME id (the tick
-                // re-broadcasts the list every 250 ms) stays allowed.
-                std::string post_validation_signed_path_;
-                std::map<std::string, std::map<uint32_t, block_id_type>> post_validation_signed_;
-                std::set<std::pair<std::string, uint32_t>> post_validation_refused_logged_;
+                // Block-vote safety rule (Jolteon): a validator votes for a block of round r
+                // (round = slot of the block) only when r is above the highest round it has
+                // voted in. One vote per round follows, and so does "never vote for an older
+                // round after a newer one" -- the property that makes two conflicting QCs
+                // need an equivocating quorum. Unlike the earlier one-signature-per-height
+                // guard it lets a validator vote for a different block at the same height in
+                // a LATER round, which is what lets a split vote resolve instead of stalling.
+                // Persisted, so a restart does not forget the round. Re-signing the SAME
+                // block of the highest round (the tick re-broadcasts every 250 ms) is allowed.
+                struct vote_record { uint32_t round = 0; uint32_t num = 0; block_id_type id; };
+                std::string block_vote_state_path_;
+                std::map<std::string, vote_record> block_vote_state_;
+                std::set<std::pair<std::string, uint32_t>> block_vote_refused_logged_;
 
-                void load_post_validation_signed() {
-                    if (post_validation_signed_path_.empty()) return;
-                    std::ifstream in(post_validation_signed_path_);
+                void load_block_vote_state() {
+                    if (block_vote_state_path_.empty()) return;
+                    std::ifstream in(block_vote_state_path_);
                     std::string name, id;
-                    uint32_t num = 0;
+                    uint32_t round = 0, num = 0;
                     size_t n = 0;
-                    // Format: "<validator> <block_num> <block_id>" per line.
-                    while (in >> name >> num >> id) {
+                    // Format: "<validator> <round> <block_num> <block_id>" per line.
+                    while (in >> name >> round >> num >> id) {
                         try {
-                            post_validation_signed_[name][num] = block_id_type(id);
+                            block_vote_state_[name] = vote_record{round, num, block_id_type(id)};
                             ++n;
                         } catch (...) {
-                            wlog("Skipping malformed post-validation record for ${w} at #${n}", ("w", name)("n", num));
+                            wlog("Skipping malformed block-vote record for ${w} at round ${r}", ("w", name)("r", round));
                         }
                     }
-                    if (n) ilog("Restored ${n} post-validation signature record(s) from ${p}",
-                                ("n", n)("p", post_validation_signed_path_));
+                    if (n) ilog("Restored ${n} block-vote round record(s) from ${p}", ("n", n)("p", block_vote_state_path_));
                 }
 
-                void save_post_validation_signed() {
-                    if (post_validation_signed_path_.empty()) return;
-                    const std::string tmp = post_validation_signed_path_ + ".tmp";
+                bool save_block_vote_state() {
+                    if (block_vote_state_path_.empty()) return true;
+                    const std::string tmp = block_vote_state_path_ + ".tmp";
                     {
                         std::ofstream out(tmp, std::ios::trunc);
                         if (!out) {
-                            elog("Cannot write ${p}; post-validation records live in memory only",
-                                 ("p", post_validation_signed_path_));
-                            return;
+                            elog("Cannot write ${p}; not voting until it is writable", ("p", block_vote_state_path_));
+                            return false;
                         }
-                        for (const auto &v : post_validation_signed_)
-                            for (const auto &h : v.second)
-                                out << v.first << ' ' << h.first << ' ' << h.second.str() << '\n';
+                        for (const auto &v : block_vote_state_)
+                            out << v.first << ' ' << v.second.round << ' ' << v.second.num << ' ' << v.second.id.str() << '\n';
                         out.flush();
                         if (!out) {
-                            elog("Failed writing ${p}", ("p", post_validation_signed_path_));
+                            elog("Failed writing ${p}", ("p", block_vote_state_path_));
                             std::remove(tmp.c_str());
-                            return;
+                            return false;
                         }
                     }
-                    if (std::rename(tmp.c_str(), post_validation_signed_path_.c_str()) != 0) {
-                        elog("Failed replacing ${p}", ("p", post_validation_signed_path_));
+                    if (std::rename(tmp.c_str(), block_vote_state_path_.c_str()) != 0) {
+                        elog("Failed replacing ${p}", ("p", block_vote_state_path_));
                         std::remove(tmp.c_str());
-                    }
-                }
-
-                // True when `validator` may sign `id` at `num`: nothing signed at that height
-                // yet (the record is written before the signature leaves) or the same id.
-                bool may_sign_post_validation(const std::string &validator, uint32_t num,
-                                              const block_id_type &id, uint32_t lib) {
-                    auto &heights = post_validation_signed_[validator];
-                    bool pruned = false;
-                    while (!heights.empty() && heights.begin()->first <= lib) {
-                        heights.erase(heights.begin());
-                        pruned = true;
-                    }
-                    for (auto it = post_validation_refused_logged_.begin(); it != post_validation_refused_logged_.end();)
-                        it = it->second <= lib ? post_validation_refused_logged_.erase(it) : std::next(it);
-                    auto h = heights.find(num);
-                    if (h != heights.end()) {
-                        if (pruned) save_post_validation_signed();
-                        if (h->second == id) return true;
-                        if (post_validation_refused_logged_.insert({validator, num}).second)
-                            wlog("Not signing post-validation of ${id} at #${n} for ${w}: ${old} was already signed at this height",
-                                 ("id", id)("n", num)("w", validator)("old", h->second));
                         return false;
                     }
-                    heights[num] = id;
-                    save_post_validation_signed();
+                    return true;
+                }
+
+                // True when `validator` may vote for `id` (height `num`) in `round`. The
+                // record is written BEFORE the signature leaves: a vote whose round could
+                // not be persisted is not sent, or a restart could vote that round again.
+                bool may_vote(const std::string &validator, uint32_t round, uint32_t num,
+                              const block_id_type &id, uint32_t lib) {
+                    for (auto it = block_vote_refused_logged_.begin(); it != block_vote_refused_logged_.end();)
+                        it = it->second <= lib ? block_vote_refused_logged_.erase(it) : std::next(it);
+                    auto it = block_vote_state_.find(validator);
+                    if (it != block_vote_state_.end()) {
+                        const auto &last = it->second;
+                        if (round == last.round && id == last.id) return true;
+                        if (round <= last.round) {
+                            // Older rounds are routinely skipped (the list carries recent
+                            // blocks); only a different block in the SAME round is news.
+                            if (round == last.round && block_vote_refused_logged_.insert({validator, num}).second)
+                                wlog("Not voting for ${id} at #${n} for ${w}: already voted for ${old} in round ${r}",
+                                     ("id", id)("n", num)("w", validator)("old", last.id)("r", round));
+                            return false;
+                        }
+                    }
+                    const auto prev = it != block_vote_state_.end() ? fc::optional<vote_record>(it->second) : fc::optional<vote_record>();
+                    block_vote_state_[validator] = vote_record{round, num, id};
+                    if (!save_block_vote_state()) {
+                        if (prev) block_vote_state_[validator] = *prev; else block_vote_state_.erase(validator);
+                        return false;
+                    }
                     return true;
                 }
 
@@ -432,9 +437,9 @@ namespace graphene {
 
                     pimpl->total_hashes_.store(0, std::memory_order_relaxed);
                     pimpl->_options = &options;
-                    pimpl->post_validation_signed_path_ =
-                        (appbase::app().data_dir() / "post-validation-signed.txt").string();
-                    pimpl->load_post_validation_signed();
+                    pimpl->block_vote_state_path_ =
+                        (appbase::app().data_dir() / "block-vote-round.txt").string();
+                    pimpl->load_block_vote_state();
                     LOAD_VALUE_SET(options, "validator", pimpl->_validators, string)
                     if (options.count("witness")) {
                         // Deprecated: --witness / config 'witness' is kept for backward compatibility.
@@ -1738,23 +1743,25 @@ namespace graphene {
                                 graphene::protocol::private_key_type validator_priv_key = private_key_itr->second;
                                 //we have block post validations for this validator
                                 //check if we have a block
-                                for(uint8_t i = 0; i < block_post_validations.size(); i++) {
-                                    if(0 != block_post_validations[i].block_num){
-                                        if(block_post_validations[i].block_id != block_id_type() &&
-                                           may_sign_post_validation(validator_account, block_post_validations[i].block_num,
-                                                                    block_post_validations[i].block_id,
-                                                                    db.get_dynamic_global_properties().last_irreversible_block_num)){
-                                            // Block vote, round 0 (block_vote_digest). The old
-                                            // chain_id+block_id digest had no domain tag and no
-                                            // round; nothing consumed it since the DLT redesign.
-                                            graphene::protocol::signature_type bpv_signature = validator_priv_key.sign_compact(
-                                                    graphene::protocol::block_vote_digest(db.get_chain_id(),
-                                                                                          block_post_validations[i].block_num,
-                                                                                          block_post_validations[i].block_id, 0));
-                                            //ilog("Witness ${w} signed block post validation #${n} ${b} with signature ${s}", ("w", validator_account)("n", block_post_validations[i].block_num)("b", block_post_validations[i].block_id)("s", bpv_signature));
-                                            p2p().post_broadcast_block_post_validation(block_post_validations[i].block_id, validator_account, bpv_signature);
-                                        }
-                                    }
+                                // Round = slot of the block. Vote in ascending round order:
+                                // the safety rule refuses any round at or below the last one.
+                                struct candidate { uint32_t round; uint32_t num; block_id_type id; };
+                                std::vector<candidate> candidates;
+                                for (const auto &bpv : block_post_validations) {
+                                    if (bpv.block_num == 0 || bpv.block_id == block_id_type()) continue;
+                                    const auto blk = db.fetch_block_by_id(bpv.block_id);
+                                    if (!blk) continue;          // not applied here: nothing to vote for yet
+                                    candidates.push_back({blk->timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL,
+                                                          bpv.block_num, bpv.block_id});
+                                }
+                                std::sort(candidates.begin(), candidates.end(),
+                                          [](const candidate &a, const candidate &b) { return a.round < b.round; });
+                                const uint32_t lib = db.get_dynamic_global_properties().last_irreversible_block_num;
+                                for (const auto &c : candidates) {
+                                    if (!may_vote(validator_account, c.round, c.num, c.id, lib)) continue;
+                                    graphene::protocol::signature_type vote_signature = validator_priv_key.sign_compact(
+                                            graphene::protocol::block_vote_digest(db.get_chain_id(), c.num, c.id, c.round));
+                                    p2p().post_broadcast_block_post_validation(c.id, validator_account, vote_signature, c.round);
                                 }
                             }
                         }
