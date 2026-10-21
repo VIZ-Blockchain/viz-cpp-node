@@ -55,6 +55,11 @@ namespace graphene {
                     const graphene::protocol::signature_type &validator_signature,
                     uint32_t round);
 
+                // HF16 timeout vote (fire-and-forget on the P2P thread).
+                void post_broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                    const std::string &validator,
+                    const graphene::protocol::signature_type &signature);
+
                 void broadcast_transaction(const graphene::protocol::signed_transaction &tx);
 
                 /**

@@ -123,6 +123,9 @@ public:
     // and record it. True = valid and not seen before, so it is worth relaying.
     // Non-pure: test delegates that never see votes need not implement it.
     virtual bool           accept_block_vote(const dlt_block_vote_message& vote) { return false; }
+    // Same contract for a timeout vote (scheduled validator, signature over
+    // block_timeout_digest). True = valid and new, worth relaying.
+    virtual bool           accept_timeout_vote(const dlt_timeout_vote_message& vote) { return false; }
 
     // ── Fork resolution ──────────────────────────────────────────
     virtual int            compare_fork_branches(const block_id_type& a, const block_id_type& b) const = 0;
@@ -195,6 +198,8 @@ public:
         const std::string& witness_account,
         const signature_type& validator_signature,
         uint32_t round);
+    void broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                const std::string& validator, const signature_type& signature);
     void broadcast_transaction(const signed_transaction& trx);
     void broadcast_chain_status();
 
@@ -306,6 +311,10 @@ private:
     void on_dlt_block_vote(peer_id peer, const dlt_block_vote_message& msg);
     // Accept a vote (local or relayed) and gossip it to capable fork peers.
     void process_block_vote(const dlt_block_vote_message& msg, peer_id from);
+    void on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_message& msg);
+    void process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from);
+    // Send to active fork peers advertising `cap`, except `from`, once per node id.
+    void gossip_to_capable(const message& out, uint32_t cap, peer_id from);
     void request_gap_fill();
 
     // ── Hello construction ───────────────────────────────────────
@@ -500,6 +509,7 @@ private:
     // Relay dedup for block votes: digest of the vote message -> seen time.
     // Bounded by pruning entries older than DLT_BLOCK_VOTE_SEEN_SEC.
     std::map<fc::sha256, fc::time_point> _block_votes_seen;
+    std::map<fc::sha256, fc::time_point> _timeout_votes_seen;
     std::multimap<fc::time_point_sec, graphene::protocol::transaction_id_type> _mempool_by_expiry;
     uint32_t                        _mempool_total_bytes = 0;
 

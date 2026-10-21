@@ -330,6 +330,19 @@ public:
         }
     }
 
+    bool accept_timeout_vote(const graphene::network::dlt_timeout_vote_message& vote) override {
+        if (vote.validator.empty() || vote.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) return false;
+        try {
+            return chain.db().with_weak_read_lock([&]() {
+                return chain.db().push_timeout_vote(vote.round, vote.high_qc_round,
+                                                    vote.validator, vote.signature);
+            });
+        } catch (const fc::exception& e) {
+            dlog("Timeout vote r${r} by ${v} rejected: ${e}", ("r", vote.round)("v", vote.validator)("e", e.what()));
+            return false;
+        }
+    }
+
     bool accept_transaction(const signed_transaction& trx) override {
         try {
             // The chain entrypoint owns recovery/shutdown policy for corruption.
@@ -723,6 +736,15 @@ void p2p_plugin::post_broadcast_block_post_validation(
     // production loop to miss its slot window.
     my->p2p_thread.async([this, block_id, witness_account, validator_signature, round]() {
         my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature, round);
+    });
+}
+
+void p2p_plugin::post_broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+    const std::string& validator, const graphene::protocol::signature_type& signature) {
+    // Fire-and-forget, like post_broadcast_block_post_validation: the
+    // production timer must not wait on peer I/O.
+    my->p2p_thread.async([this, round, high_qc_round, validator, signature]() {
+        my->node->broadcast_timeout_vote(round, high_qc_round, validator, signature);
     });
 }
 

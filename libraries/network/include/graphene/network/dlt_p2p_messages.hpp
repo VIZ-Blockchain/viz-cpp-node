@@ -42,6 +42,7 @@ enum dlt_message_type_enum {
     dlt_gap_fill_request_type           = 5115,
     dlt_gap_fill_reply_type             = 5116,
     dlt_block_vote_message_type         = 5117,
+    dlt_timeout_vote_message_type       = 5118,
 };
 
 // ── Capability bits advertised in hello.capabilities ────────────────
@@ -49,6 +50,7 @@ enum dlt_message_type_enum {
 // extra bytes (unpack_hello_compat), and we never send them a message type they
 // would score as an unknown packet.
 static const uint32_t DLT_CAP_BLOCK_VOTE = 0x1;   // understands dlt_block_vote_message
+static const uint32_t DLT_CAP_TIMEOUT_VOTE = 0x2; // understands dlt_timeout_vote_message
 
 // ── DLT node status ─────────────────────────────────────────────────
 enum dlt_node_status {
@@ -259,6 +261,18 @@ struct dlt_block_vote_message {
     signature_type  signature;
 };
 
+// HF16 timeout vote: `validator` gave up on `round` without a QC. Signs
+// block_timeout_digest(round, high_qc_round); a quorum for one round forms a
+// timeout certificate (TC) that lets the next producer skip a QC-less head.
+struct dlt_timeout_vote_message {
+    static const dlt_message_type_enum type;
+
+    uint32_t        round = 0;
+    uint32_t        high_qc_round = 0;
+    std::string     validator;
+    signature_type  signature;
+};
+
 } // namespace network
 } // namespace graphene
 
@@ -282,7 +296,8 @@ FC_REFLECT_ENUM(graphene::network::dlt_message_type_enum,
     (dlt_soft_ban_message_type)
     (dlt_gap_fill_request_type)
     (dlt_gap_fill_reply_type)
-    (dlt_block_vote_message_type))
+    (dlt_block_vote_message_type)
+    (dlt_timeout_vote_message_type))
 
 FC_REFLECT_ENUM(graphene::network::dlt_node_status,
     (DLT_NODE_STATUS_SYNC)(DLT_NODE_STATUS_FORWARD))
@@ -353,3 +368,6 @@ FC_REFLECT((graphene::network::dlt_gap_fill_reply),
 
 FC_REFLECT((graphene::network::dlt_block_vote_message),
     (block_num)(block_id)(round)(validator)(signature))
+
+FC_REFLECT((graphene::network::dlt_timeout_vote_message),
+    (round)(high_qc_round)(validator)(signature))
