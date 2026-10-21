@@ -2331,10 +2331,40 @@ namespace graphene {
                 // HF16: a handoff block needs the parent's QC. Without it we skip
                 // the slot rather than fork: votes keep arriving, and the next
                 // producer (or we, next slot) builds once the quorum is there.
-                if (db.with_weak_read_lock([&]() {
-                        return db.block_needs_parent_qc(scheduled_validator) &&
-                               !db.parent_qc_for_next_block(scheduled_validator).valid();
-                    })) {
+                // If a TC for head's round is here instead, head was given up on:
+                // drop it and build on its (certified) parent with the TC (Jolteon).
+                fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
+                bool waiting_for_qc = false;
+                db.with_weak_read_lock([&]() {
+                    if (!db.block_needs_parent_qc(scheduled_validator) ||
+                        db.parent_qc_for_next_block(scheduled_validator).valid()) return;
+                    waiting_for_qc = true;
+                    const uint32_t head_round = db.head_block_time().sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                    auto tc = db.get_timeout_cert(head_round);
+                    if (!tc) return;
+                    const auto head = db.fetch_block_by_number(db.head_block_num());
+                    if (!head) return;
+                    const graphene::protocol::block_qc_certificate *parent_qc = nullptr;
+                    for (const auto &e : head->extensions)
+                        if (e.which() == 3) parent_qc = &e.get<graphene::protocol::block_qc_certificate>();
+                    // The parent must be certified, and nobody who timed out may
+                    // have seen a QC above it (else our block would be invalid).
+                    if (!parent_qc || parent_qc->block_id != head->previous) return;
+                    for (const auto &tv : tc->votes)
+                        if (tv.second.high_qc_round > parent_qc->round) return;
+                    skip_tc = tc;
+                });
+                if (waiting_for_qc && skip_tc) {
+                    const auto skipped = db.head_block_id();
+                    ilog("TC for round ${r}: dropping QC-less head #${h} ${id}, building slot ${s} as ${w} on its parent",
+                         ("r", skip_tc->round)("h", db.head_block_num())("id", skipped)("s", slot)("w", scheduled_validator));
+                    try {
+                        db.with_strong_write_lock([&]() { db.pop_block(); });
+                    } catch (const fc::exception &e) {
+                        wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
+                        return block_validation_condition::not_time_yet;
+                    }
+                } else if (waiting_for_qc) {
                     ilog("Waiting for QC of head #${h} before producing slot ${s} as ${w}",
                          ("h", db.head_block_num())("s", slot)("w", scheduled_validator));
                     return block_validation_condition::not_time_yet;
@@ -2355,7 +2385,8 @@ namespace graphene {
                                 scheduled_time,
                                 scheduled_validator,
                                 private_key_itr->second,
-                                _production_skip_flags
+                                _production_skip_flags,
+                                skip_tc
                         );
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_validator)("tx", block.transactions.size());
                         p2p().broadcast_block(block);

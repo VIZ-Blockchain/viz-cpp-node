@@ -311,14 +311,20 @@ namespace graphene { namespace chain {
                     const fc::time_point_sec when,
                     const account_name_type &validator_owner,
                     const fc::ecc::private_key &block_signing_private_key,
-                    uint32_t skip
+                    uint32_t skip,
+                    // HF16: TC of the skipped round when building past a QC-less head
+                    const fc::optional<protocol::block_timeout_certificate> &tc =
+                            fc::optional<protocol::block_timeout_certificate>()
             );
 
             signed_block _generate_block(
                     const fc::time_point_sec when,
                     const account_name_type &validator_owner,
                     const fc::ecc::private_key &block_signing_private_key,
-                    uint32_t skip
+                    uint32_t skip,
+                    // HF16: TC of the skipped round when building past a QC-less head
+                    const fc::optional<protocol::block_timeout_certificate> &tc =
+                            fc::optional<protocol::block_timeout_certificate>()
             );
 
             void pop_block();
@@ -701,6 +707,11 @@ namespace graphene { namespace chain {
             /// Returns true when the vote is valid and new (worth relaying).
             bool push_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                    const account_name_type &validator, const signature_type &signature);
+
+            /// Keep a parent QC that arrived inside a validated block header, so a
+            /// node that missed the votes still knows the height is certified
+            /// (LIB, and a producer building past a QC-less child of it).
+            void remember_block_qc(const protocol::block_qc_certificate &cert);
 
             /// The timeout certificate formed for a round, if any (node-local view).
             fc::optional<protocol::block_timeout_certificate> get_timeout_cert(uint32_t round) const;

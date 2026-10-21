@@ -2713,11 +2713,12 @@ namespace graphene { namespace chain {
                 fc::time_point_sec when,
                 const account_name_type &validator_owner,
                 const fc::ecc::private_key &block_signing_private_key,
-                uint32_t skip /* = 0 */
+                uint32_t skip /* = 0 */,
+                const fc::optional<protocol::block_timeout_certificate> &tc
         ) {
             signed_block result;
             try {
-                result = _generate_block(when, validator_owner, block_signing_private_key, skip);
+                result = _generate_block(when, validator_owner, block_signing_private_key, skip, tc);
             }
             FC_CAPTURE_AND_RETHROW((validator_owner))
             return result;
@@ -2728,7 +2729,8 @@ namespace graphene { namespace chain {
                 fc::time_point_sec when,
                 const account_name_type &validator_owner,
                 const fc::ecc::private_key &block_signing_private_key,
-                uint32_t skip
+                uint32_t skip,
+                const fc::optional<protocol::block_timeout_certificate> &tc
         ) {
             // Apply any deferred resize BEFORE the lockless reads below.
             // This is critical: get_slot_at_time(), get_validator(), find_account()
@@ -2928,7 +2930,10 @@ namespace graphene { namespace chain {
                 FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
                           ("n", head_block_num()));
                 pending_block.extensions.insert(block_header_extensions(*cert));
+                if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
             }
+            FC_ASSERT(!tc || block_needs_parent_qc(validator_owner),
+                      "A TC goes only next to a parent QC");
 
             const auto &hfp = get_hardfork_property_object();
 
@@ -5974,6 +5979,9 @@ namespace graphene { namespace chain {
                 // HF16: must run before current_validator is set to this block's
                 // producer below — the handoff rule compares against the parent's.
                 validate_block_qc(next_block, skip);
+                for (const auto &e : next_block.extensions) {
+                    if (e.which() == 3) remember_block_qc(e.get<protocol::block_qc_certificate>());
+                }
 
                 _current_block_num = next_block_num;
                 _current_trx_in_block = 0;
@@ -7122,6 +7130,17 @@ namespace graphene { namespace chain {
                 _timeout_certs.emplace(round, std::move(tc));
             }
             return true;
+        }
+
+        void database::remember_block_qc(const protocol::block_qc_certificate &cert) {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            if (_block_qcs.find(cert.block_num) != _block_qcs.end()) return;   // tallied (or seen) already
+            block_qc qc;
+            qc.block_num = cert.block_num;
+            qc.block_id = cert.block_id;
+            qc.round = cert.round;
+            qc.signatures.assign(cert.signatures.begin(), cert.signatures.end());
+            _block_qcs.emplace(cert.block_num, std::move(qc));
         }
 
         fc::optional<protocol::block_timeout_certificate> database::get_timeout_cert(uint32_t round) const {
