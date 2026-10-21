@@ -3173,8 +3173,7 @@ namespace graphene { namespace chain {
         }
 
         uint32_t database::block_interval() const {
-            return get_dynamic_global_properties().block_interval_switch_time == fc::time_point_sec()
-                ? CHAIN_BLOCK_INTERVAL : CHAIN_BLOCK_INTERVAL_HF16;
+            return has_hardfork(CHAIN_HARDFORK_16) ? CHAIN_BLOCK_INTERVAL_HF16 : CHAIN_BLOCK_INTERVAL;
         }
 
         uint32_t database::round_of(fc::time_point_sec t) const {
