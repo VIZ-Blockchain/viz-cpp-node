@@ -25,4 +25,21 @@ namespace graphene { namespace protocol {
         return enc.result();
     }
 
+    /// Domain tag of a timeout vote; distinct from block votes so neither
+    /// signature can be replayed as the other.
+    static const char *const CHAIN_BLOCK_TIMEOUT_DOMAIN = "viz-block-timeout-v1";
+
+    /// Digest a validator signs when it gives up on `round` without a QC.
+    /// high_qc_round is the round of the highest QC it has seen; signing it
+    /// binds the claim a TC uses to lower-bound the next block's parent QC.
+    inline digest_type block_timeout_digest(const chain_id_type &chain_id, uint32_t round,
+                                            uint32_t high_qc_round) {
+        digest_type::encoder enc;
+        fc::raw::pack(enc, std::string(CHAIN_BLOCK_TIMEOUT_DOMAIN));
+        fc::raw::pack(enc, chain_id);
+        fc::raw::pack(enc, round);
+        fc::raw::pack(enc, high_qc_round);
+        return enc.result();
+    }
+
 } } // graphene::protocol

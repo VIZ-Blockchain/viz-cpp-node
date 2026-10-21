@@ -7114,6 +7114,11 @@ namespace graphene { namespace chain {
             for (const auto &e : next_block.extensions) {
                 if (e.which() == 3)   // block_qc_certificate (index in block_header_extensions)
                     cert = &e.get<protocol::block_qc_certificate>();
+                // block_timeout_certificate: the wire type exists, its validation
+                // does not yet. Until it does, no block may carry one (before or
+                // after HF16), so an unchecked TC can never enter the chain.
+                FC_ASSERT(e.which() != 4, "Timeout certificate in block #${n} is not accepted yet",
+                          ("n", next_block.block_num()));
             }
             if (!has_hardfork(CHAIN_HARDFORK_16)) {
                 FC_ASSERT(cert == nullptr, "Parent QC in block #${n} before HF16", ("n", next_block.block_num()));
