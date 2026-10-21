@@ -85,6 +85,12 @@ if(BUILD_TESTNET)
     message(STATUS "     ")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBUILD_TESTNET")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DBUILD_TESTNET")
+    # Multi-validator testnet (see config_testnet.hpp); empty = one validator.
+    set(CHAIN_TESTNET_VALIDATORS "" CACHE STRING "Number of genesis validators on the test network")
+    if(CHAIN_TESTNET_VALIDATORS)
+        message(STATUS "CHAIN_TESTNET_VALIDATORS: ${CHAIN_TESTNET_VALIDATORS}")
+        add_definitions(-DCHAIN_TESTNET_VALIDATORS=${CHAIN_TESTNET_VALIDATORS})
+    endif()
 endif()
 
 

@@ -43,8 +43,17 @@
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
 #define CHAIN_INITIATOR_PUBLIC_KEY_STR       "VIZ6MyX5QiXAXRZk7SYCiqpi6Mtm8UbHWDFSV8HPpt7FJyahCnc2T"
 #define CHAIN_INITIATOR_PUBLIC_KEY            (graphene::protocol::public_key_type(CHAIN_INITIATOR_PUBLIC_KEY_STR))
+// Multi-validator test network (QC/TC stands): build with
+// -DCHAIN_TESTNET_VALIDATORS=N and genesis creates viz, viz1 .. viz(N-1), all
+// in the top schedule (one shared initiator key; rotate per validator with
+// validator_update after start). Unset = the classic one-validator testnet.
+#ifdef CHAIN_TESTNET_VALIDATORS
+#define CHAIN_NUM_INITIATORS                  CHAIN_TESTNET_VALIDATORS
+#define CHAIN_MAX_TOP_VALIDATORS              CHAIN_TESTNET_VALIDATORS
+#else
 #define CHAIN_NUM_INITIATORS                  0
 #define CHAIN_MAX_TOP_VALIDATORS               1
+#endif
 #define CHAIN_MAX_SUPPORT_VALIDATORS           0
 #define CHAIN_MAX_VALIDATORS                   (CHAIN_MAX_TOP_VALIDATORS+CHAIN_MAX_SUPPORT_VALIDATORS)
 #define CHAIN_HARDFORK_REQUIRED_VALIDATORS     1
