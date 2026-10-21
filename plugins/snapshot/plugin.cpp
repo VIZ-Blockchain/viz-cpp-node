@@ -225,8 +225,10 @@ inline uint32_t import_dynamic_global_properties(
         obj.pm_batch_settle_bet_cursor = v.get_object().contains("pm_batch_settle_bet_cursor")
             ? v["pm_batch_settle_bet_cursor"].as_uint64() : 0;
         // HF16 slot switch point; absent in pre-HF16 snapshots = not switched yet.
-        obj.block_interval_switch_time = v.get_object().contains("block_interval_switch_time")
-            ? v["block_interval_switch_time"].as<fc::time_point_sec>() : fc::time_point_sec();
+        obj.round_anchor_time = v.get_object().contains("round_anchor_time")
+            ? v["round_anchor_time"].as<fc::time_point_sec>() : fc::time_point_sec();
+        obj.round_anchor_round = v.get_object().contains("round_anchor_round")
+            ? v["round_anchor_round"].as<uint32_t>() : 0;
     });
     return 1;
 }

@@ -3177,12 +3177,18 @@ namespace graphene { namespace chain {
         }
 
         uint32_t database::round_of(fc::time_point_sec t) const {
-            const auto s = get_dynamic_global_properties().block_interval_switch_time;
-            if (s == fc::time_point_sec() || t <= s) {
+            const auto& dgp = get_dynamic_global_properties();
+            const auto a = dgp.round_anchor_time;
+            if (a == fc::time_point_sec()) {
                 return t.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
             }
-            return s.sec_since_epoch() / CHAIN_BLOCK_INTERVAL +
-                   (t.sec_since_epoch() - s.sec_since_epoch()) / CHAIN_BLOCK_INTERVAL_HF16;
+            if (t <= a) {
+                // Parents/QCs just before the anchor. Only one re-anchor exists (HF16), so the
+                // segment before it is 3 s; a later re-anchoring HF must keep its own previous
+                // interval here instead of CHAIN_BLOCK_INTERVAL.
+                return dgp.round_anchor_round - (a.sec_since_epoch() - t.sec_since_epoch()) / CHAIN_BLOCK_INTERVAL;
+            }
+            return dgp.round_anchor_round + (t.sec_since_epoch() - a.sec_since_epoch()) / block_interval();
         }
 
         void database::shares_sender_recalc_energy(const account_object &sender, asset tokens) {

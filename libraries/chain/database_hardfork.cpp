@@ -1049,10 +1049,15 @@ inline u256 to256(const fc::uint128_t &t) {
                 case CHAIN_HARDFORK_16:
                     // #6737: this block is the last 3 s slot (dgpo.time is already this block's
                     // timestamp: update_global_dynamic_data runs before process_hardforks), every
-                    // later slot is CHAIN_BLOCK_INTERVAL_HF16. See database::round_of().
-                    modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
-                        p.block_interval_switch_time = p.time;
-                    });
+                    // later slot is CHAIN_BLOCK_INTERVAL_HF16. Re-anchor rounds here, using the
+                    // pre-switch formula for this block's own round. See database::round_of().
+                    {
+                        const uint32_t r = round_of(get_dynamic_global_properties().time);
+                        modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
+                            p.round_anchor_time = p.time;
+                            p.round_anchor_round = r;
+                        });
+                    }
                     {
                         // #6737, Q#3108=A: block-denominated chain props keep their wall-time
                         // meaning at 1 s slots. The median is recomputed from every validator's
