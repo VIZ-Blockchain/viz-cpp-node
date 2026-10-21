@@ -1940,9 +1940,8 @@ namespace graphene { namespace chain {
                         // have the full signed_block from the peer — fixes that.
                         // _repair_child_prev_links reconnects the start_block root
                         // so fetch_branch_from can walk the full slave chain.
-                        if (!_fork_db.is_known_block(new_block.id())) {
-                            _fork_db.insert_as_base(new_block);
-                        }
+                        // insert_as_base also fills an existing data-less anchor.
+                        _fork_db.insert_as_base(new_block);
                         return false;
                     }
                     // Block is at or before head but on a different fork.
