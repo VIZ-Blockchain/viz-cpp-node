@@ -7172,26 +7172,34 @@ namespace graphene { namespace chain {
         }
 
         uint32_t database::block_cert_round(const signed_block &b) {
+            // Highest round a block proves: its parent QC, or a TC it carries
+            // (a TC for round r outranks any QC below r). Validity is checked
+            // when the block is applied.
+            uint32_t r = 0;
             for (const auto &e : b.extensions) {
-                if (e.which() == 3)   // block_qc_certificate (index in block_header_extensions)
-                    return e.get<protocol::block_qc_certificate>().round;
+                if (e.which() == 3)        // block_qc_certificate
+                    r = std::max(r, e.get<protocol::block_qc_certificate>().round);
+                else if (e.which() == 4)   // block_timeout_certificate
+                    r = std::max(r, e.get<protocol::block_timeout_certificate>().round);
             }
-            return 0;
+            return r;
         }
 
         void database::validate_block_qc(const signed_block &next_block, uint32_t skip) const {
             const protocol::block_qc_certificate *cert = nullptr;
+            const protocol::block_timeout_certificate *tc = nullptr;
             for (const auto &e : next_block.extensions) {
-                if (e.which() == 3)   // block_qc_certificate (index in block_header_extensions)
+                if (e.which() == 3) {        // block_qc_certificate (index in block_header_extensions)
+                    FC_ASSERT(cert == nullptr, "Block #${n} carries two parent QCs", ("n", next_block.block_num()));
                     cert = &e.get<protocol::block_qc_certificate>();
-                // block_timeout_certificate: the wire type exists, its validation
-                // does not yet. Until it does, no block may carry one (before or
-                // after HF16), so an unchecked TC can never enter the chain.
-                FC_ASSERT(e.which() != 4, "Timeout certificate in block #${n} is not accepted yet",
-                          ("n", next_block.block_num()));
+                } else if (e.which() == 4) { // block_timeout_certificate
+                    FC_ASSERT(tc == nullptr, "Block #${n} carries two TCs", ("n", next_block.block_num()));
+                    tc = &e.get<protocol::block_timeout_certificate>();
+                }
             }
             if (!has_hardfork(CHAIN_HARDFORK_16)) {
                 FC_ASSERT(cert == nullptr, "Parent QC in block #${n} before HF16", ("n", next_block.block_num()));
+                FC_ASSERT(tc == nullptr, "TC in block #${n} before HF16", ("n", next_block.block_num()));
                 return;
             }
             if (block_needs_parent_qc(next_block.validator)) {
@@ -7200,6 +7208,9 @@ namespace graphene { namespace chain {
                           ("n", next_block.block_num())("w", next_block.validator)
                           ("p", get_dynamic_global_properties().current_validator));
             }
+            // A TC only makes sense next to the parent QC it is checked against.
+            FC_ASSERT(cert != nullptr || tc == nullptr, "Block #${n} carries a TC without a parent QC",
+                      ("n", next_block.block_num()));
             if (cert == nullptr) return;
 
             FC_ASSERT(cert->block_id == next_block.previous && cert->block_num + 1 == next_block.block_num(),
@@ -7214,10 +7225,37 @@ namespace graphene { namespace chain {
             FC_ASSERT(cert->signatures.size() >= block_qc_quorum(scheduled),
                       "Parent QC has ${k} signatures, quorum is ${q}",
                       ("k", cert->signatures.size())("q", block_qc_quorum(scheduled)));
+
+            // TC(r): a quorum gave up on round r, i.e. on a QC-less block that was
+            // built on our parent. Jolteon: r lies strictly between the parent's
+            // round and ours, and our parent QC is at least as high as every QC a
+            // timeout voter reported (nobody saw a newer certified block we skip).
+            if (tc != nullptr) {
+                const uint32_t own_round = next_block.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+                FC_ASSERT(tc->round > cert->round && tc->round < own_round,
+                          "TC round ${t} not between parent round ${p} and block round ${o}",
+                          ("t", tc->round)("p", cert->round)("o", own_round));
+                FC_ASSERT(tc->votes.size() <= scheduled, "TC has more votes than scheduled validators");
+                FC_ASSERT(tc->votes.size() >= block_qc_quorum(scheduled),
+                          "TC has ${k} votes, quorum is ${q}",
+                          ("k", tc->votes.size())("q", block_qc_quorum(scheduled)));
+                for (const auto &tv : tc->votes) {
+                    FC_ASSERT(tv.second.high_qc_round <= cert->round,
+                              "TC vote by ${v} saw QC round ${h}, above the parent QC round ${p}",
+                              ("v", tv.first)("h", tv.second.high_qc_round)("p", cert->round));
+                }
+            }
+
             if (skip & skip_validator_signature) return;
             for (const auto &sv : cert->signatures) {
                 FC_ASSERT(verify_block_vote(cert->block_num, cert->block_id, cert->round, sv.first, sv.second),
                           "Parent QC carries an invalid vote by ${v}", ("v", sv.first));
+            }
+            if (tc != nullptr) {
+                for (const auto &tv : tc->votes) {
+                    FC_ASSERT(verify_timeout_vote(tc->round, tv.second.high_qc_round, tv.first, tv.second.signature),
+                              "TC carries an invalid timeout vote by ${v}", ("v", tv.first));
+                }
             }
         }
 
