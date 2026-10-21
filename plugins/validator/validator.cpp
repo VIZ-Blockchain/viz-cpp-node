@@ -228,6 +228,8 @@ namespace graphene {
                 std::string block_vote_state_path_;
                 std::map<std::string, vote_record> block_vote_state_;
                 std::set<std::pair<std::string, uint32_t>> block_vote_refused_logged_;
+                // HF16 diagnostics: why our validator casts no vote for head (once per head).
+                std::set<std::pair<std::string, uint32_t>> head_vote_diag_logged_;
 
                 void load_block_vote_state() {
                     if (block_vote_state_path_.empty()) return;
@@ -1777,6 +1779,17 @@ namespace graphene {
                                     candidates.push_back({db.round_of(blk->timestamp),
                                                           bpv.block_num, bpv.block_id});
                                 }
+                                if (db.has_hardfork(CHAIN_HARDFORK_16)) {
+                                    const uint32_t hn = db.head_block_num();
+                                    bool listed = false, cand = false;
+                                    for (const auto &bpv : block_post_validations) if (bpv.block_num == hn) listed = true;
+                                    for (const auto &c : candidates) if (c.num == hn) cand = true;
+                                    if (!cand && head_vote_diag_logged_.insert({std::string(validator_account), hn}).second) {
+                                        if (head_vote_diag_logged_.size() > 4096) head_vote_diag_logged_.clear();
+                                        wlog("HF16 no vote candidate for head #${n} by ${w}: in confirmation list ${l} (${k} entries)",
+                                             ("n", hn)("w", validator_account)("l", listed)("k", block_post_validations.size()));
+                                    }
+                                }
                                 std::sort(candidates.begin(), candidates.end(),
                                           [](const candidate &a, const candidate &b) { return a.round < b.round; });
                                 const uint32_t lib = db.get_dynamic_global_properties().last_irreversible_block_num;
@@ -1802,7 +1815,7 @@ namespace graphene {
                                             late_ok = !held || held->block_id == blk->previous;
                                         }
                                         if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round && !late_ok) {
-                                            dlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
+                                            wlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
                                                  ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
                                             continue;
                                         }

@@ -7451,10 +7451,21 @@ namespace graphene { namespace chain {
             // the next block can be produced. Settle only what lies below head.
             const uint32_t lib = std::min(dpo.last_irreversible_block_num,
                                           dpo.head_block_number > 0 ? dpo.head_block_number - 1 : 0);
-            if (block_num <= lib) return false;                               // already final
+            // HF16 diagnostics (21-validator stand): a vote for head that is turned away
+            // is logged once per block, so a QC that never forms names its cause.
+            static uint32_t head_reject_logged = 0;
+            const auto reject_head = [&](const char *why) {
+                if (block_num == dpo.head_block_number && head_reject_logged != block_num) {
+                    head_reject_logged = block_num;
+                    wlog("Vote for head #${n} from ${w} round ${r} rejected: ${why} (LIB ${l}, head round ${h})",
+                         ("n", block_num)("w", validator)("r", round)("why", why)("l", lib)("h", head_round));
+                }
+                return false;
+            };
+            if (block_num <= lib) return reject_head("at or below LIB");     // already final
             if (block_num > dpo.head_block_number + MAX_VOTE_AHEAD_BLOCKS) return false;
 
-            if (!verify_block_vote(block_num, block_id, round, validator, signature)) return false;
+            if (!verify_block_vote(block_num, block_id, round, validator, signature)) return reject_head("signature/schedule check failed");
 
             const auto &wso = get_validator_schedule_object();
             const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
