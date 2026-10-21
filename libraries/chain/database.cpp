@@ -6128,6 +6128,7 @@ namespace graphene { namespace chain {
                         break;
                     }
                     case 3: // block_qc_certificate — verified in validate_block_qc()
+                    case 4: // block_timeout_certificate — verified in validate_block_qc()
                         break;
                     default:
                         FC_ASSERT(false, "Unknown extension in block header");
