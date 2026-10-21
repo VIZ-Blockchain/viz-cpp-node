@@ -6528,7 +6528,7 @@ namespace graphene { namespace chain {
                                                  dgp.current_reserve_ratio *
                                                  CHAIN_BANDWIDTH_PRECISION *
                                                  CHAIN_BANDWIDTH_AVERAGE_WINDOW_SECONDS) /
-                                                CHAIN_BLOCK_INTERVAL;
+                                                block_interval();
                 });
 
                 if (!(skip & skip_undo_history_check)) {

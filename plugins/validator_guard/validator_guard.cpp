@@ -151,7 +151,7 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
     // (within the last 2 * CHAIN_BLOCK_INTERVAL seconds)
     const auto head_time = database.head_block_time();
     const auto now       = fc::time_point_sec(graphene::time::now());
-    if (head_time < now - fc::seconds(CHAIN_BLOCK_INTERVAL * 2)) {
+    if (head_time < now - fc::seconds(database.block_interval() * 2)) {
         dlog("validator_guard: node not in sync, skipping check");
         return false;
     }
