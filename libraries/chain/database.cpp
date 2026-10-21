@@ -3241,7 +3241,8 @@ namespace graphene { namespace chain {
         }
 
         void database::update_bandwidth_reserve_candidates() {
-            if ((head_block_num() % CHAIN_BLOCKS_PER_HOUR ) != 0) return;
+            // HF16: keep the hourly cadence in wall time (3x more blocks per hour at 1 s).
+            if ((head_block_num() % (CHAIN_BLOCKS_PER_HOUR * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
             uint32_t bandwidth_reserve_candidates = 1;
             const auto &gprops = get_dynamic_global_properties();
             const validator_schedule_object &consensus = get_validator_schedule_object();
@@ -3427,7 +3428,8 @@ namespace graphene { namespace chain {
                     }
                 }
             }
-            if ((head_block_num() % COMMITTEE_REQUEST_PROCESSING ) != 0) return;
+            // HF16: same wall-time cadence as with 3 s slots.
+            if ((head_block_num() % (COMMITTEE_REQUEST_PROCESSING * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
             uint32_t committee_payment_request_count = 1;
             const auto &idx4_count = get_index<committee_request_index>().indices().get<by_status>();
             auto itr3 = idx4_count.lower_bound(4);

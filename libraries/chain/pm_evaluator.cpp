@@ -557,7 +557,7 @@ void pm_commit_bet_evaluator::do_apply(const pm_commit_bet_operation& o) {
     uint32_t reveal_window = mp.pm_reveal_window_blocks;
     uint32_t cur_block     = db.head_block_num();
     uint32_t epoch_end     = ((cur_block / epoch_blocks) + 1) * epoch_blocks;
-    time_point_sec reveal_dl = now + fc::seconds((int64_t)(epoch_end - cur_block + reveal_window) * CHAIN_BLOCK_INTERVAL);
+    time_point_sec reveal_dl = now + fc::seconds((int64_t)(epoch_end - cur_block + reveal_window) * db.block_interval());
 
     db.create<pm_commit_object>([&](pm_commit_object& c) {
         c.market                = mkt.id;
