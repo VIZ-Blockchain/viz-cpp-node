@@ -7553,7 +7553,14 @@ namespace graphene { namespace chain {
             if (tally.votes.empty()) tally.first_seen = fc::time_point::now();
             tally.votes.emplace(validator, signature);
 
-            if (tally.votes.size() >= quorum && _block_qcs.find(block_num) == _block_qcs.end()) {
+            // One QC per height, but the HIGHEST round wins: after a TC the height is
+            // rebuilt in a later round, and keeping the first QC forever made every
+            // rebuild uncertifiable (21-validator stand, double signer: QC for one twin
+            // of #546 in round 649, fork choice took another, then 40+ rebuilds of #546
+            // with 15/15 votes each and no QC; chain stuck for 20+ min).
+            auto held_qc = _block_qcs.find(block_num);
+            if (tally.votes.size() >= quorum && (held_qc == _block_qcs.end() || held_qc->second.round < round)) {
+                if (held_qc != _block_qcs.end()) _block_qcs.erase(held_qc);
                 block_qc qc;
                 qc.block_num = block_num;
                 qc.block_id = block_id;
