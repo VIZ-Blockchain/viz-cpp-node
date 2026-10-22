@@ -2384,6 +2384,8 @@ namespace graphene {
                 fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
                 bool waiting_for_qc = false;
                 bool rebuild_on_anchor = false;
+                // Late-QC head: the block to rebuild on is the one its QC certifies.
+                fc::optional<graphene::protocol::block_id_type> rebuild_on;
                 const uint32_t own_round = db.round_of(scheduled_time);
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
@@ -2400,10 +2402,14 @@ namespace graphene {
                     waiting_for_qc = true;
                     // Diagnostics (stand, netem 300 ms: TCs formed for 63 rounds, head never
                     // dropped): say once per head why the TC skip is not taken.
+                    // Keyed by head AND reason: keyed by head alone, the first refusal
+                    // ("no TC yet") hid the real one for the rest of the stall.
                     static uint32_t skip_diag_head = 0;
+                    static const char *skip_diag_why = nullptr;
                     const auto skip_refused = [&](const char *why) {
-                        if (skip_diag_head == db.head_block_num()) return;
+                        if (skip_diag_head == db.head_block_num() && skip_diag_why == why) return;
                         skip_diag_head = db.head_block_num();
+                        skip_diag_why = why;
                         wlog("TC skip of QC-less head #${h} refused for slot round ${r}: ${why}",
                              ("h", db.head_block_num())("r", own_round)("why", why));
                     };
@@ -2431,9 +2437,23 @@ namespace graphene {
                     }
                     // The parent must be certified, and nobody who timed out may
                     // have seen a QC above it (else our block would be invalid).
-                    if (parent_qc->block_id != head->previous) { skip_refused("head carries a QC of a non-parent"); return; }
                     for (const auto &tv : tc->votes)
-                        if (tv.second.high_qc_round > parent_qc->round) { skip_refused("a timeout vote saw a QC above head's parent QC"); return; }
+                        if (tv.second.high_qc_round > parent_qc->round) { skip_refused("a timeout vote saw a QC above head's QC"); return; }
+                    // Late-QC head (it carries its grandparent's QC because its parent's
+                    // never formed): nothing between the certified block and head can get
+                    // a QC any more, so after the TC the proposal extends the certified
+                    // block itself, as Jolteon prescribes (extend high QC). Without this a
+                    // late-QC head that also misses its own QC stalls the chain for good
+                    // (21-validator stand, netem 300 ms: head #184 carried QC of #182).
+                    if (parent_qc->block_id != head->previous) {
+                        const auto certified = db.fetch_block_by_id(parent_qc->block_id);
+                        if (!certified || certified->block_num() < db.get_dynamic_global_properties().last_irreversible_block_num ||
+                            db.head_block_num() - certified->block_num() > 2) {
+                            skip_refused("head's QC certifies a block that cannot be rebuilt on");
+                            return;
+                        }
+                        rebuild_on = parent_qc->block_id;
+                    }
                     skip_tc = tc;
                 });
                 if (waiting_for_qc && skip_tc) {
@@ -2441,7 +2461,13 @@ namespace graphene {
                     ilog("TC for round ${r}: dropping QC-less head #${h} ${id}, building slot ${s} as ${w} on its parent",
                          ("r", skip_tc->round)("h", db.head_block_num())("id", skipped)("s", slot)("w", scheduled_validator));
                     try {
-                        db.with_strong_write_lock([&]() { db.pop_block(); });
+                        db.with_strong_write_lock([&]() {
+                            db.pop_block();
+                            // Late-QC head: also drop its uncertified parent (at most one more).
+                            if (rebuild_on && db.head_block_id() != *rebuild_on) db.pop_block();
+                            FC_ASSERT(!rebuild_on || db.head_block_id() == *rebuild_on,
+                                      "TC rebuild: head is not the certified block");
+                        });
                     } catch (const fc::exception &e) {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;

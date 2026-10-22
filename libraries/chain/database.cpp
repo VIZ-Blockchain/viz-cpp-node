@@ -2111,11 +2111,14 @@ namespace graphene { namespace chain {
                     // stalled for good (21-validator stand, netem 300 ms: 5 blocks #194).
                     // Offer the pushed block as the candidate when it proves a later
                     // round; a forged certificate fails in switch_forks and is reverted.
+                    // It may also sit LOWER than head: after a TC the proposal extends the
+                    // highest certified block, below a late-QC head and its parent.
                     if (has_hardfork(CHAIN_HARDFORK_16) &&
                         !get_dynamic_global_properties().emergency_consensus_active &&
                         new_head && !new_head->anchor_only &&
                         new_head->id != new_block.id() &&
-                        new_block.block_num() == new_head->num &&
+                        new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
+                        new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
                         block_cert_round(new_block) > block_cert_round(new_head->data)) {
                         auto pushed = _fork_db.fetch_block(new_block.id());
                         if (pushed && !pushed->invalid) {
