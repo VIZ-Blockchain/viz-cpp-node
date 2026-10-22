@@ -127,6 +127,7 @@
 | 103 | `pm_early_exit_claim_paid_operation` | Отложенная выплата досрочного выхода оплачена при расчёте | [Прогнозные рынки](./prediction-markets.md) |
 | 104 | `pm_lp_payout_operation` | Доход LP выплачен при расчёте | [Прогнозные рынки](./prediction-markets.md) |
 | 105 | `set_agent_permission_operation` | Выдать, заменить или отозвать ключ агента (HF15) | [Агент-доступ](./agent-access.md) |
+| 106 | `validator_equivocation_operation` | Доказана двойная подпись валидатора (HF16 QC) | [Виртуальные операции](../virtual-operations.md) |
 
 ---
 

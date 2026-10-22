@@ -127,6 +127,7 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 103 | `pm_early_exit_claim_paid_operation` | 提前退出的延迟索赔在结算时支付 | [预测市场](./prediction-markets.md) |
 | 104 | `pm_lp_payout_operation` | LP 收益在结算时支付 | [预测市场](./prediction-markets.md) |
 | 105 | `set_agent_permission_operation` | 授予、替换或撤销代理密钥（HF15） | [Agent access](./agent-access.md) |
+| 106 | `validator_equivocation_operation` | 验证者双重投票已被证明（HF16 QC） | [虚拟操作](../virtual-operations.md) |
 
 ---
 
