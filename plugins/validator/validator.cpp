@@ -1848,9 +1848,17 @@ namespace graphene {
                     if (now_round >= head_round + 2) {
                         const uint32_t t = now_round - 1;
                         const auto head_block = db.fetch_block_by_number(head_num);
-                        // Highest QC we hold: head's own if certified, else the one head carries.
-                        const uint32_t high_qc_round = certified ? head_qc->round
-                                : (head_block ? graphene::chain::database::block_cert_round(*head_block) : 0);
+                        // Highest QC we hold: head's own if certified, else the QC head carries.
+                        // Not block_cert_round(): it also counts a TC, and a TC round reported
+                        // as a QC round made every timeout vote claim a QC that never existed,
+                        // so the TC skip of that head was refused forever (21-validator stand,
+                        // netem 300 ms: head #183 with TC 691, all timeouts "high QC 691").
+                        uint32_t carried_qc_round = 0;
+                        if (head_block)
+                            for (const auto &e : head_block->extensions)
+                                if (e.which() == 3)
+                                    carried_qc_round = e.get<graphene::protocol::block_qc_certificate>().round;
+                        const uint32_t high_qc_round = certified ? head_qc->round : carried_qc_round;
                         const auto &wso = db.get_validator_schedule_object();
                         const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                         for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
