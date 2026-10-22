@@ -7266,7 +7266,13 @@ namespace graphene { namespace chain {
 
         void database::remember_block_qc(const protocol::block_qc_certificate &cert) {
             std::lock_guard<std::mutex> guard(_block_votes_mutex);
-            if (_block_qcs.find(cert.block_num) != _block_qcs.end()) return;   // tallied (or seen) already
+            // Same rule as the tally path: per height keep the QC with the HIGHEST round. A re-proposal after a
+            // TC carries a newer-round QC; keeping the first (possibly for an equivocating twin) pinned the height.
+            auto held = _block_qcs.find(cert.block_num);
+            if (held != _block_qcs.end()) {
+                if (held->second.round >= cert.round) return;
+                _block_qcs.erase(held);
+            }
             block_qc qc;
             qc.block_num = cert.block_num;
             qc.block_id = cert.block_id;
