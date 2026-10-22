@@ -2398,7 +2398,16 @@ namespace graphene {
                         return;
                     }
                     waiting_for_qc = true;
-                    if (!tc) return;
+                    // Diagnostics (stand, netem 300 ms: TCs formed for 63 rounds, head never
+                    // dropped): say once per head why the TC skip is not taken.
+                    static uint32_t skip_diag_head = 0;
+                    const auto skip_refused = [&](const char *why) {
+                        if (skip_diag_head == db.head_block_num()) return;
+                        skip_diag_head = db.head_block_num();
+                        wlog("TC skip of QC-less head #${h} refused for slot round ${r}: ${why}",
+                             ("h", db.head_block_num())("r", own_round)("why", why));
+                    };
+                    if (!tc) { skip_refused("no TC for round r-1 yet"); return; }
                     const auto head = db.fetch_block_by_number(db.head_block_num());
                     if (!head) return;
                     const graphene::protocol::block_qc_certificate *parent_qc = nullptr;
@@ -2422,9 +2431,9 @@ namespace graphene {
                     }
                     // The parent must be certified, and nobody who timed out may
                     // have seen a QC above it (else our block would be invalid).
-                    if (parent_qc->block_id != head->previous) return;
+                    if (parent_qc->block_id != head->previous) { skip_refused("head carries a QC of a non-parent"); return; }
                     for (const auto &tv : tc->votes)
-                        if (tv.second.high_qc_round > parent_qc->round) return;
+                        if (tv.second.high_qc_round > parent_qc->round) { skip_refused("a timeout vote saw a QC above head's parent QC"); return; }
                     skip_tc = tc;
                 });
                 if (waiting_for_qc && skip_tc) {
