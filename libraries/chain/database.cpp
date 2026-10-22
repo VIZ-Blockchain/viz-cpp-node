@@ -7565,7 +7565,10 @@ namespace graphene { namespace chain {
                 const auto pb = fetch_block_by_id(parent.second);
                 const auto cb = fetch_block_by_id(child.second);
                 if (!pb || !cb) continue;
-                if (cb->timestamp != pb->timestamp + CHAIN_BLOCK_INTERVAL) continue;
+                // Compare rounds, not timestamps: the slot is 1 s after HF16, and a
+                // compile-time 3 s step never matched there, so QC-LIB was always 0
+                // and LIB fell back to post-validation (stand: lag exactly 14 blocks).
+                if (round_of(cb->timestamp) != round_of(pb->timestamp) + 1) continue;
                 return parent.first;
             }
             return 0;
