@@ -6398,7 +6398,14 @@ namespace graphene { namespace chain {
                 uint32_t missed_blocks = 0;
                 if (head_block_time() != fc::time_point_sec()) {
                     missed_blocks = get_slot_at_time(b.timestamp);
-                    assert(missed_blocks != 0);
+                    // assert() is compiled out in release builds: a slot of 0 (block time
+                    // before the first slot, e.g. post-HF16 1 s blocks replayed while the
+                    // node still applies the 3 s interval) wrapped missed_blocks to 2^32-1
+                    // and the miss loop below ran for hours (21-validator stand, replay with
+                    // the fork forced only after replay: block numbers past #20M, 7 GB log).
+                    FC_ASSERT(missed_blocks != 0,
+                              "Block #${n} time ${t} is before the first slot ${s} (interval ${i} s)",
+                              ("n", b.block_num())("t", b.timestamp)("s", get_slot_time(1))("i", block_interval()));
                     missed_blocks--;
                     for (uint32_t i = 0; i < missed_blocks; ++i) {
                         const auto &validator_missed = get_validator(get_scheduled_validator(i + 1));
