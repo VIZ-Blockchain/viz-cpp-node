@@ -227,9 +227,11 @@ namespace graphene {
                 struct vote_record { uint32_t round = 0; uint32_t num = 0; block_id_type id; };
                 std::string block_vote_state_path_;
                 std::map<std::string, vote_record> block_vote_state_;
-                std::set<std::pair<std::string, uint32_t>> block_vote_refused_logged_;
+                // Keyed by block id, not height: a livelock rebuilds one height over and over,
+                // and a height key logged only the first variant (stand 22.10, #86 x70 silent).
+                std::set<std::pair<std::string, block_id_type>> block_vote_refused_logged_;
                 // HF16 diagnostics: why our validator casts no vote for head (once per head).
-                std::set<std::pair<std::string, uint32_t>> head_vote_diag_logged_;
+                std::set<std::pair<std::string, block_id_type>> head_vote_diag_logged_;
 
                 void load_block_vote_state() {
                     if (block_vote_state_path_.empty()) return;
@@ -280,18 +282,19 @@ namespace graphene {
                 // not be persisted is not sent, or a restart could vote that round again.
                 bool may_vote(const std::string &validator, uint32_t round, uint32_t num,
                               const block_id_type &id, uint32_t lib) {
-                    for (auto it = block_vote_refused_logged_.begin(); it != block_vote_refused_logged_.end();)
-                        it = it->second <= lib ? block_vote_refused_logged_.erase(it) : std::next(it);
+                    if (block_vote_refused_logged_.size() > 4096) block_vote_refused_logged_.clear();
                     auto it = block_vote_state_.find(validator);
                     if (it != block_vote_state_.end()) {
                         const auto &last = it->second;
                         if (round == last.round && id == last.id) return true;
                         if (round <= last.round) {
                             // Older rounds are routinely skipped (the list carries recent
-                            // blocks); only a different block in the SAME round is news.
-                            if (round == last.round && block_vote_refused_logged_.insert({validator, num}).second)
-                                wlog("Not voting for ${id} at #${n} for ${w}: already voted for ${old} in round ${r}",
-                                     ("id", id)("n", num)("w", validator)("old", last.id)("r", round));
+                            // blocks), so log only blocks above LIB+1, once per block id.
+                            // last.id zero = the round was timed out, not voted.
+                            if (num > lib + 1 && block_vote_refused_logged_.insert({validator, id}).second)
+                                wlog("Not voting for ${id} at #${n} round ${r} for ${w}: last ${what} round ${lr} (${old})",
+                                     ("id", id)("n", num)("r", round)("w", validator)
+                                     ("what", last.id == block_id_type() ? "timed-out" : "voted")("lr", last.round)("old", last.id));
                             return false;
                         }
                     }
@@ -1784,7 +1787,9 @@ namespace graphene {
                                     bool listed = false, cand = false;
                                     for (const auto &bpv : block_post_validations) if (bpv.block_num == hn) listed = true;
                                     for (const auto &c : candidates) if (c.num == hn) cand = true;
-                                    if (!cand && head_vote_diag_logged_.insert({std::string(validator_account), hn}).second) {
+                                    // The producer never votes its own block: not a finding.
+                                    const bool own = db.get_dynamic_global_properties().current_validator == validator_account;
+                                    if (!cand && !own && head_vote_diag_logged_.insert({std::string(validator_account), db.head_block_id()}).second) {
                                         if (head_vote_diag_logged_.size() > 4096) head_vote_diag_logged_.clear();
                                         wlog("HF16 no vote candidate for head #${n} by ${w}: in confirmation list ${l} (${k} entries)",
                                              ("n", hn)("w", validator_account)("l", listed)("k", block_post_validations.size()));
