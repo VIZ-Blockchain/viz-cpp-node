@@ -6567,14 +6567,19 @@ namespace graphene { namespace chain {
                 });
 
                 if (!(skip & skip_undo_history_check)) {
+                    // HF16 (1 s blocks, Q#3108=A): the undo window is counted in blocks, so keep it equal in TIME —
+                    // 3× the blocks, otherwise a LIB stall halts the chain after 2.8 h instead of 8.3 h.
+                    const uint32_t max_undo = has_hardfork(CHAIN_HARDFORK_16)
+                        ? CHAIN_MAX_UNDO_HISTORY * (CHAIN_BLOCK_INTERVAL / CHAIN_BLOCK_INTERVAL_HF16)
+                        : CHAIN_MAX_UNDO_HISTORY;
                     CHAIN_ASSERT(
-                        _dgp.head_block_number - _dgp.last_irreversible_block_num < CHAIN_MAX_UNDO_HISTORY,
+                        _dgp.head_block_number - _dgp.last_irreversible_block_num < max_undo,
                         undo_database_exception,
                         "The database does not have enough undo history to support a blockchain with so many missed blocks. "
                         "Please add a checkpoint if you would like to continue applying blocks beyond this point.",
                         ("last_irreversible_block_num", _dgp.last_irreversible_block_num)
                         ("head", _dgp.head_block_number)
-                        ("max_undo", CHAIN_MAX_UNDO_HISTORY));
+                        ("max_undo", max_undo));
                 }
 
                 // === HARDFORK 12: EMERGENCY CONSENSUS MODE ACTIVATION ===
