@@ -1845,19 +1845,33 @@ namespace graphene {
                     // Time out the last fully passed round t = now-1 once no block of a
                     // later round than head has come: head certified -> the slot after it
                     // stayed empty; head QC-less -> head is being given up on too.
-                    if (now_round >= head_round + 2) {
+                    const auto head_block = db.fetch_block_by_number(head_num);
+                    // Highest QC we hold: head's own if certified, else the QC head carries.
+                    // Not block_cert_round(): it also counts a TC, and a TC round reported
+                    // as a QC round made every timeout vote claim a QC that never existed,
+                    // so the TC skip of that head was refused forever (21-validator stand,
+                    // netem 300 ms: head #183 with TC 691, all timeouts "high QC 691").
+                    uint32_t carried_qc_round = 0;
+                    if (head_block)
+                        for (const auto &e : head_block->extensions)
+                            if (e.which() == 3)
+                                carried_qc_round = e.get<graphene::protocol::block_qc_certificate>().round;
+                    // Pacemaker backoff (Q#3123=A). A QC-less head whose QC lags it by g
+                    // rounds has been rebuilt after TCs in a row: wait w = 2^floor(log2 g)
+                    // rounds (1, 2, 4, capped at 8) before giving up on it, so votes slower
+                    // than a slot still reach a quorum. g comes from the head itself, so
+                    // every validator on it picks the same w and the timeouts meet in one
+                    // round. A certified head, or a QC-less one right after its QC, keeps
+                    // w = 1. Without it, at 300 ms per hop each rebuilt head was given up
+                    // on before its votes arrived (21-validator stand: #179 rebuilt 444
+                    // times, TC every round, height frozen).
+                    uint32_t wait_rounds = 1;
+                    if (!certified && carried_qc_round > 0 && head_round > carried_qc_round + 1) {
+                        const uint32_t g = head_round - carried_qc_round;
+                        while (wait_rounds * 2 <= g && wait_rounds < 8) wait_rounds *= 2;
+                    }
+                    if (now_round >= head_round + 1 + wait_rounds) {
                         const uint32_t t = now_round - 1;
-                        const auto head_block = db.fetch_block_by_number(head_num);
-                        // Highest QC we hold: head's own if certified, else the QC head carries.
-                        // Not block_cert_round(): it also counts a TC, and a TC round reported
-                        // as a QC round made every timeout vote claim a QC that never existed,
-                        // so the TC skip of that head was refused forever (21-validator stand,
-                        // netem 300 ms: head #183 with TC 691, all timeouts "high QC 691").
-                        uint32_t carried_qc_round = 0;
-                        if (head_block)
-                            for (const auto &e : head_block->extensions)
-                                if (e.which() == 3)
-                                    carried_qc_round = e.get<graphene::protocol::block_qc_certificate>().round;
                         const uint32_t high_qc_round = certified ? head_qc->round : carried_qc_round;
                         const auto &wso = db.get_validator_schedule_object();
                         const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
