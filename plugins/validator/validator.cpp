@@ -2274,7 +2274,13 @@ namespace graphene {
                 // Two-level fork collision resolution:
                 //   Level 1: Vote-weighted comparison when both forks are in fork_db
                 //   Level 2: Stuck-head timeout after one full validator round (21 blocks = 63s)
-                {
+                // Not after HF16 (outside emergency): competing blocks are settled by QC/TC fork
+                // choice and a double producer is punished by equivocation evidence. Deferring
+                // here let ONE double-signing validator halt the chain: its twin at head+1 made
+                // every producer defer, and the counter only grows on a node's own slot, so the
+                // timeout needed 21 own slots (~7 min at 1 s), after which gap fill brought the
+                // twin back (21-validator stand, qc-4 doubling viz2+viz3: head stuck at #81).
+                if (emergency_active || !db.has_hardfork(CHAIN_HARDFORK_16)) {
                     auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1);
                     if (existing_blocks.size() > 0) {
                         bool has_competing_block = false;
