@@ -7146,7 +7146,14 @@ namespace graphene { namespace chain {
             static constexpr uint32_t MAX_VOTE_ROUND_BEHIND = 1200;     // ~1 h at 3 s
             const uint32_t head_round = round_of(head_block_time());
             if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
-            if (round > head_round + MAX_VOTE_AHEAD_ROUNDS) return false;
+            // Bound "ahead" by the wall-clock round, not head's: timeout votes exist
+            // precisely while head is stuck. Measured from head, every vote is refused
+            // ~64 s into a stall, no TC can form any more and the chain never recovers,
+            // even after the network heals (21-validator stand, netem 300 ms, 22.10).
+            // The vote pool is off-chain state, so a local clock bound is fine here.
+            const uint32_t now_round = std::max(head_round,
+                    round_of(fc::time_point_sec(fc::time_point::now())));
+            if (round > now_round + MAX_VOTE_AHEAD_ROUNDS) return false;
 
             if (!verify_timeout_vote(round, high_qc_round, validator, signature)) return false;
 
