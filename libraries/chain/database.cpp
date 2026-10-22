@@ -2104,6 +2104,26 @@ namespace graphene { namespace chain {
                     }
                     _maybe_warn_multiple_production(new_head->num);
 
+                    // HF16: fork_db keeps the first block at a height as its head, so a
+                    // same-height sibling never reached the certificate comparison below:
+                    // a TC replacement of a QC-less head (Jolteon) was stored and never
+                    // applied, every next producer built one more sibling and the chain
+                    // stalled for good (21-validator stand, netem 300 ms: 5 blocks #194).
+                    // Offer the pushed block as the candidate when it proves a later
+                    // round; a forged certificate fails in switch_forks and is reverted.
+                    if (has_hardfork(CHAIN_HARDFORK_16) &&
+                        !get_dynamic_global_properties().emergency_consensus_active &&
+                        new_head && !new_head->anchor_only &&
+                        new_head->id != new_block.id() &&
+                        new_block.block_num() == new_head->num &&
+                        block_cert_round(new_block) > block_cert_round(new_head->data)) {
+                        auto pushed = _fork_db.fetch_block(new_block.id());
+                        if (pushed && !pushed->invalid) {
+                            _fork_db.set_head(pushed);
+                            new_head = pushed;
+                        }
+                    }
+
                     // If the block we just pushed directly extends our database head,
                     // it is a simple linear extension regardless of what fork_db thinks
                     // is the longest chain. This handles the case where fork_db's _head
