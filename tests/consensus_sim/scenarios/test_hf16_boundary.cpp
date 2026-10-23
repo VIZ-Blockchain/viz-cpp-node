@@ -12,6 +12,8 @@
 #include "genesis_factory.hpp"
 #include "virtual_clock.hpp"
 #include <graphene/chain/database.hpp>
+#include <graphene/chain/fork_database.hpp>
+#include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/block_vote.hpp>
@@ -140,6 +142,53 @@ BOOST_AUTO_TEST_CASE(slot_and_round_switch_at_fork_block) {
     // The median recomputed from the stored (scaled) votes keeps the x3 value.
     BOOST_CHECK_EQUAL(db.get_validator_schedule_object().median_props.inflation_recalc_period,
                       std::min<uint64_t>(uint64_t(pre_recalc) * 3, std::numeric_limits<uint32_t>::max()));
+}
+
+
+// A whole deferred chain can link before the database applies its first block.
+// fork_db's pruning reference must not discard the applied branch's LIB ancestors.
+BOOST_AUTO_TEST_CASE(deferred_chain_cascade_retains_irreversible_history) {
+    auto gp = make_genesis_params(0xCA5CADEu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start)
+        start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node source("cascade-source", gp, clk);
+    simulated_node follower("cascade-follower", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(source, gp, when));
+    for (const auto& block : source.canonical_blocks_from(1))
+        follower.receive_block(block);
+    BOOST_REQUIRE(follower.head_block_id() == source.head_block_id());
+    BOOST_REQUIRE(follower.db().has_hardfork(CHAIN_HARDFORK_14));
+    source.db().set_hardfork(CHAIN_HARDFORK_16, true);
+    follower.db().set_hardfork(CHAIN_HARDFORK_16, true);
+    const uint32_t base = source.head_block_num();
+    const uint32_t old_lib = follower.last_irreversible_block_num();
+    for (int i = 0; i < 12; ++i) produce(source, gp, when);
+    const auto blocks = source.canonical_blocks_from(base + 1);
+    BOOST_REQUIRE_EQUAL(blocks.size(), 12u);
+    // Cache descendants while their first parent is still missing.
+    for (size_t i = 1; i < blocks.size(); ++i) {
+        bool deferred = false;
+        try { follower.db().get_fork_db().push_block(blocks[i]); }
+        catch (const graphene::chain::unlinkable_block_exception&) { deferred = true; }
+        BOOST_REQUIRE(deferred);
+    }
+    follower.receive_block(blocks.front());
+    BOOST_REQUIRE_EQUAL(follower.head_block_num(), source.head_block_num());
+    BOOST_REQUIRE(follower.head_block_id() == source.head_block_id());
+    BOOST_REQUIRE_GT(follower.last_irreversible_block_num(), old_lib);
+    // Every newly finalized ancestor must remain available, including via block_log
+    // after fork_db's window shrinks back to the fully applied head.
+    for (uint32_t n = old_lib + 1; n <= follower.last_irreversible_block_num(); ++n) {
+        const auto ours = follower.db().fetch_block_by_number(n);
+        const auto theirs = source.db().fetch_block_by_number(n);
+        BOOST_REQUIRE(ours.valid());
+        BOOST_REQUIRE(theirs.valid());
+        BOOST_CHECK(ours->id() == theirs->id());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

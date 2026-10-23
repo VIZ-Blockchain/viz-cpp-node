@@ -6875,8 +6875,13 @@ namespace graphene { namespace chain {
                                     });
                                 }
 
-                                _fork_db.set_max_size(dpo.head_block_number -
-                                                    dpo.last_irreversible_block_num + 1);
+                                // fork_db may be ahead of applied state after linking a deferred batch.
+                                // Its pruning window is measured from ITS head, so retain through
+                                // our LIB rather than pruning still-needed ancestors during catchup.
+                                _fork_db.set_max_size(
+                                    std::max(dpo.head_block_number,
+                                             _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                                    dpo.last_irreversible_block_num + 1);
                                 remove_validated=true;
                             }
                         }
@@ -7083,8 +7088,13 @@ namespace graphene { namespace chain {
                                     });
                                 }
 
-                                _fork_db.set_max_size(dpo.head_block_number -
-                                                    dpo.last_irreversible_block_num + 1);
+                                // fork_db may be ahead of applied state after linking a deferred batch.
+                                // Its pruning window is measured from ITS head, so retain through
+                                // our LIB rather than pruning still-needed ancestors during catchup.
+                                _fork_db.set_max_size(
+                                    std::max(dpo.head_block_number,
+                                             _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                                    dpo.last_irreversible_block_num + 1);
                             }
                         }
                     }
@@ -7920,8 +7930,13 @@ namespace graphene { namespace chain {
                 }
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: fork_db set_max_size=${s}", ("s", dpo.head_block_number - dpo.last_irreversible_block_num + 1));
-                _fork_db.set_max_size(dpo.head_block_number -
-                                      dpo.last_irreversible_block_num + 1);
+                // fork_db may be ahead of applied state after linking a deferred batch.
+                // Its pruning window is measured from ITS head, so retain through
+                // our LIB rather than pruning still-needed ancestors during catchup.
+                _fork_db.set_max_size(
+                    std::max(dpo.head_block_number,
+                             _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                    dpo.last_irreversible_block_num + 1);
                 if (_debug_block_production) ilog("DEBUG_CRASH: update_last_irreversible_block done");
             } FC_CAPTURE_AND_RETHROW()
         }
