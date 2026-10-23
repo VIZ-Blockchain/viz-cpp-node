@@ -329,6 +329,13 @@ namespace graphene {
                     return true;
                 }
                 std::map<std::string, uint32_t> timeout_sent_;   // in memory: a restart may resend, which is harmless
+                // Own block votes not yet in a QC are re-gossiped with backoff (1, 2, 4,
+                // capped at 8 slots; at most VOTE_RESEND_MAX times). A vote lost on the
+                // way (peer dropped, queue lost on reconnect) otherwise never came back:
+                // with 15 live of 21 every vote is needed, so one loss froze the height.
+                struct vote_resend { uint32_t sent = 0; fc::time_point next; };
+                static constexpr uint32_t VOTE_RESEND_MAX = 8;
+                std::map<std::pair<std::string, uint32_t>, vote_resend> vote_resend_;
 
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
@@ -1795,6 +1802,14 @@ namespace graphene {
                                              ("n", hn)("w", validator_account)("l", listed)("k", block_post_validations.size()));
                                     }
                                 }
+                                if (!candidates.empty()) {
+                                    const uint32_t min_round = std::min_element(candidates.begin(), candidates.end(),
+                                            [](const candidate &a, const candidate &b) { return a.round < b.round; })->round;
+                                    for (auto it = vote_resend_.begin(); it != vote_resend_.end(); )
+                                        if (it->first.first == std::string(validator_account) && it->first.second < min_round)
+                                            it = vote_resend_.erase(it);
+                                        else ++it;
+                                }
                                 std::sort(candidates.begin(), candidates.end(),
                                           [](const candidate &a, const candidate &b) { return a.round < b.round; });
                                 const uint32_t lib = db.get_dynamic_global_properties().last_irreversible_block_num;
@@ -1826,9 +1841,20 @@ namespace graphene {
                                         }
                                     }
                                     if (!may_vote(validator_account, c.round, c.num, c.id, lib)) continue;
+                                    auto &rs = vote_resend_[std::make_pair(std::string(validator_account), c.round)];
+                                    if (rs.sent > 0) {
+                                        if (rs.sent > VOTE_RESEND_MAX || now_fine < rs.next) continue;
+                                        const auto held = db.get_block_qc(c.num);
+                                        if (held && held->block_id == c.id && held->round >= c.round) continue;
+                                        ilog("Re-sending vote of ${w} for #${n} round ${r} (no QC yet, attempt ${k})",
+                                             ("w", validator_account)("n", c.num)("r", c.round)("k", rs.sent));
+                                    }
                                     graphene::protocol::signature_type vote_signature = validator_priv_key.sign_compact(
                                             graphene::protocol::block_vote_digest(db.get_chain_id(), c.num, c.id, c.round));
                                     p2p().post_broadcast_block_post_validation(c.id, validator_account, vote_signature, c.round);
+                                    const uint32_t backoff = std::min<uint32_t>(1u << std::min<uint32_t>(rs.sent, 3), 8);
+                                    rs.next = now_fine + fc::seconds(int64_t(db.block_interval()) * backoff);
+                                    ++rs.sent;
                                 }
                             }
                         }

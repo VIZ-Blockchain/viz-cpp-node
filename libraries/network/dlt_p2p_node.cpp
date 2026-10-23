@@ -2540,6 +2540,15 @@ void dlt_p2p_node::broadcast_block_post_validation(
     msg.round = round;
     msg.validator = witness_account;
     msg.signature = validator_signature;
+    // A re-send of our own vote (the validator retries until a QC forms) would
+    // die in the relay dedup and in the pool's one-vote-per-round check, so it
+    // goes straight to the peers. Peers that already have it drop it there.
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (_block_votes_seen.count(key)) {
+        _block_votes_seen[key] = fc::time_point::now();
+        gossip_to_capable(message(msg), DLT_CAP_BLOCK_VOTE, INVALID_PEER_ID);
+        return;
+    }
     process_block_vote(msg, INVALID_PEER_ID);
 }
 
