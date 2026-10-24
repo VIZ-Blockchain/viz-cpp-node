@@ -356,37 +356,6 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     BOOST_REQUIRE_GT(node.last_irreversible_block_num(), base_lib);
     BOOST_REQUIRE_GT(follower.last_irreversible_block_num(), base_lib);
 
-    // A signed duplicate vote is evidence, not a second quorum vote.
-    const auto head = *db.fetch_block_by_number(db.head_block_num());
-    const uint32_t round = db.round_of(head.timestamp);
-    const auto voter = db.get_validator_schedule_object().current_shuffled_validators[0];
-    const auto missed = db.get_validator(voter).total_missed;
-    // Preserve the old one-hour wall-time vote window after changing slot length.
-    const uint32_t historical = round - 2000;
-    const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
-    BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
-    const uint32_t expired = round - 3601;
-    const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
-    BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
-
-    signed_block twin = head;
-    twin.timestamp += fc::seconds(1);
-    const auto conflicting = twin.id();
-    const auto digest = block_vote_digest(db.get_chain_id(), head.block_num(), conflicting, round);
-    BOOST_CHECK(!db.push_block_vote(head.block_num(), conflicting, round, voter, key_for(gp, voter).sign_compact(digest)));
-    uint32_t equivocation_ops = 0;
-    boost::signals2::scoped_connection virtual_ops(db.post_apply_operation.connect(
-        [&](const operation_notification &n) { if (n.op.which() == 106) ++equivocation_ops; }));
-    produce(node, gp, when); relay();
-    BOOST_CHECK_EQUAL(equivocation_ops, 1u);
-    BOOST_CHECK_EQUAL(db.get_validator(voter).last_equivocation_round, round);
-    BOOST_CHECK_EQUAL(follower.db().get_validator(voter).last_equivocation_round, round);
-    BOOST_CHECK_GT(db.get_validator(voter).total_missed, missed);
-    bool proof = false;
-    for (const auto &e : db.fetch_block_by_number(db.head_block_num())->extensions)
-        if (e.which() == 5) proof = true;
-    BOOST_CHECK(proof);
-
     // With no QC of the current head, its parent's carried QC is valid for
     // exactly one consecutive late-QC fallback block.
     const auto producer = next_validator(node);
@@ -416,6 +385,41 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc);
     relay();
     BOOST_REQUIRE_GT(follower.last_irreversible_block_num(), base_lib);
+    // A signed duplicate vote is evidence, not a second quorum vote.
+    vote_for_head(node, gp);
+    const auto head = *db.fetch_block_by_number(db.head_block_num());
+    const uint32_t round = db.round_of(head.timestamp);
+    const auto voter = db.get_validator_schedule_object().current_shuffled_validators[0];
+    const auto missed = db.get_validator(voter).total_missed;
+    // Preserve the old one-hour wall-time vote window after changing slot length.
+    const uint32_t historical = round - 2000;
+    const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
+    BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
+    const uint32_t expired = round - 3601;
+    const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
+    BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
+
+    signed_block twin = head;
+    twin.timestamp += fc::seconds(1);
+    const auto conflicting = twin.id();
+    const auto digest = block_vote_digest(db.get_chain_id(), head.block_num(), conflicting, round);
+    BOOST_CHECK(!db.push_block_vote(head.block_num(), conflicting, round, voter, key_for(gp, voter).sign_compact(digest)));
+    uint32_t equivocation_ops = 0;
+    boost::signals2::scoped_connection virtual_ops(db.post_apply_operation.connect(
+        [&](const operation_notification &n) { if (n.op.which() == 106) ++equivocation_ops; }));
+    produce(node, gp, when); relay();
+    BOOST_CHECK_EQUAL(equivocation_ops, 1u);
+    BOOST_CHECK_EQUAL(db.get_validator(voter).last_equivocation_round, round);
+    BOOST_CHECK_EQUAL(follower.db().get_validator(voter).last_equivocation_round, round);
+    BOOST_CHECK_GT(db.get_validator(voter).total_missed, missed);
+    bool proof = false;
+    const auto proof_block = db.fetch_block_by_number(db.head_block_num());
+    BOOST_REQUIRE(proof_block.valid());
+    for (const auto &e : proof_block->extensions)
+        if (e.which() == 5) proof = true;
+    BOOST_CHECK(proof);
+
+
 }
 
 BOOST_AUTO_TEST_CASE(forged_certificate_cannot_enter_fork_choice) {
