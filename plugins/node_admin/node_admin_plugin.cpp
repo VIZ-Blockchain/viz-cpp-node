@@ -2114,7 +2114,7 @@ private:
         if (finished_) return;
         finished_ = true;
         boost::system::error_code ignored;
-        timer_.cancel(ignored);
+        try { timer_.cancel(); } catch (const boost::system::system_error &) {}
         input_.reset();
         if (complete)
             con_->handle_write_http_response(websocketpp::lib::error_code());
