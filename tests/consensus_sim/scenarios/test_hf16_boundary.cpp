@@ -35,7 +35,8 @@ namespace {
 account_name_type next_validator(simulated_node& n) { return n.db().get_scheduled_validator(1); }
 
 fc::ecc::private_key key_for(const genesis_params& gp, const account_name_type& v) {
-    return (v == gp.initiator_name) ? gp.initiator_key : gp.genesis_witness_key;
+    return (v == gp.genesis_witness_name || v == account_name_type("validator-two"))
+        ? gp.genesis_witness_key : gp.initiator_key;
 }
 
 // The harness has no p2p: every scheduled validator votes for head directly (see test_pm_no_contest_fee).
@@ -334,7 +335,13 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     auto &db = node.db();
     db.set_hardfork(CHAIN_HARDFORK_16, true);
     follower.db().set_hardfork(CHAIN_HARDFORK_16, true);
+#ifdef CHAIN_TESTNET_VALIDATORS
     BOOST_REQUIRE_GE(db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 2);
+#else
+    // The classic testnet build has a fixed one-slot schedule. The CI matrix's
+    // CHAIN_TESTNET_VALIDATORS=2 build requires a real multi-validator quorum.
+    BOOST_REQUIRE_EQUAL(db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 1);
+#endif
     const uint32_t base_lib = node.last_irreversible_block_num();
     auto relay = [&]() {
         const auto b = db.fetch_block_by_number(db.head_block_num());
