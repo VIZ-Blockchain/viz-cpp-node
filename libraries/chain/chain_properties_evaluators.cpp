@@ -103,6 +103,12 @@ namespace graphene { namespace chain {
         // one-year-of-3-s-blocks bound stays consensus (the stored props are checked after the
         // visit, so a rejected op leaves nothing behind - the whole op is rolled back).
         const auto check_year_bound = [&](const chain_properties& p) {
+            const bool hf16 = _db.has_hardfork(CHAIN_HARDFORK_16);
+            const uint64_t reveal_blocks = hf16
+                ? uint64_t(p.pm_batch_epoch_blocks) + p.pm_reveal_window_blocks
+                : uint64_t(uint32_t(p.pm_batch_epoch_blocks + p.pm_reveal_window_blocks));
+            FC_ASSERT(p.pm_closed_market_retention_sec > reveal_blocks * _db.block_interval(),
+                      "retention must exceed the live worst-case commit reveal deadline");
             if (_db.has_hardfork(CHAIN_HARDFORK_16)) {
                 FC_ASSERT(p.distribution_epoch_length >=
                           CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * (CHAIN_BLOCK_INTERVAL / _db.block_interval()),

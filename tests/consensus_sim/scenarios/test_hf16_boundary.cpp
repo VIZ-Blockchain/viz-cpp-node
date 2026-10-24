@@ -15,6 +15,7 @@
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/account_object.hpp>
+#include <graphene/chain/operation_notification.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/block_vote.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -258,6 +259,13 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     chain_properties_pm props = db.get_validator(gp.initiator_name).props;
     props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH;
     versioned_chain_properties_update_operation op; op.owner = gp.initiator_name; op.props = props;
+    auto short_retention = props;
+    short_retention.pm_batch_epoch_blocks = 6;
+    short_retention.pm_reveal_window_blocks = 15;
+    short_retention.pm_closed_market_retention_sec = 30;
+    op.props = short_retention;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
+    op.props = props;
     node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
     produce(node, gp, when);
     BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
@@ -268,7 +276,18 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3 - 1;
     op.props = props;
     BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
-    props.distribution_epoch_length += 1; op.props = props;
+    props.distribution_epoch_length += 1;
+    auto overflowing = props;
+    overflowing.pm_batch_epoch_blocks = 0x80000000u;
+    overflowing.pm_reveal_window_blocks = 0x80000000u;
+    overflowing.pm_closed_market_retention_sec = 30;
+    op.props = overflowing;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
+    // 21 native blocks are 21 seconds after HF16, not the old 63 seconds.
+    props.pm_batch_epoch_blocks = 6;
+    props.pm_reveal_window_blocks = 15;
+    props.pm_closed_market_retention_sec = 30;
+    op.props = props;
     node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
     produce(node, gp, when);
     BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
@@ -286,6 +305,30 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     simulated_node node("bft-source", gp, clk), follower("bft-follower", gp, clk);
     fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
     BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    // Register a second real validator through transactions, not a forged schedule.
+    const auto pub = gp.genesis_witness_key.get_public_key();
+    authority auth; auth.weight_threshold = 1; auth.key_auths[pub] = 1;
+    account_create_operation create;
+    create.creator = gp.initiator_name; create.new_account_name = "validator-two";
+    create.fee = node.db().get_validator_schedule_object().median_props.account_creation_fee;
+    create.delegation = asset(0, SHARES_SYMBOL);
+    create.master = auth; create.active = auth; create.regular = auth; create.memo_key = pub;
+    transfer_operation fund; fund.from = gp.initiator_name; fund.to = "validator-two";
+    fund.amount = asset(100000000, TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({create, fund}, gp.initiator_key, node));
+    produce(node, gp, when);
+    validator_update_operation register_validator;
+    register_validator.owner = "validator-two"; register_validator.url = "viz";
+    register_validator.block_signing_key = pub;
+    account_validator_vote_operation vote;
+    vote.account = gp.initiator_name; vote.validator = "validator-two"; vote.approve = true;
+    auto tx = sign_ops({register_validator, vote}, gp.initiator_key, node);
+    tx.sign(gp.genesis_witness_key, node.chain_id());
+    node.push_pending_transaction(tx);
+    for (int i = 0; i < 100; ++i) {
+        produce(node, gp, when);
+        if (node.db().get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT >= 2) break;
+    }
     for (const auto &b : node.canonical_blocks_from(1)) follower.receive_block(b);
     BOOST_REQUIRE(follower.head_block_id() == node.head_block_id());
     auto &db = node.db();
@@ -324,7 +367,11 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     const auto conflicting = twin.id();
     const auto digest = block_vote_digest(db.get_chain_id(), head.block_num(), conflicting, round);
     BOOST_CHECK(!db.push_block_vote(head.block_num(), conflicting, round, voter, key_for(gp, voter).sign_compact(digest)));
+    uint32_t equivocation_ops = 0;
+    boost::signals2::scoped_connection virtual_ops(db.post_apply_operation.connect(
+        [&](const operation_notification &n) { if (n.op.which() == 106) ++equivocation_ops; }));
     produce(node, gp, when); relay();
+    BOOST_CHECK_EQUAL(equivocation_ops, 1u);
     BOOST_CHECK_EQUAL(db.get_validator(voter).last_equivocation_round, round);
     BOOST_CHECK_EQUAL(follower.db().get_validator(voter).last_equivocation_round, round);
     BOOST_CHECK_GT(db.get_validator(voter).total_missed, missed);
