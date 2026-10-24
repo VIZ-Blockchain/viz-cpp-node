@@ -2,7 +2,7 @@
 
 验证者插件负责区块签名和生产。它在自己的 OS 线程上运行专用的 250ms 定时器循环，在每次触发时执行一系列安全检查，并在满足所有条件时调用 `database::generate_block()`。
 
-**源码：** [plugins/validator/validator.cpp](../../plugins/validator/validator.cpp)
+**源码：** [plugins/validator/validator.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/validator/validator.cpp)
 
 ---
 

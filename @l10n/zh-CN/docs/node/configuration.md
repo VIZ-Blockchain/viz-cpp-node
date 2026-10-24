@@ -197,6 +197,25 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
+`file` appender 已配置为按时间轮转（每小时一个新文件，保留一天），但只有在 fc
+纤程队列被处理时轮转才会触发，而 `vizd` 启动后不再处理它（2026-10-20 实测：测试网节点在
+`info` 级别下九小时写了一个 37 MB 的文件，没有任何按小时的文件；主网节点运行四天也没有
+产生新文件）。不要指望它来限制文件大小，并注意在 `debug` 下节点每小时可能写出数 GB 日志。
+如果只需要最近的尾部，请使用可选的 capped appender：单个文件，只保留最后 `max_lines` 行
+（默认 10000，`0` 表示不限制）。它在写入时统计行数并在原文件上就地压缩，因此文件保持在
+`max_lines` 与约 1.1 x `max_lines` 之间，不依赖任何定时器。配置中没有
+`log.capped_file_appender.*` 节的节点行为与之前完全一致；该节也可以安全地先于二进制升级
+下发——旧版本会忽略它并继续写入 stderr。若配置的路径无法打开，节点仍会启动：向 stderr
+输出一行 `capped_file_appender: cannot open log file …`，只是不会创建文件。
+
+```ini
+log.capped_file_appender.node.filename = logs/node/node.log
+log.capped_file_appender.node.max_lines = 10000
+
+# 写哪些日志由 logger 决定；appender 本身不写任何东西。
+logger.default.appenders = stderr, node
+```
+
 ---
 
 ## 完整参考

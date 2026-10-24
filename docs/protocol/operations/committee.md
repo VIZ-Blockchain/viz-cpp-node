@@ -102,3 +102,5 @@ Votes on a funding request. Voting power is proportional to the voter's SHARES s
 ---
 
 See also: [Data Types](../data-types.md), [Operations Overview](./overview.md), [Virtual Operations](../virtual-operations.md), [Committee Governance](../../governance/committee.md).
+
+**HF16 limit:** at creation, `required_amount_max.amount <= floor(current_supply.amount / 100)` in raw units (1% of current total VIZ, rounded down). Before HF16 the limit is 500,000 VIZ. This is not 1% of the committee fund; existing requests are not repriced. See [HF16](../../consensus/hf16.md).

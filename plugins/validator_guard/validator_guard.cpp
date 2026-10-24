@@ -9,9 +9,16 @@
 #include <graphene/time/time.hpp>
 #include <fc/string.hpp>
 #include <fc/io/json.hpp>
+#include <atomic>
+#include <chrono>
+#include <fstream>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <thread>
-#include <chrono>
+
+#include <cstdio>
+#include <unistd.h>
 
 #include <boost/signals2/connection.hpp>
 #include <appbase/application.hpp>
@@ -57,6 +64,15 @@ struct validator_guard_plugin::impl {
     // (we should NOT auto-restore them — only a restart or explicit action should re-enable)
     std::set<std::string> _auto_disabled_validators;
 
+    // Operator-intent latch: validators disabled through node_admin stay disabled.
+    // Unlike _auto_disabled_validators this is NOT about consecutive blocks and is not
+    // cleared by the periodic check; it survives restarts through a file in the data dir,
+    // otherwise a redeploy would silently re-enable a validator the operator turned off.
+    std::set<std::string> _operator_hold;
+    mutable std::mutex _state_mtx;      // guards _operator_hold
+    std::string _hold_path;
+    std::atomic<bool> _startup_done{false};
+
     // Per-validator key pair used for signing and for broadcasting the update
     struct validator_info {
         fc::ecc::private_key signing_key;
@@ -86,6 +102,17 @@ struct validator_guard_plugin::impl {
     // validator that is still enabled on-chain and keeps re-broadcasting the
     // transactions until peers have had a chance to receive them.
     void disable_on_shutdown();
+
+    // ── operator actions (node_admin) ─────────────────────────────────────────
+    bool chain_actions_available() const {
+        return _enabled && _startup_done.load() && !_validator_configs.empty();
+    }
+    bool is_held(const std::string& name) const;
+    void load_operator_holds();
+    void save_operator_holds_locked();   // caller holds _state_mtx
+    std::vector<validator_status> validators_status() const;
+    std::vector<validator_action_result> apply_validator_actions(
+        const std::vector<validator_action_request>& requests);
 
     graphene::plugins::chain::plugin&   chain_;
     graphene::plugins::p2p::p2p_plugin& p2p_;
@@ -124,7 +151,7 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
     // (within the last 2 * CHAIN_BLOCK_INTERVAL seconds)
     const auto head_time = database.head_block_time();
     const auto now       = fc::time_point_sec(graphene::time::now());
-    if (head_time < now - fc::seconds(CHAIN_BLOCK_INTERVAL * 2)) {
+    if (head_time < now - fc::seconds(database.block_interval() * 2)) {
         dlog("validator_guard: node not in sync, skipping check");
         return false;
     }
@@ -172,6 +199,10 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
             wlog("validator_guard: validator '${w}' not found in database", ("w", name));
             continue;
         }
+
+        // Operator disabled this validator through node_admin: the hold latch suppresses
+        // auto-restore, otherwise the periodic check would re-enable it within a minute.
+        if (is_held(name)) continue;
 
         // Signing key is present on-chain — nothing to do
         if (itr->signing_key != null_key) {
@@ -442,6 +473,320 @@ void validator_guard_plugin::impl::disable_on_shutdown() {
          ("n", txs.size()));
 }
 
+// ─── operator hold latch ─────────────────────────────────────────────────────
+// A hold is "the operator turned this validator off through node_admin". It is persisted so
+// a restart/redeploy cannot silently re-enable block production, and it is distinct from
+// _auto_disabled_validators (which tracks consecutive blocks and clears itself).
+
+bool validator_guard_plugin::impl::is_held(const std::string& name) const {
+    std::lock_guard<std::mutex> lock(_state_mtx);
+    return _operator_hold.count(name) > 0;
+}
+
+void validator_guard_plugin::impl::load_operator_holds() {
+    std::set<std::string> holds;
+    if (!_hold_path.empty()) {
+        std::ifstream in(_hold_path);
+        std::string line;
+        while (std::getline(in, line)) {
+            // Format: "<unixtime> <name>". Account names cannot contain spaces.
+            const std::size_t sp = line.find(' ');
+            if (sp == std::string::npos) continue;
+            std::string name = line.substr(sp + 1);
+            while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+            if (!name.empty()) holds.insert(name);
+        }
+        if (!holds.empty()) {
+            ilog("validator_guard: restored ${n} operator hold(s) from ${p}",
+                 ("n", holds.size())("p", _hold_path));
+        }
+    }
+    std::lock_guard<std::mutex> lock(_state_mtx);
+    _operator_hold = std::move(holds);
+}
+
+void validator_guard_plugin::impl::save_operator_holds_locked() {
+    if (_hold_path.empty()) return;
+    const std::string tmp = _hold_path + ".tmp." + std::to_string(::getpid());
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) {
+            elog("validator_guard: cannot write hold file ${p}; holds live in memory only", ("p", _hold_path));
+            return;
+        }
+        const uint32_t now = static_cast<uint32_t>(graphene::time::now().sec_since_epoch());
+        for (const auto& name : _operator_hold) out << now << ' ' << name << '\n';
+        out.flush();
+        if (!out) {
+            elog("validator_guard: failed writing hold file ${p}", ("p", _hold_path));
+            std::remove(tmp.c_str());
+            return;
+        }
+    }
+    if (std::rename(tmp.c_str(), _hold_path.c_str()) != 0) {
+        elog("validator_guard: failed replacing hold file ${p} (tmp ${t})", ("p", _hold_path)("t", tmp));
+        std::remove(tmp.c_str());
+    }
+}
+
+// ─── validators_status ───────────────────────────────────────────────────────
+// Read-only snapshot for node_admin. Called from the admin (webserver) thread, so the
+// chain database is read under a weak read lock; _validator_configs is immutable after
+// initialization, and the hold set is copied under its own mutex first (no lock nesting
+// with the chain lock on the write side).
+
+std::vector<validator_status> validator_guard_plugin::impl::validators_status() const {
+    std::vector<validator_status> out;
+    // _validator_configs is still being pruned while startup runs; report nothing until
+    // it is final instead of racing with the erase.
+    if (!_enabled || !_startup_done.load()) return out;
+
+    std::set<std::string> holds;
+    {
+        std::lock_guard<std::mutex> lock(_state_mtx);
+        holds = _operator_hold;
+    }
+
+    db().with_weak_read_lock([&]() {
+        static const graphene::protocol::public_key_type null_key;
+        const auto& idx = db()
+            .get_index<graphene::chain::validator_index>()
+            .indices()
+            .get<graphene::chain::by_name>();
+
+        // Best effort: the schedule may be empty right after startup.
+        std::vector<std::string> next_slots;
+        for (uint32_t i = 1; i <= 3; ++i) {
+            try { next_slots.push_back(db().get_scheduled_validator(i)); }
+            catch (...) { next_slots.push_back(std::string()); }
+        }
+
+        for (const auto& entry : _validator_configs) {
+            validator_status st;
+            st.name = entry.first;
+            st.hold = holds.count(st.name) > 0;
+            st.configured_key = static_cast<std::string>(
+                graphene::protocol::public_key_type(entry.second.signing_key.get_public_key()));
+
+            auto itr = idx.find(st.name);
+            if (itr != idx.end()) {
+                st.on_chain = true;
+                st.enabled = (itr->signing_key != null_key);
+                if (st.enabled) st.signing_key = static_cast<std::string>(itr->signing_key);
+            }
+
+            try {
+                const auto& auth = db().get<graphene::chain::account_authority_object,
+                                            graphene::chain::by_account>(st.name);
+                const auto pk = entry.second.active_key.get_public_key();
+                for (const auto& k : auth.active.key_auths) {
+                    if (k.first == pk) { st.active_authority = true; break; }
+                }
+            } catch (...) {
+                // A validator whose account is gone is reported as on_chain=false above.
+            }
+
+            for (std::size_t i = 0; i < next_slots.size(); ++i) {
+                if (next_slots[i] == st.name) { st.scheduled_in = static_cast<int32_t>(i + 1); break; }
+            }
+            out.push_back(st);
+        }
+    });
+    return out;
+}
+
+// ─── apply_validator_actions ─────────────────────────────────────────────────
+// Builds and signs every validator_update under one read lock, then releases the lock and
+// broadcasts — broadcast_transaction() dispatches to the P2P thread and waits, and that
+// thread may need the write lock to apply an incoming block (same rule as disable_on_shutdown).
+// The local chain also gets the transaction through accept_transaction(), so a single-node
+// testnet includes it without peers.
+
+std::vector<validator_action_result> validator_guard_plugin::impl::apply_validator_actions(
+        const std::vector<validator_action_request>& requests) {
+    std::vector<validator_action_result> results(requests.size());
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        results[i].name = requests[i].name;
+        switch (requests[i].action) {
+            case validator_action::enable:  results[i].action = "enable";  break;
+            case validator_action::disable: results[i].action = "disable"; break;
+            case validator_action::set_key: results[i].action = "set_key"; break;
+        }
+    }
+
+    auto fail_all = [&](const std::string& why) {
+        for (auto& r : results) if (r.error.empty()) r.error = why;
+        return results;
+    };
+
+    if (!_enabled) return fail_all("validator_guard is disabled in config (validator-guard-enabled = false)");
+    if (!_startup_done.load() || _validator_configs.empty())
+        return fail_all("validator_guard is not active: no validator is configured with an active key");
+
+    struct pending_action {
+        std::size_t index = 0;
+        bool has_tx = false;
+        graphene::chain::signed_transaction tx;
+    };
+    std::vector<pending_action> pending;
+    static const graphene::protocol::public_key_type null_key;
+
+    try {
+        db().with_weak_read_lock([&]() {
+            const auto& idx = db()
+                .get_index<graphene::chain::validator_index>()
+                .indices()
+                .get<graphene::chain::by_name>();
+
+            for (std::size_t i = 0; i < requests.size(); ++i) {
+                const validator_action_request& req = requests[i];
+                validator_action_result& res = results[i];
+
+                auto cfg_it = _validator_configs.find(req.name);
+                if (cfg_it == _validator_configs.end()) {
+                    res.error = "validator '" + req.name + "' is not configured in validator-guard";
+                    continue;
+                }
+                auto itr = idx.find(req.name);
+                if (itr == idx.end()) {
+                    res.error = "validator '" + req.name + "' does not exist on chain";
+                    continue;
+                }
+
+                const bool current_enabled = (itr->signing_key != null_key);
+                const std::string current = current_enabled
+                    ? static_cast<std::string>(itr->signing_key) : std::string();
+
+                if (req.check_expected && current != req.expected_key) {
+                    res.error = "chain state changed: signing key is '" +
+                                (current.empty() ? std::string("null") : current) +
+                                "', the plan expected '" +
+                                (req.expected_key.empty() ? std::string("null") : req.expected_key) + "'";
+                    continue;
+                }
+
+                graphene::protocol::public_key_type target;
+                switch (req.action) {
+                    case validator_action::enable:
+                        target = graphene::protocol::public_key_type(
+                            cfg_it->second.signing_key.get_public_key());
+                        break;
+                    case validator_action::disable:
+                        target = null_key;
+                        break;
+                    case validator_action::set_key:
+                        try {
+                            target = graphene::protocol::public_key_type(req.signing_key);
+                        } catch (const fc::exception& e) {
+                            res.error = "invalid signing_key: " + e.to_string();
+                            continue;
+                        }
+                        break;
+                }
+
+                const bool target_enabled = (target != null_key);
+                if (current_enabled == target_enabled && (!target_enabled || itr->signing_key == target)) {
+                    // Already in the desired state (the chain moved between plan and apply).
+                    res.ok = true;
+                    res.changed = false;
+                    pending_action pa;
+                    pa.index = i;
+                    pending.push_back(pa);
+                    continue;
+                }
+
+                graphene::protocol::validator_update_operation op;
+                op.owner            = req.name;
+                op.url              = std::string(itr->url.begin(), itr->url.end());
+                op.block_signing_key = target;
+
+                graphene::chain::signed_transaction tx;
+                tx.operations.push_back(op);
+                // Operator window: long enough for a couple of blocks of retry, short
+                // enough that a stale transaction cannot resurface much later.
+                tx.set_expiration(fc::time_point_sec(graphene::time::now() + fc::seconds(60)));
+                tx.set_reference_block(db().head_block_id());
+                tx.sign(cfg_it->second.active_key, db().get_chain_id());
+
+                pending_action pa;
+                pa.index = i;
+                pa.has_tx = true;
+                pa.tx = tx;
+                pending.push_back(pa);
+            }
+        });
+    } catch (const fc::exception& e) {
+        return fail_all(std::string("failed to read chain state: ") + e.to_string());
+    } catch (const std::exception& e) {
+        return fail_all(std::string("failed to read chain state: ") + e.what());
+    }
+
+    for (auto& pa : pending) {
+        if (!pa.has_tx) continue;
+        validator_action_result& res = results[pa.index];
+        const std::string tx_id = pa.tx.id().str();
+
+        std::string accept_error;
+        try {
+            chain_.accept_transaction(pa.tx);
+        } catch (const fc::exception& e) {
+            accept_error = e.to_detail_string();
+        } catch (const std::exception& e) {
+            accept_error = e.what();
+        }
+
+        try {
+            p2p_.broadcast_transaction(pa.tx);
+        } catch (const fc::exception& e) {
+            res.ok = false;
+            res.tx_id = tx_id;
+            res.error = "broadcast failed: " + e.to_detail_string();
+            if (!accept_error.empty()) res.error += "; local accept: " + accept_error;
+            continue;
+        } catch (const std::exception& e) {
+            res.ok = false;
+            res.tx_id = tx_id;
+            res.error = std::string("broadcast failed: ") + e.what();
+            continue;
+        }
+
+        if (!accept_error.empty()) {
+            // The tx may still reach the network, but this node refused it locally —
+            // calling that a success would be a lie. Name both facts.
+            res.ok = false;
+            res.tx_id = tx_id;
+            res.error = "local accept failed: " + accept_error;
+            continue;
+        }
+
+        res.ok = true;
+        res.changed = true;
+        res.tx_id = tx_id;
+        ilog("validator_guard: operator ${a} for '${w}' [ID: ${id}]",
+             ("a", res.action)("w", res.name)("id", tx_id));
+    }
+
+    // The hold follows the outcome, never the intent: a failed disable must not leave a
+    // latch that blocks auto-restore (that would disable the validator only in our heads).
+    {
+        std::lock_guard<std::mutex> lock(_state_mtx);
+        bool dirty = false;
+        for (std::size_t i = 0; i < results.size(); ++i) {
+            if (!results[i].ok) continue;
+            const bool want_hold = (requests[i].action == validator_action::disable);
+            if (want_hold && !_operator_hold.count(results[i].name)) {
+                _operator_hold.insert(results[i].name);
+                dirty = true;
+            } else if (!want_hold && _operator_hold.erase(results[i].name) > 0) {
+                dirty = true;
+            }
+        }
+        if (dirty) save_operator_holds_locked();
+    }
+
+    return results;
+}
+
 // ─── plugin lifecycle ────────────────────────────────────────────────────────
 
 validator_guard_plugin::validator_guard_plugin()  = default;
@@ -511,6 +856,8 @@ void validator_guard_plugin::plugin_initialize(
     try {
         ilog("validator_guard: plugin_initialize() begin");
         pimpl = std::make_unique<impl>();
+        pimpl->_hold_path =
+            (appbase::app().data_dir() / "validator-guard-holds.txt").string();
 
         // enabled flag — prefer validator-guard-enabled, fall back to deprecated witness-guard-enabled
         if (options.count("validator-guard-enabled")) {
@@ -626,8 +973,13 @@ void validator_guard_plugin::plugin_initialize(
 void validator_guard_plugin::plugin_startup() {
     ilog("validator_guard: plugin_startup() begin");
 
+    // Operator holds are read before the first periodic check: a restart must not
+    // re-enable a validator that was disabled on purpose.
+    pimpl->load_operator_holds();
+
     if (!pimpl->_enabled || pimpl->_validator_configs.empty()) {
         ilog("validator_guard: nothing to monitor, plugin inactive");
+        pimpl->_startup_done = true;
         return;
     }
     // Verify on-chain authority for every configured validator
@@ -659,7 +1011,7 @@ void validator_guard_plugin::plugin_startup() {
         }
     }
 
-    if (pimpl->_validator_configs.empty()) return;
+    if (pimpl->_validator_configs.empty()) { pimpl->_startup_done = true; return; }
 
     // Run an initial check at startup; mark done if the node is already in sync
     // (check_and_restore_internal returns true when the node is synchronized).
@@ -764,10 +1116,12 @@ void validator_guard_plugin::plugin_startup() {
     }
 );
 
+    pimpl->_startup_done = true;
     ilog("validator_guard: plugin_startup() end — active");
 }
 
 void validator_guard_plugin::plugin_shutdown() {
+    if (pimpl) pimpl->_startup_done = false;
     // Disconnect from applied_block first so the consecutive-block guard does not
     // fire (and double-broadcast) while we run the graceful-shutdown disable below.
     if (pimpl && pimpl->_applied_block_connection.connected()) {
@@ -787,6 +1141,30 @@ void validator_guard_plugin::plugin_shutdown() {
     }
 
     ilog("validator_guard: plugin_shutdown()");
+}
+
+// ─── public API for node_admin ───────────────────────────────────────────────
+
+bool validator_guard_plugin::chain_actions_available() const {
+    return pimpl && pimpl->chain_actions_available();
+}
+
+std::vector<validator_status> validator_guard_plugin::validators_status() const {
+    if (!pimpl) return {};
+    return pimpl->validators_status();
+}
+
+std::vector<validator_action_result> validator_guard_plugin::apply_validator_actions(
+        const std::vector<validator_action_request>& requests) {
+    if (!pimpl) {
+        std::vector<validator_action_result> out(requests.size());
+        for (std::size_t i = 0; i < requests.size(); ++i) {
+            out[i].name = requests[i].name;
+            out[i].error = "validator_guard is not initialized";
+        }
+        return out;
+    }
+    return pimpl->apply_validator_actions(requests);
 }
 
 } // validator_guard

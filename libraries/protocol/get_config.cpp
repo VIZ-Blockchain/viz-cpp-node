@@ -5,12 +5,16 @@
 #include <graphene/protocol/config.hpp>
 #endif
 #include <graphene/protocol/asset.hpp>
+#include <graphene/protocol/chain_operations.hpp>
 #include <graphene/protocol/version.hpp>
 
 namespace graphene {
     namespace protocol {
 
-        fc::variant_object get_config() {
+        fc::variant_object get_config(uint32_t live_block_interval) {
+            const uint32_t interval = live_block_interval ? live_block_interval : CHAIN_BLOCK_INTERVAL;
+            FC_ASSERT(interval == CHAIN_BLOCK_INTERVAL || interval == CHAIN_BLOCK_INTERVAL_HF16);
+            const uint32_t scale = CHAIN_BLOCK_INTERVAL / interval;
             fc::mutable_variant_object result;
 
             result["CHAIN_100_PERCENT"] = CHAIN_100_PERCENT;
@@ -22,9 +26,11 @@ namespace graphene {
             result["CONSENSUS_BANDWIDTH_RESERVE_BELOW"] = CONSENSUS_BANDWIDTH_RESERVE_BELOW;
             result["CHAIN_HARDFORK_VERSION"] = CHAIN_HARDFORK_VERSION;
             result["CHAIN_VERSION"] = CHAIN_VERSION;
-            result["CHAIN_BLOCK_INTERVAL"] = CHAIN_BLOCK_INTERVAL;
-            result["CHAIN_BLOCKS_PER_DAY"] = CHAIN_BLOCKS_PER_DAY;
-            result["CHAIN_BLOCKS_PER_YEAR"] = CHAIN_BLOCKS_PER_YEAR;
+            result["CHAIN_BLOCK_INTERVAL"] = interval;
+            result["CHAIN_BLOCK_INTERVAL_HF16"] = CHAIN_BLOCK_INTERVAL_HF16;
+            result["CHAIN_BLOCKS_PER_HOUR"] = uint32_t(3600 / interval);
+            result["CHAIN_BLOCKS_PER_DAY"] = uint32_t(86400 / interval);
+            result["CHAIN_BLOCKS_PER_YEAR"] = uint32_t(CHAIN_SECONDS_PER_YEAR / interval);
             result["CHAIN_ID"] = CHAIN_ID;
             result["CHAIN_HARDFORK_REQUIRED_VALIDATORS"] = CHAIN_HARDFORK_REQUIRED_VALIDATORS;
             result["CHAIN_INITIATOR_NAME"] = CHAIN_INITIATOR_NAME;
@@ -47,7 +53,7 @@ namespace graphene {
             result["CHAIN_MAX_SIG_CHECK_DEPTH"] = CHAIN_MAX_SIG_CHECK_DEPTH;
             result["CHAIN_MAX_TIME_UNTIL_EXPIRATION"] = CHAIN_MAX_TIME_UNTIL_EXPIRATION;
             result["CHAIN_MAX_TRANSACTION_SIZE"] = CHAIN_MAX_TRANSACTION_SIZE;
-            result["CHAIN_MAX_UNDO_HISTORY"] = CHAIN_MAX_UNDO_HISTORY;
+            result["CHAIN_MAX_UNDO_HISTORY"] = uint32_t(CHAIN_MAX_UNDO_HISTORY * scale);
             result["CHAIN_MAX_VOTE_CHANGES"] = CHAIN_MAX_VOTE_CHANGES;
             result["CHAIN_MAX_TOP_VALIDATORS"] = CHAIN_MAX_TOP_VALIDATORS;
             result["CHAIN_MAX_WITHDRAW_ROUTES"] = CHAIN_MAX_WITHDRAW_ROUTES;
@@ -70,6 +76,19 @@ namespace graphene {
             result["CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT"] = CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT;
             result["CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK"] = CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK;
 
+            // Stored/voted properties are native block counts (owner Q3108=A), not
+            // hidden 3-second units. Expose live defaults so clients need not re-vote
+            // stale compile-time values after HF16.
+            chain_properties_pm defaults;
+            defaults.inflation_recalc_period *= scale;
+            defaults.distribution_epoch_length *= scale;
+            defaults.pm_batch_epoch_blocks *= scale;
+            defaults.pm_reveal_window_blocks *= scale;
+            result["CHAIN_DEFAULT_CHAIN_PROPERTIES"] = fc::variant(defaults);
+            result["CHAIN_PROPERTY_BLOCK_UNITS"] = "native-blocks";
+            result["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH"] = uint32_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * scale);
+            result["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * scale);
+            result["CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * scale);
             return result;
         }
 

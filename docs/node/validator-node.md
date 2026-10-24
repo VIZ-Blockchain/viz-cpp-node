@@ -1,6 +1,6 @@
 # Running a Validator Node
 
-Validators (block producers) are accounts scheduled by the Fair-DPOS algorithm to produce blocks every 3 seconds. Running a validator node requires a registered validator account, a signing key, and a properly configured node.
+Validators (block producers) are accounts scheduled by the Fair-DPOS algorithm to produce blocks every 3 seconds before HF16 and every 1 second after HF16. Running a validator node requires a registered validator account, a signing key, and a properly configured node.
 
 ---
 

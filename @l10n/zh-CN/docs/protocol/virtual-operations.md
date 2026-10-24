@@ -377,6 +377,13 @@
 
 所有 PM 资金流动严格零和（无增发）；结算守恒 `Σ out == Σ 下注 + LP 本金 + forfeit_pool`。
 
+
+### 共识（HF16 QC）
+
+| ID | 操作 | 触发条件 |
+|----|------|----------|
+| 106 | `validator_equivocation_operation` | 某区块携带证据，证明 `validator` 在同一 `round` 中为两个不同区块（`first_block_id`、`second_block_id`）签署了投票。处罚等同于漏块（`total_missed++`，`penalty_percent += validator_miss_penalty_percent`，持续 `validator_miss_penalty_duration`）；每轮最多一次（`last_equivocation_round`） |
+
 ---
 
 参见：[操作概述](./operations/overview.md)、[奖励](./operations/awards.md)、[委员会](./operations/committee.md)。

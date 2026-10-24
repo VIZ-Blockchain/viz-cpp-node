@@ -2,14 +2,14 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-// HF15 (PM audit fixes) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION is
-// version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
+// HF16 (no-contest fee freeze) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
+// is version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
 // current_hardfork_version < CHAIN_HARDFORK_VERSION. So a new fork has to move THAT field, not the
-// revision; 4.1.0 here must stay byte-equal to CHAIN_HARDFORK_15_VERSION in hardfork.d/15.hf,
+// revision; 4.2.0 here must stay byte-equal to CHAIN_HARDFORK_16_VERSION in hardfork.d/16.hf,
 // which database_hardfork.cpp asserts. config.hpp carries the same value for the production
-// config — the two builds differ in chain identity and fork TIMES (15.hf), not in which forks
+// config — the two builds differ in chain identity and fork TIMES (16.hf), not in which forks
 // are registered.
-#define CHAIN_VERSION                         (version(4, 1, 0))
+#define CHAIN_VERSION                         (version(4, 2, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZTEST"
@@ -32,6 +32,7 @@
 #define CHAIN_CLEAR_CLOSED_COMMITTEE_REQUEST_DELAY        fc::minutes(10)
 
 #define CHAIN_BLOCK_INTERVAL                  3
+#define CHAIN_BLOCK_INTERVAL_HF16             1 // HF16 (#6737, Q#3103=A): slot after the fork block; database::block_interval()
 #define CHAIN_BLOCK_VALIDATOR_REPEAT            1
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
@@ -43,8 +44,17 @@
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
 #define CHAIN_INITIATOR_PUBLIC_KEY_STR       "VIZ6MyX5QiXAXRZk7SYCiqpi6Mtm8UbHWDFSV8HPpt7FJyahCnc2T"
 #define CHAIN_INITIATOR_PUBLIC_KEY            (graphene::protocol::public_key_type(CHAIN_INITIATOR_PUBLIC_KEY_STR))
+// Multi-validator test network (QC/TC stands): build with
+// -DCHAIN_TESTNET_VALIDATORS=N and genesis creates viz, viz1 .. viz(N-1), all
+// in the top schedule (one shared initiator key; rotate per validator with
+// validator_update after start). Unset = the classic one-validator testnet.
+#ifdef CHAIN_TESTNET_VALIDATORS
+#define CHAIN_NUM_INITIATORS                  CHAIN_TESTNET_VALIDATORS
+#define CHAIN_MAX_TOP_VALIDATORS              CHAIN_TESTNET_VALIDATORS
+#else
 #define CHAIN_NUM_INITIATORS                  0
 #define CHAIN_MAX_TOP_VALIDATORS               1
+#endif
 #define CHAIN_MAX_SUPPORT_VALIDATORS           0
 #define CHAIN_MAX_VALIDATORS                   (CHAIN_MAX_TOP_VALIDATORS+CHAIN_MAX_SUPPORT_VALIDATORS)
 #define CHAIN_HARDFORK_REQUIRED_VALIDATORS     1
@@ -128,7 +138,7 @@
 
 /// Number of consecutive blocks produced by the emergency witness that
 /// triggers automatic exit from emergency mode (validators have rejoined).
-#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 validators
+#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // Legacy unused constant: emergency exits by active-validator quorum, not a timer.
 
 #define CHAIN_IRREVERSIBLE_THRESHOLD          (75 * CHAIN_1_PERCENT)
 /** Irreversibility only counts blocks produced if wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN */

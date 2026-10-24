@@ -1,6 +1,6 @@
 # Emergency Consensus Mode
 
-Emergency consensus mode (introduced in HF12) activates automatically when the network stalls for 1 hour. A special "committee" validator takes over block production to maintain chain continuity until real validators restore their signing keys.
+Emergency consensus mode (introduced in HF12) activates automatically when the network stalls for 20 minutes. A special "committee" validator takes over block production to maintain chain continuity until real validators restore their signing keys.
 
 ---
 
@@ -8,7 +8,7 @@ Emergency consensus mode (introduced in HF12) activates automatically when the n
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 s | Inactivity time before activation |
+| `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 1200 s | Inactivity time before activation |
 | `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` | `"committee"` | Emergency block producer account |
 | `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` | `VIZ75CR...` | Deterministic emergency signing key |
 | `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | Consecutive real-validator blocks for exit |
@@ -31,7 +31,7 @@ Emergency consensus mode (introduced in HF12) activates automatically when the n
 1. **HF12 gate** — skip if the hardfork has not activated.
 2. **Already active** — skip if emergency mode is already on.
 3. **LIB block available in block log** — skip if the LIB block is not present in the block log (DLT nodes after snapshot restore have an empty block log; a missing LIB block would compute millions of stale seconds and trigger a false activation deadlock).
-4. **Timeout** — compute `seconds_since_lib = current_block.timestamp − lib_block.timestamp`. If `< 3600`, skip.
+4. **Timeout** — compute `seconds_since_lib = current_block.timestamp − lib_block.timestamp`. If `< 1200`, skip.
 
 All checks use only block-embedded timestamps — no wall clock, no skip flags. This guarantees identical deterministic activation on every node, including replays.
 

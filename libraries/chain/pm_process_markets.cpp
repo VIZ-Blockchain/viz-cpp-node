@@ -766,19 +766,29 @@ namespace pm_detail {
                 // carries the oracle's no-contest penalty and `uncovered` the forfeit pool (dual use,
                 // documented on the object) — kept as two separate floor divisions so the amounts
                 // match the one-shot implementation exactly.
-                const auto& mp = median(db);
                 share_type penalty(0);
                 if (st.stake_total.value > 0) {
                     const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
                     auto oit = oidx.find(mkt.oracle);
                     if (oit != oidx.end()) {
-                        int64_t want = (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
-                            * fc::uint128_t((uint64_t)mp.pm_no_contest_penalty_percent) / fc::uint128_t(10000)).lo;
+                        // HF16: the price was fixed by pm_no_contest_evaluator in the announcing
+                        // block; charge exactly it. Rows announced before the fork carry
+                        // no_contest_fee_frozen == false and keep the legacy median computation —
+                        // that is why no seed pass is needed at activation.
+                        int64_t want;
+                        if (db.has_hardfork(CHAIN_PM_NO_CONTEST_FREEZE_HARDFORK) && mkt.no_contest_fee_frozen) {
+                            want = mkt.no_contest_fee.value;
+                        } else {
+                            const auto& mp = median(db);
+                            want = (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                                * fc::uint128_t((uint64_t)mp.pm_no_contest_penalty_percent) / fc::uint128_t(10000)).lo;
+                        }
                         penalty = share_type(want > oit->insurance.value ? oit->insurance.value : want);
                         if (penalty.value > 0)
                             db.modify(*oit, [&](pm_oracle_object& o) {
                                 o.insurance               -= penalty;
                                 o.total_insurance_slashed += penalty;
+                                o.no_contest_slashed_total += penalty;   // HF16: exact class attribution
                             });
                     }
                 }

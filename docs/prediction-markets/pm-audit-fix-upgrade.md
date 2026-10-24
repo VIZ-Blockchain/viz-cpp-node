@@ -1,5 +1,8 @@
 # HF15 — PM audit fixes: activation checklist and stale-state migration
 
+> **Historical HF15 checklist:** the statements below describe that upgrade, not the current release status. Release 4.2.0 compiles hardforks through 16; see [HF16](../consensus/hf16.md).
+
+
 Status: the two fixes below are **implemented but not scheduled on mainnet**. The fork is registered
 in both configs (`CHAIN_NUM_HARDFORKS = 15` everywhere) and gated by its activation time plus the
 validator quorum, so a production binary applies it once that time is reached — nothing runs before

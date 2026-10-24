@@ -114,3 +114,5 @@ payment = min(committee_fund / count_approved_requests, remain_payout_amount)
 ---
 
 См. также: [Операции комитета](../protocol/operations/committee.md), [Стейкинг и DAO](./staking-and-dao.md), [Параметры цепочки](./chain-properties.md), [Виртуальные операции](../protocol/virtual-operations.md).
+
+**Лимит HF16:** при создании `required_amount_max.amount <= floor(current_supply.amount / 100)` в минимальных единицах (1% текущего общего количества VIZ с округлением вниз). До HF16 — 500 000 VIZ. Это не 1% фонда комитета; существующие заявки не переоцениваются. См. [HF16](../consensus/hf16.md).

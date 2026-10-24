@@ -2,7 +2,7 @@
 
 链插件是每个 VIZ Ledger 节点的核心组件。它管理 chainbase 共享内存数据库，接受并验证区块和交易，维护 fork 数据库和区块日志状态，并协调与快照和 P2P 插件的启动。所有其他插件都依赖它。
 
-**源码：** [plugins/chain/plugin.cpp](../../plugins/chain/plugin.cpp)
+**源码：** [plugins/chain/plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/chain/plugin.cpp)
 
 ---
 

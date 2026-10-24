@@ -225,3 +225,7 @@ let shares = VIZ.Asset(1000.0, .vests) // "1000.000000 VESTS"
 ---
 
 参见：[JSON-RPC API](./json-rpc.md)、[CLI Wallet](./cli-wallet.md)。
+
+## HF16 兼容性
+
+JS 0.18.5 已发布至 npm，支持 QC/TC/双重投票证据区块头。PHP 保持原交易格式并透传新头部 JSON。Python 1.4.0 源码和依赖已通过 Python 3.10–3.14 CI；PyPI 发布独立进行。DAO 客户端不能固定限制为 500,000 VIZ：节点按当前总供应量检查上限。参见 [HF16](../consensus/hf16.md)。

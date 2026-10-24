@@ -4,7 +4,7 @@
 
 Плагин не меняет консенсус, не требует хардфорка и не влияет на обработку блоков: ноды с ним и без него полностью совместимы.
 
-**Исходный код:** [plugins/block_archive/plugin.cpp](../../plugins/block_archive/plugin.cpp)
+**Исходный код:** [plugins/block_archive/plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/block_archive/plugin.cpp)
 
 ---
 

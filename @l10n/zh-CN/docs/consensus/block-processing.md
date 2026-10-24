@@ -1,5 +1,8 @@
 # 区块处理
 
+> **HF16 / 4.2.0：** 1 秒时隙、QC/TC 和 2-chain 规则参见 [HF16](./hf16.md)。下文旧的 3 秒和 14 个确认描述适用于激活前，不能作为 HF16 QC 门槛。
+
+
 区块应用、待处理交易管理和 fork 切换的内部机制。
 
 ---
@@ -298,6 +301,7 @@ struct block_post_validation_message {
 ### 约束条件
 
 - 只有**当前打乱排列的调度**中的验证者才计入 2/3 阈值；调度外的验证者被跳过。
+- **每轮只投一票（Jolteon 安全规则）。** 验证者只在 *r* 高于其已投票的最高轮次时，才为第 *r* 轮的区块投票（轮次 = 区块的时隙，`timestamp / CHAIN_BLOCK_INTERVAL`）。验证者插件把每个验证者的该轮次保存在 `<data-dir>/block-vote-round.txt`，在投票发出**之前**写入（无法持久化轮次的投票不会发送），并在同一轮出现另一个区块时记录日志 `Not voting for … already voted for … in round …`。与“每个高度只签一次”不同，验证者可以在更晚的轮次为同一高度的另一个区块投票——正是这一点让分裂的投票得以解决而不是卡住。同一轮中两个冲突的法定人数证书需要有验证者投票两次；节点会把这类投票记录为 `Equivocation: …`。重复广播同一投票仍然允许。
 - 在**紧急共识**期间（`emergency_consensus_active = true`），`check_block_post_validation_chain()` 立即返回——LIB 仅通过经典路径推进，以避免恢复过程死锁。
 - 确认列表上限为 **20 条**（`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`）。低于当前 LIB 的条目在每个区块后删除。
 

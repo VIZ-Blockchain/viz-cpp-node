@@ -1,5 +1,8 @@
 # Hardforks
 
+> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+
+
 A hardfork is a network upgrade that changes consensus rules. All nodes must upgrade before the scheduled activation timestamp; nodes running old software will diverge from the network after activation.
 
 ---
@@ -9,7 +12,7 @@ A hardfork is a network upgrade that changes consensus rules. All nodes must upg
 Each hardfork has:
 - A **unique number** (N).
 - A **Unix timestamp** — the earliest wall-clock time at which the hardfork can activate.
-- A **validator vote supermajority** — >80% of the current validator set must signal the new hardfork version via `validator_update_operation`.
+- A **validator vote supermajority** — >80% of the current validator set must signal the new hardfork version via block-header `hardfork_version_vote` (normally emitted automatically by the validator plugin).
 
 Both conditions must be satisfied simultaneously. Validators can block an unwanted hardfork by withholding their version vote even after the scheduled timestamp.
 
@@ -32,7 +35,7 @@ HF12 (version 3.1.0) introduced:
 
 1. **Fork collision counter** — `fork_collision_count` and `last_fork_collision_block_num` added to `dynamic_global_property_object`. Observable via `get_dynamic_global_properties`.
 2. **Vote-weighted fork comparison** (`compare_fork_branches()`) — fork selection uses total delegated SHARES per validator branch + 10% bonus for longer chain.
-3. **Emergency consensus mode** — activates automatically after 1 hour with no blocks; "committee" account takes all 21 slots. See [Emergency Consensus](./emergency-consensus.md).
+3. **Emergency consensus mode** — activates automatically after 20 minutes with no blocks; "committee" account takes all 21 slots. See [Emergency Consensus](./emergency-consensus.md).
 4. **Minority fork auto-resync** — validator plugin detects node isolation (21 consecutive own-blocks) and rolls back to LIB.
 5. **NTP improvements** — dedicated NTP client with configurable servers, interval, and round-trip threshold.
 
@@ -46,7 +49,7 @@ HF13 (version 3.2.0) introduced:
 
 - New field on `validator_object`: `reward_percent` — fraction of block reward shared with voters (0–10000 basis points).
 - New virtual operation: `validator_reward_virtual_operation` — fired once per reward distribution.
-- Set via `validator_update_operation`.
+- Set via block-header `hardfork_version_vote` (normally emitted automatically by the validator plugin).
 
 ---
 
@@ -169,3 +172,11 @@ Normal restart:
 ---
 
 See also: [Fair-DPOS](./fair-dpos.md), [Emergency Consensus](./emergency-consensus.md), [Snapshots](../node/snapshot.md).
+
+## Release 4.x
+
+| HF | Version | Scope |
+|---|---|---|
+| 14 | 4.0.0 | Prediction markets and governance |
+| 15 | 4.1.0 | PM audit fixes, agent access and permanent key history |
+| 16 | 4.2.0 | QC/TC, 1-second slot, DAO ceiling and no-contest fee freeze; [activation details](./hf16.md) |

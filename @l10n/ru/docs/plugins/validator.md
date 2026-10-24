@@ -2,7 +2,7 @@
 
 Плагин валидатора отвечает за подписание и производство блоков. Он запускает выделенный цикл таймера с интервалом 250 мс в собственном потоке ОС, выполняет ряд проверок безопасности при каждом тике и вызывает `database::generate_block()` при выполнении всех условий.
 
-**Источник:** [plugins/validator/validator.cpp](../../plugins/validator/validator.cpp)
+**Источник:** [plugins/validator/validator.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/validator/validator.cpp)
 
 ---
 

@@ -38,6 +38,57 @@ enum class dlt_block_accept_result {
     REJECTED       ///< Block failed validation entirely (bad signature, etc.)
 };
 
+// ── Operator-facing snapshots ─────────────────────────────────────────
+// Plain data copies of the P2P state, returned on demand by the admin API. They must be
+// read on the P2P thread (the maps they copy belong to it); everything here is already
+// formatted (no fc types) so the HTTP layer stays free of network internals.
+
+struct dlt_peer_report_entry {
+    std::string endpoint;
+    std::string node_id;            ///< hex of public_key_data, empty before hello
+    std::string lifecycle;          ///< CONNECTING / HANDSHAKING / SYNCING / ACTIVE / DISCONNECTED / BANNED
+    std::string node_status;        ///< SYNC / FORWARD, as last seen from the peer
+    std::string fork_status;        ///< NORMAL / LOOKING_RESOLUTION / MINORITY
+    bool        incoming = false;
+    bool        trusted = false;
+    bool        exchange_enabled = false;
+    bool        fork_alignment = false;
+    uint32_t    connected_sec = 0;
+    uint32_t    peer_head = 0;
+    uint32_t    peer_lib = 0;
+    uint32_t    peer_dlt_earliest = 0;
+    uint32_t    peer_dlt_latest = 0;
+    int64_t     head_lag = 0;       ///< our head - peer head; negative = the peer is ahead
+    uint32_t    spam_strikes = 0;
+    std::string ban_reason;
+    uint32_t    ban_duration_sec = 0;
+    uint32_t    reconnect_backoff_sec = 0;
+    uint32_t    next_reconnect_in_sec = 0;
+};
+
+struct dlt_peer_report {
+    uint64_t    uptime_sec = 0;
+    std::string node_status;
+    std::string fork_status;
+    bool        paused = false;
+    bool        isolated_peers = false;
+    bool        catching_up = false;
+    uint32_t    our_head = 0;
+    uint32_t    our_lib = 0;
+    uint32_t    dlt_earliest = 0;
+    uint32_t    dlt_latest = 0;
+    uint32_t    connection_count = 0;
+    uint32_t    active_count = 0;
+    uint32_t    max_connections = 0;
+    uint32_t    known_peers = 0;
+    uint32_t    trusted_peers = 0;
+    uint32_t    banned_peers = 0;
+    uint32_t    best_peer_head = 0;
+    int64_t     best_peer_head_lag = 0;  ///< our head - best peer head; negative = behind
+    uint32_t    peers_ahead = 0;
+    std::vector<dlt_peer_report_entry> peers;
+};
+
 /**
  *  @class dlt_p2p_delegate
  *  @brief Callback interface between dlt_p2p_node and the chain/plugin layer.
@@ -68,6 +119,13 @@ public:
     // ── Block/transaction handling ───────────────────────────────
     virtual dlt_block_accept_result accept_block(const signed_block& block, bool sync_mode) = 0;
     virtual bool           accept_transaction(const signed_transaction& trx) = 0;
+    // Verify a block vote (scheduled validator, signature over block_vote_digest)
+    // and record it. True = valid and not seen before, so it is worth relaying.
+    // Non-pure: test delegates that never see votes need not implement it.
+    virtual bool           accept_block_vote(const dlt_block_vote_message& vote) { return false; }
+    // Same contract for a timeout vote (scheduled validator, signature over
+    // block_timeout_digest). True = valid and new, worth relaying.
+    virtual bool           accept_timeout_vote(const dlt_timeout_vote_message& vote) { return false; }
 
     // ── Fork resolution ──────────────────────────────────────────
     virtual int            compare_fork_branches(const block_id_type& a, const block_id_type& b) const = 0;
@@ -138,7 +196,10 @@ public:
     void broadcast_block_post_validation(
         const block_id_type& block_id,
         const std::string& witness_account,
-        const signature_type& validator_signature);
+        const signature_type& validator_signature,
+        uint32_t round);
+    void broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                const std::string& validator, const signature_type& signature);
     void broadcast_transaction(const signed_transaction& trx);
     void broadcast_chain_status();
 
@@ -157,6 +218,20 @@ public:
     dlt_node_status get_node_status() const { return _node_status; }
     dlt_fork_status get_fork_status() const { return _fork_status; }
     bool is_on_majority_fork() const;
+
+    // ── Operator control (admin API) ─────────────────────────────
+    // All three must be called on the P2P thread: they touch the peer maps.
+    //
+    // add_peer() starts dialing immediately and remembers the endpoint so the periodic
+    // reconnect loop keeps retrying it. trusted=true additionally makes the peer
+    // exempt from soft-bans: a trusted node that sends bad data is disconnected and
+    // retried instead of being banned for an hour.
+    void add_peer(const fc::ip::endpoint& ep, bool trusted);
+    // Clears local and remote soft-bans, resets backoff and re-dials. Returns the number
+    // of peer entries that carried a ban.
+    uint32_t clear_banned_peers();
+    // Read-only copy of the state served by admin.p2p.status / the /ui/ page.
+    dlt_peer_report get_peer_report() const;
 
     // True when block production should be deferred: either during
     // a block-processing pause (snapshot creation holding DB read lock)
@@ -233,6 +308,13 @@ private:
     // ── Gap fill handlers (exchange-only) ────────────────────────
     void on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_request& req);
     void on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply& reply);
+    void on_dlt_block_vote(peer_id peer, const dlt_block_vote_message& msg);
+    // Accept a vote (local or relayed) and gossip it to capable fork peers.
+    void process_block_vote(const dlt_block_vote_message& msg, peer_id from);
+    void on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_message& msg);
+    void process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from);
+    // Send to active fork peers advertising `cap`, except `from`, once per node id.
+    void gossip_to_capable(const message& out, uint32_t cap, peer_id from);
     void request_gap_fill();
 
     // ── Hello construction ───────────────────────────────────────
@@ -391,6 +473,10 @@ private:
     std::map<peer_id, dlt_peer_state> _peer_states;
     std::set<dlt_known_peer>        _known_peers;
     std::vector<fc::ip::endpoint>   _seed_nodes;
+    // Endpoints the operator marked trusted at runtime (admin.p2p.add_trusted). They are
+    // kept out of the known-peer GC and never soft-banned. Not persisted: a restart drops
+    // them unless the operator re-adds them (or lists them in p2p-seed-node).
+    std::set<fc::ip::endpoint>      _trusted_peers;
 
     // ── Active connections ───────────────────────────────────────
     std::map<peer_id, fc::tcp_socket_ptr> _connections;
@@ -420,6 +506,10 @@ private:
 
     // ── Mempool ──────────────────────────────────────────────────
     std::map<graphene::protocol::transaction_id_type, dlt_mempool_entry> _mempool_by_id;
+    // Relay dedup for block votes: digest of the vote message -> seen time.
+    // Bounded by pruning entries older than DLT_BLOCK_VOTE_SEEN_SEC.
+    std::map<fc::sha256, fc::time_point> _block_votes_seen;
+    std::map<fc::sha256, fc::time_point> _timeout_votes_seen;
     std::multimap<fc::time_point_sec, graphene::protocol::transaction_id_type> _mempool_by_expiry;
     uint32_t                        _mempool_total_bytes = 0;
 

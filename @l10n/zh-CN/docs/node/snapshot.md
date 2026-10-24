@@ -82,7 +82,7 @@ snapshot-dir = /data/snapshots
 
 ```ini
 plugin = snapshot
-snapshot-every-n-blocks = 28800   # 按 3 秒/区块计约 24 小时
+snapshot-every-n-blocks = 28800   # HF16 前约 24 小时，激活后约 8 小时（1 秒/区块）
 snapshot-dir = /data/snapshots
 snapshot-max-age-days = 90
 ```

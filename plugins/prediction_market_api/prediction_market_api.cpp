@@ -144,6 +144,56 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             return r;
         }
 
+        // No-contest price BEFORE settlement: this oracle's void-announced markets still inside the
+        // dispute grace (status 3, payout pending, no dispute filed — a filed dispute flips
+        // payout_status away from 1 and makes the penalty conditional, so it is excluded) that have
+        // stake on them. Prices per market: the HF16 frozen fee when the row carries one, otherwise
+        // the legacy median computation — the same branch settle_market(win < 0) takes. Walk is over
+        // by_oracle_finalized (the oracle's OPEN obligations: finalized_time == 0 sorts first), so
+        // the oracle's resolved history is never read. Display-only; cached per (block, oracle).
+        struct oracle_nc_pending_info {
+            // `= 0`, not `(0)`: in a class body `share_type x(0);` declares a member function.
+            uint32_t   count = 0;
+            share_type stake = 0;
+            share_type fee_nominal = 0;
+            share_type fee_capped = 0;
+        };
+        oracle_nc_pending_info oracle_no_contest_pending(const database& db, const account_name_type& owner) {
+            struct entry { uint32_t epoch = 0; oracle_nc_pending_info v; };
+            static thread_local std::map<account_name_type, entry> cache;
+            const uint32_t epoch = db.head_block_num();
+            auto cit = cache.find(owner);
+            if (cit != cache.end() && cit->second.epoch == epoch) return cit->second.v;
+            if (cache.size() > 512) cache.clear();
+
+            oracle_nc_pending_info r;
+            const auto& mp = db.get_validator_schedule_object().median_props;
+            const int64_t legacy_unit =
+                (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                          * (uint64_t)mp.pm_no_contest_penalty_percent / 10000).lo;
+            const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle_finalized>();
+            auto it = idx.lower_bound(boost::make_tuple(owner, fc::time_point_sec(), pm_market_id_type()));
+            for (; it != idx.end() && it->oracle == owner
+                     && it->finalized_time == fc::time_point_sec(); ++it) {
+                if (it->status != 3 || it->payout_status != 1 || it->resolved_outcome >= 0) continue;
+                if (it->bets_sum.value <= 0) continue;   // settle_market charges only with stake
+                ++r.count;
+                r.stake += it->bets_sum;
+                r.fee_nominal += share_type(it->no_contest_fee_frozen ? it->no_contest_fee.value
+                                                                     : legacy_unit);
+            }
+            const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+            auto oit = oidx.find(owner);
+            const int64_t ins = (oit != oidx.end()) ? oit->insurance.value : 0;
+            // Upper bound: settlement caps EACH market at the insurance available then, so the sum
+            // of per-market prices can never exceed the current insurance; the nominal is reported
+            // alongside so a cap hit is visible instead of silently swallowed.
+            r.fee_capped = share_type(r.fee_nominal.value < ins ? r.fee_nominal.value : ins);
+
+            cache[owner] = entry{epoch, r};
+            return r;
+        }
+
         // p50/p95 resolution latency (seconds) from the oracle's 8-bucket histogram: the UPPER
         // boundary of the bucket where the cumulative count first reaches the target percentile. The
         // open top bucket (>30d) reports its lower edge (2592000) as a floor. 0 if no resolutions yet.
@@ -631,6 +681,26 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         o["image"]    = image;
         o["category"] = category;
         o["metadata"] = fc::variant(std::move(md));   // reconstructed; clients parse market.metadata
+        // Price of a no-contest BEFORE it is charged: non-zero only while the market is
+        // void-announced and still disputable (status 3, payout pending, no dispute filed) and has
+        // stake. Frozen fee when the row carries one (HF16), otherwise the median unit — exactly
+        // the branch settle_market(win < 0) takes — capped by the oracle's insurance.
+        int64_t charge = 0;
+        if (m.status == 3 && m.payout_status == 1 && m.resolved_outcome < 0 && m.bets_sum.value > 0) {
+            int64_t want;
+            if (m.no_contest_fee_frozen) {
+                want = m.no_contest_fee.value;
+            } else {
+                const auto& mp = db.get_validator_schedule_object().median_props;
+                want = (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                                 * (uint64_t)mp.pm_no_contest_penalty_percent / 10000).lo;
+            }
+            const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+            auto oit = oidx.find(m.oracle);
+            const int64_t ins = (oit != oidx.end()) ? oit->insurance.value : 0;
+            charge = want < ins ? want : ins;
+        }
+        o["settlement_charge"] = charge;
         return fc::variant(std::move(o));
     }
 
@@ -1124,9 +1194,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             auto itr = idx.find(owner);
             FC_ASSERT(itr != idx.end(), "Oracle not found");
             auto aw = oracle_awaiting(db, itr->owner);
+            auto nc = oracle_no_contest_pending(db, itr->owner);
             return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr, db.head_block_time()),
                                         aw.count, aw.oldest_age,
-                                        rt_percentile(*itr, 50), rt_percentile(*itr, 95)};
+                                        rt_percentile(*itr, 50), rt_percentile(*itr, 95),
+                                        nc.count, nc.stake, nc.fee_nominal, nc.fee_capped};
         });
     }
 
@@ -1405,7 +1477,17 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         CHECK_ARG_SIZE(0)
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
-            return db.get_validator_schedule_object().median_props;
+            const auto& mp = db.get_validator_schedule_object().median_props;
+            // One derived number clients/scripts would otherwise recompute by hand (and have got
+            // wrong): the nominal no-contest penalty per market, dispute_fee × pct / 10000. The
+            // settlement still caps it by the oracle's insurance per market.
+            fc::variant v;
+            fc::to_variant(mp, v);
+            fc::mutable_variant_object o(v.get_object());
+            o["pm_no_contest_fee_per_market"] =
+                (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                          * (uint64_t)mp.pm_no_contest_penalty_percent / 10000).lo;
+            return fc::variant(std::move(o));
         });
     }
 
@@ -1964,9 +2046,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 auto oit = oidx.find(mkt.oracle);
                 if (oit != oidx.end()) {
                     auto oaw = oracle_awaiting(db, oit->owner);
+                    auto onc = oracle_no_contest_pending(db, oit->owner);
                     oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit, db.head_block_time()),
                                                   oaw.count, oaw.oldest_age,
-                                                  rt_percentile(*oit, 50), rt_percentile(*oit, 95)};
+                                                  rt_percentile(*oit, 50), rt_percentile(*oit, 95),
+                                                  onc.count, onc.stake, onc.fee_nominal, onc.fee_capped};
                 }
             }
 

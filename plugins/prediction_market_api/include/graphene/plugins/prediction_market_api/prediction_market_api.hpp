@@ -32,6 +32,18 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // resolution_time_hist buckets. 0 until it has resolved at least one market (P5).
         uint32_t         resolution_time_p50 = 0;
         uint32_t         resolution_time_p95 = 0;
+        // No-contest price BEFORE it is charged: this oracle's markets that are void-announced and
+        // still inside the dispute grace (status 3, payout pending, no dispute filed), with stake on
+        // them. `no_contest_pending_stake` is the bet base, `fee_nominal` = Σ per-market price and
+        // `fee_capped` = min(fee_nominal, insurance) — the settlement caps per market, so the capped
+        // number is an upper bound, and both are shown because a cap hit would otherwise hide the
+        // nominal. Computed on read (per-block cache), display-only.
+        uint32_t         no_contest_pending_count = 0;
+        // `= 0`, not `(0)`: inside a class body `share_type x(0);` is parsed as a member FUNCTION
+        // declaration (parameter type int), and FC_REFLECT then fails on a pointer-to-member-function.
+        share_type       no_contest_pending_stake = 0;
+        share_type       no_contest_fee_nominal = 0;
+        share_type       no_contest_fee_capped = 0;
     };
 
     // A bet plus the parimutuel payout it would receive if its side wins (or its
@@ -225,7 +237,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     DEFINE_API_ARGS(get_lazy_withdraw_requests, msg_pack, std::vector<pm_lazy_withdraw_request_object>)
     DEFINE_API_ARGS(get_deferred_claims,        msg_pack, std::vector<pm_deferred_claim_object>)
     DEFINE_API_ARGS(get_account_commits,        msg_pack, std::vector<pm_commit_object>)
-    DEFINE_API_ARGS(get_pm_chain_properties,   msg_pack, chain_properties_pm)
+    // Returns the median chain_properties_pm as an object PLUS derived read-only fields
+    // (pm_no_contest_fee_per_market) — a variant rather than the bare struct, additive for clients.
+    DEFINE_API_ARGS(get_pm_chain_properties,   msg_pack, fc::variant)
     DEFINE_API_ARGS(get_market_meta,           msg_pack, pm_market_meta_object)
     DEFINE_API_ARGS(list_markets_by_category,  msg_pack, std::vector<fc::variant>)
     DEFINE_API_ARGS(list_markets_by_event,     msg_pack, std::vector<fc::variant>)
@@ -310,7 +324,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_oracle_api_object),
     (oracle)(reliability_score)(markets_awaiting_resolution)(oldest_unresolved_age)
-    (resolution_time_p50)(resolution_time_p95))
+    (resolution_time_p50)(resolution_time_p95)
+    (no_contest_pending_count)(no_contest_pending_stake)(no_contest_fee_nominal)(no_contest_fee_capped))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_position_api_object),
     (bet)(expected_payout)(market_status)(resolved_outcome))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_weight_entry),

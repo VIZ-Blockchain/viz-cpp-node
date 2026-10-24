@@ -17,6 +17,7 @@
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <thread>
 
 namespace graphene { namespace chain {
@@ -310,14 +311,26 @@ namespace graphene { namespace chain {
                     const fc::time_point_sec when,
                     const account_name_type &validator_owner,
                     const fc::ecc::private_key &block_signing_private_key,
-                    uint32_t skip
+                    uint32_t skip,
+                    // HF16: TC of the skipped round when building past a QC-less head
+                    const fc::optional<protocol::block_timeout_certificate> &tc =
+                            fc::optional<protocol::block_timeout_certificate>(),
+                    // HF16 late-QC fallback: certificate to carry instead of QC(head)
+                    const fc::optional<protocol::block_qc_certificate> &qc_override =
+                            fc::optional<protocol::block_qc_certificate>()
             );
 
             signed_block _generate_block(
                     const fc::time_point_sec when,
                     const account_name_type &validator_owner,
                     const fc::ecc::private_key &block_signing_private_key,
-                    uint32_t skip
+                    uint32_t skip,
+                    // HF16: TC of the skipped round when building past a QC-less head
+                    const fc::optional<protocol::block_timeout_certificate> &tc =
+                            fc::optional<protocol::block_timeout_certificate>(),
+                    // HF16 late-QC fallback: certificate to carry instead of QC(head)
+                    const fc::optional<protocol::block_qc_certificate> &qc_override =
+                            fc::optional<protocol::block_qc_certificate>()
             );
 
             void pop_block();
@@ -425,6 +438,16 @@ namespace graphene { namespace chain {
              * If no such N exists, return 0.
              */
             uint32_t get_slot_at_time(fc::time_point_sec when) const;
+
+            /** Slot length in seconds for slots after the head (HF16: 3 -> 1). */
+            uint32_t block_interval() const;
+
+            /**
+             * Consensus round of a slot time, contiguous across the HF16 switch:
+             * t/3 up to the switch block S, then S/3 + (t - S). Rounds of QC/TC must use this,
+             * never t / CHAIN_BLOCK_INTERVAL, or round r-1 does not exist on the first 1 s slot.
+             */
+            uint32_t round_of(fc::time_point_sec t) const;
 
             void shares_sender_recalc_energy(const account_object &receiver, asset tokens);
 
@@ -648,6 +671,87 @@ namespace graphene { namespace chain {
 
             void check_block_post_validation_chain();
 
+            // ── Block votes and quorum certificates (QC) ─────────────────
+            // In-memory, node-local: votes are gossiped (dlt_block_vote_message),
+            // not stored in chainbase, so they never enter undo sessions.
+            // Step 0 of the QC plan: verify, tally, detect a quorum and
+            // equivocation, and expose the certificate. Under HF16 the
+            // highest QC on our branch also advances LIB (node-local, like the
+            // pre-DLT post-validation LIB); parent_qc in the header is next.
+            struct block_qc {
+                uint32_t block_num = 0;
+                block_id_type block_id;
+                uint32_t round = 0;
+                std::vector<std::pair<account_name_type, signature_type>> signatures;
+                fc::microseconds formed_after;   // first vote -> quorum, for measurement
+            };
+
+            /// Verify and tally a vote. Caller holds at least a weak read lock.
+            /// Returns true when the vote is valid and new (worth relaying).
+            bool push_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                 const account_name_type &validator, const signature_type &signature);
+
+            /// The certificate formed for a height, if any (node-local view).
+            fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
+
+            /// Highest height H such that H and H+1 (both <= max_num) are certified
+            /// on our main branch (2-chain finality); 0 if none. Feeds LIB under HF16.
+            uint32_t highest_qc_on_main_branch(uint32_t max_num) const;
+
+            /// HF16 header rule: a handoff block carries a valid QC of its parent.
+            void validate_block_qc(const signed_block &next_block, uint32_t skip) const;
+
+            /// Round of the certificate a block claims to carry (0 = none). Used by
+            /// HF16 fork choice; validity is checked when the block is applied.
+            static uint32_t block_cert_round(const signed_block &b);
+            uint32_t verified_fork_cert_round(const signed_block &b) const;
+
+            /// Votes needed for a QC with the given number of scheduled validators:
+            /// strictly more than 2/3 and not below the irreversibility threshold.
+            static uint32_t block_qc_quorum(uint32_t num_scheduled);
+
+            /// Consensus check of one vote against current state: validator is
+            /// scheduled, has a signing key, and the signature recovers to it.
+            bool verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                   const account_name_type &validator, const signature_type &signature) const;
+
+            /// Consensus check of one timeout vote: validator is scheduled, has a
+            /// signing key, and the signature over block_timeout_digest recovers to it.
+            bool verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                     const account_name_type &validator, const signature_type &signature) const;
+
+            /// Verify and tally a timeout vote (validator gave up on `round`).
+            /// Returns true when the vote is valid and new (worth relaying).
+            bool push_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                   const account_name_type &validator, const signature_type &signature);
+
+            /// HF16 late-QC fallback. QC(head) has not formed in time, but head is of
+            /// round own_round-1 and certifies its own parent of round own_round-2:
+            /// then a block of own_round may carry that grandparent QC instead, so a
+            /// late quorum costs one slot of finality rather than the slot itself.
+            fc::optional<protocol::block_qc_certificate> grandparent_qc_for_next_block(
+                    const account_name_type &producer, uint32_t own_round) const;
+
+            /// Keep a parent QC that arrived inside a validated block header, so a
+            /// node that missed the votes still knows the height is certified
+            /// (LIB, and a producer building past a QC-less child of it).
+            void remember_block_qc(const protocol::block_qc_certificate &cert);
+
+            /// HF16: check double-vote proofs a block carries and punish each validator
+            /// like for a missed block (once per validator and round, newest first).
+            void apply_equivocation_proofs(const signed_block &b, uint32_t skip);
+
+            /// The timeout certificate formed for a round, if any (node-local view).
+            fc::optional<protocol::block_timeout_certificate> get_timeout_cert(uint32_t round) const;
+
+            /// HF16: does a block by `producer` on top of head need the parent's QC?
+            bool block_needs_parent_qc(const account_name_type &producer) const;
+
+            /// HF16: the parent certificate `producer` would put into its next
+            /// block, built from the node-local QC of head and re-verified against
+            /// state; empty when not needed or not formed yet.
+            fc::optional<protocol::block_qc_certificate> parent_qc_for_next_block(const account_name_type &producer) const;
+
             /**
              * Compare two fork branches by vote weight (HF12 logic).
              * Sums wit_obj.votes (on-chain stake) for all unique validators in each branch,
@@ -725,6 +829,26 @@ namespace graphene { namespace chain {
             std::unique_ptr<database_impl> _my;
 
             fork_database _fork_db;
+
+            struct block_vote_tally {
+                fc::time_point first_seen;
+                std::map<account_name_type, signature_type> votes;
+            };
+            // (block_num, round, block_id) -> votes for exactly that triple
+            std::map<std::tuple<uint32_t, uint32_t, block_id_type>, block_vote_tally> _block_vote_tallies;
+            // (validator, round) -> (height, id) it voted for. Round = slot: one vote
+            // per round, so a second id in the same round is equivocation.
+            std::map<std::pair<account_name_type, uint32_t>, std::pair<uint32_t, block_id_type>> _block_vote_by_validator;
+            // Signature of each counted vote (same key), kept to build double-vote proofs
+            std::map<std::pair<account_name_type, uint32_t>, signature_type> _block_vote_sigs;
+            // Double votes seen and not yet carried in a block (one per validator, round)
+            std::map<std::pair<account_name_type, uint32_t>, protocol::block_equivocation_proof> _pending_equivocations;
+            std::map<uint32_t, block_qc> _block_qcs;
+            // HF16 timeouts: round -> (validator -> vote); one vote per (validator, round)
+            std::map<uint32_t, std::map<account_name_type, protocol::block_timeout_vote>> _timeout_votes;
+            std::map<uint32_t, protocol::block_timeout_certificate> _timeout_certs;
+            mutable std::mutex _block_votes_mutex;
+            std::atomic<uint32_t> _head_reject_logged{0};
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];
 

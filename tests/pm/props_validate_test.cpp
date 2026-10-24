@@ -104,9 +104,9 @@ BOOST_AUTO_TEST_CASE(batch_commit_reveal_bounds) {
     expect_ok  ([](chain_properties_pm& p) { p.pm_min_batch_bet.amount = 100; });
     expect_fail([](chain_properties_pm& p) { p.pm_batch_epoch_blocks = 0; });
     expect_fail([](chain_properties_pm& p) { p.pm_reveal_window_blocks = 0; });
-    // Constructive GC invariant: retention must STRICTLY exceed the worst-case reveal deadline.
+    // Stateless floor is the 1 s deadline; the evaluator enforces the live HF-gated cadence.
     const uint32_t worst = (chain_properties_pm().pm_batch_epoch_blocks
-                          + chain_properties_pm().pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL;
+                          + chain_properties_pm().pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL_HF16;
     expect_fail([&](chain_properties_pm& p) { p.pm_closed_market_retention_sec = worst; });
     expect_ok  ([&](chain_properties_pm& p) { p.pm_closed_market_retention_sec = worst + 1; });
 }

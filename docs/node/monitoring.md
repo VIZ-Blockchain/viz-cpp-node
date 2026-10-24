@@ -15,7 +15,7 @@ curl -s -X POST http://localhost:8090 \
   | python3 -m json.tool
 ```
 
-Check `head_block_number` — it must increase every 3 seconds while synced. Check `time` — it must be within a few seconds of wall clock.
+Check `head_block_number` — it must increase every 3 seconds before HF16 and every 1 second after HF16 while synced. Check `time` — it must be within a few seconds of wall clock.
 
 A simple liveness probe script:
 
@@ -184,7 +184,7 @@ while True:
 
 | Panel | Metric / Source |
 |-------|----------------|
-| Head block | `viz_head_block_number` (increases every 3 s when synced) |
+| Head block | `viz_head_block_number` (3 s before HF16, 1 s after; when synced) |
 | Block lag | `time() - viz_head_block_time` (seconds behind wall clock) |
 | Peer count | Parsed from P2P stats log |
 | Peer latency | P2P stats log, by peer IP |

@@ -6,6 +6,15 @@
 namespace graphene { namespace chain {
 
      void committee_worker_create_request_evaluator::do_apply(const committee_worker_create_request_operation& o) {
+        // Before HF16 preserve the historical fixed ceiling for replay. From HF16,
+        // use one percent of the current total supply, rounded down to raw units.
+        const auto& supply = _db.get_dynamic_global_properties().current_supply;
+        const share_type maximum = _db.has_hardfork(CHAIN_HARDFORK_16)
+            ? share_type(supply.amount.value / 100)
+            : share_type(COMMITTEE_MAX_REQUIRED_AMOUNT);
+        FC_ASSERT(o.required_amount_max.amount <= maximum,
+                  "Committee request exceeds maximum ${maximum}",
+                  ("maximum", asset(maximum, TOKEN_SYMBOL)));
         const auto& median_props = _db.get_validator_schedule_object().median_props;
         const auto &creator = _db.get_account(o.creator);
         _db.get_account(o.worker);

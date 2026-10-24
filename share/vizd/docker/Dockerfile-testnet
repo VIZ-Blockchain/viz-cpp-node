@@ -78,6 +78,8 @@ COPY libraries $APPDIR/libraries
 # wallet CLI that operators invoke via `docker exec`. `sharing=locked` is required
 # because ccache is not concurrent-safe; `shared` would risk cache corruption
 # under any future matrix-build setup.
+# Empty = classic one-validator testnet; e.g. --build-arg TESTNET_VALIDATORS=21
+ARG TESTNET_VALIDATORS=
 RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     cd $APPDIR && \
     git submodule update --init --recursive -f && \
@@ -89,6 +91,7 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
         -DBOOST_ROOT=/usr/local \
         -DBUILD_SHARED_LIBRARIES=FALSE \
         -DBUILD_TESTNET=TRUE \
+        -DCHAIN_TESTNET_VALIDATORS=${TESTNET_VALIDATORS} \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
         .. \
     && \

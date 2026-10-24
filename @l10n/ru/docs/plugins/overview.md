@@ -35,6 +35,7 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | `snapshot` | Рекомендуется | `chain` | — |
 | `block_archive` | Опционально | `chain` | — |
 | `validator_guard` | Рекомендуется для валидаторов | `chain`, `p2p` | — |
+| `node_admin` | Опционально (оператор/AI-агент) | `chain` | Свой loopback-слушатель |
 
 ### API
 

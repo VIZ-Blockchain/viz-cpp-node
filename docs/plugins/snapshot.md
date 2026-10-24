@@ -2,7 +2,7 @@
 
 The snapshot plugin enables near-instant node startup by serializing and restoring the full blockchain state as a JSON file. Instead of replaying millions of blocks from the block log, a node loads a pre-built snapshot and begins syncing from the snapshot's block height via P2P.
 
-**Source:** [plugins/snapshot/snapshot.cpp](../../plugins/snapshot/snapshot.cpp)
+**Source:** [plugins/snapshot/snapshot.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/snapshot/plugin.cpp)
 
 ---
 

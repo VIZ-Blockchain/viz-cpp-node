@@ -31,6 +31,17 @@ namespace graphene {
             auto &id_index = _index.get<block_id>();
             auto existing = id_index.find(b.id());
             if (existing != id_index.end()) {
+                // An anchor (insert_anchor_block) holds only id/num. Now that the
+                // real block is here, fill it in: otherwise the LIB writer of a
+                // non-DLT node finds no data for this block and asserts on
+                // block_log append (21-validator QC stand, #6741: a node that
+                // joined at head #1 anchored #1, then rejected every #2).
+                if ((*existing)->anchor_only) {
+                    id_index.modify(existing, [&](item_ptr &it) {
+                        it->data = std::move(b);
+                        it->anchor_only = false;
+                    });
+                }
                 // Already in linked index — still repair any child blocks whose
                 // prev pointer is null (inserted via start_block before we knew
                 // this ancestor).

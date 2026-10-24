@@ -377,6 +377,13 @@ See [Prediction Market Operations](./operations/prediction-markets.md). (IDs 91�
 
 All PM money movement is strictly zero-sum (no emission); settlement conserves `Σ out == Σ bets + LP principal + forfeit_pool`.
 
+
+### Consensus (HF16 QC)
+
+| ID | Operation | Trigger |
+|----|-----------|---------|
+| 106 | `validator_equivocation_operation` | A block carried proof that `validator` signed votes for two different blocks (`first_block_id`, `second_block_id`) in the same `round`. Penalised like a missed block (`total_missed++`, `penalty_percent += validator_miss_penalty_percent` for `validator_miss_penalty_duration`); at most once per round (`last_equivocation_round`) |
+
 ---
 
 See also: [Operations Overview](./operations/overview.md), [Awards](./operations/awards.md), [Committee](./operations/committee.md).

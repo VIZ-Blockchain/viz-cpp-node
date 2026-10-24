@@ -105,10 +105,15 @@ inline u256 to256(const fc::uint128_t &t) {
             // HF15 (PM audit fixes) is registered in BOTH configs — production included, because the
             // shelter testnet runs the production config and a testnet-only fork could never
             // activate there. The gate is the activation time (15.hf) plus the validator quorum,
-            // not the build flavour; CHAIN_NUM_HARDFORKS is 15 everywhere so the arrays are sized
-            // [CHAIN_NUM_HARDFORKS + 1] = [16] and these indices are in bounds.
+            // not the build flavour; CHAIN_NUM_HARDFORKS is 16 everywhere so the arrays are sized
+            // [CHAIN_NUM_HARDFORKS + 1] = [17] and these indices are in bounds.
             _hardfork_times[CHAIN_HARDFORK_15] = fc::time_point_sec(CHAIN_HARDFORK_15_TIME);
             _hardfork_versions[CHAIN_HARDFORK_15] = CHAIN_HARDFORK_15_VERSION;
+
+            // HF16 (no-contest fee freeze) — same registration rule as HF15: unconditional in both
+            // configs, gated by the time in 16.hf plus validator quorum.
+            _hardfork_times[CHAIN_HARDFORK_16] = fc::time_point_sec(CHAIN_HARDFORK_16_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_16] = CHAIN_HARDFORK_16_VERSION;
 
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
@@ -1040,6 +1045,41 @@ inline u256 to256(const fc::uint128_t &t) {
                     // (id 0) so pm_lazy_deposit and the allocation/leverage paths can rely
                     // on get<pm_lazy_pool_object>. All balances start at zero (empty pool).
                     create<pm_lazy_pool_object>([](pm_lazy_pool_object&) {});
+                    break;
+                case CHAIN_HARDFORK_16:
+                    // #6737: this block is the last 3 s slot (dgpo.time is already this block's
+                    // timestamp: update_global_dynamic_data runs before process_hardforks), every
+                    // later slot is CHAIN_BLOCK_INTERVAL_HF16. Re-anchor rounds here, using the
+                    // pre-switch formula for this block's own round. See database::round_of().
+                    {
+                        const uint32_t r = round_of(get_dynamic_global_properties().time);
+                        modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
+                            p.round_anchor_time = p.time;
+                            p.round_anchor_round = r;
+                        });
+                    }
+                    {
+                        // #6737, Q#3108=A: block-denominated chain props keep their wall-time
+                        // meaning at 1 s slots. The median is recomputed from every validator's
+                        // own props each schedule round, so scaling only median_props would be
+                        // undone within one round: scale every stored vote, then the median.
+                        const auto scale = [](chain_properties& c) {
+                            const auto x3 = [](uint32_t v) {
+                                return uint32_t(std::min<uint64_t>(uint64_t(v) * 3, std::numeric_limits<uint32_t>::max()));
+                            };
+                            c.inflation_recalc_period   = x3(c.inflation_recalc_period);
+                            c.distribution_epoch_length = x3(c.distribution_epoch_length);
+                            c.pm_batch_epoch_blocks     = x3(c.pm_batch_epoch_blocks);
+                            c.pm_reveal_window_blocks   = x3(c.pm_reveal_window_blocks);
+                        };
+                        const auto& vidx = get_index<validator_index>().indices();
+                        for (auto it = vidx.begin(); it != vidx.end(); ++it) {
+                            modify(*it, [&](validator_object& v) { scale(v.props); });
+                        }
+                        modify(get_validator_schedule_object(), [&](validator_schedule_object& w) {
+                            scale(w.median_props);
+                        });
+                    }
                     break;
                 default:
                     break;

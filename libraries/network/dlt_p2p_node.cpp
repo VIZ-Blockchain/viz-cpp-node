@@ -309,6 +309,10 @@ static dlt_hello_message unpack_hello_compat(const message& msg) {
     if (ds.remaining() >= sizeof(node_id_t)) {
         fc::raw::unpack(ds, hello.node_id);
     }
+    // capabilities (uint32) follows node_id; absent on peers that predate it.
+    if (ds.remaining() >= sizeof(uint32_t)) {
+        fc::raw::unpack(ds, hello.capabilities);
+    }
     // Any remaining bytes are future protocol fields — ignored for forward compat.
     return hello;
 }
@@ -641,7 +645,9 @@ inline uint32_t frame_msg_type(const std::vector<char>& frame) {
 // stall a peer's sync or leave a request unanswered.
 inline bool is_droppable_when_full(uint32_t msg_type) {
     return msg_type == dlt_fork_status_message_type
-        || msg_type == dlt_transaction_message_type;
+        || msg_type == dlt_transaction_message_type
+        || msg_type == dlt_block_vote_message_type    // superseded by the QC / next round
+        || msg_type == dlt_timeout_vote_message_type; // superseded by the TC / next round
 }
 } // anonymous namespace
 
@@ -1018,6 +1024,12 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_gap_fill_reply_type:
                 on_dlt_gap_fill_reply(peer, msg.as<dlt_gap_fill_reply>());
                 break;
+            case dlt_block_vote_message_type:
+                on_dlt_block_vote(peer, msg.as<dlt_block_vote_message>());
+                break;
+            case dlt_timeout_vote_message_type:
+                on_dlt_timeout_vote(peer, msg.as<dlt_timeout_vote_message>());
+                break;
             default:
                 auto ep_it_unk = _peer_states.find(peer);
                 auto ep_unk = (ep_it_unk != _peer_states.end()) ? std::string(ep_it_unk->second.endpoint) : std::to_string(peer);
@@ -1056,6 +1068,7 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
     hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
+    hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE;
     return hello;
 }
 
@@ -1085,6 +1098,21 @@ bool dlt_p2p_node::check_fork_alignment(const dlt_hello_message& hello,
     // and can eventually receive a snapshot. Don't mark any block as
     // recognized since it has none.
     if (hello.head_block_num == 0) {
+        return true;
+    }
+
+    // ── We are empty, peer serves the chain from genesis ────────
+    // Mirror of the rule above. A node started from genesis (fresh testnet, no snapshot)
+    // has no block to recognise the peer by, so every peer was "not fork-aligned": exchange
+    // stayed off, blocks #1..#2 were never requested and every later block was unlinkable.
+    // Only nodes that were connected while #1 was being produced ever got the chain (6 of 21
+    // on the HF16 QC stand, #6741). Every block will still be fully validated from genesis on
+    // apply against the locally configured genesis/chain id and checkpoints. This hello
+    // grants transport eligibility, not trust in the advertised head or canonical history.
+    // Operators needing a pinned bootstrap history must configure known checkpoints or
+    // a trusted snapshot; a peer that cannot serve from #1 (a DLT node
+    // with a pruned range) still needs a snapshot and is not accepted here.
+    if (_delegate->get_head_block_num() == 0 && hello.dlt_earliest_block <= 1) {
         return true;
     }
 
@@ -1138,6 +1166,7 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
 
     // Persist node_id — used for dedup and peer-exchange identity.
     state.node_id = hello.node_id;
+    state.peer_capabilities = hello.capabilities;
 
     // ── Self-connection guard ───────────────────────────────────────────────
     // The hello carries OUR node_id ⇒ this socket ends at our own listener.
@@ -2502,20 +2531,112 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
 void dlt_p2p_node::broadcast_block_post_validation(
     const block_id_type& block_id,
     const std::string& witness_account,
-    const signature_type& validator_signature) {
-    // For now, send as fork_status message with block_id
-    dlt_fork_status_message msg;
-    msg.fork_status = _fork_status;
-    msg.head_block_id = block_id;
-    msg.head_block_num = graphene::protocol::block_header::num_from_id(block_id);
-    if (_delegate) {
-        msg.lib_block_id = _delegate->get_lib_block_id();
-        msg.lib_block_num = _delegate->get_lib_block_num();
-        msg.dlt_earliest_block = _delegate->get_dlt_earliest_block();
-        msg.dlt_latest_block = _delegate->get_dlt_latest_block();
+    const signature_type& validator_signature,
+    uint32_t round) {
+    // The signature is a block vote (block_vote_digest; round = slot of the
+    // block) made by the validator plugin. Until the DLT redesign is fully QC-aware it travels as
+    // dlt_block_vote_message; before this the call sent a fork_status and the
+    // signature never left the node, so LIB fell back to the producer rule.
+    dlt_block_vote_message msg;
+    msg.block_num = graphene::protocol::block_header::num_from_id(block_id);
+    msg.block_id = block_id;
+    msg.round = round;
+    msg.validator = witness_account;
+    msg.signature = validator_signature;
+    // A re-send of our own vote (the validator retries until a QC forms) would
+    // die in the relay dedup and in the pool's one-vote-per-round check, so it
+    // goes straight to the peers. Peers that already have it drop it there.
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (_block_votes_seen.count(key)) {
+        _block_votes_seen[key] = fc::time_point::now();
+        gossip_to_capable(message(msg), DLT_CAP_BLOCK_VOTE, INVALID_PEER_ID);
+        return;
     }
-    msg.node_status = _node_status;
-    send_to_all_our_fork_peers(message(msg));
+    process_block_vote(msg, INVALID_PEER_ID);
+}
+
+void dlt_p2p_node::on_dlt_block_vote(peer_id peer, const dlt_block_vote_message& msg) {
+    process_block_vote(msg, peer);
+}
+
+void dlt_p2p_node::process_block_vote(const dlt_block_vote_message& msg, peer_id from) {
+    static constexpr int64_t DLT_BLOCK_VOTE_SEEN_SEC = 120;
+    const auto now = fc::time_point::now();
+
+    // Prune the relay-dedup map. Votes older than two minutes are far below LIB
+    // at any block interval we run, so re-accepting one is harmless (the pool
+    // already counted it or dropped it as stale).
+    for (auto it = _block_votes_seen.begin(); it != _block_votes_seen.end(); ) {
+        if (now - it->second > fc::seconds(DLT_BLOCK_VOTE_SEEN_SEC)) it = _block_votes_seen.erase(it);
+        else ++it;
+    }
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (!_block_votes_seen.emplace(key, now).second) return;   // already handled
+
+    // Verification lives in the chain: scheduled validator + signature over
+    // block_vote_digest. An invalid vote is neither counted nor relayed, so a
+    // peer cannot use us to amplify garbage.
+    if (!_delegate || !_delegate->accept_block_vote(msg)) {
+        if (from != INVALID_PEER_ID) {
+            dlog(DLT_LOG_DGRAY "Block vote #${n} by ${v} from peer ${p} not accepted" DLT_LOG_RESET,
+                 ("n", msg.block_num)("v", msg.validator)("p", from));
+        }
+        return;
+    }
+
+    // Gossip to capable fork peers only: a peer without DLT_CAP_BLOCK_VOTE
+    // would score the message as an unknown packet against us.
+    gossip_to_capable(message(msg), DLT_CAP_BLOCK_VOTE, from);
+}
+
+void dlt_p2p_node::gossip_to_capable(const message& out, uint32_t cap, peer_id from) {
+    std::set<node_id_t> sent_to_node_ids;
+    static const node_id_t zero_id;
+    std::vector<peer_id> targets;
+    for (const auto& item : _peer_states) {
+        const auto& st = item.second;
+        if (item.first == from) continue;
+        if (st.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE || !st.exchange_enabled) continue;
+        if (!(st.peer_capabilities & cap)) continue;
+        if (st.node_id != zero_id && !sent_to_node_ids.insert(st.node_id).second) continue;
+        targets.push_back(item.first);
+    }
+    for (auto id : targets) send_message(id, out);
+}
+
+void dlt_p2p_node::broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                          const std::string& validator, const signature_type& signature) {
+    dlt_timeout_vote_message msg;
+    msg.round = round;
+    msg.high_qc_round = high_qc_round;
+    msg.validator = validator;
+    msg.signature = signature;
+    process_timeout_vote(msg, INVALID_PEER_ID);
+}
+
+void dlt_p2p_node::on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_message& msg) {
+    process_timeout_vote(msg, peer);
+}
+
+void dlt_p2p_node::process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from) {
+    static constexpr int64_t DLT_TIMEOUT_VOTE_SEEN_SEC = 120;
+    const auto now = fc::time_point::now();
+    for (auto it = _timeout_votes_seen.begin(); it != _timeout_votes_seen.end(); ) {
+        if (now - it->second > fc::seconds(DLT_TIMEOUT_VOTE_SEEN_SEC)) it = _timeout_votes_seen.erase(it);
+        else ++it;
+    }
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (!_timeout_votes_seen.emplace(key, now).second) return;   // already handled
+
+    // Invalid votes are neither counted nor relayed (no amplification).
+    if (!_delegate || !_delegate->accept_timeout_vote(msg)) {
+        if (from != INVALID_PEER_ID) {
+            dlog(DLT_LOG_DGRAY "Timeout vote r${r} by ${v} from peer ${p} not accepted" DLT_LOG_RESET,
+                 ("r", msg.round)("v", msg.validator)("p", from));
+        }
+        return;
+    }
+    gossip_to_capable(message(msg), DLT_CAP_TIMEOUT_VOTE, from);
 }
 
 void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
@@ -3439,6 +3560,26 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer, const std::string& reason) {
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
 
+    // A trusted peer is never soft-banned: we drop the connection and retry shortly instead.
+    // Trusted nodes are declared by the operator (admin.p2p.add_trusted), and turning one
+    // bad packet into an hour of silence defeats the purpose of trusting it.
+    if (_trusted_peers.count(it->second.endpoint)) {
+        wlog(DLT_LOG_ORANGE "Trusted peer ${ep}: not banning (${r}); disconnecting and retrying" DLT_LOG_RESET,
+             ("ep", it->second.endpoint)("r", reason));
+        it->second.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
+        it->second.state_entered_time = fc::time_point::now();
+        it->second.ban_reason.clear();
+        it->second.ban_duration_sec = 0;
+        it->second.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
+        it->second.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
+        auto conn_it = _connections.find(peer);
+        if (conn_it != _connections.end()) {
+            try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
+            _connections.erase(conn_it);
+        }
+        return;
+    }
+
     wlog(DLT_LOG_RED "Soft-banning peer ${ep} for ${d}s (reason: ${r})" DLT_LOG_RESET,
          ("ep", it->second.endpoint)("d", BAN_DURATION_SEC)("r", reason));
 
@@ -3464,6 +3605,179 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer, const std::string& reason) {
         try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
         _connections.erase(conn_it);
     }
+}
+
+// ── Operator control (admin API) ─────────────────────────────────────
+
+namespace {
+
+const char* lifecycle_name(dlt_peer_lifecycle_state s) {
+    switch (s) {
+        case DLT_PEER_LIFECYCLE_CONNECTING:   return "CONNECTING";
+        case DLT_PEER_LIFECYCLE_HANDSHAKING:  return "HANDSHAKING";
+        case DLT_PEER_LIFECYCLE_SYNCING:      return "SYNCING";
+        case DLT_PEER_LIFECYCLE_ACTIVE:       return "ACTIVE";
+        case DLT_PEER_LIFECYCLE_DISCONNECTED: return "DISCONNECTED";
+        case DLT_PEER_LIFECYCLE_BANNED:       return "BANNED";
+    }
+    return "?";
+}
+
+const char* node_status_name(uint8_t s) {
+    return s == DLT_NODE_STATUS_FORWARD ? "FORWARD" : "SYNC";
+}
+
+const char* fork_status_name(uint8_t s) {
+    switch (s) {
+        case DLT_FORK_STATUS_NORMAL:              return "NORMAL";
+        case DLT_FORK_STATUS_LOOKING_RESOLUTION:  return "LOOKING_RESOLUTION";
+        case DLT_FORK_STATUS_MINORITY:            return "MINORITY";
+    }
+    return "?";
+}
+
+std::string node_id_hex(const node_id_t &id) {
+    static const char digits[] = "0123456789abcdef";
+    bool zero = true;
+    for (size_t i = 0; i < sizeof(id.data); ++i) {
+        if (id.data[i] != 0) { zero = false; break; }
+    }
+    if (zero) return std::string();
+    std::string out;
+    out.reserve(sizeof(id.data) * 2);
+    for (size_t i = 0; i < sizeof(id.data); ++i) {
+        const unsigned char b = static_cast<unsigned char>(id.data[i]);
+        out.push_back(digits[b >> 4]);
+        out.push_back(digits[b & 0x0f]);
+    }
+    return out;
+}
+
+} // namespace
+
+void dlt_p2p_node::add_peer(const fc::ip::endpoint& ep, bool trusted) {
+    if (trusted) _trusted_peers.insert(ep);
+
+    dlt_known_peer kp;
+    kp.endpoint = ep;
+    kp.last_seen = fc::time_point::now();
+    _known_peers.insert(kp);
+
+    // An endpoint we already track may be parked in DISCONNECTED/BANNED with a long
+    // backoff; clear that so add_peer dials now rather than in an hour.
+    for (auto& item : _peer_states) {
+        auto& s = item.second;
+        if (s.endpoint != ep) continue;
+        s.ban_reason.clear();
+        s.ban_duration_sec = 0;
+        s.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
+        s.next_reconnect_attempt = fc::time_point();
+        break;
+    }
+
+    connect_to_peer(ep);
+    ilog(DLT_LOG_GREEN "DLT P2P: operator added peer ${ep}${t}" DLT_LOG_RESET,
+         ("ep", ep)("t", trusted ? " as trusted" : ""));
+}
+
+uint32_t dlt_p2p_node::clear_banned_peers() {
+    uint32_t cleared = 0;
+    for (auto& item : _peer_states) {
+        auto& s = item.second;
+        const bool banned = s.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED || !s.ban_reason.empty();
+        if (!banned) continue;
+
+        ilog(DLT_LOG_GREEN "DLT P2P: clearing ban for ${ep} (was: ${r})" DLT_LOG_RESET,
+             ("ep", s.endpoint)("r", s.ban_reason.empty() ? std::string("remote") : s.ban_reason));
+        ++cleared;
+        s.ban_reason.clear();
+        s.ban_duration_sec = 0;
+        s.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
+        s.next_reconnect_attempt = fc::time_point();
+
+        dlt_known_peer kp;
+        kp.endpoint = s.endpoint;
+        kp.last_seen = fc::time_point::now();
+        _known_peers.insert(kp);
+
+        // connect_to_peer() reuses this peer_id and resets the per-session fields.
+        connect_to_peer(s.endpoint);
+    }
+    ilog(DLT_LOG_GREEN "DLT P2P: clearing banned peer list — ${n} entries reset" DLT_LOG_RESET,
+         ("n", cleared));
+    return cleared;
+}
+
+dlt_peer_report dlt_p2p_node::get_peer_report() const {
+    dlt_peer_report r;
+    const auto now = fc::time_point::now();
+
+    r.uptime_sec = (_node_start_time.sec_since_epoch() > 0)
+        ? static_cast<uint64_t>((now - _node_start_time).count() / 1000000)
+        : 0;
+    r.node_status = node_status_name(_node_status);
+    r.fork_status = fork_status_name(_fork_status);
+    r.paused = _block_processing_paused;
+    r.isolated_peers = _isolated_peers;
+    r.catching_up = is_catching_up_after_pause();
+    r.our_head = _delegate ? _delegate->get_head_block_num() : 0;
+    r.our_lib = _delegate ? _delegate->get_lib_block_num() : 0;
+    r.dlt_earliest = _delegate ? _delegate->get_dlt_earliest_block() : 0;
+    r.dlt_latest = _delegate ? _delegate->get_dlt_latest_block() : 0;
+    r.max_connections = _max_connections;
+    r.known_peers = static_cast<uint32_t>(_known_peers.size());
+    r.trusted_peers = static_cast<uint32_t>(_trusted_peers.size());
+
+    for (const auto& item : _peer_states) {
+        const auto& s = item.second;
+        dlt_peer_report_entry e;
+        e.endpoint = std::string(s.endpoint);
+        e.node_id = node_id_hex(s.node_id);
+        e.lifecycle = lifecycle_name(s.lifecycle_state);
+        e.node_status = node_status_name(s.peer_node_status);
+        e.fork_status = fork_status_name(s.peer_fork_status);
+        e.incoming = s.is_incoming;
+        e.trusted = _trusted_peers.count(s.endpoint) > 0;
+        e.exchange_enabled = s.exchange_enabled;
+        e.fork_alignment = s.fork_alignment;
+        if (s.connected_since.sec_since_epoch() > 0) {
+            const int64_t sec = (now - s.connected_since).count() / 1000000;
+            e.connected_sec = sec > 0 ? static_cast<uint32_t>(sec) : 0;
+        }
+        e.peer_head = s.peer_head_num;
+        e.peer_lib = s.peer_lib_num;
+        e.peer_dlt_earliest = s.peer_dlt_earliest;
+        e.peer_dlt_latest = s.peer_dlt_latest;
+        e.head_lag = static_cast<int64_t>(r.our_head) - static_cast<int64_t>(s.peer_head_num);
+        e.spam_strikes = s.spam_strikes;
+        e.ban_reason = s.ban_reason;
+        e.ban_duration_sec = s.ban_duration_sec;
+        e.reconnect_backoff_sec = s.reconnect_backoff_sec;
+        if (s.next_reconnect_attempt.sec_since_epoch() > 0 && s.next_reconnect_attempt > now) {
+            e.next_reconnect_in_sec = static_cast<uint32_t>(
+                (s.next_reconnect_attempt - now).count() / 1000000);
+        }
+
+        if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+            s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
+            ++r.active_count;
+        }
+        if (s.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED || !s.ban_reason.empty()) {
+            ++r.banned_peers;
+        }
+        if (s.peer_head_num > r.best_peer_head) r.best_peer_head = s.peer_head_num;
+        if (s.peer_head_num > r.our_head) ++r.peers_ahead;
+
+        r.peers.push_back(std::move(e));
+    }
+
+    r.connection_count = static_cast<uint32_t>(_connections.size());
+    r.best_peer_head_lag = static_cast<int64_t>(r.our_head) - static_cast<int64_t>(r.best_peer_head);
+    std::sort(r.peers.begin(), r.peers.end(),
+              [](const dlt_peer_report_entry& a, const dlt_peer_report_entry& b) {
+                  return a.endpoint < b.endpoint;
+              });
+    return r;
 }
 
 // ── Diagnostics ──────────────────────────────────────────────────────
@@ -3772,8 +4086,8 @@ void dlt_p2p_node::periodic_known_peers_cleanup() {
             continue;
         }
 
-        // Skip seeds (always retry-worthy)
-        bool is_seed = false;
+        // Skip seeds and operator-trusted peers (always retry-worthy)
+        bool is_seed = _trusted_peers.count(it->endpoint) > 0;
         for (const auto& sep : _seed_nodes) {
             if (sep == it->endpoint) { is_seed = true; break; }
         }

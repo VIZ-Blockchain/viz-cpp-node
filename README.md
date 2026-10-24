@@ -22,7 +22,7 @@ Example run:
 
 ```
 docker run \
-    -d -p 2001:2001 -p 8090:8090 -p 8091:8091 --name vizd \
+    -d --restart unless-stopped -p 2001:2001 -p 8090:8090 -p 8091:8091 --name vizd \
     vizblockchain/vizd:latest
 
 docker logs -f vizd

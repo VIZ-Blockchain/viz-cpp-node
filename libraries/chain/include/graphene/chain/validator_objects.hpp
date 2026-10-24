@@ -105,6 +105,10 @@ namespace graphene { namespace chain {
         // HF13: Validator reward sharing
         /// Fraction of block reward shared with stakeholders; basis points (0-CHAIN_100_PERCENT).
         uint16_t sharing_rate = 0;
+
+        /// HF16: round of the last double vote punished (a proof must be newer,
+        /// so each (validator, round) is punished once and proofs cannot repeat).
+        uint32_t last_equivocation_round = 0;
         /// Accumulated TOKEN (VIZ) pending distribution to stakeholders at epoch end.
         /// Stored in TOKEN atomic units; converted to SHARES via create_vesting() at epoch end.
         /// validator_reward_operation for the validator carries only the validator's own share.
@@ -310,7 +314,7 @@ FC_REFLECT(
     (id)(owner)(created)(url)(votes)(penalty_percent)(counted_votes)(schedule)(virtual_last_update)(virtual_position)(virtual_scheduled_time)(total_missed)
     (last_aslot)(last_confirmed_block_num)(current_run)(last_supported_block_num)(signing_key)(props)
     (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote)
-    (sharing_rate)(pending_stakeholder_reward))
+    (sharing_rate)(pending_stakeholder_reward)(last_equivocation_round))
 
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::validator_object, graphene::chain::validator_index)
 

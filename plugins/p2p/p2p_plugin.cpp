@@ -112,6 +112,16 @@ public:
             auto blocks = fdb.fetch_block_by_number(block_num);
             if (!blocks.empty()) return blocks.front()->data;
         } catch (...) {}
+        // Non-DLT node (full block_log, e.g. a chain started from genesis): irreversible blocks
+        // leave fork_db and live only in block_log. get_dlt_earliest_block() advertises 0 for
+        // such a node, so peers ask it from #1 - without this fallback it answered with nothing
+        // for #1..LIB and new peers could never link (21-validator QC stand, #6741).
+        if (!db._dlt_mode) {
+            try {
+                auto block = db.get_block_log().read_block_by_num(block_num);
+                if (block.valid()) return block;
+            } catch (...) {}
+        }
         return {};
     }
 
@@ -137,6 +147,15 @@ public:
                 return true;
             }
         } catch (...) {}
+        if (!db._dlt_mode) {
+            try {
+                auto block = db.get_block_log().read_block_by_num(block_num);
+                if (block.valid()) {
+                    id_out = block->id();
+                    return true;
+                }
+            } catch (...) {}
+        }
         return false;
     }
 
@@ -312,6 +331,34 @@ public:
         } catch (const fc::exception& e) {
             wlog("Error accepting block #${n}: ${e}", ("n", block.block_num())("e", e.to_detail_string()));
             return dlt_block_accept_result::REJECTED;
+        }
+    }
+
+    bool accept_block_vote(const graphene::network::dlt_block_vote_message& vote) override {
+        // account_name_type is fixed-width and truncates silently: refuse
+        // oversized names here instead of letting two names collapse into one.
+        if (vote.validator.empty() || vote.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) return false;
+        try {
+            return chain.db().with_weak_read_lock([&]() {
+                return chain.db().push_block_vote(vote.block_num, vote.block_id, vote.round,
+                                                  vote.validator, vote.signature);
+            });
+        } catch (const fc::exception& e) {
+            dlog("Block vote #${n} by ${v} rejected: ${e}", ("n", vote.block_num)("v", vote.validator)("e", e.what()));
+            return false;
+        }
+    }
+
+    bool accept_timeout_vote(const graphene::network::dlt_timeout_vote_message& vote) override {
+        if (vote.validator.empty() || vote.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) return false;
+        try {
+            return chain.db().with_weak_read_lock([&]() {
+                return chain.db().push_timeout_vote(vote.round, vote.high_qc_round,
+                                                    vote.validator, vote.signature);
+            });
+        } catch (const fc::exception& e) {
+            dlog("Timeout vote r${r} by ${v} rejected: ${e}", ("r", vote.round)("v", vote.validator)("e", e.what()));
+            return false;
         }
     }
 
@@ -690,22 +737,33 @@ void p2p_plugin::broadcast_block(const graphene::protocol::signed_block& block) 
 void p2p_plugin::broadcast_block_post_validation(
     const graphene::protocol::block_id_type block_id,
     const std::string& witness_account,
-    const graphene::protocol::signature_type& validator_signature) {
-    my->p2p_thread.async([this, block_id, witness_account, validator_signature]() {
-        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature);
+    const graphene::protocol::signature_type& validator_signature,
+    uint32_t round) {
+    my->p2p_thread.async([this, block_id, witness_account, validator_signature, round]() {
+        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature, round);
     }).wait();
 }
 
 void p2p_plugin::post_broadcast_block_post_validation(
     const graphene::protocol::block_id_type block_id,
     const std::string& witness_account,
-    const graphene::protocol::signature_type& validator_signature) {
+    const graphene::protocol::signature_type& validator_signature,
+    uint32_t round) {
     // Fire-and-forget: queue the broadcast on the P2P thread without
     // blocking the caller.  The production timer thread must never
     // wait for slow peer socket I/O — a blocked wait would cause the
     // production loop to miss its slot window.
-    my->p2p_thread.async([this, block_id, witness_account, validator_signature]() {
-        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature);
+    my->p2p_thread.async([this, block_id, witness_account, validator_signature, round]() {
+        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature, round);
+    });
+}
+
+void p2p_plugin::post_broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+    const std::string& validator, const graphene::protocol::signature_type& signature) {
+    // Fire-and-forget, like post_broadcast_block_post_validation: the
+    // production timer must not wait on peer I/O.
+    my->p2p_thread.async([this, round, high_qc_round, validator, signature]() {
+        my->node->broadcast_timeout_vote(round, high_qc_round, validator, signature);
     });
 }
 
@@ -743,8 +801,34 @@ uint32_t p2p_plugin::get_connections_count() const {
     return my->node ? my->node->get_connection_count() : 0;
 }
 
+uint32_t p2p_plugin::get_connections_count_sync() const {
+    // The peer map belongs to the p2p thread; reading it from e.g. the node_admin HTTP
+    // thread would be a data race on a std::map that the p2p thread mutates.
+    return my->p2p_thread.async([this]() {
+        return my->node ? my->node->get_connection_count() : 0;
+    }).wait();
+}
+
 bool p2p_plugin::is_isolated_peers() const {
     return my->isolated_peers;
+}
+
+void p2p_plugin::add_peer_sync(const fc::ip::endpoint &ep, bool trusted) {
+    my->p2p_thread.async([this, ep, trusted]() {
+        if (my->node) my->node->add_peer(ep, trusted);
+    }).wait();
+}
+
+uint32_t p2p_plugin::clear_banned_peers_sync() {
+    return my->p2p_thread.async([this]() -> uint32_t {
+        return my->node ? my->node->clear_banned_peers() : 0;
+    }).wait();
+}
+
+graphene::network::dlt_peer_report p2p_plugin::get_peer_report_sync() const {
+    return my->p2p_thread.async([this]() {
+        return my->node ? my->node->get_peer_report() : graphene::network::dlt_peer_report();
+    }).wait();
 }
 
 void p2p_plugin::reconnect_seeds() {
@@ -767,6 +851,15 @@ void p2p_plugin::pause_block_processing() {
     // P2P thread and we are already on it.
     if (my && my->node)
         my->node->pause_block_processing();
+}
+
+void p2p_plugin::pause_block_processing_sync() {
+    // Same flag as pause_block_processing(), but posted to its owning thread.
+    // Callers are admin/restore threads, never the p2p thread itself.
+    if (!my) return;
+    my->p2p_thread.async([this]() {
+        if (my->node) my->node->pause_block_processing();
+    }).wait();
 }
 
 void p2p_plugin::resume_block_processing() {

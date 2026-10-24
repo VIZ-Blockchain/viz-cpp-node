@@ -82,7 +82,7 @@ snapshot-dir = /data/snapshots
 
 ```ini
 plugin = snapshot
-snapshot-every-n-blocks = 28800   # ~24 часа при 3 с/блок
+snapshot-every-n-blocks = 28800   # ~24 ч до HF16; ~8 ч после (1 с/блок)
 snapshot-dir = /data/snapshots
 snapshot-max-age-days = 90
 ```
