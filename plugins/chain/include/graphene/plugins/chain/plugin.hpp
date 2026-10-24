@@ -1,4 +1,5 @@
 #pragma once
+#include <mutex>
 
 #include <appbase/application.hpp>
 
@@ -146,6 +147,7 @@ namespace graphene {
                 /// Returns false and fills `error` if the restore cannot start or fails;
                 /// a failed import has already wiped the state and requested shutdown.
                 bool restore_from_snapshot(const std::string& snapshot_path, std::string& error);
+                std::unique_lock<std::mutex> try_lock_recovery() const;
 
                 /// Apply the chain's runtime corruption policy: recover when enabled,
                 /// otherwise request shutdown. Callers must stop processing the failed item.

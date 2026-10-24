@@ -17,7 +17,11 @@
 #include <graphene/chain/pm_objects.hpp>
 #include <graphene/protocol/pm_operations.hpp>
 #include <graphene/protocol/chain_operations.hpp>
+#ifdef BUILD_TESTNET
+#include <graphene/protocol/config_testnet.hpp>
+#else
 #include <graphene/protocol/config.hpp>
+#endif
 #include <fc/crypto/sha256.hpp>
 
 using namespace consensus_sim;
@@ -51,7 +55,7 @@ void vote_for_head(simulated_node& n, const genesis_params& gp) {
 
 void produce(simulated_node& n, const genesis_params& gp, fc::time_point_sec& when) {
     vote_for_head(n, gp);
-    when += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    when += fc::seconds(n.db().block_interval());
     const auto v = next_validator(n);
     n.produce_block(v, key_for(gp, v), when);
 }

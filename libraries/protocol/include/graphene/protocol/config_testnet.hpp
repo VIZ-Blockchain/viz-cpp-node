@@ -138,7 +138,7 @@
 
 /// Number of consecutive blocks produced by the emergency witness that
 /// triggers automatic exit from emergency mode (validators have rejoined).
-#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 validators
+#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // Legacy unused constant: emergency exits by active-validator quorum, not a timer.
 
 #define CHAIN_IRREVERSIBLE_THRESHOLD          (75 * CHAIN_1_PERCENT)
 /** Irreversibility only counts blocks produced if wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN */

@@ -2104,13 +2104,22 @@ namespace graphene { namespace chain {
                     }
                     _maybe_warn_multiple_production(new_head->num);
 
+                    // Signature admission controls certificate priority only. A legitimate
+                    // competing branch can have a different key/schedule from current state;
+                    // if cheap verification cannot establish its certificate, retain the
+                    // historical longer-chain path and let full branch replay validate it.
+                    const auto admitted_round = [&](const signed_block &b) -> uint32_t {
+                        try { return verified_fork_cert_round(b); }
+                        catch (const fc::exception &) { return 0; }
+                    };
+
                     // HF16: fork_db keeps the first block at a height as its head, so a
                     // same-height sibling never reached the certificate comparison below:
                     // a TC replacement of a QC-less head (Jolteon) was stored and never
                     // applied, every next producer built one more sibling and the chain
                     // stalled for good (21-validator stand, netem 300 ms: 5 blocks #194).
                     // Offer the pushed block as the candidate when it proves a later
-                    // round; a forged certificate fails in switch_forks and is reverted.
+                    // round; signatures and quorum are checked before changing the fork head.
                     // It may also sit LOWER than head: after a TC the proposal extends the
                     // highest certified block, below a late-QC head and its parent.
                     if (has_hardfork(CHAIN_HARDFORK_16) &&
@@ -2119,7 +2128,7 @@ namespace graphene { namespace chain {
                         new_head->id != new_block.id() &&
                         new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
                         new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
-                        block_cert_round(new_block) > block_cert_round(new_head->data)) {
+                        admitted_round(new_block) > block_cert_round(new_head->data)) {
                         auto pushed = _fork_db.fetch_block(new_block.id());
                         if (pushed && !pushed->invalid) {
                             _fork_db.set_head(pushed);
@@ -2151,17 +2160,17 @@ namespace graphene { namespace chain {
                         try {
                         // HF16: the branch whose tip carries the certificate of the
                         // later round wins, even at the same height. The certificate
-                        // is only claimed here; switch_forks applies the block and
-                        // validate_block_qc rejects a forged one, which reverts the
-                        // switch. Equal rounds fall through to the HF12 rule.
+                        // has passed signature/quorum admission before rollback. Full
+                        // branch-dependent validation still runs during apply_block.
+                        // Equal rounds fall through to the HF12 rule.
                         int cert_cmp = 0;
                         if (has_hardfork(CHAIN_HARDFORK_16) &&
                             !get_dynamic_global_properties().emergency_consensus_active) {
                             const auto head_blk = fetch_block_by_id(head_block_id());
                             if (head_blk) {
-                                const uint32_t new_r = block_cert_round(new_head->data);
+                                const uint32_t new_r = admitted_round(new_head->data);
                                 const uint32_t head_r = block_cert_round(*head_blk);
-                                cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
+                                if (new_r) cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
                             }
                         }
                         if (cert_cmp != 0) {
@@ -2966,7 +2975,7 @@ namespace graphene { namespace chain {
                 for (auto it = _pending_equivocations.begin(); it != _pending_equivocations.end(); ) {
                     const auto &p = it->second;
                     const auto *v = find_validator(p.validator);
-                    if (!v || p.round <= v->last_equivocation_round || p.round + 1200 < own_round) {
+                    if (!v || p.round <= v->last_equivocation_round || uint64_t(p.round) + 3600 / block_interval() < own_round) {
                         it = _pending_equivocations.erase(it);          // punished already or too old
                         continue;
                     }
@@ -6467,11 +6476,11 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS) {
+                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
                                     elog("Emergency consensus: Validator ${w} missed ${missed} blocks since last confirmed ${lc} "
                                          "(threshold=${t}), blanking signing_key",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
-                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS));
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())));
                                     w.signing_key = public_key_type();
                                     push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
@@ -6497,7 +6506,7 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS) {
+                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
                                     elog("Validator ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("k", w.signing_key));
@@ -6541,7 +6550,7 @@ namespace graphene { namespace chain {
        *  If the network reserve ratio falls under 100 then it is probably time to
        *  increase the capacity of the network.
        */
-                    if (dgp.head_block_number % 20 == 0) {
+                    if (dgp.head_block_number % (60 / block_interval()) == 0) {
                         if (dgp.average_block_size > dgp.maximum_block_size / 4) {
                             dgp.current_reserve_ratio /= 2; /// exponential back up
                         } else { /// linear growth... not much fine grain control near full capacity
@@ -7188,9 +7197,9 @@ namespace graphene { namespace chain {
                                          const account_name_type &validator, const signature_type &signature) {
             // Same window as block votes: bounded memory for valid-but-absurd rounds.
             static constexpr uint32_t MAX_VOTE_AHEAD_ROUNDS = 64;
-            static constexpr uint32_t MAX_VOTE_ROUND_BEHIND = 1200;     // ~1 h at 3 s
+            const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval(); // preserve the one-hour evidence window
             const uint32_t head_round = round_of(head_block_time());
-            if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
+            if (uint64_t(round) + MAX_VOTE_ROUND_BEHIND < head_round) return false;
             // Bound "ahead" by the wall-clock round, not head's: timeout votes exist
             // precisely while head is stuck. Measured from head, every vote is refused
             // ~64 s into a stall, no TC can form any more and the chain never recovers,
@@ -7247,7 +7256,7 @@ namespace graphene { namespace chain {
             for (const auto *p : proofs) {
                 FC_ASSERT(seen.insert(p->validator).second, "Two double-vote proofs for ${v} in one block", ("v", p->validator));
                 FC_ASSERT(p->first.block_id != p->second.block_id, "Double-vote proof for ${v}: same block twice", ("v", p->validator));
-                FC_ASSERT(p->round < own_round && p->round + 1200 >= own_round,
+                FC_ASSERT(p->round < own_round && uint64_t(p->round) + 3600 / block_interval() >= own_round,
                           "Double-vote proof for ${v}: round ${r} outside the window", ("v", p->validator)("r", p->round));
                 const auto &w = get_validator(p->validator);
                 FC_ASSERT(p->round > w.last_equivocation_round,
@@ -7392,6 +7401,47 @@ namespace graphene { namespace chain {
             return r;
         }
 
+        // Admission check only: branch-dependent parent/schedule checks still run in apply_block.
+        // An unauthenticated peer must not buy a rollback with a made-up certificate round.
+        uint32_t database::verified_fork_cert_round(const signed_block &b) const {
+            const uint32_t round = block_cert_round(b);
+            if (!round) return 0;
+            const auto *producer = find_validator(b.validator);
+            FC_ASSERT(producer && b.validate_signee(producer->signing_key), "Invalid fork producer signature");
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
+            bool producer_scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT)
+                if (wso.current_shuffled_validators[i] == b.validator) producer_scheduled = true;
+            FC_ASSERT(producer_scheduled, "Fork producer is not in the current schedule");
+            const uint32_t quorum = block_qc_quorum(scheduled);
+            unsigned qcs = 0, tcs = 0;
+            for (const auto &e : b.extensions) {
+                if (e.which() == 3) {
+                    FC_ASSERT(++qcs == 1, "Duplicate fork QC");
+                    const auto &qc = e.get<protocol::block_qc_certificate>();
+                    FC_ASSERT(qc.signatures.size() >= quorum && qc.signatures.size() <= scheduled,
+                              "Fork QC does not have a scheduled quorum");
+                    FC_ASSERT(protocol::block_header::num_from_id(qc.block_id) == qc.block_num &&
+                              qc.block_num < b.block_num() && qc.round < round_of(b.timestamp),
+                              "Invalid fork QC height/round");
+                    for (const auto &v : qc.signatures)
+                        FC_ASSERT(verify_block_vote(qc.block_num, qc.block_id, qc.round, v.first, v.second),
+                                  "Invalid fork QC vote");
+                } else if (e.which() == 4) {
+                    FC_ASSERT(++tcs == 1, "Duplicate fork TC");
+                    const auto &tc = e.get<protocol::block_timeout_certificate>();
+                    FC_ASSERT(tc.votes.size() >= quorum && tc.votes.size() <= scheduled &&
+                              tc.round < round_of(b.timestamp), "Invalid fork TC quorum/round");
+                    for (const auto &v : tc.votes)
+                        FC_ASSERT(verify_timeout_vote(tc.round, v.second.high_qc_round, v.first, v.second.signature),
+                                  "Invalid fork timeout vote");
+                }
+            }
+            FC_ASSERT(!tcs || qcs, "Fork TC without QC");
+            return round;
+        }
+
         void database::validate_block_qc(const signed_block &next_block, uint32_t skip) const {
             const protocol::block_qc_certificate *cert = nullptr;
             const protocol::block_timeout_certificate *tc = nullptr;
@@ -7496,13 +7546,13 @@ namespace graphene { namespace chain {
             static constexpr uint32_t MAX_VOTE_AHEAD_BLOCKS = 64;
             // Round = slot (block timestamp / interval). Accept a window around
             // head: far-past rounds are below LIB anyway, far-future ones are junk.
-            static constexpr uint32_t MAX_VOTE_ROUND_BEHIND = 1200;     // ~1 h at 3 s
+            const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval(); // preserve the one-hour evidence window
             if (block_num == 0 || block_id == block_id_type()) return false;
             if (protocol::block_header::num_from_id(block_id) != block_num) return false;
 
             const auto &dpo = get_dynamic_global_properties();
             const uint32_t head_round = round_of(head_block_time());
-            if (round + MAX_VOTE_ROUND_BEHIND < head_round) return false;
+            if (uint64_t(round) + MAX_VOTE_ROUND_BEHIND < head_round) return false;
             if (round > head_round + MAX_VOTE_AHEAD_BLOCKS) return false;
             // With a tiny schedule (one validator: testnet, consensus_sim) the
             // classic LIB reaches head itself, yet head still needs a QC before
@@ -7511,10 +7561,8 @@ namespace graphene { namespace chain {
                                           dpo.head_block_number > 0 ? dpo.head_block_number - 1 : 0);
             // HF16 diagnostics (21-validator stand): a vote for head that is turned away
             // is logged once per block, so a QC that never forms names its cause.
-            static uint32_t head_reject_logged = 0;
             const auto reject_head = [&](const char *why) {
-                if (block_num == dpo.head_block_number && head_reject_logged != block_num) {
-                    head_reject_logged = block_num;
+                if (block_num == dpo.head_block_number && _head_reject_logged.exchange(block_num) != block_num) {
                     wlog("Vote for head #${n} from ${w} round ${r} rejected: ${why} (LIB ${l}, head round ${h})",
                          ("n", block_num)("w", validator)("r", round)("why", why)("l", lib)("h", head_round));
                 }

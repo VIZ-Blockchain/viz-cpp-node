@@ -18,7 +18,12 @@
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/block_vote.hpp>
 #include <graphene/protocol/chain_operations.hpp>
+#ifdef BUILD_TESTNET
+#include <graphene/protocol/config_testnet.hpp>
+#else
 #include <graphene/protocol/config.hpp>
+#endif
+#include <graphene/protocol/get_config.hpp>
 
 using namespace consensus_sim;
 using namespace graphene::chain;
@@ -112,6 +117,14 @@ BOOST_AUTO_TEST_CASE(slot_and_round_switch_at_fork_block) {
 
     db.set_hardfork(CHAIN_HARDFORK_16, true);
     BOOST_REQUIRE(db.has_hardfork(CHAIN_HARDFORK_16));
+
+    const auto live_config = graphene::protocol::get_config(db.block_interval());
+    BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_HOUR"].as_uint64(), 3600u);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_DAY"].as_uint64(), 86400u);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_YEAR"].as_uint64(), CHAIN_SECONDS_PER_YEAR);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"].as_uint64(), CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * 3);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_DEFAULT_CHAIN_PROPERTIES"].get_object()["inflation_recalc_period"].as_uint64(),
+                      uint64_t(CHAIN_CONSENSUS_INFLATION_RECALC_PERIOD) * 3);
 
     // The fork block is the anchor: same round as before the switch, next slot is +1 s.
     const auto& dgp = db.get_dynamic_global_properties();
@@ -229,6 +242,158 @@ BOOST_AUTO_TEST_CASE(committee_request_ceiling_tracks_current_supply) {
         p.current_supply = asset(raw_supply, TOKEN_SYMBOL);
     });
     BOOST_CHECK_NO_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)));
+}
+
+
+BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
+    auto gp = make_genesis_params(0xE9016u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("epoch-floor", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    auto &db = node.db();
+    chain_properties_pm props = db.get_validator(gp.initiator_name).props;
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH;
+    versioned_chain_properties_update_operation op; op.owner = gp.initiator_name; op.props = props;
+    node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
+                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
+    db.set_hardfork(CHAIN_HARDFORK_16, true);
+    // Other block-denominated settings have been migrated too: start from those props.
+    props = db.get_validator(gp.initiator_name).props;
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3 - 1;
+    op.props = props;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
+    props.distribution_epoch_length += 1; op.props = props;
+    node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
+                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3);
+}
+
+// Every CI run now exercises real signatures, QC/LIB, timeout votes, late-QC and
+// on-chain equivocation on two independent database instances.
+BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
+    auto gp = make_genesis_params(0xBF716u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("bft-source", gp, clk), follower("bft-follower", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    for (const auto &b : node.canonical_blocks_from(1)) follower.receive_block(b);
+    BOOST_REQUIRE(follower.head_block_id() == node.head_block_id());
+    auto &db = node.db();
+    db.set_hardfork(CHAIN_HARDFORK_16, true);
+    follower.db().set_hardfork(CHAIN_HARDFORK_16, true);
+    BOOST_REQUIRE_GE(db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 2);
+    const uint32_t base_lib = node.last_irreversible_block_num();
+    auto relay = [&]() {
+        const auto b = db.fetch_block_by_number(db.head_block_num());
+        BOOST_REQUIRE(b.valid());
+        follower.receive_block(*b);
+        BOOST_REQUIRE(follower.head_block_id() == b->id());
+    };
+    for (int i = 0; i < 8; ++i) { produce(node, gp, when); relay(); }
+    vote_for_head(node, gp);
+    BOOST_REQUIRE(db.get_block_qc(db.head_block_num()).valid());
+    BOOST_REQUIRE_GT(db.highest_qc_on_main_branch(db.head_block_num()), base_lib);
+    BOOST_REQUIRE_GT(node.last_irreversible_block_num(), base_lib);
+    BOOST_REQUIRE_GT(follower.last_irreversible_block_num(), base_lib);
+
+    // A signed duplicate vote is evidence, not a second quorum vote.
+    const auto head = *db.fetch_block_by_number(db.head_block_num());
+    const uint32_t round = db.round_of(head.timestamp);
+    const auto voter = db.get_validator_schedule_object().current_shuffled_validators[0];
+    const auto missed = db.get_validator(voter).total_missed;
+    // Preserve the old one-hour wall-time vote window after changing slot length.
+    const uint32_t historical = round - 2000;
+    const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
+    BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
+    const uint32_t expired = round - 3601;
+    const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
+    BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
+
+    signed_block twin = head;
+    twin.timestamp += fc::seconds(1);
+    const auto conflicting = twin.id();
+    const auto digest = block_vote_digest(db.get_chain_id(), head.block_num(), conflicting, round);
+    BOOST_CHECK(!db.push_block_vote(head.block_num(), conflicting, round, voter, key_for(gp, voter).sign_compact(digest)));
+    produce(node, gp, when); relay();
+    BOOST_CHECK_EQUAL(db.get_validator(voter).last_equivocation_round, round);
+    BOOST_CHECK_EQUAL(follower.db().get_validator(voter).last_equivocation_round, round);
+    BOOST_CHECK_GT(db.get_validator(voter).total_missed, missed);
+    bool proof = false;
+    for (const auto &e : db.fetch_block_by_number(db.head_block_num())->extensions)
+        if (e.which() == 5) proof = true;
+    BOOST_CHECK(proof);
+
+    // With no QC of the current head, its parent's carried QC is valid for
+    // exactly one consecutive late-QC fallback block.
+    const auto producer = next_validator(node);
+    const auto qc = db.grandparent_qc_for_next_block(producer, db.round_of(when) + 1);
+    BOOST_REQUIRE(qc.valid());
+    when += fc::seconds(db.block_interval());
+    db.generate_block(when, producer, key_for(gp, producer), database::skip_nothing, {}, qc);
+    relay();
+
+    // A quorum times out a stalled round; its signatures survive wire inclusion.
+    vote_for_head(node, gp);
+    const auto high = db.get_block_qc(db.head_block_num());
+    BOOST_REQUIRE(high.valid());
+    produce(node, gp, when); relay(); // Uncertified child that will be replaced after timeout.
+    const uint32_t timeout_round = db.round_of(when);
+    const auto &wso = db.get_validator_schedule_object();
+    for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+        const auto v = wso.current_shuffled_validators[i];
+        const auto d = block_timeout_digest(db.get_chain_id(), timeout_round, high->round);
+        BOOST_CHECK(db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
+    }
+    const auto tc = db.get_timeout_cert(timeout_round);
+    BOOST_REQUIRE(tc.valid());
+    db.pop_block(); // Producer discards the uncertified head; follower still holds it.
+    when += fc::seconds(db.block_interval());
+    const auto v = db.get_scheduled_validator(db.get_slot_at_time(when));
+    db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc);
+    relay();
+    BOOST_REQUIRE_GT(follower.last_irreversible_block_num(), base_lib);
+}
+
+BOOST_AUTO_TEST_CASE(forged_certificate_cannot_enter_fork_choice) {
+    auto gp = make_genesis_params(0xF0C16u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("forged-cert", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    auto &db = node.db(); db.set_hardfork(CHAIN_HARDFORK_16, true);
+    for (int i = 0; i < 5; ++i) produce(node, gp, when);
+    const auto original = *db.fetch_block_by_number(db.head_block_num());
+    signed_block forged = original;
+    forged.extensions.clear();
+    block_qc_certificate qc;
+    qc.block_num = original.block_num() - 1; qc.block_id = original.previous;
+    qc.round = db.round_of(original.timestamp) + 100;
+    forged.extensions.insert(block_header_extensions(qc));
+    // Even a real producer signature cannot replace the missing quorum signatures.
+    forged.sign(key_for(gp, forged.validator));
+    BOOST_CHECK_THROW(db.verified_fork_cert_round(forged), fc::exception);
+    uint32_t applied = 0;
+    auto connection = db.applied_block.connect([&](const signed_block &) { ++applied; });
+    try { db.push_block(forged, database::skip_nothing); } catch (const fc::exception &) {}
+    connection.disconnect();
+    BOOST_CHECK_EQUAL(applied, 0u); // No rollback/replay of the honest suffix.
+    BOOST_CHECK(db.head_block_id() == original.id());
+    BOOST_CHECK(db.get_fork_db().head()->id == original.id());
+    // Valid producer/certificate signatures are accepted by admission.
+    BOOST_CHECK_EQUAL(db.verified_fork_cert_round(original), db.block_cert_round(original));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

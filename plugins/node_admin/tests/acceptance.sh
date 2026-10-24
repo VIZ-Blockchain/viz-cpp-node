@@ -765,6 +765,8 @@ check "MCP notification -> HTTP 202" 202 "$CODE"
 check "MCP notification -> empty body" 0 "$(wc -c < "$OUT" | tr -d ' ')"
 
 auth "$GOOD" '{"jsonrpc":"2.0","id":23,"method":"tools/list"}'
+check "MCP schemas use named properties and valid required keys" true \
+    "$(python3 -c 'import json,sys; ts=json.load(open(sys.argv[1]))["result"]["tools"]; print(str(all(isinstance(t["inputSchema"]["properties"],dict) and all(k in t["inputSchema"]["properties"] for k in t["inputSchema"].get("required",[])) for t in ts)).lower())' "$OUT")"
 check "MCP tools/list -> forty-one tools" 41 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["result"]["tools"]))' "$OUT")"
 check "MCP tools/list -> admin.auth.me present" true \
@@ -960,6 +962,9 @@ else
 fi
 auth "$ADM" '{"jsonrpc":"2.0","id":113,"method":"admin.ping"}'
 check "restart -> admin answers after the restart" true "$(field result.ok)"
+
+auth "$GOOD" '{"jsonrpc":"2.0","id":126,"method":"admin.webserver.status"}'
+check "restart -> config limit overrides stale runtime policy" 42 "$(field result.limits.per_minute)"
 
 auth "$ADM" '{"jsonrpc":"2.0","id":114,"method":"admin.plugins.list"}'
 check "restart -> block_info is configured now" true \

@@ -138,7 +138,7 @@ const uint32_t kRatePerSecond = 20;
 // Snapshot files are served in one HTTP response, so the body has to fit in memory.
 // VIZ mainnet snapshots are ~4 MB compressed; the cap is for a pathological file, not
 // the normal case. Larger files stay downloadable with scp from the node.
-const uint64_t kMaxSnapshotDownloadBytes = 512ULL * 1024 * 1024;
+const uint64_t kMaxSnapshotDownloadBytes = 8ULL * 1024 * 1024;
 
 /// Constant-time comparison for equal-length strings. Token hashes are always 64 hex chars,
 /// so an early size check leaks nothing beyond "this is not a sha256 hex digest".
@@ -240,9 +240,10 @@ bool allowed_config_value(const std::vector<std::string> &lines, const std::stri
 /// the old or the new file, never a half-written one.
 bool write_config_atomic(const std::string &path, const std::string &body,
                          std::string &backup_path, std::string &why) {
-    const bfs::path target(path);
-    const bfs::path dir = target.parent_path();
     boost::system::error_code ec;
+    const bfs::path target = bfs::exists(path, ec) ? bfs::canonical(path, ec) : bfs::path(path);
+    if (ec) { why = "cannot resolve config path: " + ec.message(); return false; }
+    const bfs::path dir = target.parent_path();
 
     if (bfs::exists(target, ec)) {
         const std::string stamp = std::to_string(static_cast<uint64_t>(now_unixtime()));
@@ -258,35 +259,33 @@ bool write_config_atomic(const std::string &path, const std::string &body,
     }
 
 #ifdef _WIN32
-    const std::string tmp = path + ".tmp";
-#else
-    const std::string tmp = path + ".tmp." + std::to_string(::getpid());
-#endif
+    const std::string tmp = target.string() + ".tmp";
     {
         std::ofstream out(tmp.c_str(), std::ios::binary | std::ios::trunc);
-        if (!out) {
-            why = "cannot write " + tmp;
-            return false;
-        }
         out.write(body.data(), static_cast<std::streamsize>(body.size()));
         out.flush();
-        if (!out) {
-            why = "short write to " + tmp;
-            return false;
-        }
+        if (!out) { why = "cannot write " + tmp; return false; }
     }
-#ifndef _WIN32
+#else
+    std::string pattern = target.string() + ".tmp.XXXXXX";
+    std::vector<char> name(pattern.begin(), pattern.end());
+    name.push_back('\0');
+    const int fd = ::mkstemp(name.data()); // O_EXCL and 0600 before any secret bytes are written
+    if (fd < 0) { why = "cannot create config temp file"; return false; }
+    const std::string tmp(name.data());
+    size_t written = 0;
+    while (written < body.size()) {
+        const ssize_t n = ::write(fd, body.data() + written, body.size() - written);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ::close(fd); ::unlink(tmp.c_str()); why = "cannot write config"; return false; }
+        written += static_cast<size_t>(n);
+    }
     struct stat st;
-    if (::stat(path.c_str(), &st) == 0) ::chmod(tmp.c_str(), st.st_mode & 07777);
-    const int fd = ::open(tmp.c_str(), O_RDONLY);
-    if (fd >= 0) {
-        if (::fsync(fd) != 0) {
-            ::close(fd);
-            why = "cannot fsync " + tmp;
-            return false;
-        }
-        ::close(fd);
+    if (::stat(target.string().c_str(), &st) == 0) ::fchmod(fd, st.st_mode & 0777);
+    if (::fsync(fd) != 0) {
+        ::close(fd); ::unlink(tmp.c_str()); why = "cannot fsync config"; return false;
     }
+    ::close(fd);
 #endif
     bfs::rename(bfs::path(tmp), target, ec);
     if (ec) {
@@ -2060,7 +2059,7 @@ struct asio_with_stub_log : public websocketpp::config::asio {
 
     typedef websocketpp::transport::asio::endpoint<transport_config> transport_type;
 
-    static const long timeout_open_handshake = 0;
+    static const long timeout_open_handshake = 5000;
 };
 
 typedef websocketpp::server<asio_with_stub_log> websocket_server_type;
@@ -2085,6 +2084,7 @@ struct node_admin_plugin::impl {
     asio::io_context ios;
     websocket_server_type server;
     std::thread thread;
+    std::set<connection_hdl, std::owner_less<connection_hdl>> connections;
     std::unique_ptr<tcp::endpoint> endpoint;
     bool listening = false;
     fc::time_point started_at = fc::time_point::now();
@@ -2383,6 +2383,17 @@ void node_admin_plugin::impl::start() {
     server.set_reuse_addr(true);
     server.set_max_http_body_size(kMaxBodyBytes);
 
+    server.set_tcp_pre_init_handler([this](connection_hdl hdl) {
+        for (auto it = connections.begin(); it != connections.end(); ) {
+            if (it->expired()) it = connections.erase(it); else ++it;
+        }
+        if (connections.size() >= 64) {
+            boost::system::error_code ec;
+            server.get_con_from_hdl(hdl)->get_socket().close(ec);
+            return;
+        }
+        connections.insert(hdl);
+    });
     server.set_http_handler([this](connection_hdl hdl) { this->handle_http(hdl); });
 
     server.listen(*endpoint);
@@ -2451,7 +2462,7 @@ bool node_admin_plugin::impl::rate_ok(const std::string &label) {
         slot.first = now;
         slot.second = 0;
     }
-    if (++slot.second > kRatePerSecond) return false;
+    if (++slot.second > (label == "__ingress__" ? 100u : kRatePerSecond)) return false;
     return true;
 }
 
@@ -2466,6 +2477,10 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
     if (!con) return;
     con->defer_http_response();
 
+    if (!rate_ok("__ingress__")) {
+        respond(con, websocketpp::http::status_code::too_many_requests, "rate limit exceeded");
+        return; // Do not let rejected traffic rotate authenticated audit history away.
+    }
     const fc::time_point started = fc::time_point::now();
     const std::string rid = std::to_string(static_cast<unsigned long long>(++request_seq));
     // The real peer, not X-Forwarded-For: this listener is never behind a proxy by design, so
@@ -2936,7 +2951,11 @@ fc::variant node_admin_plugin::impl::dispatch(const std::string &method, const f
 
 // ── methods ──────────────────────────────────────────────────────────────────────────────
 fc::mutable_variant_object node_admin_plugin::impl::make_node_info() const {
-    const graphene::chain::database &db = chain.db();
+    auto recovery_guard = chain.try_lock_recovery();
+    if (!recovery_guard.owns_lock() || chain.is_recovering())
+        throw rpc_error{-32004, "chain is recovering", "state is temporarily unavailable", "retry after restore"};
+    graphene::chain::database &db = chain.db();
+    return db.with_weak_read_lock([&]() {
     const auto head_time = db.head_block_time();
     const auto now = fc::time_point::now().sec_since_epoch();
     const int64_t head_age = static_cast<int64_t>(now) - static_cast<int64_t>(head_time.sec_since_epoch());
@@ -2966,6 +2985,7 @@ fc::mutable_variant_object node_admin_plugin::impl::make_node_info() const {
     m("recovering", chain.is_recovering());
     m("uptime_sec", static_cast<int64_t>((fc::time_point::now() - started_at).count() / 1000000));
     return m;
+    });
 }
 
 fc::variant node_admin_plugin::impl::h_ping(const fc::variant &) {
@@ -3151,7 +3171,10 @@ fc::variant node_admin_plugin::impl::h_plugins_status(const fc::variant &params)
     const std::vector<cfg_entry> cfg = parse_config_file(config_path(), &exists);
     bool configured = false;
     for (const cfg_entry &e : cfg) {
-        if (e.key == "plugin" && e.value == name) { configured = true; break; }
+        if (e.key == "plugin") {
+            const auto names = util::plugin_names_in_value(e.value);
+            if (std::find(names.begin(), names.end(), name) != names.end()) { configured = true; break; }
+        }
     }
 
     const appbase::abstract_plugin *p = observe_plugin(name);
@@ -3218,7 +3241,7 @@ fc::variant node_admin_plugin::impl::h_config_get(const fc::variant &) {
         }
         fc::mutable_variant_object item;
         item("key", e.key);
-        item("value", sensitive_key(e.key) ? std::string("***") : e.value);
+        item("value", sensitive_key(e.key) ? std::string("***") : mask_text(e.value));
         current_entries.push_back(fc::variant(item));
     }
     if (have_section) flush();
@@ -3516,7 +3539,16 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &params
     const std::string after = param_str(o, "after", "");
 
     auto &snap = snapshot_started();
-    const bool recovering = chain.is_recovering();
+    bool recovering = chain.is_recovering();
+    fc::variant head;
+    {
+        auto recovery_guard = chain.try_lock_recovery();
+        recovering = recovering || !recovery_guard.owns_lock() || chain.is_recovering();
+        if (!recovering)
+            head = chain.db().with_weak_read_lock([&]() {
+                return fc::variant(static_cast<int64_t>(chain.db().head_block_num()));
+            });
+    }
     const fc::variant all_files = snapshot_list_variant();
     const fc::variants &files = all_files.get_array();
     const std::string latest_path = snap.latest_snapshot_path();
@@ -3542,8 +3574,7 @@ fc::variant node_admin_plugin::impl::h_snapshot_status(const fc::variant &params
     m("dir", snap.snapshot_directory());
     // While a restore runs the database is closed or being rebuilt; reading head there
     // would either block or report a half-built value, so it is null during that window.
-    m("head_block_num", recovering ? fc::variant()
-                                   : fc::variant(static_cast<int64_t>(chain.db().head_block_num())));
+    m("head_block_num", head);
     m("snapshot_count", static_cast<int64_t>(files.size()));
     m("snapshot_total", static_cast<int64_t>(files.size()));
     m("offset", offset);
@@ -4335,6 +4366,11 @@ objects_state node_admin_plugin::impl::collect_objects() const {
 
     s.schema_file_present = read_uint_file(chain_state / "schema_version", s.stored_schema);
 
+    auto recovery_guard = chain.try_lock_recovery();
+    if (!recovery_guard.owns_lock() || chain.is_recovering()) {
+        s.recovering = true;
+        return s;
+    }
     graphene::chain::database &db = chain.db();
     s.recovering = chain.is_recovering();
     try {
@@ -4563,6 +4599,9 @@ bool node_admin_plugin::impl::guard_ready() const {
 }
 
 fc::variant node_admin_plugin::impl::h_validator_list(const fc::variant &) {
+    auto recovery_guard = chain.try_lock_recovery();
+    if (!recovery_guard.owns_lock() || chain.is_recovering())
+        throw rpc_error{-32004, "chain is recovering", "state is temporarily unavailable", "retry after restore"};
     auto *g = guard_plugin();
     const bool loaded = g != nullptr;
     const bool started = loaded && g->get_state() == appbase::abstract_plugin::started;
@@ -4609,7 +4648,11 @@ fc::variant node_admin_plugin::impl::h_validator_list(const fc::variant &) {
 // consensus. Names only: signing keys live in the validator plugin and are shown by
 // admin.validator.list (and only for the validators this node actually runs).
 fc::variant node_admin_plugin::impl::h_validators_active(const fc::variant &) {
-    const graphene::chain::database &db = chain.db();
+    auto recovery_guard = chain.try_lock_recovery();
+    if (!recovery_guard.owns_lock() || chain.is_recovering())
+        throw rpc_error{-32004, "chain is recovering", "state is temporarily unavailable", "retry after restore"};
+    graphene::chain::database &db = chain.db();
+    return db.with_weak_read_lock([&]() {
     const auto &wso = db.get_validator_schedule_object();
     const auto &dgp = db.get_dynamic_global_properties();
 
@@ -4637,10 +4680,14 @@ fc::variant node_admin_plugin::impl::h_validators_active(const fc::variant &) {
       static_cast<int64_t>(dgp.emergency_consensus_active ? dgp.emergency_consensus_start_block : 0));
     m("validator_plugin_loaded", validator_loaded);
     return fc::variant(m);
+    });
 }
 
 fc::variant node_admin_plugin::impl::h_validator_plan(const fc::variant &params,
                                                       const token_info &token) {
+    auto recovery_guard = chain.try_lock_recovery();
+    if (!recovery_guard.owns_lock() || chain.is_recovering())
+        throw rpc_error{-32004, "chain is recovering", "state is temporarily unavailable", "retry after restore"};
     namespace vg = graphene::plugins::validator_guard;
 
     if (!params.is_object()) {
@@ -4844,7 +4891,7 @@ fc::variant node_admin_plugin::impl::h_validator_apply(const fc::variant &params
 // Tools call the admin methods 1:1, so every tool invocation lands in the audit log with
 // its own method name (`tools/call` is the JSON-RPC method; the tool name is in params).
 fc::variant node_admin_plugin::impl::mcp_tools() const {
-    auto schema = [](fc::variants props, fc::variants required) {
+    auto schema = [](fc::mutable_variant_object props, fc::variants required) {
         fc::mutable_variant_object s;
         s("type", "object");
         s("properties", props);
@@ -4865,17 +4912,17 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
         t("inputSchema", input);
         return fc::variant(t);
     };
-    const fc::variant no_args = schema(fc::variants{}, fc::variants{});
+    const fc::variant no_args = schema(fc::mutable_variant_object{}, fc::variants{});
 
-    fc::variants logs_props;
-    logs_props.push_back(prop("string", "Name from admin-log-file entries"));
-    logs_props.push_back(prop("integer", "Maximum bytes to read from the tail (default 16384)"));
-    logs_props.push_back(prop("integer", "Maximum lines to return (default 200)"));
+    fc::mutable_variant_object logs_props;
+    logs_props("name", prop("string", "Name from admin-log-file entries"));
+    logs_props("bytes", prop("integer", "Maximum bytes to read from the tail (default 16384)"));
+    logs_props("lines", prop("integer", "Maximum lines to return (default 200)"));
     fc::variants logs_required;
     logs_required.push_back(fc::variant(std::string("name")));
 
-    fc::variants audit_props;
-    audit_props.push_back(prop("integer", "Maximum audit lines to return (default 100)"));
+    fc::mutable_variant_object audit_props;
+    audit_props("lines", prop("integer", "Maximum audit lines to return (default 100)"));
 
     fc::variants tools;
     tools.push_back(tool("admin.ping", "Liveness check: server time and ok=true.", no_args));
@@ -4893,8 +4940,8 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Plugins configured in config.ini with observed lifecycle state and the "
                          "name of the method that reports each plugin's own status.", no_args));
 
-    fc::variants plugin_name_props;
-    plugin_name_props.push_back(prop("string", "Plugin name exactly as written in config.ini, e.g. p2p"));
+    fc::mutable_variant_object plugin_name_props;
+    plugin_name_props("name", prop("string", "Plugin name exactly as written in config.ini, e.g. p2p"));
     fc::variants plugin_name_required;
     plugin_name_required.push_back(fc::variant(std::string("name")));
     tools.push_back(tool("admin.plugins.status",
@@ -4911,10 +4958,10 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "unreadable, named findings, and the repair mode that would fix them.",
                          no_args));
 
-    fc::variants repair_props;
-    repair_props.push_back(prop("string", "'replay' rebuilds state from the block log; "
+    fc::mutable_variant_object repair_props;
+    repair_props("mode", prop("string", "'replay' rebuilds state from the block log; "
                                           "'resync' wipes state and blocks and syncs from peers"));
-    repair_props.push_back(prop("string", "Must be exactly 'repair'"));
+    repair_props("confirm", prop("string", "Must be exactly 'repair'"));
     fc::variants repair_required;
     repair_required.push_back(fc::variant(std::string("mode")));
     repair_required.push_back(fc::variant(std::string("confirm")));
@@ -4935,8 +4982,8 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Tail the node_admin audit log (one JSON line per request outcome).",
                          schema(audit_props, fc::variants{})));
 
-    fc::variants endpoint_props;
-    endpoint_props.push_back(prop("string", "Peer endpoint as IPv4:port, e.g. 1.2.3.4:1776"));
+    fc::mutable_variant_object endpoint_props;
+    endpoint_props("endpoint", prop("string", "Peer endpoint as IPv4:port, e.g. 1.2.3.4:1776"));
     fc::variants endpoint_required;
     endpoint_required.push_back(fc::variant(std::string("endpoint")));
 
@@ -4958,19 +5005,19 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Needs the 'p2p' scope.",
                          no_args));
 
-    fc::variants restore_props;
-    restore_props.push_back(prop("string",
+    fc::mutable_variant_object restore_props;
+    restore_props("name", prop("string",
         "Snapshot file name from admin.snapshot.status, e.g. snapshot-block-84360000.vizjson"));
-    restore_props.push_back(prop("string",
+    restore_props("path", prop("string",
         "Absolute path of a snapshot file located directly in the snapshot directory"));
-    restore_props.push_back(prop("boolean",
+    restore_props("latest", prop("boolean",
         "Restore the highest-block snapshot in the snapshot directory (default when "
         "neither name nor path is given)"));
 
-    fc::variants snap_props;
-    snap_props.push_back(prop("integer", "Skip this many snapshots from the newest (default 0)"));
-    snap_props.push_back(prop("integer", "Return at most this many snapshots (default 20, max 200)"));
-    snap_props.push_back(prop("string",
+    fc::mutable_variant_object snap_props;
+    snap_props("offset", prop("integer", "Skip this many snapshots from the newest (default 0)"));
+    snap_props("limit", prop("integer", "Return at most this many snapshots (default 20, max 200)"));
+    snap_props("after", prop("string",
         "Name of the last row you already have; the page continues after it. Use this instead "
         "of offset when paging through a directory that changes: offset repeats or skips rows "
         "when a snapshot is written or pruned between pages. A pruned anchor is reported as "
@@ -4992,19 +5039,19 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "replays dlt_block_log and resumes P2P. Needs the 'snapshot' scope.",
                          schema(restore_props, fc::variants{})));
 
-    fc::variants ws_ips_props;
-    ws_ips_props.push_back(prop("integer", "Maximum rows to return (default 200, max 5000)"));
-    fc::variants ws_limits_props;
-    ws_limits_props.push_back(prop("boolean", "Enforce the limits (default: keep the current value)"));
-    ws_limits_props.push_back(prop("integer", "Max requests per IP per minute"));
-    ws_limits_props.push_back(prop("integer", "Max requests per IP per hour"));
-    ws_limits_props.push_back(prop("integer", "Max requests per IP per day"));
-    fc::variants ws_stats_props;
-    ws_stats_props.push_back(prop("boolean", "Enable or disable per-IP request accounting"));
+    fc::mutable_variant_object ws_ips_props;
+    ws_ips_props("limit", prop("integer", "Maximum rows to return (default 200, max 5000)"));
+    fc::mutable_variant_object ws_limits_props;
+    ws_limits_props("enabled", prop("boolean", "Enforce the limits (default: keep the current value)"));
+    ws_limits_props("per_minute", prop("integer", "Max requests per IP per minute"));
+    ws_limits_props("per_hour", prop("integer", "Max requests per IP per hour"));
+    ws_limits_props("per_day", prop("integer", "Max requests per IP per day"));
+    fc::mutable_variant_object ws_stats_props;
+    ws_stats_props("enabled", prop("boolean", "Enable or disable per-IP request accounting"));
     fc::variants ws_stats_required;
     ws_stats_required.push_back(fc::variant(std::string("enabled")));
-    fc::variants ws_ip_props;
-    ws_ip_props.push_back(prop("string", "A single IPv4 or IPv6 address"));
+    fc::mutable_variant_object ws_ip_props;
+    ws_ip_props("ip", prop("string", "A single IPv4 or IPv6 address"));
     fc::variants ws_ip_required;
     ws_ip_required.push_back(fc::variant(std::string("ip")));
 
@@ -5054,19 +5101,19 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
              "Allow-listed config keys mapped to new values (string, number or boolean). "
              "Identity, keys, data paths and listener endpoints are never editable.");
     set_prop("additionalProperties", true);
-    fc::variants cfg_plan_props;
-    cfg_plan_props.push_back(fc::variant(set_prop));
+    fc::mutable_variant_object cfg_plan_props;
+    cfg_plan_props("set", fc::variant(set_prop));
     fc::variants cfg_set_required;
     cfg_set_required.push_back(fc::variant(std::string("set")));
-    fc::variants plan_id_props;
-    plan_id_props.push_back(prop("string", "plan_id returned by the matching *.plan call"));
+    fc::mutable_variant_object plan_id_props;
+    plan_id_props("plan_id", prop("string", "plan_id returned by the matching *.plan call"));
     fc::variants plan_id_required;
     plan_id_required.push_back(fc::variant(std::string("plan_id")));
-    fc::variants list_props;
-    list_props.push_back(prop("array", "Plugin names to add (must be registered in vizd)"));
-    list_props.push_back(prop("array", "Plugin names to remove (chain and node_admin are protected)"));
-    fc::variants confirm_props;
-    confirm_props.push_back(prop("string", "Must be exactly 'restart'"));
+    fc::mutable_variant_object list_props;
+    list_props("add", prop("array", "Plugin names to add (must be registered in vizd)"));
+    list_props("remove", prop("array", "Plugin names to remove (chain and node_admin are protected)"));
+    fc::mutable_variant_object confirm_props;
+    confirm_props("confirm", prop("string", "Must be exactly 'restart'"));
     fc::variants confirm_required;
     confirm_required.push_back(fc::variant(std::string("confirm")));
 
@@ -5101,8 +5148,8 @@ fc::variant node_admin_plugin::impl::mcp_tools() const {
                          "Restart=always) starts the node again. Needs the 'process' scope.",
                          schema(confirm_props, confirm_required)));
 
-    fc::variants validator_props;
-    validator_props.push_back(prop("array",
+    fc::mutable_variant_object validator_props;
+    validator_props("actions", prop("array",
         "Actions: [{name, action: 'enable'|'disable'|'set_key', signing_key?}]. One entry "
         "per validator; duplicates are refused."));
     fc::variants validator_required;
@@ -5252,6 +5299,8 @@ void node_admin_plugin::impl::audit(const std::string &rid, const std::string &l
         m("rid", rid);
         m("token", label.empty() ? "-" : label);
         m("method", method);
+        if (method == "tools/call" && params.is_object() && params.get_object().contains("name"))
+            m("tool", params.get_object()["name"]);
         if (!params.is_null()) m("params", params);
         m("outcome", outcome);
         m("code", static_cast<int64_t>(code));
@@ -5269,6 +5318,9 @@ void node_admin_plugin::impl::audit_line(const std::string &line) {
     // rotate at a fixed size instead of growing without bound
     struct stat st;
     if (::stat(audit_path.c_str(), &st) == 0 && st.st_size > static_cast<off_t>(kAuditRotateBytes)) {
+        for (int i = 7; i >= 1; --i)
+            ::rename((audit_path + "." + std::to_string(i)).c_str(),
+                     (audit_path + "." + std::to_string(i + 1)).c_str());
         ::rename(audit_path.c_str(), (audit_path + ".1").c_str());
     }
     const int fd = ::open(audit_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);

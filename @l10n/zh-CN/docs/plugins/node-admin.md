@@ -72,7 +72,7 @@ Webserver 统计和限流是独立开关。白名单绕过限制但仍计数；�
 
 UI 提供总览、诊断、插件、对象检查、日志、P2P、快照、Webserver 策略、验证者和配置计划。危险变更先展示计划/差异，再执行 apply。页面自身 GET 不需要认证，但不携带节点数据，也不授予任何权限。反向代理前缀下页面根据自己的 URL 计算 RPC 基址。
 
-快照下载 `GET /snapshot/latest` 或 `GET /snapshot/<name>` 及对应 HEAD 需要 bearer/read；只接受列表中实际文件名，拒绝目录穿越。超过 512 MB 返回 413，此时使用 scp 等方式复制。
+快照下载 `GET /snapshot/latest` 或 `GET /snapshot/<name>` 及对应 HEAD 需要 bearer/read；只接受列表中实际文件名，拒绝目录穿越。超过 8 MiB 返回 413，此时使用 scp 等方式复制。
 
 ## MCP（Streamable HTTP）
 
@@ -97,3 +97,9 @@ MCP 工具与上表管理方法一一对应，共 41 个。无会话，不签发
 管理端口包含状态恢复、链上密钥变更及进程控制能力，不应接入公共 RPC 反向代理。通过隧道访问时保留令牌权限分离和审计。详尽参数、配置允许列表和各方法返回字段可对照[英文完整参考](/plugins/node-admin)。
 
 测试入口：`plugins/node_admin/tests/acceptance.sh`、`plugins/node_admin/tests/validator-e2e.sh`；包含 token/scope 拒绝、plan/apply、快照、对象修复、MCP/UI 与审计检查。
+
+## 4.2.0 安全补充
+
+入口总预算为每秒 100 个请求，超出部分在写审计前拒绝；审计轮换保留 `.1`–`.8` 八代，MCP 审计增加实际工具名称 `tool`。HTTP 握手超时为 5 秒，并发连接上限为 64。快照 HTTP 下载上限为 8 MiB，大文件使用 scp。
+
+持久化的 webserver 运行策略仅在 `config_policy` 与启动时 config.ini 的统计/限流配置一致时恢复。修改这些配置后采用新配置，IP 名单仍保留；无指纹的旧状态文件仅恢复 IP 名单。关闭统计日志不会关闭已启用的限流。

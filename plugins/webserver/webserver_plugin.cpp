@@ -204,8 +204,8 @@ namespace graphene {
             // ── request accounting, IP lists and admission limits ───────────────────────
             // All of it is driven by `webserver-stats-enabled` (off by default: the node
             // then behaves exactly as before). The blacklist works even with stats off —
-            // it is a security control, not a metric. Limits require stats because they
-            // need the same per-IP counters.
+            // it is a security control, not a metric. Enabled limits keep their counters
+            // even while stats logging is disabled.
             struct ip_counters {
                 uint64_t total = 0;
                 uint64_t minute = 0;
@@ -217,7 +217,7 @@ namespace graphene {
                 uint32_t hour_bucket = 0;
                 uint32_t day_bucket = 0;
                 uint32_t last_seen = 0;
-                uint64_t logged = 0;        // total at the last log flush
+                uint64_t logged = 0;        // total + blocked at the last log flush
             };
 
             enum class admission {
@@ -323,8 +323,36 @@ namespace graphene {
                 // up to `state_path`; request handlers take it once per request.
                 mutable std::mutex stats_mutex;
                 bool stats_enabled = false;
+                std::string config_policy;
+                std::unordered_set<std::string> trusted_proxies;
+                std::string client_ip(const websocket_server_type::connection_ptr &con) const {
+                    std::string ip = peer_ip(con);
+                    if (!trusted_proxies.count(ip)) return ip;
+                    const std::string header = con->get_request().get_header("X-Forwarded-For");
+                    if (header.size() > 4096) return ip;
+                    std::vector<std::string> hops;
+                    size_t start = 0;
+                    while (start < header.size()) {
+                        const size_t end = header.find(',', start);
+                        std::string hop = header.substr(start, end == std::string::npos ? end : end - start);
+                        const auto first = hop.find_first_not_of(" \t");
+                        const auto last = hop.find_last_not_of(" \t");
+                        hop = first == std::string::npos ? "" : hop.substr(first, last - first + 1);
+                        hop = normalize_ip(hop);
+                        if (!valid_ip_text(hop)) return ip;
+                        hops.push_back(hop);
+                        if (end == std::string::npos) break;
+                        start = end + 1;
+                    }
+                    // Walk from the authenticated TCP peer towards the client. Never trust
+                    // the leftmost address supplied by an untrusted hop.
+                    for (auto it = hops.rbegin(); it != hops.rend() && trusted_proxies.count(ip); ++it)
+                        ip = *it;
+                    return ip;
+                }
                 webserver_limits limits;
                 std::unordered_map<std::string, ip_counters> ip_stats;
+                uint32_t last_stats_gc = 0;
                 std::unordered_set<std::string> whitelist;
                 std::unordered_set<std::string> blacklist;
                 uint64_t total_requests = 0;
@@ -478,19 +506,29 @@ namespace graphene {
                 // control, not a metric.
                 if (blacklist.count(ip)) {
                     ++blocked_requests;
-                    auto &c = ip_stats[ip];
-                    ++c.blocked;
-                    c.last_seen = now;
+                    auto it = ip_stats.find(ip);
+                    if (it != ip_stats.end()) { ++it->second.blocked; it->second.last_seen = now; }
                     return admission::blacklisted;
                 }
-                if (!stats_enabled) {
+                if (!stats_enabled && !limits.enabled) {
                     return admission::allow;
                 }
 
                 // Bound the map: a scanner rotating through millions of source addresses
                 // must not turn the stats themselves into a memory exhaustion vector.
-                if (ip_stats.size() > 200000 && !ip_stats.count(ip)) {
-                    ip_stats.clear();
+                if (ip_stats.size() >= 200000 && now - last_stats_gc >= 60) {
+                    last_stats_gc = now;
+                    for (auto it = ip_stats.begin(); it != ip_stats.end(); ) {
+                        if (now > it->second.last_seen && now - it->second.last_seen > 86400)
+                            it = ip_stats.erase(it);
+                        else ++it;
+                    }
+                }
+                if (ip_stats.size() >= 200000 && !ip_stats.count(ip)) {
+                    // Fail closed for untracked sources; existing clients keep their windows.
+                    if (whitelist.count(ip)) return admission::allow;
+                    ++limited_requests;
+                    return admission::rate_limited;
                 }
 
                 auto &c = ip_stats[ip];
@@ -550,40 +588,36 @@ namespace graphene {
             }
 
             void webserver_plugin::webserver_plugin_impl::flush_stats_locked(bool force) {
+                std::unique_lock<std::mutex> lock(stats_mutex);
                 if (!stats_enabled || stats_log_path.empty()) return;
 
-                bool wrote_any = false;
-                std::ostringstream out;
-                const uint32_t now = now_seconds();
+                struct row { std::string ip; ip_counters c; bool white; bool black; };
+                std::vector<row> changed;
                 for (auto &kv : ip_stats) {
                     auto &c = kv.second;
-                    if (!force && c.total == c.logged) continue;
-                    c.logged = c.total;
-                    wrote_any = true;
-                    out << iso_utc(now)
-                        << " ip=" << kv.first
-                        << " total=" << c.total
-                        << " minute=" << c.minute
-                        << " hour=" << c.hour
-                        << " day=" << c.day
-                        << " blocked=" << c.blocked
-                        << " limited=" << c.limited
-                        << " whitelisted=" << (whitelist.count(kv.first) ? 1 : 0)
-                        << " blacklisted=" << (blacklist.count(kv.first) ? 1 : 0)
-                        << "\n";
+                    if (!force && c.total + c.blocked == c.logged) continue;
+                    c.logged = c.total + c.blocked;
+                    changed.push_back({kv.first, c, whitelist.count(kv.first) != 0, blacklist.count(kv.first) != 0});
                 }
-                if (!wrote_any && !force) return;
-
-                out << iso_utc(now)
-                    << " summary total=" << total_requests
-                    << " ips=" << ip_stats.size()
-                    << " blocked=" << blocked_requests
-                    << " limited=" << limited_requests
-                    << " limit_m=" << limits.per_minute
-                    << " limit_h=" << limits.per_hour
-                    << " limit_d=" << limits.per_day
-                    << " limits_enabled=" << (limits.enabled ? 1 : 0)
-                    << "\n";
+                if (changed.empty() && !force) return;
+                const uint64_t total = total_requests, blocked = blocked_requests, limited = limited_requests;
+                const size_t ips = ip_stats.size();
+                const auto policy = limits;
+                lock.unlock(); // Formatting and filesystem I/O do not block admission.
+                const uint32_t now = now_seconds();
+                const auto ts = iso_utc(now);
+                std::ostringstream out;
+                for (const auto &r : changed) {
+                    const auto &c = r.c;
+                    out << ts << " ip=" << r.ip << " total=" << c.total
+                        << " minute=" << c.minute << " hour=" << c.hour << " day=" << c.day
+                        << " blocked=" << c.blocked << " limited=" << c.limited
+                        << " whitelisted=" << r.white << " blacklisted=" << r.black << "\n";
+                }
+                out << ts << " summary total=" << total << " ips=" << ips
+                    << " blocked=" << blocked << " limited=" << limited
+                    << " limit_m=" << policy.per_minute << " limit_h=" << policy.per_hour
+                    << " limit_d=" << policy.per_day << " limits_enabled=" << policy.enabled << "\n";
 
                 try {
                     rotate_stats_log_locked();
@@ -616,15 +650,14 @@ namespace graphene {
                     waited_ms += step_ms;
                     if (waited_ms < stats_interval_sec * 1000) continue;
                     waited_ms = 0;
-                    std::lock_guard<std::mutex> lock(stats_mutex);
-                    if (!stats_enabled) continue;
-                    flush_stats_locked(true);
+                    flush_stats_locked(false);
                 }
             }
 
             bool webserver_plugin::webserver_plugin_impl::save_admin_state_locked() {
                 if (state_path.empty()) return false;
                 fc::mutable_variant_object v;
+                v("config_policy", config_policy);
                 v("stats_enabled", stats_enabled);
                 v("limits_enabled", limits.enabled);
                 v("per_minute", limits.per_minute);
@@ -689,13 +722,15 @@ namespace graphene {
                     };
                     // Parse into locals and commit only when the whole file is valid:
                     // a malformed field must not leave the live policy half-updated.
+                    const bool same_config = o.contains("config_policy") &&
+                        o["config_policy"].as_string() == config_policy;
                     bool new_stats = stats_enabled;
                     bool new_limits_enabled = limits.enabled;
-                    if (o.contains("stats_enabled")) new_stats = o["stats_enabled"].as_bool();
-                    if (o.contains("limits_enabled")) new_limits_enabled = o["limits_enabled"].as_bool();
-                    const uint32_t new_m = std::max<uint32_t>(1, read_u32("per_minute", limits.per_minute));
-                    const uint32_t new_h = std::max<uint32_t>(1, read_u32("per_hour", limits.per_hour));
-                    const uint32_t new_d = std::max<uint32_t>(1, read_u32("per_day", limits.per_day));
+                    if (same_config && o.contains("stats_enabled")) new_stats = o["stats_enabled"].as_bool();
+                    if (same_config && o.contains("limits_enabled")) new_limits_enabled = o["limits_enabled"].as_bool();
+                    const uint32_t new_m = std::max<uint32_t>(1, (same_config ? read_u32("per_minute", limits.per_minute) : limits.per_minute));
+                    const uint32_t new_h = std::max<uint32_t>(1, (same_config ? read_u32("per_hour", limits.per_hour) : limits.per_hour));
+                    const uint32_t new_d = std::max<uint32_t>(1, (same_config ? read_u32("per_day", limits.per_day) : limits.per_day));
 
                     auto read_list = [&](const char *key) {
                         std::unordered_set<std::string> dst;
@@ -734,7 +769,7 @@ namespace graphene {
                 websocket_server_type::message_ptr msg
             ) {
                 auto con = server->get_con_from_hdl(hdl);
-                const admission verdict = admit(peer_ip(con));
+                const admission verdict = admit(client_ip(con));
                 if (verdict != admission::allow) {
                     const char *msg = verdict == admission::blacklisted
                         ? "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32005,\"message\":\"forbidden\"},\"id\":null}"
@@ -815,7 +850,7 @@ namespace graphene {
             void webserver_plugin::webserver_plugin_impl::handle_http_message(websocket_server_type *server, connection_hdl hdl) {
                 auto con = server->get_con_from_hdl(hdl);
 
-                switch (admit(peer_ip(con))) {
+                switch (admit(client_ip(con))) {
                     case admission::blacklisted:
                         con->append_header("Access-Control-Allow-Origin", "*");
                         con->set_body("forbidden");
@@ -1104,6 +1139,8 @@ namespace graphene {
                         "Enable per-IP request accounting, the stats log and rate limits. Default: false.")
                     ("webserver-limits-enabled", boost::program_options::value<bool>(),
                         "Enforce request rate limits. Defaults to the value of webserver-stats-enabled.")
+                    ("webserver-trusted-proxy", boost::program_options::value<std::vector<std::string>>()->composing(),
+                        "Trusted reverse-proxy IP (repeatable). Only these peers may supply X-Forwarded-For.")
                     ("webserver-limit-m", boost::program_options::value<uint32_t>()->default_value(1000),
                         "Maximum requests per IP per minute when limits are enabled. Default: 1000.")
                     ("webserver-limit-h", boost::program_options::value<uint32_t>()->default_value(10000),
@@ -1146,6 +1183,15 @@ namespace graphene {
                 my->limits.per_minute = std::max<uint32_t>(1, options.at("webserver-limit-m").as<uint32_t>());
                 my->limits.per_hour = std::max<uint32_t>(1, options.at("webserver-limit-h").as<uint32_t>());
                 my->limits.per_day = std::max<uint32_t>(1, options.at("webserver-limit-d").as<uint32_t>());
+                my->config_policy = std::to_string(my->stats_enabled) + ":" +
+                    std::to_string(my->limits.enabled) + ":" + std::to_string(my->limits.per_minute) + ":" +
+                    std::to_string(my->limits.per_hour) + ":" + std::to_string(my->limits.per_day);
+                if (options.count("webserver-trusted-proxy"))
+                    for (const auto &proxy : options.at("webserver-trusted-proxy").as<std::vector<std::string>>()) {
+                        const auto ip = normalize_ip(proxy);
+                        FC_ASSERT(valid_ip_text(ip), "Invalid webserver-trusted-proxy IP");
+                        my->trusted_proxies.insert(ip);
+                    }
                 my->stats_log_max_bytes = options.at("webserver-stats-log-max-size").as<uint64_t>();
                 my->stats_log_keep = options.at("webserver-stats-log-keep").as<uint32_t>();
                 // Cap the interval so `stats_interval_sec * 1000` cannot overflow uint32.
@@ -1263,10 +1309,7 @@ namespace graphene {
                 my->stats_stop.store(true, std::memory_order_release);
                 if (my->stats_thread.joinable()) my->stats_thread.join();
 
-                {
-                    std::lock_guard<std::mutex> lock(my->stats_mutex);
-                    my->flush_stats_locked(true);
-                }
+                my->flush_stats_locked(false);
 
                 my->stop_webserver();
             }

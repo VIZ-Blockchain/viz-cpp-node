@@ -2,7 +2,7 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-// HF16 (no-contest fee freeze) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
+// HF16 (BFT finality, 1 s slots, DAO cap and fee freeze) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
 // is version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
 // current_hardfork_version < CHAIN_HARDFORK_VERSION. A new fork therefore has to move THAT field,
 // not the revision; 4.2.0 here must stay byte-equal to CHAIN_HARDFORK_16_VERSION in
@@ -36,8 +36,8 @@
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       200 // ~10 min after first missed block for top witness
-#define CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS (5 * CHAIN_MAX_VALIDATORS) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min)
+#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       200 // ~10 min; runtime multiplies block threshold by 3 after HF16
+#define CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS (5 * CHAIN_MAX_VALIDATORS) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min; runtime threshold scales at HF16)
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
@@ -128,7 +128,7 @@
 
 /// Number of consecutive blocks produced by the emergency witness that
 /// triggers automatic exit from emergency mode (validators have rejoined).
-#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 validators
+#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // Legacy unused constant: emergency exits by active-validator quorum, not a timer.
 
 #define CHAIN_IRREVERSIBLE_THRESHOLD          (75 * CHAIN_1_PERCENT)
 /** Irreversibility only counts blocks produced if wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN */

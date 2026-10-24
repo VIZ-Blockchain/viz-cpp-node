@@ -704,6 +704,7 @@ namespace graphene { namespace chain {
             /// Round of the certificate a block claims to carry (0 = none). Used by
             /// HF16 fork choice; validity is checked when the block is applied.
             static uint32_t block_cert_round(const signed_block &b);
+            uint32_t verified_fork_cert_round(const signed_block &b) const;
 
             /// Votes needed for a QC with the given number of scheduled validators:
             /// strictly more than 2/3 and not below the irreversibility threshold.
@@ -847,6 +848,7 @@ namespace graphene { namespace chain {
             std::map<uint32_t, std::map<account_name_type, protocol::block_timeout_vote>> _timeout_votes;
             std::map<uint32_t, protocol::block_timeout_certificate> _timeout_certs;
             mutable std::mutex _block_votes_mutex;
+            std::atomic<uint32_t> _head_reject_logged{0};
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];
 

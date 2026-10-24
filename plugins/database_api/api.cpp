@@ -349,10 +349,9 @@ DEFINE_API(plugin, get_config) {
 fc::variant_object plugin::api_impl::get_config() const {
     // HF16 (#6737): the slot length is chain state, not a compile constant; clients that
     // derive times from block counts must see the live value.
-    fc::mutable_variant_object result(graphene::protocol::get_config());
-    result["CHAIN_BLOCK_INTERVAL"] = database().block_interval();
-    result["CHAIN_BLOCK_INTERVAL_HF16"] = CHAIN_BLOCK_INTERVAL_HF16;
-    return result;
+    return database().with_weak_read_lock([&]() {
+        return graphene::protocol::get_config(database().block_interval());
+    });
 }
 
 DEFINE_API(plugin, get_dynamic_global_properties) {

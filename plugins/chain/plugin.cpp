@@ -71,6 +71,7 @@ namespace chain {
         bool sync_start_logged = false; // guard to log sync start only once
 
         std::atomic<bool> currently_syncing{false}; // true while processing P2P sync blocks
+        std::mutex recovery_read_mutex;
         std::atomic<bool> recovery_in_progress{false}; // true while auto-recovery is running
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
@@ -329,6 +330,10 @@ namespace chain {
 
     bool plugin::is_syncing() const {
         return my->currently_syncing.load(std::memory_order_acquire);
+    }
+
+    std::unique_lock<std::mutex> plugin::try_lock_recovery() const {
+        return std::unique_lock<std::mutex>(my->recovery_read_mutex, std::try_to_lock);
     }
 
     bool plugin::is_recovering() const {
@@ -1046,6 +1051,8 @@ namespace chain {
             return;
         }
 
+        std::unique_lock<std::mutex> readers(my->recovery_read_mutex);
+
         // Guard against infinite recovery loops: if the same block keeps
         // failing after recovery, the snapshot or block log may be corrupted.
         // Reset the counter after a cooldown period to allow eventual retry.
@@ -1177,6 +1184,7 @@ namespace chain {
             std::atomic<bool>& flag;
             ~flag_reset() { flag.store(false, std::memory_order_release); }
         } reset_guard{my->recovery_in_progress};
+        std::unique_lock<std::mutex> readers(my->recovery_read_mutex);
 
         if (snapshot_path.empty()) {
             error = "empty snapshot path";

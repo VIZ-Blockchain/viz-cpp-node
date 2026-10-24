@@ -72,6 +72,8 @@ namespace graphene {
             namespace system = boost::system;
 
             struct validator_plugin::impl final {
+                uint32_t skip_diag_head = 0;
+                const char *skip_diag_why = nullptr;
                 impl():
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
@@ -2463,8 +2465,6 @@ namespace graphene {
                     // dropped): say once per head why the TC skip is not taken.
                     // Keyed by head AND reason: keyed by head alone, the first refusal
                     // ("no TC yet") hid the real one for the rest of the stall.
-                    static uint32_t skip_diag_head = 0;
-                    static const char *skip_diag_why = nullptr;
                     const auto skip_refused = [&](const char *why) {
                         if (skip_diag_head == db.head_block_num() && skip_diag_why == why) return;
                         skip_diag_head = db.head_block_num();

@@ -140,13 +140,13 @@ The `webserver` scope on a `node_admin` token controls the mutating methods; rea
 | `admin.webserver.status` | Limits, totals, IP lists, tracked IP count |
 | `admin.webserver.ips` | Per-IP counters (`limit` up to 5000), sorted by request count |
 | `admin.webserver.limits` | Change `enabled`, `per_minute`, `per_hour`, `per_day` (omitted fields keep their value) |
-| `admin.webserver.stats` | Turn accounting on/off (`{"enabled": true|false}`) |
+| `admin.webserver.stats` | Turn stats logging on/off; enabled limits retain counters (`{"enabled": true|false}`) |
 | `admin.webserver.whitelist_add` / `whitelist_remove` | Edit the whitelist (`{"ip": "..."}`) |
 | `admin.webserver.blacklist_add` / `blacklist_remove` | Edit the blacklist (`{"ip": "..."}`) |
 | `admin.webserver.reset` | Zero the counters, keep the lists and limits |
 | `admin.webserver.reload` | Re-read `webserver-admin-state` from disk |
 
-Each of these is also exposed as an MCP tool of the same name. **Changes are applied to the live plugin immediately — no restart and no re-reading of `config.ini`.** They are written to `webserver-admin-state` (atomic temp-file + rename), which is loaded at the next startup and therefore overrides the `config.ini` seed. `config.ini` is never rewritten. `reload` exists for operators who edited the JSON file by hand; normal changes do not need it.
+Each of these is also exposed as an MCP tool of the same name. **Changes are applied to the live plugin immediately — no restart and no re-reading of `config.ini`.** They are written to `webserver-admin-state` (atomic temp-file + rename), which is loaded at the next startup only when its `config_policy` fingerprint matches the startup stats/limits settings. Changed config.ini policy wins; IP lists are restored independently. Legacy state files restore IP lists only. `config.ini` is never rewritten. `reload` exists for operators who edited the JSON file by hand; normal changes do not need it.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"admin.webserver.limits",
@@ -276,3 +276,9 @@ location /ws {
 ---
 
 See also: [Plugin Overview](./overview.md), [Database API](./database-api.md), [JSON-RPC API](../api/json-rpc.md).
+
+### Trusted reverse proxies and persistence
+
+By default limits use the TCP peer address and ignore forwarding headers. Behind nginx, explicitly configure `webserver-trusted-proxy = 127.0.0.1` (repeat the option for each actual proxy IP) and forward `X-Forwarded-For`. The node walks the chain from right to left and stops at the first untrusted hop. Never trust arbitrary client addresses as proxies.
+
+The 200,000-IP capacity guard expires entries older than one day and rejects new untracked sources while full; it never clears live clients' rate windows. Enabled limits continue counting when stats logging is disabled. Periodic stats write changed rows only, with formatting and disk I/O outside the admission mutex. Persisted policy is bound to a `config_policy` startup fingerprint; changed config.ini stats/limits settings supersede old runtime policy while preserving IP lists.

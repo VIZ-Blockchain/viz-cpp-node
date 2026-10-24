@@ -89,8 +89,8 @@ namespace graphene {
                 /// `max_ips` rows are returned, highest request count first.
                 webserver_admin_state admin_state(size_t max_ips = 200) const;
 
-                /// Turn request accounting on or off at runtime. Limits need it; the
-                /// blacklist does not. Persisted to the admin state file.
+                /// Turn stats logging on or off at runtime. Enabled limits keep counting
+                /// independently. Persisted to the admin state file.
                 void set_stats_enabled(bool enabled);
 
                 /// Replace limits. `enabled=false` keeps counting (if stats are on) but stops

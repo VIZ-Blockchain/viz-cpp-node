@@ -103,7 +103,12 @@ namespace graphene { namespace chain {
         // one-year-of-3-s-blocks bound stays consensus (the stored props are checked after the
         // visit, so a rejected op leaves nothing behind - the whole op is rolled back).
         const auto check_year_bound = [&](const chain_properties& p) {
-            if (_db.has_hardfork(CHAIN_HARDFORK_16)) return;
+            if (_db.has_hardfork(CHAIN_HARDFORK_16)) {
+                FC_ASSERT(p.distribution_epoch_length >=
+                          CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * (CHAIN_BLOCK_INTERVAL / _db.block_interval()),
+                          "distribution_epoch_length must preserve the minimum epoch duration after HF16");
+                return;
+            }
             FC_ASSERT(p.inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR,
                 "inflation_recalc_period must not exceed one year in blocks before HF16");
             FC_ASSERT(p.distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR),

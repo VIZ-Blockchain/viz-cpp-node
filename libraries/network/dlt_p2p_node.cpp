@@ -1107,7 +1107,10 @@ bool dlt_p2p_node::check_fork_alignment(const dlt_hello_message& hello,
     // stayed off, blocks #1..#2 were never requested and every later block was unlinkable.
     // Only nodes that were connected while #1 was being produced ever got the chain (6 of 21
     // on the HF16 QC stand, #6741). Every block will still be fully validated from genesis on
-    // apply, so accepting the peer costs nothing; a peer that cannot serve from #1 (a DLT node
+    // apply against the locally configured genesis/chain id and checkpoints. This hello
+    // grants transport eligibility, not trust in the advertised head or canonical history.
+    // Operators needing a pinned bootstrap history must configure known checkpoints or
+    // a trusted snapshot; a peer that cannot serve from #1 (a DLT node
     // with a pruned range) still needs a snapshot and is not accepted here.
     if (_delegate->get_head_block_num() == 0 && hello.dlt_earliest_block <= 1) {
         return true;

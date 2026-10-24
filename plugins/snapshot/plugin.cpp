@@ -5415,7 +5415,13 @@ std::string snapshot_plugin::request_snapshot_creation(std::string& path) {
     if (!my) return "unavailable";
     if (my->_restore_in_progress.load(std::memory_order_acquire)) return "busy";
 
-    const uint32_t head = my->db.head_block_num();
+    uint32_t head = 0;
+    {
+        auto &chain = appbase::app().get_plugin<graphene::plugins::chain::plugin>();
+        auto recovery_guard = chain.try_lock_recovery();
+        if (!recovery_guard.owns_lock() || chain.is_recovering()) return "busy";
+        head = my->db.with_weak_read_lock([&]() { return my->db.head_block_num(); });
+    }
     if (head == 0) return "empty";
 
     const fc::path output = fc::path(my->snapshot_dir) /

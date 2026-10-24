@@ -40,9 +40,7 @@ uint64_t compaction_trigger(uint32_t max_lines) {
     return static_cast<uint64_t>(max_lines) + std::max<uint64_t>(16, max_lines / 10);
 }
 
-// Reading a file backwards costs one pass over the tail only; refuse to walk forever
-// through a degenerate file that has no line breaks at all (a single 10 GB "line").
-const uint64_t kMaxScanBytes = 64ull * 1024 * 1024;
+// Scan in fixed 64 KiB chunks: the configured line cap has no byte-size assumption.
 
 /**
  * Offset right after the newline that starts the last `keep` lines, or 0 when the
@@ -72,7 +70,6 @@ bool find_tail_offset(const std::string &path, uint32_t keep, uint64_t &cut, boo
     const std::size_t chunk = 64 * 1024;
     std::streamoff pos = size;
     uint64_t seen = 0;
-    uint64_t scanned = 0;
 
     while (pos > 0) {
         const std::size_t take = static_cast<std::size_t>(std::min<std::streamoff>(chunk, pos));
@@ -90,11 +87,6 @@ bool find_tail_offset(const std::string &path, uint32_t keep, uint64_t &cut, boo
                 found = true;
                 return true;
             }
-        }
-        scanned += take;
-        if (scanned >= kMaxScanBytes) {
-            error = "no line boundary within " + std::to_string(kMaxScanBytes) + " bytes of " + path;
-            return false;
         }
     }
     return true;
@@ -315,7 +307,7 @@ void capped_file_appender::log(const fc::log_message &m) {
 
     my->out << line << "\t\t\t" << m.get_context().get_file() << ":" << m.get_context().get_line_number() << "\n";
     if (my->cfg.flush) my->out.flush();
-    ++my->lines;
+    my->lines += 1 + static_cast<uint64_t>(std::count(line.begin(), line.end(), '\n'));
 
     if (my->cfg.max_lines > 0 && my->lines >= compaction_trigger(my->cfg.max_lines)) {
         my->compact();

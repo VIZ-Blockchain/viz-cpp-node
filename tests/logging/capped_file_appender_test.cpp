@@ -245,3 +245,30 @@ BOOST_AUTO_TEST_CASE(zero_means_unlimited) {
     BOOST_TEST(split_lines(read_file(path)).size() == 300u);
     std::remove(path.c_str());
 }
+
+BOOST_AUTO_TEST_CASE(trim_large_retained_tail_exceeds_old_scan_budget) {
+    const std::string path = temp_path("large_tail");
+    const std::string line(1023, 'x');
+    { std::ofstream out(path, std::ios::binary);
+      for (int i = 0; i < 70000; ++i) out << line << "\n"; }
+    std::string error;
+    BOOST_REQUIRE(graphene::utilities::capped_file_appender::trim_to_last_lines(path, 66000, error));
+    uint64_t count = 0;
+    BOOST_REQUIRE(graphene::utilities::capped_file_appender::count_lines_in_file(path, count, error));
+    BOOST_CHECK_EQUAL(count, 66000u);
+    std::remove(path.c_str());
+}
+
+BOOST_AUTO_TEST_CASE(multiline_messages_count_physical_lines) {
+    const std::string path = temp_path("multiline");
+    std::remove(path.c_str());
+    graphene::utilities::capped_file_appender::config cfg;
+    cfg.filename = path; cfg.max_lines = 50; cfg.flush = true;
+    graphene::utilities::capped_file_appender appender{fc::variant(cfg)};
+    for (int i = 0; i < 100; ++i)
+        appender.log(fc::log_message(fc::log_context(fc::log_level::info, "test.cpp", 1, "test"),
+                                    "a\nb\nc\nd", fc::mutable_variant_object()));
+    const auto lines = split_lines(read_file(path));
+    BOOST_CHECK_LE(lines.size(), 69u); // 66-line trigger, up to three lines in the final message
+    std::remove(path.c_str());
+}

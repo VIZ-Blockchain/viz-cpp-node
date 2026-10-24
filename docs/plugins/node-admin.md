@@ -157,7 +157,7 @@ The non-`POST` routes are the built-in UI and snapshot downloads:
   carries the same headers, including `Content-Length`. Any other method or path answers `405`.
 
 Download limits: the file must be a regular file directly in the snapshot directory (names
-come from `admin.snapshot.status`; traversal is rejected), and files larger than **512 MB**
+come from `admin.snapshot.status`; traversal is rejected), and files larger than **8 MiB**
 answer `413` — copy those with `scp` instead.
 
 ---
@@ -702,8 +702,10 @@ limits and the IP lists. Their semantics, defaults and log format are documented
 **Changes are live.** The plugin keeps this state in memory; a change applies to the next
 request the webserver receives, with no restart and no re-reading of `config.ini`. Every
 change is also persisted atomically to `webserver-admin-state`
-(`<data-dir>/webserver-admin.json` by default), which is loaded at startup and therefore
-overrides the `config.ini` seed. The `reload` method re-reads that file for manual edits.
+(`<data-dir>/webserver-admin.json` by default), which is loaded at startup. Persisted runtime policy is applied only when its
+`config_policy` fingerprint matches the startup stats/limits configuration. Changing those
+config.ini settings invalidates the old policy snapshot; IP lists remain intact. Legacy state
+files without a fingerprint restore IP lists only. The `reload` method re-reads that file for manual edits.
 
 | Method | Scope | Params | Purpose |
 |--------|-------|--------|---------|
@@ -1043,8 +1045,9 @@ admin-token = ui:read,snapshot,p2p:<sha256 of a 32-byte random token>
 
 ## Audit
 
-Every request — including failed authentication, parse errors and rate limiting — appends
-one JSON line:
+Requests admitted by the global 100 requests/second ingress budget — including failed
+authentication and parse errors — append one JSON line. Excess ingress is rejected before
+auditing so unauthenticated floods cannot continuously rotate the audit trail:
 
 ```json
 {"ts":"2026-10-19T14:40:00Z","rid":"17","token":"agent","method":"admin.node_info",
@@ -1054,7 +1057,9 @@ one JSON line:
 `token` is the label, never the token or its hash. `remote` is the real peer address of the
 connection (not `X-Forwarded-For`: this listener is never behind a proxy, so that header
 would let a client pick its own attribution). `params` are masked with the same redaction
-rules as the log tail. The file is created `0600` and rotated to `.1` at 16 MB.
+rules as the log tail. The file is created `0600` and rotated at 16 MB with eight retained generations (`.1`–`.8`). MCP calls also record the
+actual tool name in `tool`. HTTP handshakes time out after 5 seconds and the listener admits
+at most 64 concurrent connections. Snapshot downloads are bounded to 8 MiB; use scp for larger files.
 
 ---
 

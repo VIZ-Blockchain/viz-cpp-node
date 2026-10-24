@@ -59,6 +59,11 @@ BOOST_AUTO_TEST_CASE(mask_wif_at_start_and_end) {
     BOOST_CHECK(mask_text(wif + " x").find(wif) == std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(mask_adjacent_wifs) {
+    const std::string key = "L" + std::string(51, '1');
+    BOOST_CHECK_EQUAL(mask_text(key + " " + key), "*** ***");
+}
+
 BOOST_AUTO_TEST_CASE(mask_kl_wif_form) {
     // Second accepted form: K/L + 51 base58 chars.
     const std::string wif = "L" + std::string(51, '1');
@@ -80,6 +85,8 @@ BOOST_AUTO_TEST_CASE(mask_leaves_innocent_text_alone) {
 }
 
 BOOST_AUTO_TEST_CASE(sensitive_key_names) {
+    BOOST_CHECK(sensitive_key("validator-guard-validator"));
+    BOOST_CHECK(sensitive_key("witness-guard-witness"));
     BOOST_CHECK(sensitive_key("private-key"));
     BOOST_CHECK(sensitive_key("PRIVATE_KEY"));
     BOOST_CHECK(sensitive_key("admin-token"));

@@ -1,3 +1,12 @@
+// HF16 / VIZ 4.2.0: BFT QC/TC block votes, 2-chain finality, certificate fork choice,
+// 1-second slots (1 VIZ/block intentionally retained: 3x annual emission, owner Q3105=C),
+// equivocation virtual operation 106, P2P vote messages 5117/5118, and DAO request cap
+// floor(current_supply / 100). Block-denominated periods are migrated at activation.
+// All nodes, including API/seed nodes, must upgrade: old nodes cannot decode extensions 3/4/5.
+// Shared-memory layout changes require replay or a compatible 4.2.0 snapshot.
+// Activation: 2026-10-31 00:00 UTC plus the production 17/21 version-vote quorum.
+// See docs/consensus/hf16.md for the full upgrade and consensus contract.
+//
 // 16 Hardfork — freeze the no-contest price at announcement. Today pm_no_contest only declares the
 // void and opens the pm_dispute_grace_sec window; the penalty is computed at settlement from the
 // median chain_properties_pm of THAT moment. A parameter vote inside the window therefore changes

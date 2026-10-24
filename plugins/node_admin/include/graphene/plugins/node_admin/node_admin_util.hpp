@@ -84,7 +84,8 @@ inline bool is_plain_snapshot_name(const std::string &name) {
 inline bool sensitive_key(const std::string &key) {
     const std::string k = to_lower(key);
     static const char *needles[] = {
-        "private-key", "private_key", "password", "secret", "token", "wif", "emergency"
+        "private-key", "private_key", "password", "secret", "token", "wif", "emergency",
+        "validator-guard-validator", "witness-guard-witness"
     };
     for (const char *n : needles) {
         if (k.find(n) != std::string::npos) return true;
@@ -96,12 +97,12 @@ inline bool sensitive_key(const std::string &key) {
 /// (masking an innocent word) is harmless; a false negative is a leaked WIF.
 inline std::string mask_text(const std::string &text) {
     static const std::regex wif(
-        "(^|[^A-Za-z0-9])(5[HJK][1-9A-HJ-NP-Za-km-z]{49}|[KL][1-9A-HJ-NP-Za-km-z]{51})([^A-Za-z0-9]|$)",
+        "(^|[^A-Za-z0-9])(5[HJK][1-9A-HJ-NP-Za-km-z]{49}|[KL][1-9A-HJ-NP-Za-km-z]{51})(?=[^A-Za-z0-9]|$)",
         std::regex::ECMAScript);
     static const std::regex inline_secret(
         "((private-key|emergency-private-key|admin-token|password|secret)[[:space:]]*[=:][[:space:]]*)([^[:space:]\\\"]+)",
         std::regex::ECMAScript | std::regex::icase);
-    std::string out = std::regex_replace(text, wif, "$1***$3");
+    std::string out = std::regex_replace(text, wif, "$1***");
     out = std::regex_replace(out, inline_secret, "$1***");
     return out;
 }
