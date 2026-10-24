@@ -30,6 +30,7 @@
 #include <websocketpp/server.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -138,7 +139,6 @@ const uint32_t kRatePerSecond = 20;
 // Snapshot files are served in one HTTP response, so the body has to fit in memory.
 // VIZ mainnet snapshots are ~4 MB compressed; the cap is for a pathological file, not
 // the normal case. Larger files stay downloadable with scp from the node.
-const uint64_t kMaxSnapshotDownloadBytes = 8ULL * 1024 * 1024;
 
 /// Constant-time comparison for equal-length strings. Token hashes are always 64 hex chars,
 /// so an early size check leaks nothing beyond "this is not a sha256 hex digest".
@@ -2064,6 +2064,79 @@ struct asio_with_stub_log : public websocketpp::config::asio {
 
 typedef websocketpp::server<asio_with_stub_log> websocket_server_type;
 
+// A raw HTTP response uses one bounded buffer and one outstanding socket write.
+// Defer websocketpp's buffered response, then use its normal HTTP completion hook
+// after the last chunk (or terminate on an incomplete transfer).
+class snapshot_http_stream : public std::enable_shared_from_this<snapshot_http_stream> {
+public:
+    snapshot_http_stream(asio::io_context &ios, websocket_server_type::connection_ptr con,
+                         std::unique_ptr<std::ifstream> input, uint64_t size,
+                         std::string headers)
+        : con_(std::move(con)), input_(std::move(input)), remaining_(size),
+          headers_(std::move(headers)), timer_(ios) {}
+
+    void start() {
+        const auto ec = con_->defer_http_response();
+        if (ec) { finish(false); return; }
+        arm_timeout();
+        auto self = shared_from_this();
+        asio::async_write(con_->get_socket(), asio::buffer(headers_),
+            [self](const boost::system::error_code &ec, std::size_t) {
+                if (ec) self->finish(false); else self->next();
+            });
+    }
+
+private:
+    void arm_timeout() {
+        timer_.expires_after(std::chrono::seconds(30));
+        auto self = shared_from_this();
+        timer_.async_wait([self](const boost::system::error_code &ec) {
+            if (!ec) self->finish(false);
+        });
+    }
+
+    void next() {
+        if (finished_) return;
+        if (!remaining_) { finish(true); return; }
+        const auto n = static_cast<std::size_t>(std::min<uint64_t>(remaining_, buffer_.size()));
+        input_->read(buffer_.data(), static_cast<std::streamsize>(n));
+        if (input_->gcount() != static_cast<std::streamsize>(n)) { finish(false); return; }
+        remaining_ -= n;
+        arm_timeout(); // A stalled receiver cannot retain a descriptor indefinitely.
+        auto self = shared_from_this();
+        asio::async_write(con_->get_socket(), asio::buffer(buffer_.data(), n),
+            [self](const boost::system::error_code &ec, std::size_t) {
+                if (ec) self->finish(false); else self->next();
+            });
+    }
+
+    void finish(bool complete) {
+        if (finished_) return;
+        finished_ = true;
+        boost::system::error_code ignored;
+        timer_.cancel(ignored);
+        input_.reset();
+        if (complete)
+            con_->handle_write_http_response(websocketpp::lib::error_code());
+        else {
+            // Cancel our raw Asio write as well as websocketpp's transport state.
+            // Otherwise its completion handler can keep a stalled socket alive.
+            con_->get_socket().set_option(asio::socket_base::linger(true, 0), ignored);
+            con_->get_socket().cancel(ignored);
+            con_->get_socket().close(ignored);
+            con_->terminate(websocketpp::error::make_error_code(websocketpp::error::general));
+        }
+    }
+
+    websocket_server_type::connection_ptr con_;
+    std::unique_ptr<std::ifstream> input_;
+    uint64_t remaining_;
+    std::string headers_;
+    std::array<char, 64 * 1024> buffer_;
+    asio::steady_timer timer_;
+    bool finished_ = false;
+};
+
 // ── JSON-RPC error ─────────────────────────────────────────────────────────────────────────
 struct rpc_error {
     int code;
@@ -2615,44 +2688,20 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
                       -32602, elapsed_ms(started), remote);
                 return;
             }
-            const uintmax_t size = bfs::file_size(file, ec);
-            if (ec || size > kMaxSnapshotDownloadBytes) {
-                respond(con, websocketpp::http::status_code::request_entity_too_large,
-                        to_json(rpc_err(fc::variant(),
-                                        rpc_error{-32600, "snapshot too large to serve over HTTP",
-                                                  std::to_string(size) + " bytes (limit " +
-                                                      std::to_string(kMaxSnapshotDownloadBytes) + ")",
-                                                  "copy the file with scp instead"})));
+            // Open once and measure that same descriptor: a concurrent pathname
+            // replacement must not mix one file's Content-Length with another body.
+            auto input = std::unique_ptr<std::ifstream>(new std::ifstream(file, std::ios::binary));
+            input->seekg(0, std::ios::end);
+            const auto end = input->tellg();
+            if (!*input || end < std::streampos(0)) {
+                respond(con, websocketpp::http::status_code::internal_server_error,
+                        to_json(rpc_err(fc::variant(), rpc_error{-32099, "cannot open snapshot file", file, ""})));
                 audit(rid, token->label, req_method + " " + path, fc::variant(),
-                      "too_large", -32600, elapsed_ms(started), remote);
+                      "open_failed", -32099, elapsed_ms(started), remote);
                 return;
             }
-
-            std::string content;
-            if (req_method != "HEAD") {
-                std::ifstream in(file, std::ios::binary);
-                if (!in) {
-                    respond(con, websocketpp::http::status_code::internal_server_error,
-                            to_json(rpc_err(fc::variant(),
-                                            rpc_error{-32099, "cannot open snapshot file",
-                                                      file, ""})));
-                    audit(rid, token->label, req_method + " " + path, fc::variant(),
-                          "open_failed", -32099, elapsed_ms(started), remote);
-                    return;
-                }
-                content.resize(static_cast<std::size_t>(size));
-                if (size) in.read(&content[0], static_cast<std::streamsize>(size));
-                content.resize(static_cast<std::size_t>(in.gcount()));
-                if (!in && !in.eof()) {
-                    respond(con, websocketpp::http::status_code::internal_server_error,
-                            to_json(rpc_err(fc::variant(),
-                                            rpc_error{-32099, "cannot read snapshot file",
-                                                      file, ""})));
-                    audit(rid, token->label, req_method + " " + path, fc::variant(),
-                          "read_failed", -32099, elapsed_ms(started), remote);
-                    return;
-                }
-            }
+            const uint64_t size = static_cast<uint64_t>(end);
+            input->seekg(0, std::ios::beg);
 
             try {
                 con->append_header("X-Content-Type-Options", "nosniff");
@@ -2661,11 +2710,22 @@ void node_admin_plugin::impl::handle_http(connection_hdl hdl) {
             } catch (const std::exception &e) {
                 wlog("node_admin: failed to set snapshot headers: ${e}", ("e", e.what()));
             }
-            respond(con, websocketpp::http::status_code::ok, content,
-                    "application/octet-stream",
-                    // A HEAD reply carries the headers a GET would return, so the file
-                    // size must be explicit: the body is empty by design.
-                    req_method == "HEAD" ? static_cast<int64_t>(size) : -1);
+            if (req_method == "HEAD") {
+                respond(con, websocketpp::http::status_code::ok, "",
+                        "application/octet-stream", static_cast<int64_t>(size));
+            } else {
+                con->set_status(websocketpp::http::status_code::ok);
+                auto response = con->get_response();
+                response.set_version("HTTP/1.1");
+                response.set_body("");
+                response.replace_header("Content-Type", "application/octet-stream");
+                response.replace_header("Content-Length", std::to_string(size));
+                response.replace_header("Cache-Control", "no-store");
+                response.replace_header("Connection", "close");
+                auto transfer = std::make_shared<snapshot_http_stream>(
+                    ios, con, std::move(input), size, response.raw());
+                transfer->start();
+            }
             audit(rid, token->label, req_method + " " + path,
                   fc::mutable_variant_object("file", filename)("bytes", static_cast<int64_t>(size)),
                   "snapshot_download", 0, elapsed_ms(started), remote);

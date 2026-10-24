@@ -448,6 +448,12 @@ check "HEAD /snapshot/<name> -> HTTP 200" 200 "$CODE"
 check_contains "HEAD /snapshot/<name> -> content length" 'Content-Length: 23' \
     "$(tr -d '\r' < "$WORK/dl-head.hdr")"
 
+# Large files must stream byte-for-byte without buffering whole bodies or blocking RPC.
+if ! python3 "$(dirname "$0")/snapshot_download.py" "$BASE" "$GOOD" "$SNAPDIR" "$NODE_PID"; then
+    echo "FAIL snapshot streaming regression"
+    FAIL=$((FAIL + 1))
+fi
+
 # restore path guards never start a restore from an unexpected file
 auth "$SNAP" '{"jsonrpc":"2.0","id":46,"method":"admin.snapshot.restore","params":{"name":"missing.vizjson"}}'
 check "snapshot.restore of a missing name -> -32602" -32602 "$(field error.code)"

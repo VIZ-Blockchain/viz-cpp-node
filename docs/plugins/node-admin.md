@@ -156,9 +156,10 @@ The non-`POST` routes are the built-in UI and snapshot downloads:
   and the `read` scope — unlike `/ui/`, a snapshot is node state. `HEAD` works on both and
   carries the same headers, including `Content-Length`. Any other method or path answers `405`.
 
-Download limits: the file must be a regular file directly in the snapshot directory (names
-come from `admin.snapshot.status`; traversal is rejected), and files larger than **8 MiB**
-answer `413` — copy those with `scp` instead.
+Downloads require a regular file directly in the snapshot directory (names come from
+`admin.snapshot.status`; traversal is rejected). Files stream in 64 KiB chunks with
+backpressure and no file-size ceiling. A stalled socket write times out after 30 seconds;
+large downloads do not buffer the entire snapshot or block other admin requests.
 
 ---
 
@@ -1059,7 +1060,7 @@ connection (not `X-Forwarded-For`: this listener is never behind a proxy, so tha
 would let a client pick its own attribution). `params` are masked with the same redaction
 rules as the log tail. The file is created `0600` and rotated at 16 MB with eight retained generations (`.1`–`.8`). MCP calls also record the
 actual tool name in `tool`. HTTP handshakes time out after 5 seconds and the listener admits
-at most 64 concurrent connections. Snapshot downloads are bounded to 8 MiB; use scp for larger files.
+at most 64 concurrent connections. Snapshot downloads stream in 64 KiB chunks without a file-size ceiling; stalled writes time out after 30 seconds.
 
 ---
 
