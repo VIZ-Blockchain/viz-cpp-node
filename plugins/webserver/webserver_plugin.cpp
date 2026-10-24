@@ -1,4 +1,5 @@
 #include <graphene/plugins/webserver/webserver_plugin.hpp>
+#include <graphene/plugins/webserver/ip_counter_cache.hpp>
 
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
@@ -206,19 +207,6 @@ namespace graphene {
             // then behaves exactly as before). The blacklist works even with stats off —
             // it is a security control, not a metric. Enabled limits keep their counters
             // even while stats logging is disabled.
-            struct ip_counters {
-                uint64_t total = 0;
-                uint64_t minute = 0;
-                uint64_t hour = 0;
-                uint64_t day = 0;
-                uint64_t blocked = 0;
-                uint64_t limited = 0;
-                uint32_t minute_bucket = 0;
-                uint32_t hour_bucket = 0;
-                uint32_t day_bucket = 0;
-                uint32_t last_seen = 0;
-                uint64_t logged = 0;        // total + blocked at the last log flush
-            };
 
             enum class admission {
                 allow,
@@ -351,8 +339,7 @@ namespace graphene {
                     return ip;
                 }
                 webserver_limits limits;
-                std::unordered_map<std::string, ip_counters> ip_stats;
-                uint32_t last_stats_gc = 0;
+                detail::ip_counter_cache ip_stats;
                 std::unordered_set<std::string> whitelist;
                 std::unordered_set<std::string> blacklist;
                 uint64_t total_requests = 0;
@@ -507,31 +494,16 @@ namespace graphene {
                 if (blacklist.count(ip)) {
                     ++blocked_requests;
                     auto it = ip_stats.find(ip);
-                    if (it != ip_stats.end()) { ++it->second.blocked; it->second.last_seen = now; }
+                    if (it != ip_stats.end()) { auto &c = ip_stats.touch(ip); ++c.blocked; c.last_seen = now; }
                     return admission::blacklisted;
                 }
                 if (!stats_enabled && !limits.enabled) {
                     return admission::allow;
                 }
 
-                // Bound the map: a scanner rotating through millions of source addresses
-                // must not turn the stats themselves into a memory exhaustion vector.
-                if (ip_stats.size() >= 200000 && now - last_stats_gc >= 60) {
-                    last_stats_gc = now;
-                    for (auto it = ip_stats.begin(); it != ip_stats.end(); ) {
-                        if (now > it->second.last_seen && now - it->second.last_seen > 86400)
-                            it = ip_stats.erase(it);
-                        else ++it;
-                    }
-                }
-                if (ip_stats.size() >= 200000 && !ip_stats.count(ip)) {
-                    // Fail closed for untracked sources; existing clients keep their windows.
-                    if (whitelist.count(ip)) return admission::allow;
-                    ++limited_requests;
-                    return admission::rate_limited;
-                }
-
-                auto &c = ip_stats[ip];
+                // Bounded LRU admission evicts only the oldest inactive counter.
+                // A source-address spray must not lock every new client out for a day.
+                auto &c = ip_stats.touch(ip);
                 c.last_seen = now;
                 ++c.total;
                 ++total_requests;
@@ -591,7 +563,7 @@ namespace graphene {
                 std::unique_lock<std::mutex> lock(stats_mutex);
                 if (!stats_enabled || stats_log_path.empty()) return;
 
-                struct row { std::string ip; ip_counters c; bool white; bool black; };
+                struct row { std::string ip; detail::ip_counters c; bool white; bool black; };
                 std::vector<row> changed;
                 for (auto &kv : ip_stats) {
                     auto &c = kv.second;

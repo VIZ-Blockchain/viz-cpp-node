@@ -288,6 +288,7 @@ if(BUILD_CONSENSUS_TESTS)
     add_subdirectory(tests/pm)
     add_subdirectory(tests/node_admin)
     add_subdirectory(tests/logging)
+    add_subdirectory(tests/webserver)
 endif()
 
 if(ENABLE_INSTALLER)

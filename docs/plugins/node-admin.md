@@ -1175,3 +1175,5 @@ genesis, the 5% free-space boundary, a wedged read lock (unreadable, and no repa
 strength of a lock that was never answered), and recovery/block-log warnings. The judge is what
 invites an operator to wipe state, so a false `corrupted` and a false `ok` are both defects and
 both have a test.
+
+Per-IP counters retain at most 200,000 sources in memory. At capacity, the least recently used counter is evicted so new clients are evaluated normally instead of all receiving 429. A returning evicted source starts fresh counters; active sources retain their existing windows. Blacklists and whitelists are stored separately and are not evicted.
