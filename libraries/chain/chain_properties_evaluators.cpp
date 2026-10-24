@@ -123,17 +123,18 @@ namespace graphene { namespace chain {
 
         const auto &idx = _db.get_index<validator_index>().indices().get<by_name>();
         auto itr = idx.find(o.owner);
+        // Validate a detached candidate. A throwing multi_index modifier may erase
+        // the live object before transaction undo can restore it.
+        chain_properties candidate = itr != idx.end() ? itr->props : chain_properties();
+        o.props.visit(chain_properties_update(_db, candidate));
+        check_year_bound(candidate);
         if (itr != idx.end()) {
-            _db.modify(*itr, [&](validator_object& w) {
-                o.props.visit(chain_properties_update(_db, w.props));
-                check_year_bound(w.props);
-            });
+            _db.modify(*itr, [&](validator_object& w) { w.props = candidate; });
         } else {
             _db.create<validator_object>([&](validator_object& w) {
                 w.owner = o.owner;
                 w.created = _db.head_block_time();
-                o.props.visit(chain_properties_update(_db, w.props));
-                check_year_bound(w.props);
+                w.props = candidate;
             });
         }
     }
