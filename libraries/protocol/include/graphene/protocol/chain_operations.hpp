@@ -1172,7 +1172,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(required_amount_max.symbol == TOKEN_SYMBOL);
                 FC_ASSERT(duration >= COMMITTEE_MIN_DURATION);
                 FC_ASSERT(duration <= COMMITTEE_MAX_DURATION);
-                FC_ASSERT(required_amount_max.amount <= COMMITTEE_MAX_REQUIRED_AMOUNT);
+                // Supply-dependent ceiling is checked by the evaluator (HF16).
             }
 
             void get_required_regular_authorities(flat_set<account_name_type> &a) const {

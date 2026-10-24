@@ -191,4 +191,44 @@ BOOST_AUTO_TEST_CASE(deferred_chain_cascade_retains_irreversible_history) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(committee_request_ceiling_tracks_current_supply) {
+    auto gp = make_genesis_params(0xDA016u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start)
+        start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("committee-ceiling", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    auto& db = node.db();
+    committee_worker_create_request_operation op;
+    op.creator = gp.initiator_name; op.worker = gp.initiator_name;
+    op.url = "https://example.org/committee-ceiling";
+    op.required_amount_min = asset(0, TOKEN_SYMBOL);
+    op.duration = COMMITTEE_MIN_DURATION;
+    op.required_amount_max = asset(COMMITTEE_MAX_REQUIRED_AMOUNT + 1, TOKEN_SYMBOL);
+    // Stateless validation must permit amounts above the old ceiling; the database
+    // supplies both the hardfork version and the live supply.
+    BOOST_CHECK_NO_THROW(op.validate());
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
+    db.set_hardfork(CHAIN_HARDFORK_16, true);
+    const int64_t raw_supply = CHAIN_INIT_SUPPLY * 2 + 99;
+    db.modify(db.get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
+        p.current_supply = asset(raw_supply, TOKEN_SYMBOL);
+    });
+    op.required_amount_max = asset(raw_supply / 100 + 1, TOKEN_SYMBOL);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
+    // Recompute for the next request rather than freezing the activation supply.
+    db.modify(db.get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
+        p.current_supply = asset(CHAIN_INIT_SUPPLY, TOKEN_SYMBOL);
+    });
+    op.required_amount_max = asset(raw_supply / 100, TOKEN_SYMBOL);
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
+    db.modify(db.get_dynamic_global_properties(), [&](dynamic_global_property_object& p) {
+        p.current_supply = asset(raw_supply, TOKEN_SYMBOL);
+    });
+    BOOST_CHECK_NO_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
