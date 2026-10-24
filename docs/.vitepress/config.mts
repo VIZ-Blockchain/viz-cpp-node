@@ -405,6 +405,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
     {
       text: t.consensus,
       items: [
+        { text: 'HF16 / 4.2.0', link: p('/consensus/hf16') },
         { text: t.fairDpos, link: p('/consensus/fair-dpos') },
         { text: t.blockProcessing, link: p('/consensus/block-processing') },
         { text: t.forkResolution, link: p('/consensus/fork-resolution') },
@@ -433,6 +434,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.databaseApi, link: p('/plugins/database-api') },
         { text: t.predictionMarketApi, link: p('/plugins/prediction-market-api') },
         { text: t.webserver, link: p('/plugins/webserver') },
+        { text: 'Node Admin · UI · MCP', link: p('/plugins/node-admin') },
       ],
     },
     {

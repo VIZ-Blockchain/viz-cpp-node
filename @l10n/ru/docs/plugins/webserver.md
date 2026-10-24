@@ -2,7 +2,7 @@
 
 Плагин webserver предоставляет HTTP и WebSocket конечные точки, перенаправляющие JSON-RPC запросы в плагин `json_rpc`. Включает кеш ответов, ключом которого служит `method + params` (не `id`), инвалидируемый при каждом применённом блоке, и пул потоков для параллельной обработки запросов.
 
-**Исходник:** [plugins/webserver/webserver_plugin.cpp](../../plugins/webserver/webserver_plugin.cpp)
+**Исходник:** [plugins/webserver/webserver_plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/webserver/webserver_plugin.cpp)
 
 ---
 

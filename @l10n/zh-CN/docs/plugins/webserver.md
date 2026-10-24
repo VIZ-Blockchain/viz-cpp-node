@@ -2,7 +2,7 @@
 
 网络服务器插件提供 HTTP 和 WebSocket 端点，将 JSON-RPC 请求转发到 `json_rpc` 插件。它包含以 `method + params`（不含 `id`）为键的响应缓存（每个应用的区块使其失效），以及用于并发请求处理的线程池。
 
-**源码：** [plugins/webserver/webserver_plugin.cpp](../../plugins/webserver/webserver_plugin.cpp)
+**源码：** [plugins/webserver/webserver_plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/webserver/webserver_plugin.cpp)
 
 ---
 

@@ -1,5 +1,8 @@
 # Block Processing
 
+> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+
+
 Internal mechanics of block application, pending transaction management, and fork switching.
 
 ---
@@ -312,7 +315,7 @@ Classic DPOS path (~63 s) remains active as a fallback if confirmation messages 
 | `CHAIN_BLOCK_GENERATION_POSTPONED_TX_LIMIT` | 5 | Max consecutive oversized transactions skipped during generation |
 | `CHAIN_BLOCK_SIZE` | 65536 bytes | Hard block size limit |
 | `maximum_block_size` | Dynamic (validator median) | Soft block size limit |
-| `CHAIN_BLOCK_INTERVAL` | 3 s | Block production interval |
+| `CHAIN_BLOCK_INTERVAL` | 3 s before HF16; runtime 1 s after | Block production interval |
 
 ---
 

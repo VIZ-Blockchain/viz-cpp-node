@@ -82,7 +82,7 @@ When block 5,000,000 is applied, the snapshot is written to `/data/snapshots/sna
 
 ```ini
 plugin = snapshot
-snapshot-every-n-blocks = 28800   # ~24 hours at 3 s/block
+snapshot-every-n-blocks = 28800   # ~24 h before HF16; ~8 h after (1 s/block)
 snapshot-dir = /data/snapshots
 snapshot-max-age-days = 90
 ```

@@ -162,7 +162,7 @@ curl -s -X POST http://localhost:8090 \
   | python3 -m json.tool
 ```
 
-检查 `head_block_number`——同步后应每 3 秒增加一次。
+检查 `head_block_number`——同步后应HF16 前每 3 秒、激活后每 1 秒增加一次。
 
 ---
 

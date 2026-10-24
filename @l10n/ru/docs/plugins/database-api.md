@@ -2,7 +2,7 @@
 
 Плагин `database_api` предоставляет JSON-RPC методы только для чтения, позволяющие запрашивать состояние блокчейна: блоки, аккаунты, свойства цепочки, делегирование, проверку авторизации и управление.
 
-**Исходник:** [plugins/database_api/](../../plugins/database_api/)
+**Исходник:** [plugins/database_api/](https://github.com/VIZ-Blockchain/viz-cpp-node/tree/pm/plugins/database_api/)
 
 ---
 

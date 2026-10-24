@@ -2,7 +2,7 @@
 
 Плагин snapshot обеспечивает почти мгновенный запуск узла путём сериализации и восстановления полного состояния блокчейна в виде JSON-файла. Вместо воспроизведения миллионов блоков из block log, узел загружает предварительно подготовленный снимок и начинает синхронизацию с высоты блока снимка через P2P.
 
-**Исходник:** [plugins/snapshot/snapshot.cpp](../../plugins/snapshot/snapshot.cpp)
+**Исходник:** [plugins/snapshot/snapshot.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/snapshot/plugin.cpp)
 
 ---
 

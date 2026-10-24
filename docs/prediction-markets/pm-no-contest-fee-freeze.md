@@ -1,6 +1,6 @@
 # HF16 — no-contest fee freeze: activation checklist and backfill semantics
 
-Status: **implemented, not scheduled.** The fork is registered in both configs
+Status: **implemented; activation scheduled for 2026-10-31 00:00:00 UTC.** The fork is registered in both configs
 (`CHAIN_NUM_HARDFORKS = 16`, `CHAIN_VERSION = 4.2.0`) and gated by its activation time plus the
 validator quorum: a production binary applies it once that time is reached, and nothing runs before
 then. This note is the operator-facing checklist — what is frozen, how the two states on a market are

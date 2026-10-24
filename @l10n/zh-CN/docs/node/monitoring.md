@@ -15,7 +15,7 @@ curl -s -X POST http://localhost:8090 \
   | python3 -m json.tool
 ```
 
-检查 `head_block_number` — 同步时应每 3 秒增加一次。检查 `time` — 应与系统时钟相差几秒以内。
+检查 `head_block_number` — 同步时应HF16 前每 3 秒、激活后每 1 秒增加一次。检查 `time` — 应与系统时钟相差几秒以内。
 
 简单的存活探测脚本：
 
@@ -184,7 +184,7 @@ while True:
 
 | 面板 | 指标 / 来源 |
 |------|-----------|
-| 头块 | `viz_head_block_number`（同步时每 3 秒增加） |
+| 头块 | `viz_head_block_number`（同步时HF16 前每 3 秒、激活后每 1 秒增加） |
 | 区块延迟 | `time() - viz_head_block_time`（落后系统时钟的秒数） |
 | 节点数 | 从 P2P 统计日志解析 |
 | 节点延迟 | P2P 统计日志，按节点 IP |

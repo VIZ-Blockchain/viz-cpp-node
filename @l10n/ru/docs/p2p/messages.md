@@ -2,7 +2,7 @@
 
 DLT P2P использует бинарный протокол через raw TCP. Каждое сообщение оформляется 4-байтовым заголовком с порядком байт little-endian, содержащим ID типа сообщения, за которым следует полезная нагрузка с префиксом длины, сериализованная с помощью FC reflection.
 
-**Заголовочный файл:** [libraries/network/include/graphene/network/dlt_p2p_messages.hpp](../../libraries/network/include/graphene/network/dlt_p2p_messages.hpp)
+**Заголовочный файл:** [libraries/network/include/graphene/network/dlt_p2p_messages.hpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/libraries/network/include/graphene/network/dlt_p2p_messages.hpp)
 
 ---
 
