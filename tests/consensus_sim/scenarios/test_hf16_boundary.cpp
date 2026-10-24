@@ -298,6 +298,7 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
 // Every CI run now exercises real signatures, QC/LIB, timeout votes, late-QC and
 // on-chain equivocation on two independent database instances.
 BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
+    try {
     auto gp = make_genesis_params(0xBF716u, 1);
     fc::time_point_sec start(fc::time_point::now());
     if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
@@ -369,21 +370,30 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     vote_for_head(node, gp);
     const auto high = db.get_block_qc(db.head_block_num());
     BOOST_REQUIRE(high.valid());
-    produce(node, gp, when); relay(); // Uncertified child that will be replaced after timeout.
+    const auto scheduled_count = db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT;
+    if (scheduled_count > 1)
+        produce(node, gp, when); // Only this node sees the uncertified child.
+    else
+        when += fc::seconds(db.block_interval()); // One-slot testnet commits every head immediately.
     const uint32_t timeout_round = db.round_of(when);
-    const auto &wso = db.get_validator_schedule_object();
+    // The other producer stays at the certified parent. Build the sibling in its
+    // independent database rather than manually undoing a producer's live state.
+    auto &recovery_db = follower.db();
+    vote_for_head(follower, gp);
+    const auto &wso = recovery_db.get_validator_schedule_object();
     for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
         const auto v = wso.current_shuffled_validators[i];
-        const auto d = block_timeout_digest(db.get_chain_id(), timeout_round, high->round);
-        BOOST_CHECK(db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
+        const auto d = block_timeout_digest(recovery_db.get_chain_id(), timeout_round, high->round);
+        BOOST_CHECK(recovery_db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
     }
-    const auto tc = db.get_timeout_cert(timeout_round);
+    const auto tc = recovery_db.get_timeout_cert(timeout_round);
     BOOST_REQUIRE(tc.valid());
-    db.pop_block(); // Producer discards the uncertified head; follower still holds it.
-    when += fc::seconds(db.block_interval());
-    const auto v = db.get_scheduled_validator(db.get_slot_at_time(when));
-    db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc);
-    relay();
+    when += fc::seconds(recovery_db.block_interval());
+    const auto v = recovery_db.get_scheduled_validator(recovery_db.get_slot_at_time(when));
+    const auto recovered = recovery_db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc);
+    db.push_block(recovered, database::skip_nothing);
+    BOOST_REQUIRE(node.head_block_id() == recovered.id());
+    BOOST_REQUIRE(follower.head_block_id() == recovered.id());
     BOOST_REQUIRE_GT(follower.last_irreversible_block_num(), base_lib);
     // A signed duplicate vote is evidence, not a second quorum vote.
     vote_for_head(node, gp);
@@ -419,7 +429,7 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
         if (e.which() == 5) proof = true;
     BOOST_CHECK(proof);
 
-
+    } catch (const fc::exception &e) { BOOST_FAIL(e.to_detail_string()); }
 }
 
 BOOST_AUTO_TEST_CASE(forged_certificate_cannot_enter_fork_choice) {

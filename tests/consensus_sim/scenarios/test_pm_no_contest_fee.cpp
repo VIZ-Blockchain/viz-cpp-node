@@ -125,7 +125,7 @@ void create_and_fund(simulated_node& node, const genesis_params& gp, fc::time_po
 // Blocks sufficient for the settle cron to traverse the dispute grace from an announcement.
 int cron_grace_blocks(simulated_node& node) {
     const uint64_t grace = node.db().get_validator_schedule_object().median_props.pm_dispute_grace_sec;
-    return (int)(grace / CHAIN_BLOCK_INTERVAL) + 500;
+    return (int)(grace / node.db().block_interval()) + 500;
 }
 
 // Push a PM parameter vote and advance until the median actually reflects it. The harness runs a
