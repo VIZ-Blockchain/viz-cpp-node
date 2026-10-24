@@ -23,8 +23,20 @@ json_rpc::plugin
 | `webserver-thread-pool-size` | `256` | Worker threads for handling HTTP and WebSocket requests. |
 | `webserver-cache-enabled` | `true` | Enable the response cache. |
 | `webserver-cache-size` | `10000` | Maximum number of cached responses. Cache is evicted entirely when this limit is reached. |
+| `webserver-stats-enabled` | `false` | Enable per-IP request accounting, the stats log, and (unless overridden) the rate limits. |
+| `webserver-limits-enabled` | value of `webserver-stats-enabled` | Enforce the per-IP rate limits. Limits need the counters from `webserver-stats-enabled`. |
+| `webserver-limit-m` | `1000` | Maximum requests per IP per minute. |
+| `webserver-limit-h` | `10000` | Maximum requests per IP per hour. |
+| `webserver-limit-d` | `100000` | Maximum requests per IP per day. |
+| `webserver-stats-log` | `<data-dir>/webserver-stats.log` | Stats log path; rotated by size. |
+| `webserver-stats-log-max-size` | `10485760` (10 MiB) | Rotate the stats log when it exceeds this size. |
+| `webserver-stats-log-keep` | `5` | Number of rotated files (`.1` … `.N`) to keep. |
+| `webserver-stats-interval` | `60` | Seconds between snapshot lines written to the stats log. |
+| `webserver-admin-state` | `<data-dir>/webserver-admin.json` | Live state (limits, IP lists, stats switch) persisted by `node_admin`. |
 
 At least one of `webserver-http-endpoint` or `webserver-ws-endpoint` must be set for the plugin to do anything. Both can be enabled simultaneously.
+
+The stats and limit options are the **startup seed** only. Once the node is running, the live values are owned by the plugin and can be changed through `node_admin` (see [Managing stats and limits at runtime](#managing-stats-and-limits-at-runtime)); every change is applied to the next request and persisted to `webserver-admin-state`.
 
 ---
 
@@ -79,6 +91,70 @@ HTTP and WebSocket servers each run on a dedicated `io_service` instance. Incomi
 
 ---
 
+## Request Accounting and Rate Limiting
+
+Off by default. Set `webserver-stats-enabled = true` to count requests per client IP and enable the limits (or set `webserver-limits-enabled` explicitly to decouple the two).
+
+### Limits
+
+| Window | Default |
+|--------|---------|
+| minute | 1000 requests |
+| hour | 10000 requests |
+| day | 100000 requests |
+
+The windows are fixed (the minute bucket resets at the minute boundary, the hour at the hour, the day at midnight UTC), and every request is checked against all three. A request over any limit is rejected:
+
+- HTTP: `429 Too Many Requests`, `Retry-After: 60`, body `rate limit exceeded`.
+- WebSocket: JSON-RPC error `-32006 rate limit exceeded`.
+
+This is deliberate protection against scraping and parser traffic: consumers that need more throughput should run their own node.
+
+### Lists
+
+- **Whitelist** — addresses that bypass the limits. They are still counted and still appear in the stats.
+- **Blacklist** — addresses that are rejected with `403 Forbidden` (HTTP) or `-32005 forbidden` (WebSocket). The blacklist wins over the whitelist. It is enforced even when stats are disabled.
+- Adding an address to one list removes it from the other.
+
+### What the stats log contains
+
+Every `webserver-stats-interval` seconds the plugin appends one line per tracked IP plus a summary:
+
+```text
+2026-10-19T12:00:00Z ip=203.0.113.7 total=4210 minute=320 hour=4210 day=4210 blocked=0 limited=3 whitelisted=0 blacklisted=0 last_seen=1760875200
+2026-10-19T12:00:00Z summary total_requests=4210 blocked_requests=0 limited_requests=3 tracked_ips=1
+```
+
+The file is rotated by size: `<name>` becomes `<name>.1`, older files shift to `.2` … `.webserver-stats-log-keep`, and the oldest is deleted.
+
+### Client address
+
+The plugin uses the TCP peer address of the connection. Put behind nginx, every request appears to come from the proxy (`127.0.0.1`), so per-IP limits become global limits and the per-IP report shows a single row. Either expose the API directly, whitelist the proxy and rate-limit at the proxy layer (`limit_req`), or enable PROXY protocol support at the proxy/network layer.
+
+### Managing stats and limits at runtime
+
+The `webserver` scope on a `node_admin` token controls the mutating methods; reads only need `read`:
+
+| Method | Purpose |
+|--------|---------|
+| `admin.webserver.status` | Limits, totals, IP lists, tracked IP count |
+| `admin.webserver.ips` | Per-IP counters (`limit` up to 5000), sorted by request count |
+| `admin.webserver.limits` | Change `enabled`, `per_minute`, `per_hour`, `per_day` (omitted fields keep their value) |
+| `admin.webserver.stats` | Turn stats logging on/off; enabled limits retain counters (`{"enabled": true|false}`) |
+| `admin.webserver.whitelist_add` / `whitelist_remove` | Edit the whitelist (`{"ip": "..."}`) |
+| `admin.webserver.blacklist_add` / `blacklist_remove` | Edit the blacklist (`{"ip": "..."}`) |
+| `admin.webserver.reset` | Zero the counters, keep the lists and limits |
+| `admin.webserver.reload` | Re-read `webserver-admin-state` from disk |
+
+Each of these is also exposed as an MCP tool of the same name. **Changes are applied to the live plugin immediately — no restart and no re-reading of `config.ini`.** They are written to `webserver-admin-state` (atomic temp-file + rename), which is loaded at the next startup only when its `config_policy` fingerprint matches the startup stats/limits settings. Changed config.ini policy wins; IP lists are restored independently. Legacy state files restore IP lists only. `config.ini` is never rewritten. `reload` exists for operators who edited the JSON file by hand; normal changes do not need it.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"admin.webserver.limits",
+ "params":{"per_minute":600,"per_hour":8000}}
+```
+
+---
+
 ## WebSocket Subscriptions
 
 WebSocket clients can register callbacks:
@@ -117,7 +193,7 @@ This allows browser-based wallets and dApps to call the JSON-RPC endpoint direct
 ## Security
 
 - **Bind to localhost** (`127.0.0.1`) and use a reverse proxy (nginx/Caddy) for public exposure. Binding to `0.0.0.0` exposes the RPC directly to the network.
-- The plugin has no built-in authentication or rate limiting. Apply those at the reverse proxy layer.
+- The plugin has no built-in authentication. It has optional per-IP rate limiting and IP lists (see [Request Accounting and Rate Limiting](#request-accounting-and-rate-limiting)), but those are blunt controls — keep authentication and coarse filtering at the reverse proxy layer.
 - Mutating methods (`network_broadcast_api`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
 
 ---
@@ -200,3 +276,9 @@ location /ws {
 ---
 
 See also: [Plugin Overview](./overview.md), [Database API](./database-api.md), [JSON-RPC API](../api/json-rpc.md).
+
+### Trusted reverse proxies and persistence
+
+By default limits use the TCP peer address and ignore forwarding headers. Behind nginx, explicitly configure `webserver-trusted-proxy = 127.0.0.1` (repeat the option for each actual proxy IP) and forward `X-Forwarded-For`. The node walks the chain from right to left and stops at the first untrusted hop. Never trust arbitrary client addresses as proxies.
+
+The 200,000-IP capacity guard expires entries older than one day and rejects new untracked sources while full; it never clears live clients' rate windows. Enabled limits continue counting when stats logging is disabled. Periodic stats write changed rows only, with formatting and disk I/O outside the admission mutex. Persisted policy is bound to a `config_policy` startup fingerprint; changed config.ini stats/limits settings supersede old runtime policy while preserving IP lists.

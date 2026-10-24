@@ -42,7 +42,7 @@ bool accepts(const set_agent_permission_operation& op) {
 BOOST_AUTO_TEST_SUITE(agent_access)
 
 BOOST_AUTO_TEST_CASE(op_id_is_appended_never_renumbered) {
-    BOOST_CHECK_EQUAL(operation::count(), 106);
+    BOOST_CHECK_EQUAL(operation::count(), 107);   // +1: HF16 validator_equivocation (106)
 
     // Anchors on both sides of the append: if either index moves, the wire format broke.
     operation probe;
@@ -50,6 +50,8 @@ BOOST_AUTO_TEST_CASE(op_id_is_appended_never_renumbered) {
     BOOST_CHECK_EQUAL(operation_wire_name(probe), "pm_lp_payout");
     probe.set_which(105);
     BOOST_CHECK_EQUAL(operation_wire_name(probe), "set_agent_permission");
+    probe.set_which(106);
+    BOOST_CHECK_EQUAL(operation_wire_name(probe), "validator_equivocation");
 
     // The wire name clients write as the first element of the operation array.
     BOOST_CHECK_EQUAL(operation_wire_name(operation(set_agent_permission_operation())),

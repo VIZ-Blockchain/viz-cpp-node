@@ -225,3 +225,7 @@ let shares = VIZ.Asset(1000.0, .vests) // "1000.000000 VESTS"
 ---
 
 See also: [JSON-RPC API](./json-rpc.md), [CLI Wallet](./cli-wallet.md).
+
+## HF16 compatibility
+
+JS 0.18.5 is published to npm and supports QC/TC/equivocation block headers. PHP supports the unchanged transaction format and passes new header JSON through. Python 1.4.0 source and dependencies passed Python 3.10–3.14 CI; PyPI publication is separate. DAO clients must use the node’s current-supply ceiling, not a hard-coded 500,000 VIZ. See [HF16](../consensus/hf16.md).

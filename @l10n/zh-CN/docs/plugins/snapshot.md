@@ -2,7 +2,7 @@
 
 快照插件通过将完整的区块链状态序列化并恢复为 JSON 文件，实现节点的近乎即时启动。节点不需要从区块日志重放数百万个区块，而是加载预构建的快照，并通过 P2P 从快照的区块高度开始同步。
 
-**源码：** [plugins/snapshot/snapshot.cpp](../../plugins/snapshot/snapshot.cpp)
+**源码：** [plugins/snapshot/snapshot.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/snapshot/plugin.cpp)
 
 ---
 

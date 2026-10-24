@@ -2,7 +2,7 @@
 
 `database_api` 插件提供只读 JSON-RPC 方法，用于查询区块链状态：区块、账户、链属性、委托、权限验证和治理。
 
-**源码：** [plugins/database_api/](../../plugins/database_api/)
+**源码：** [plugins/database_api/](https://github.com/VIZ-Blockchain/viz-cpp-node/tree/pm/plugins/database_api/)
 
 ---
 

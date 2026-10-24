@@ -465,7 +465,8 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(inflation_ratio_committee_vs_reward_fund >= 0);
                 FC_ASSERT(inflation_ratio_committee_vs_reward_fund <= CHAIN_100_PERCENT);
                 FC_ASSERT(inflation_recalc_period >= 0);
-                FC_ASSERT(inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR);
+                // HF16 (#6737): one year is 3x more blocks at 1 s; the pre-HF16 bound is kept by the evaluator.
+                FC_ASSERT(inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR * 3);
             }
 
             chain_properties_hf4& operator=(const chain_properties_init& src) {
@@ -599,7 +600,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH,
                     "distribution_epoch_length must be at least ${min} blocks",
                     ("min", CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH));
-                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR),
+                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR * 3), // HF16: see evaluator
                     "distribution_epoch_length must not exceed one year in blocks");
             }
 
@@ -789,10 +790,13 @@ namespace graphene { namespace protocol {
                 // commit can never be garbage-collected before its escrow is returned — makes the
                 // "commit is always cleared before GC" invariant hold by construction, not by the
                 // default parameter magnitudes (5 d vs ~11 min) alone.
+                // Stateless validation must accept both pre-fork and native HF16 counts.
+                // The evaluator retains the historical 3 s check before HF16 and checks
+                // the live cadence (with a widened sum) afterwards. Keeping the legacy
+                // uint32 sum here avoids tightening validation of historical replay.
                 FC_ASSERT(pm_closed_market_retention_sec
-                              > (uint64_t)(pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL,
-                    "pm_closed_market_retention_sec must exceed the worst-case commit reveal deadline "
-                    "((pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL)");
+                              > (uint64_t)(pm_batch_epoch_blocks + pm_reveal_window_blocks) * CHAIN_BLOCK_INTERVAL_HF16,
+                    "pm_closed_market_retention_sec must exceed the minimum possible commit reveal deadline");
                 FC_ASSERT(pm_processing_cap_per_block > 0, "pm_processing_cap_per_block must be positive");
                 // #432 D: the settle budget must guarantee PROGRESS (a market with N rows finishes in
                 // ~N/budget blocks) and still bound the work of a single block. Zero would wedge every
@@ -1171,7 +1175,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(required_amount_max.symbol == TOKEN_SYMBOL);
                 FC_ASSERT(duration >= COMMITTEE_MIN_DURATION);
                 FC_ASSERT(duration <= COMMITTEE_MAX_DURATION);
-                FC_ASSERT(required_amount_max.amount <= COMMITTEE_MAX_REQUIRED_AMOUNT);
+                // Supply-dependent ceiling is checked by the evaluator (HF16).
             }
 
             void get_required_regular_authorities(flat_set<account_name_type> &a) const {

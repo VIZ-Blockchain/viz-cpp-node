@@ -2,7 +2,7 @@
 
 DLT P2P 使用原始 TCP 上的二进制协议。每条消息以 4 字节小端头帧定，包含消息类型 ID，后跟通过 FC 反射序列化的长度前缀数据载荷。
 
-**头文件：** [libraries/network/include/graphene/network/dlt_p2p_messages.hpp](../../libraries/network/include/graphene/network/dlt_p2p_messages.hpp)
+**头文件：** [libraries/network/include/graphene/network/dlt_p2p_messages.hpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/libraries/network/include/graphene/network/dlt_p2p_messages.hpp)
 
 ---
 

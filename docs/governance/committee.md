@@ -114,3 +114,5 @@ Virtual operations fired during lifecycle:
 ---
 
 See also: [Committee Operations](../protocol/operations/committee.md), [Staking and DAO](./staking-and-dao.md), [Chain Properties](./chain-properties.md), [Virtual Operations](../protocol/virtual-operations.md).
+
+**HF16 limit:** at creation, `required_amount_max.amount <= floor(current_supply.amount / 100)` in raw units (1% of current total VIZ, rounded down). Before HF16 the limit is 500,000 VIZ. This is not 1% of the committee fund; existing requests are not repriced. See [HF16](../consensus/hf16.md).

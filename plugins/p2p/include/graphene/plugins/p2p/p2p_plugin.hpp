@@ -2,6 +2,8 @@
 
 #include <graphene/plugins/chain/plugin.hpp>
 
+#include <graphene/network/dlt_p2p_node.hpp>
+
 #include <appbase/application.hpp>
 
 #define P2P_PLUGIN_NAME "p2p"
@@ -41,7 +43,8 @@ namespace graphene {
 
                 void broadcast_block_post_validation(const graphene::protocol::block_id_type block_id,
                     const std::string &witness_account,
-                    const graphene::protocol::signature_type &validator_signature);
+                    const graphene::protocol::signature_type &validator_signature,
+                    uint32_t round);
 
                 // Fire-and-forget variant: posts the broadcast to the P2P
                 // thread without blocking the caller.  Safe to call from
@@ -49,7 +52,13 @@ namespace graphene {
                 // for slow peer I/O to complete.
                 void post_broadcast_block_post_validation(const graphene::protocol::block_id_type block_id,
                     const std::string &witness_account,
-                    const graphene::protocol::signature_type &validator_signature);
+                    const graphene::protocol::signature_type &validator_signature,
+                    uint32_t round);
+
+                // HF16 timeout vote (fire-and-forget on the P2P thread).
+                void post_broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                    const std::string &validator,
+                    const graphene::protocol::signature_type &signature);
 
                 void broadcast_transaction(const graphene::protocol::signed_transaction &tx);
 
@@ -84,8 +93,28 @@ namespace graphene {
 
                 /**
                  * Get the number of currently active P2P connections.
+                 *
+                 * NOT thread-safe: it walks the peer map owned by the p2p thread. Call it
+                 * from the p2p thread (or a call serialized onto it); from any other thread
+                 * use get_connections_count_sync().
                  */
                 uint32_t get_connections_count() const;
+
+                /**
+                 * Thread-safe connection count: posts the read onto the p2p thread and waits.
+                 * Returns 0 when the p2p node is not up yet. Never call it from the p2p
+                 * thread itself — it would wait for itself.
+                 */
+                uint32_t get_connections_count_sync() const;
+
+                /**
+                 * Operator controls, serialized onto the P2P thread (the peer maps live there).
+                 * See dlt_p2p_node for semantics; these are the entry points used by node_admin.
+                 */
+                void add_peer_sync(const fc::ip::endpoint &ep, bool trusted);
+                uint32_t clear_banned_peers_sync();
+                graphene::network::dlt_peer_report get_peer_report_sync() const;
+
                 bool is_isolated_peers() const;
 
                 /**
@@ -102,6 +131,15 @@ namespace graphene {
                  * to prevent concurrent database modifications.
                  */
                 void pause_block_processing();
+
+                /**
+                 * Pause block processing from a NON-p2p thread. The flag is owned by
+                 * the p2p thread, so the call is posted there and the caller waits.
+                 * Must not be called from the p2p thread itself (async().wait() there
+                 * would deadlock); code already on the p2p thread calls
+                 * pause_block_processing() directly.
+                 */
+                void pause_block_processing_sync();
 
                 /**
                  * Resume block processing after a pause.

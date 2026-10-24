@@ -2,6 +2,7 @@ set(CURRENT_TARGET webserver_plugin)
 
 list(APPEND CURRENT_TARGET_HEADERS
      include/graphene/plugins/webserver/webserver_plugin.hpp
+     include/graphene/plugins/webserver/ip_counter_cache.hpp
      )
 
 list(APPEND CURRENT_TARGET_SOURCES

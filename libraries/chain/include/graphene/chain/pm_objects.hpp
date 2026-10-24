@@ -95,6 +95,13 @@ namespace graphene { namespace chain {
             // guaranteed zero-initialized — the generic fc::array<uint32_t> ctor leaves data
             // indeterminate, which would be non-deterministic. p50/p95 are derived on read in the API.
             fc::array<share_type, 8> resolution_time_hist;
+
+            // HF16: monotone total of no-contest penalties charged to this oracle — incremented in the
+            // same modify() that grows total_insurance_slashed, so the no-contest class has exact
+            // attribution without a virtual operation. Forward-accumulating from activation; rows
+            // settled before HF16 are NOT backfilled (the aggregate delta is the only record, and
+            // subtracting it now would be a guess). Display/attribution only — never gates consensus.
+            share_type        no_contest_slashed_total;
         };
 
         struct by_owner;
@@ -199,6 +206,17 @@ namespace graphene { namespace chain {
             // no-reveal penalty, refunded 80% otherwise). GC never sees status-0 rows by construction
             // (retention strictly exceeds the worst-case reveal deadline), so no GC adjustment needed.
             uint32_t          open_commits = 0;
+            // HF16 (no-contest fee freeze): the nominal penalty fixed in pm_no_contest_evaluator at
+            // the moment the oracle announces the void, from the THEN-current median chain_properties_pm.
+            // settle_market(win < 0) charges exactly this instead of re-reading the median, so a
+            // parameter vote inside the pm_dispute_grace_sec window can no longer change the price
+            // retroactively. The flag is separate from the amount on purpose: a frozen fee of 0
+            // (penalty percent voted to 0) must not fall back to the median and pick up a later vote;
+            // 0-amount and never-frozen are different states. `false` = row announced before HF16 —
+            // settlement keeps the legacy median computation for it (no seed pass needed; see 16.hf).
+            // Not display-only: consensus reads both at settlement.
+            share_type        no_contest_fee;
+            bool              no_contest_fee_frozen = false;
         };
 
         struct by_creator;
@@ -931,7 +949,7 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
     (avg_resolution_time)(penalty_stamps)(bans_received)(last_penalty_stamp_time)
     (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by)(active_markets)
     (markets_in_dispute_window)(disputes_awaiting_response)(disputes_awaiting_decision)
-    (resolved_late_count)(resolution_time_hist))
+    (resolved_late_count)(resolution_time_hist)(no_contest_slashed_total))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),
@@ -941,7 +959,7 @@ FC_REFLECT((graphene::chain::pm_market_object),
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)
     (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(decision_url)(decision_reason)
-    (deferred_claim_count)(open_commits))
+    (deferred_claim_count)(open_commits)(no_contest_fee)(no_contest_fee_frozen))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_market_object, graphene::chain::pm_market_index)
 
 FC_REFLECT((graphene::chain::pm_outcome_object),

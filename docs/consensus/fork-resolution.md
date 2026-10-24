@@ -1,5 +1,8 @@
 # Fork Resolution
 
+> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+
+
 This page covers how VIZ Ledger detects, selects, and resolves competing forks — from the basic fork database to the HF12 vote-weighted collision resolver.
 
 ---

@@ -99,17 +99,42 @@ namespace graphene { namespace chain {
         FC_ASSERT( _db.has_hardfork(CHAIN_HARDFORK_4), "versioned_chain_properties_update_evaluator not enabled until HF 4" );
         _db.get_account(o.owner); // verify owner exists
 
+        // #6737: protocol validate() allows up to 3 years of 1 s blocks; until HF16 the old
+        // one-year-of-3-s-blocks bound stays consensus (the stored props are checked after the
+        // visit, so a rejected op leaves nothing behind - the whole op is rolled back).
+        const auto check_year_bound = [&](const chain_properties& p) {
+            const bool hf16 = _db.has_hardfork(CHAIN_HARDFORK_16);
+            const uint64_t reveal_blocks = hf16
+                ? uint64_t(p.pm_batch_epoch_blocks) + p.pm_reveal_window_blocks
+                : uint64_t(uint32_t(p.pm_batch_epoch_blocks + p.pm_reveal_window_blocks));
+            FC_ASSERT(p.pm_closed_market_retention_sec > reveal_blocks * _db.block_interval(),
+                      "retention must exceed the live worst-case commit reveal deadline");
+            if (_db.has_hardfork(CHAIN_HARDFORK_16)) {
+                FC_ASSERT(p.distribution_epoch_length >=
+                          CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * (CHAIN_BLOCK_INTERVAL / _db.block_interval()),
+                          "distribution_epoch_length must preserve the minimum epoch duration after HF16");
+                return;
+            }
+            FC_ASSERT(p.inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR,
+                "inflation_recalc_period must not exceed one year in blocks before HF16");
+            FC_ASSERT(p.distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR),
+                "distribution_epoch_length must not exceed one year in blocks before HF16");
+        };
+
         const auto &idx = _db.get_index<validator_index>().indices().get<by_name>();
         auto itr = idx.find(o.owner);
+        // Validate a detached candidate. A throwing multi_index modifier may erase
+        // the live object before transaction undo can restore it.
+        chain_properties candidate = itr != idx.end() ? itr->props : chain_properties();
+        o.props.visit(chain_properties_update(_db, candidate));
+        check_year_bound(candidate);
         if (itr != idx.end()) {
-            _db.modify(*itr, [&](validator_object& w) {
-                o.props.visit(chain_properties_update(_db, w.props));
-            });
+            _db.modify(*itr, [&](validator_object& w) { w.props = candidate; });
         } else {
             _db.create<validator_object>([&](validator_object& w) {
                 w.owner = o.owner;
                 w.created = _db.head_block_time();
-                o.props.visit(chain_properties_update(_db, w.props));
+                w.props = candidate;
             });
         }
     }

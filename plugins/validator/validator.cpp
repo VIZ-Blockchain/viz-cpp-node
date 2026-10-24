@@ -1,4 +1,5 @@
 
+#include <graphene/protocol/block_vote.hpp>
 #include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
 
@@ -19,6 +20,9 @@
 // included directly now.
 #include <boost/asio/deadline_timer.hpp>
 
+#include <cstdio>
+#include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -68,6 +72,8 @@ namespace graphene {
             namespace system = boost::system;
 
             struct validator_plugin::impl final {
+                uint32_t skip_diag_head = 0;
+                const char *skip_diag_why = nullptr;
                 impl():
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
@@ -153,7 +159,185 @@ namespace graphene {
                 std::map<public_key_type, fc::ecc::private_key> _private_keys;
                 std::set<string> _validators;
 
+                // Signing key of each configured validator as committed at the head
+                // block. chainbase's session-visible validator object may already
+                // contain a pending validator_update that changes the key, but a block
+                // header is validated against the pre-block (committed) key
+                // (validate_block_header). Production must therefore sign with the
+                // committed key, not with the session-visible one.
+                //
+                // Seeded at startup and refreshed from applied block CONTENTS: an
+                // applied_block callback runs after push_block() has re-applied the
+                // pending pool, so reading the DB there would see uncommitted state.
+                std::map<string, public_key_type> _committed_signing_keys;
+                uint64_t _committed_keys_block_num = 0;
+                std::mutex _committed_keys_mutex;
+
+                /** Key the next block header must be signed with (the key committed
+                 *  at head), given the session-visible value from the validator index. */
+                public_key_type effective_signing_key(const string &name, const public_key_type &visible) {
+                    if (visible == public_key_type())
+                        return visible; // blanked / disabled: production is skipped anyway
+                    public_key_type committed;
+                    uint64_t snapshot_block = 0;
+                    {
+                        std::lock_guard<std::mutex> lk(_committed_keys_mutex);
+                        auto it = _committed_signing_keys.find(name);
+                        if (it == _committed_signing_keys.end() || it->second == visible)
+                            return visible;
+                        committed = it->second;
+                        snapshot_block = _committed_keys_block_num;
+                    }
+                    // DB access outside the lock: a writer must never wait on it.
+                    if (snapshot_block != database().head_block_num())
+                        return visible; // snapshot behind head: trust the chain
+                    // Snapshot is for head and differs from the session-visible key:
+                    // the difference comes from a pending validator_update. Keep
+                    // producing with the committed key; the update lands in the next
+                    // block and takes effect for the one after it.
+                    return committed;
+                }
+
+                /** Record the signing keys committed by an applied block. */
+                void update_committed_signing_keys(const graphene::chain::signed_block &block) {
+                    std::lock_guard<std::mutex> lk(_committed_keys_mutex);
+                    _committed_keys_block_num = block.block_num();
+                    for (const auto &trx : block.transactions) {
+                        for (const auto &op : trx.operations) {
+                            if (op.which() != operation::tag<validator_update_operation>::value)
+                                continue;
+                            const auto &up = op.get<validator_update_operation>();
+                            auto it = _committed_signing_keys.find(up.owner);
+                            if (it != _committed_signing_keys.end())
+                                it->second = up.block_signing_key;
+                        }
+                    }
+                }
+
                 fc::time_point last_block_post_validation_time;
+
+                // ── one post-validation signature per height ──────────────────────────────
+                // Block-vote safety rule (Jolteon): a validator votes for a block of round r
+                // (round = slot of the block) only when r is above the highest round it has
+                // voted in. One vote per round follows, and so does "never vote for an older
+                // round after a newer one" -- the property that makes two conflicting QCs
+                // need an equivocating quorum. Unlike the earlier one-signature-per-height
+                // guard it lets a validator vote for a different block at the same height in
+                // a LATER round, which is what lets a split vote resolve instead of stalling.
+                // Persisted, so a restart does not forget the round. Re-signing the SAME
+                // block of the highest round (the tick re-broadcasts every 250 ms) is allowed.
+                struct vote_record { uint32_t round = 0; uint32_t num = 0; block_id_type id; };
+                std::string block_vote_state_path_;
+                std::map<std::string, vote_record> block_vote_state_;
+                // Keyed by block id, not height: a livelock rebuilds one height over and over,
+                // and a height key logged only the first variant (stand 22.10, #86 x70 silent).
+                std::set<std::pair<std::string, block_id_type>> block_vote_refused_logged_;
+                // HF16 diagnostics: why our validator casts no vote for head (once per head).
+                std::set<std::pair<std::string, block_id_type>> head_vote_diag_logged_;
+
+                void load_block_vote_state() {
+                    if (block_vote_state_path_.empty()) return;
+                    std::ifstream in(block_vote_state_path_);
+                    std::string name, id;
+                    uint32_t round = 0, num = 0;
+                    size_t n = 0;
+                    // Format: "<validator> <round> <block_num> <block_id>" per line.
+                    while (in >> name >> round >> num >> id) {
+                        try {
+                            block_vote_state_[name] = vote_record{round, num, block_id_type(id)};
+                            ++n;
+                        } catch (...) {
+                            wlog("Skipping malformed block-vote record for ${w} at round ${r}", ("w", name)("r", round));
+                        }
+                    }
+                    if (n) ilog("Restored ${n} block-vote round record(s) from ${p}", ("n", n)("p", block_vote_state_path_));
+                }
+
+                bool save_block_vote_state() {
+                    if (block_vote_state_path_.empty()) return true;
+                    const std::string tmp = block_vote_state_path_ + ".tmp";
+                    {
+                        std::ofstream out(tmp, std::ios::trunc);
+                        if (!out) {
+                            elog("Cannot write ${p}; not voting until it is writable", ("p", block_vote_state_path_));
+                            return false;
+                        }
+                        for (const auto &v : block_vote_state_)
+                            out << v.first << ' ' << v.second.round << ' ' << v.second.num << ' ' << v.second.id.str() << '\n';
+                        out.flush();
+                        if (!out) {
+                            elog("Failed writing ${p}", ("p", block_vote_state_path_));
+                            std::remove(tmp.c_str());
+                            return false;
+                        }
+                    }
+                    if (std::rename(tmp.c_str(), block_vote_state_path_.c_str()) != 0) {
+                        elog("Failed replacing ${p}", ("p", block_vote_state_path_));
+                        std::remove(tmp.c_str());
+                        return false;
+                    }
+                    return true;
+                }
+
+                // True when `validator` may vote for `id` (height `num`) in `round`. The
+                // record is written BEFORE the signature leaves: a vote whose round could
+                // not be persisted is not sent, or a restart could vote that round again.
+                bool may_vote(const std::string &validator, uint32_t round, uint32_t num,
+                              const block_id_type &id, uint32_t lib) {
+                    if (block_vote_refused_logged_.size() > 4096) block_vote_refused_logged_.clear();
+                    auto it = block_vote_state_.find(validator);
+                    if (it != block_vote_state_.end()) {
+                        const auto &last = it->second;
+                        if (round == last.round && id == last.id) return true;
+                        if (round <= last.round) {
+                            // Older rounds are routinely skipped (the list carries recent
+                            // blocks), so log only blocks above LIB+1, once per block id.
+                            // last.id zero = the round was timed out, not voted.
+                            if (num > lib + 1 && block_vote_refused_logged_.insert({validator, id}).second)
+                                wlog("Not voting for ${id} at #${n} round ${r} for ${w}: last ${what} round ${lr} (${old})",
+                                     ("id", id)("n", num)("r", round)("w", validator)
+                                     ("what", last.id == block_id_type() ? "timed-out" : "voted")("lr", last.round)("old", last.id));
+                            return false;
+                        }
+                    }
+                    const auto prev = it != block_vote_state_.end() ? fc::optional<vote_record>(it->second) : fc::optional<vote_record>();
+                    block_vote_state_[validator] = vote_record{round, num, id};
+                    if (!save_block_vote_state()) {
+                        if (prev) block_vote_state_[validator] = *prev; else block_vote_state_.erase(validator);
+                        return false;
+                    }
+                    return true;
+                }
+
+                // HF16 timeout: `validator` gives up on `round` (head without a QC).
+                // Jolteon safety: after timing out round r we never vote for a block of
+                // round r, so the round is recorded (block id zero) BEFORE the timeout
+                // leaves, same as a vote. Having already voted for the block of round r
+                // does not forbid the timeout. False = do not send.
+                bool may_timeout(const std::string &validator, uint32_t round) {
+                    auto sent = timeout_sent_.find(validator);
+                    if (sent != timeout_sent_.end() && sent->second >= round) return false;   // once per round
+                    auto it = block_vote_state_.find(validator);
+                    if (it != block_vote_state_.end() && it->second.round > round) return false; // moved on
+                    if (it == block_vote_state_.end() || it->second.round < round) {
+                        const auto prev = it != block_vote_state_.end() ? fc::optional<vote_record>(it->second) : fc::optional<vote_record>();
+                        block_vote_state_[validator] = vote_record{round, 0, block_id_type()};
+                        if (!save_block_vote_state()) {
+                            if (prev) block_vote_state_[validator] = *prev; else block_vote_state_.erase(validator);
+                            return false;
+                        }
+                    }
+                    timeout_sent_[validator] = round;
+                    return true;
+                }
+                std::map<std::string, uint32_t> timeout_sent_;   // in memory: a restart may resend, which is harmless
+                // Own block votes not yet in a QC are re-gossiped with backoff (1, 2, 4,
+                // capped at 8 slots; at most VOTE_RESEND_MAX times). A vote lost on the
+                // way (peer dropped, queue lost on reconnect) otherwise never came back:
+                // with 15 live of 21 every vote is needed, so one loss froze the height.
+                struct vote_resend { uint32_t sent = 0; fc::time_point next; };
+                static constexpr uint32_t VOTE_RESEND_MAX = 8;
+                std::map<std::pair<std::string, uint32_t>, vote_resend> vote_resend_;
 
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
@@ -290,6 +474,9 @@ namespace graphene {
 
                     pimpl->total_hashes_.store(0, std::memory_order_relaxed);
                     pimpl->_options = &options;
+                    pimpl->block_vote_state_path_ =
+                        (appbase::app().data_dir() / "block-vote-round.txt").string();
+                    pimpl->load_block_vote_state();
                     LOAD_VALUE_SET(options, "validator", pimpl->_validators, string)
                     if (options.count("witness")) {
                         // Deprecated: --witness / config 'witness' is kept for backward compatibility.
@@ -388,6 +575,19 @@ namespace graphene {
                         ilog("  configured validator: ${w}", ("w", w));
                     }
 
+                    // Seed the committed signing-key snapshot from head state. At
+                    // startup there is no pending transaction session yet, so the
+                    // index read is committed state.
+                    for (const auto& w : pimpl->_validators) {
+                        try {
+                            pimpl->_committed_signing_keys[w] = d.get_validator(w).signing_key;
+                        } catch (const fc::exception& e) {
+                            wlog("Validator ${w} is not on chain yet; its committed signing key "
+                                 "will be learned from applied blocks", ("w", w));
+                        }
+                    }
+                    pimpl->_committed_keys_block_num = d.head_block_num();
+
                     if (!pimpl->_validators.empty()) {
                         ilog("Launching block production for ${n} validators.", ("n", pimpl->_validators.size()));
                         pimpl->p2p().set_block_production(true);
@@ -464,7 +664,8 @@ namespace graphene {
                             continue;
                         }
 
-                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        graphene::protocol::public_key_type scheduled_key =
+                                pimpl->effective_signing_key(scheduled_validator, itr->signing_key);
                         if (scheduled_key == graphene::protocol::public_key_type()) {
                             continue; // Disabled validator (zero key)
                         }
@@ -510,7 +711,8 @@ namespace graphene {
                             continue;
                         }
 
-                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        graphene::protocol::public_key_type scheduled_key =
+                                pimpl->effective_signing_key(scheduled_validator, itr->signing_key);
                         if (scheduled_key == graphene::protocol::public_key_type()) {
                             continue; // Disabled validator (zero key)
                         }
@@ -605,6 +807,10 @@ namespace graphene {
                     uint64_t block_num = block.block_num();
                     uint64_t prev_num = _last_applied_block_num;
                     _last_applied_block_num = block_num;
+
+                    // Keep the committed signing-key snapshot current from block
+                    // contents (a DB read here would also see re-applied pending txs).
+                    update_committed_signing_keys(block);
 
                     // === SLOT-HIJACK DETECTION (runs for every block) ===
                     // In DLT emergency mode, the emergency master may blank our validator's
@@ -1136,8 +1342,8 @@ namespace graphene {
                     int64_t time_since_lag_ms = (fc::time_point::now() - fc::time_point(_last_lag_slot_time)).count() / 1000;
                     // If less than one full slot interval has passed since the lag, skip ahead
                     // to avoid rechecking the same missed slot.
-                    if (time_since_lag_ms < (int64_t)CHAIN_BLOCK_INTERVAL * 1000) {
-                        int64_t skip_ms = (CHAIN_BLOCK_INTERVAL * 1000) - time_since_lag_ms;
+                    if (time_since_lag_ms < (int64_t)database().block_interval() * 1000) {
+                        int64_t skip_ms = (database().block_interval() * 1000) - time_since_lag_ms;
                         if (skip_ms > 0) {
                             if (database()._debug_block_production) {
                                 ilog("DEBUG_CRASH: skipping ${ms}ms to avoid rechecking lagged slot", ("ms", skip_ms));
@@ -1574,19 +1780,149 @@ namespace graphene {
                                 graphene::protocol::private_key_type validator_priv_key = private_key_itr->second;
                                 //we have block post validations for this validator
                                 //check if we have a block
-                                for(uint8_t i = 0; i < block_post_validations.size(); i++) {
-                                    if(0 != block_post_validations[i].block_num){
-                                        if(block_post_validations[i].block_id != block_id_type()){
-                                            graphene::protocol::digest_type::encoder enc;
-                                            fc::raw::pack(enc, db.get_chain_id().str().append(block_post_validations[i].block_id.str()));
-                                            //sign the enc by validator_priv_key
-                                            graphene::protocol::signature_type bpv_signature = validator_priv_key.sign_compact(enc.result());
-                                            //ilog("Witness ${w} signed block post validation #${n} ${b} with signature ${s}", ("w", validator_account)("n", block_post_validations[i].block_num)("b", block_post_validations[i].block_id)("s", bpv_signature));
-                                            p2p().post_broadcast_block_post_validation(block_post_validations[i].block_id, validator_account, bpv_signature);
-                                        }
+                                // Round = slot of the block. Vote in ascending round order:
+                                // the safety rule refuses any round at or below the last one.
+                                struct candidate { uint32_t round; uint32_t num; block_id_type id; };
+                                std::vector<candidate> candidates;
+                                for (const auto &bpv : block_post_validations) {
+                                    if (bpv.block_num == 0 || bpv.block_id == block_id_type()) continue;
+                                    const auto blk = db.fetch_block_by_id(bpv.block_id);
+                                    if (!blk) continue;          // not applied here: nothing to vote for yet
+                                    candidates.push_back({db.round_of(blk->timestamp),
+                                                          bpv.block_num, bpv.block_id});
+                                }
+                                if (db.has_hardfork(CHAIN_HARDFORK_16)) {
+                                    const uint32_t hn = db.head_block_num();
+                                    bool listed = false, cand = false;
+                                    for (const auto &bpv : block_post_validations) if (bpv.block_num == hn) listed = true;
+                                    for (const auto &c : candidates) if (c.num == hn) cand = true;
+                                    // The producer never votes its own block: not a finding.
+                                    const bool own = db.get_dynamic_global_properties().current_validator == validator_account;
+                                    if (!cand && !own && head_vote_diag_logged_.insert({std::string(validator_account), db.head_block_id()}).second) {
+                                        if (head_vote_diag_logged_.size() > 4096) head_vote_diag_logged_.clear();
+                                        wlog("HF16 no vote candidate for head #${n} by ${w}: in confirmation list ${l} (${k} entries)",
+                                             ("n", hn)("w", validator_account)("l", listed)("k", block_post_validations.size()));
                                     }
                                 }
+                                if (!candidates.empty()) {
+                                    const uint32_t min_round = std::min_element(candidates.begin(), candidates.end(),
+                                            [](const candidate &a, const candidate &b) { return a.round < b.round; })->round;
+                                    for (auto it = vote_resend_.begin(); it != vote_resend_.end(); )
+                                        if (it->first.first == std::string(validator_account) && it->first.second < min_round)
+                                            it = vote_resend_.erase(it);
+                                        else ++it;
+                                }
+                                std::sort(candidates.begin(), candidates.end(),
+                                          [](const candidate &a, const candidate &b) { return a.round < b.round; });
+                                const uint32_t lib = db.get_dynamic_global_properties().last_irreversible_block_num;
+                                for (const auto &c : candidates) {
+                                    // Jolteon: vote for round r only on QC(r-1) or TC(r-1), so a
+                                    // block that jumped over rounds without a TC gets no QC. A block
+                                    // without a parent QC (HF16 start, after emergency) is exempt.
+                                    if (db.has_hardfork(CHAIN_HARDFORK_16)) {
+                                        const auto blk = db.fetch_block_by_id(c.id);
+                                        uint32_t qc_round = 0, tc_round = 0;
+                                        bool has_qc = false;
+                                        for (const auto &e : blk->extensions) {
+                                            if (e.which() == 3) { has_qc = true; qc_round = e.get<graphene::protocol::block_qc_certificate>().round; }
+                                            else if (e.which() == 4) tc_round = e.get<graphene::protocol::block_timeout_certificate>().round;
+                                        }
+                                        // Late-QC fallback (grandparent QC, consecutive rounds) is
+                                        // valid too, unless we hold a QC for a SIBLING of the parent
+                                        // (another block at its height): voting past a certified
+                                        // block we know of is what Jolteon's rule forbids.
+                                        bool late_ok = false;
+                                        if (has_qc && qc_round + 2 == c.round) {
+                                            const auto held = db.get_block_qc(c.num - 1);
+                                            late_ok = !held || held->block_id == blk->previous;
+                                        }
+                                        if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round && !late_ok) {
+                                            wlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
+                                                 ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
+                                            continue;
+                                        }
+                                    }
+                                    if (!may_vote(validator_account, c.round, c.num, c.id, lib)) continue;
+                                    auto &rs = vote_resend_[std::make_pair(std::string(validator_account), c.round)];
+                                    if (rs.sent > 0) {
+                                        if (rs.sent > VOTE_RESEND_MAX || now_fine < rs.next) continue;
+                                        const auto held = db.get_block_qc(c.num);
+                                        if (held && held->block_id == c.id && held->round >= c.round) continue;
+                                        ilog("Re-sending vote of ${w} for #${n} round ${r} (no QC yet, attempt ${k})",
+                                             ("w", validator_account)("n", c.num)("r", c.round)("k", rs.sent));
+                                    }
+                                    graphene::protocol::signature_type vote_signature = validator_priv_key.sign_compact(
+                                            graphene::protocol::block_vote_digest(db.get_chain_id(), c.num, c.id, c.round));
+                                    p2p().post_broadcast_block_post_validation(c.id, validator_account, vote_signature, c.round);
+                                    const uint32_t backoff = std::min<uint32_t>(1u << std::min<uint32_t>(rs.sent, 3), 8);
+                                    rs.next = now_fine + fc::seconds(int64_t(db.block_interval()) * backoff);
+                                    ++rs.sent;
+                                }
                             }
+                        }
+                    }
+                }
+
+                // HF16 timeout votes. The head's round is r; the producer of r+1 needs
+                // QC(head). If the whole slot r+1 has passed and that QC still is not
+                // here, each of our scheduled validators times out round r, naming the
+                // round of the highest QC it holds (the one head carries). A quorum of
+                // timeouts forms TC(r), which lets the next producer skip the QC-less head.
+                // Sent once per round; a lost timeout is not resent (gossip relays it).
+                if (!emergency_active && db.has_hardfork(CHAIN_HARDFORK_16) && db.head_block_num() > 0) {
+                    const uint32_t head_num = db.head_block_num();
+                    const uint32_t head_round = db.round_of(db.head_block_time());
+                    const uint32_t now_round = db.round_of(now);
+                    const auto head_qc = db.get_block_qc(head_num);
+                    const bool certified = head_qc && head_qc->block_id == db.head_block_id();
+                    // Time out the last fully passed round t = now-1 once no block of a
+                    // later round than head has come: head certified -> the slot after it
+                    // stayed empty; head QC-less -> head is being given up on too.
+                    const auto head_block = db.fetch_block_by_number(head_num);
+                    // Highest QC we hold: head's own if certified, else the QC head carries.
+                    // Not block_cert_round(): it also counts a TC, and a TC round reported
+                    // as a QC round made every timeout vote claim a QC that never existed,
+                    // so the TC skip of that head was refused forever (21-validator stand,
+                    // netem 300 ms: head #183 with TC 691, all timeouts "high QC 691").
+                    uint32_t carried_qc_round = 0;
+                    if (head_block)
+                        for (const auto &e : head_block->extensions)
+                            if (e.which() == 3)
+                                carried_qc_round = e.get<graphene::protocol::block_qc_certificate>().round;
+                    // Pacemaker backoff (Q#3123=A). A QC-less head whose QC lags it by g
+                    // rounds has been rebuilt after TCs in a row: wait w = 2^floor(log2 g)
+                    // rounds (1, 2, 4, capped at 8) before giving up on it, so votes slower
+                    // than a slot still reach a quorum. g comes from the head itself, so
+                    // every validator on it picks the same w and the timeouts meet in one
+                    // round. A certified head, or a QC-less one right after its QC, keeps
+                    // w = 1. Without it, at 300 ms per hop each rebuilt head was given up
+                    // on before its votes arrived (21-validator stand: #179 rebuilt 444
+                    // times, TC every round, height frozen).
+                    uint32_t wait_rounds = 1;
+                    if (!certified && carried_qc_round > 0 && head_round > carried_qc_round + 1) {
+                        const uint32_t g = head_round - carried_qc_round;
+                        while (wait_rounds * 2 <= g && wait_rounds < 8) wait_rounds *= 2;
+                    }
+                    if (now_round >= head_round + 1 + wait_rounds) {
+                        const uint32_t t = now_round - 1;
+                        const uint32_t high_qc_round = certified ? head_qc->round : carried_qc_round;
+                        const auto &wso = db.get_validator_schedule_object();
+                        const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
+                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                            const std::string v = wso.current_shuffled_validators[i];
+                            if (!_validators.count(v)) continue;
+                            auto w_itr = by_name.find(v);
+                            if (w_itr == by_name.end() || w_itr->signing_key == graphene::protocol::public_key_type()) continue;
+                            auto key_itr = _private_keys.find(w_itr->signing_key);
+                            if (key_itr == _private_keys.end()) continue;
+                            if (high_qc_round >= t) continue;   // malformed head; push would refuse it
+                            if (!may_timeout(v, t)) continue;
+                            const auto sig = key_itr->second.sign_compact(
+                                    graphene::protocol::block_timeout_digest(db.get_chain_id(), t, high_qc_round));
+                            ilog("Timeout: ${w} gives up on round ${r} (head #${h} round ${hr}, ${c}; high QC round ${q})",
+                                 ("w", v)("r", t)("h", head_num)("hr", head_round)
+                                 ("c", certified ? "certified" : "no QC")("q", high_qc_round));
+                            p2p().post_broadcast_timeout_vote(t, high_qc_round, v, sig);
                         }
                     }
                 }
@@ -1871,7 +2207,11 @@ namespace graphene {
                 if (db._debug_block_production) ilog("DEBUG_CRASH: validator found=${f}", ("f", itr != validator_by_name.end()));
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
-                graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                // The header of the next block is validated against the key committed
+                // at head; a pending validator_update may already be visible in this
+                // index, so do not take the session-visible key at face value.
+                graphene::protocol::public_key_type scheduled_key =
+                        effective_signing_key(scheduled_validator, itr->signing_key);
                 if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
 
                 // Skip production if the scheduled slot time is at or before
@@ -1967,7 +2307,13 @@ namespace graphene {
                 // Two-level fork collision resolution:
                 //   Level 1: Vote-weighted comparison when both forks are in fork_db
                 //   Level 2: Stuck-head timeout after one full validator round (21 blocks = 63s)
-                {
+                // Not after HF16 (outside emergency): competing blocks are settled by QC/TC fork
+                // choice and a double producer is punished by equivocation evidence. Deferring
+                // here let ONE double-signing validator halt the chain: its twin at head+1 made
+                // every producer defer, and the counter only grows on a node's own slot, so the
+                // timeout needed 21 own slots (~7 min at 1 s), after which gap fill brought the
+                // twin back (21-validator stand, qc-4 doubling viz2+viz3: head stuck at #81).
+                if (emergency_active || !db.has_hardfork(CHAIN_HARDFORK_16)) {
                     auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1);
                     if (existing_blocks.size() > 0) {
                         bool has_competing_block = false;
@@ -2089,6 +2435,127 @@ namespace graphene {
                     }
                 } catch (...) {}
 
+                // HF16: a handoff block needs the parent's QC. Without it we skip
+                // the slot rather than fork: votes keep arriving, and the next
+                // producer (or we, next slot) builds once the quorum is there.
+                // If a TC for head's round is here instead, head was given up on:
+                // drop it and build on its (certified) parent with the TC (Jolteon).
+                // Validators vote for a block of round r only if it carries QC(r-1) or
+                // TC(r-1); so after any empty or QC-less round we attach TC(r-1).
+                fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
+                bool waiting_for_qc = false;
+                bool rebuild_on_anchor = false;
+                // Late-QC head: the block to rebuild on is the one its QC certifies.
+                fc::optional<graphene::protocol::block_id_type> rebuild_on;
+                const uint32_t own_round = db.round_of(scheduled_time);
+                db.with_weak_read_lock([&]() {
+                    if (!db.block_needs_parent_qc(scheduled_validator)) return;
+                    auto tc = db.get_timeout_cert(own_round - 1);
+                    const auto parent_cert = db.parent_qc_for_next_block(scheduled_validator);
+                    if (parent_cert.valid()) {
+                        // Head certified. A gap after it needs TC(r-1) for our block to get votes.
+                        if (parent_cert->round + 1 >= own_round || !tc) return;
+                        for (const auto &tv : tc->votes)
+                            if (tv.second.high_qc_round > parent_cert->round) return;
+                        skip_tc = tc;
+                        return;
+                    }
+                    waiting_for_qc = true;
+                    // Diagnostics (stand, netem 300 ms: TCs formed for 63 rounds, head never
+                    // dropped): say once per head why the TC skip is not taken.
+                    // Keyed by head AND reason: keyed by head alone, the first refusal
+                    // ("no TC yet") hid the real one for the rest of the stall.
+                    const auto skip_refused = [&](const char *why) {
+                        if (skip_diag_head == db.head_block_num() && skip_diag_why == why) return;
+                        skip_diag_head = db.head_block_num();
+                        skip_diag_why = why;
+                        wlog("TC skip of QC-less head #${h} refused for slot round ${r}: ${why}",
+                             ("h", db.head_block_num())("r", own_round)("why", why));
+                    };
+                    if (!tc) { skip_refused("no TC for round r-1 yet"); return; }
+                    const auto head = db.fetch_block_by_number(db.head_block_num());
+                    if (!head) return;
+                    const graphene::protocol::block_qc_certificate *parent_qc = nullptr;
+                    for (const auto &e : head->extensions)
+                        if (e.which() == 3) parent_qc = &e.get<graphene::protocol::block_qc_certificate>();
+                    // Head's parent is the HF16 activation block (the round anchor): head is
+                    // exempt from a parent QC and so is its replacement. If head's round timed
+                    // out (validators sent timeout votes before head arrived, so they will
+                    // never vote for it), drop head and rebuild on the anchor with no TC.
+                    // Without this the chain stalls for good right after activation
+                    // (21-validator stand, 22.10: TC 15/15 every slot, head #67 forever).
+                    if (!parent_qc) {
+                        const auto &dgp = db.get_dynamic_global_properties();
+                        const auto parent = db.fetch_block_by_id(head->previous);
+                        if (parent && dgp.round_anchor_time != fc::time_point_sec() &&
+                            parent->timestamp <= dgp.round_anchor_time) {
+                            skip_tc = tc;
+                            rebuild_on_anchor = true;
+                        }
+                        return;
+                    }
+                    // The parent must be certified, and nobody who timed out may
+                    // have seen a QC above it (else our block would be invalid).
+                    for (const auto &tv : tc->votes)
+                        if (tv.second.high_qc_round > parent_qc->round) { skip_refused("a timeout vote saw a QC above head's QC"); return; }
+                    // Late-QC head (it carries its grandparent's QC because its parent's
+                    // never formed): nothing between the certified block and head can get
+                    // a QC any more, so after the TC the proposal extends the certified
+                    // block itself, as Jolteon prescribes (extend high QC). Without this a
+                    // late-QC head that also misses its own QC stalls the chain for good
+                    // (21-validator stand, netem 300 ms: head #184 carried QC of #182).
+                    if (parent_qc->block_id != head->previous) {
+                        const auto certified = db.fetch_block_by_id(parent_qc->block_id);
+                        if (!certified || certified->block_num() < db.get_dynamic_global_properties().last_irreversible_block_num ||
+                            db.head_block_num() - certified->block_num() > 2) {
+                            skip_refused("head's QC certifies a block that cannot be rebuilt on");
+                            return;
+                        }
+                        rebuild_on = parent_qc->block_id;
+                    }
+                    skip_tc = tc;
+                });
+                if (waiting_for_qc && skip_tc) {
+                    const auto skipped = db.head_block_id();
+                    ilog("TC for round ${r}: dropping QC-less head #${h} ${id}, building slot ${s} as ${w} on its parent",
+                         ("r", skip_tc->round)("h", db.head_block_num())("id", skipped)("s", slot)("w", scheduled_validator));
+                    try {
+                        db.with_strong_write_lock([&]() {
+                            db.pop_block();
+                            // Late-QC head: also drop its uncertified parent (at most one more).
+                            if (rebuild_on && db.head_block_id() != *rebuild_on) db.pop_block();
+                            FC_ASSERT(!rebuild_on || db.head_block_id() == *rebuild_on,
+                                      "TC rebuild: head is not the certified block");
+                        });
+                    } catch (const fc::exception &e) {
+                        wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
+                        return block_validation_condition::not_time_yet;
+                    }
+                    // Our block now sits on the anchor: it needs no parent QC and may
+                    // carry no TC ("A TC goes only next to a parent QC").
+                    if (rebuild_on_anchor) skip_tc.reset();
+                    waiting_for_qc = false;
+                }
+                // Late-QC fallback. `now` is whole seconds with a +250 ms look-ahead, so the
+                // lag check above lets us produce until ~750 ms after the slot, on 250 ms
+                // ticks; the last one lands ~500 ms in. There, rather than lose the slot,
+                // carry the grandparent QC head already carries; finality slips one slot.
+                fc::optional<graphene::protocol::block_qc_certificate> late_qc;
+                if (waiting_for_qc && !skip_tc &&
+                    now_fine - fc::time_point(scheduled_time) >= fc::milliseconds(400)) {
+                    late_qc = db.with_weak_read_lock([&]() {
+                        return db.grandparent_qc_for_next_block(scheduled_validator, own_round);
+                    });
+                    if (late_qc)
+                        ilog("Late QC: head #${h} still uncertified at the end of slot ${s}; ${w} carries QC of #${g} instead",
+                             ("h", db.head_block_num())("s", slot)("w", scheduled_validator)("g", late_qc->block_num));
+                }
+                if (waiting_for_qc && !skip_tc && !late_qc) {
+                    ilog("Waiting for QC of head #${h} before producing slot ${s} as ${w}",
+                         ("h", db.head_block_num())("s", slot)("w", scheduled_validator));
+                    return block_validation_condition::not_time_yet;
+                }
+
                 if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_validator));
                 if (scheduled_validator == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     dlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",
@@ -2104,7 +2571,9 @@ namespace graphene {
                                 scheduled_time,
                                 scheduled_validator,
                                 private_key_itr->second,
-                                _production_skip_flags
+                                _production_skip_flags,
+                                skip_tc,
+                                late_qc
                         );
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_validator)("tx", block.transactions.size());
                         p2p().broadcast_block(block);

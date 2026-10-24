@@ -102,3 +102,5 @@
 ---
 
 参见：[数据类型](../data-types.md)、[操作概述](./overview.md)、[虚拟操作](../virtual-operations.md)、[委员会治理](../../governance/committee.md)。
+
+**HF16 上限：** 创建时 `required_amount_max.amount <= floor(current_supply.amount / 100)`，按最小单位向下取整，即当前 VIZ 总量的 1%。激活前上限为 500,000 VIZ。不是委员会资金的 1%，也不修改现有申请。参见 [HF16](../../consensus/hf16.md)。

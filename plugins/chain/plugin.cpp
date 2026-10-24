@@ -71,6 +71,7 @@ namespace chain {
         bool sync_start_logged = false; // guard to log sync start only once
 
         std::atomic<bool> currently_syncing{false}; // true while processing P2P sync blocks
+        std::mutex recovery_read_mutex;
         std::atomic<bool> recovery_in_progress{false}; // true while auto-recovery is running
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
@@ -331,6 +332,10 @@ namespace chain {
         return my->currently_syncing.load(std::memory_order_acquire);
     }
 
+    std::unique_lock<std::mutex> plugin::try_lock_recovery() const {
+        return std::unique_lock<std::mutex>(my->recovery_read_mutex, std::try_to_lock);
+    }
+
     bool plugin::is_recovering() const {
         return my->recovery_in_progress.load(std::memory_order_acquire);
     }
@@ -568,9 +573,11 @@ namespace chain {
         // state so head becomes 0, then come up on empty state.  This is the exact
         // recovery a manual `docker compose up -d --force-recreate` performs, minus
         // the operator.
+        bool resync_marker_seen = false;
         {
             auto force_resync_marker = my->shared_memory_dir / "force_resync";
             if (boost::filesystem::exists(force_resync_marker)) {
+                resync_marker_seen = true;
                 wlog("Detected force_resync marker (P2P wedge watchdog). Wiping state for a clean "
                      "re-bootstrap (network resync or fresh operator-supplied snapshot).");
                 std::cerr << "   force_resync marker found — wiping state for clean re-bootstrap.\n";
@@ -613,6 +620,37 @@ namespace chain {
                          ("e", _rm_ec.message()));
                 ilog("force_resync marker cleared; state wiped. Node will come up on empty state and "
                      "resync from the network (local snapshot auto-import disabled for this boot).");
+            }
+        }
+
+        // ========== force_replay marker (admin repair) ==========
+        // node_admin's Objects tab writes this marker and exits when an operator asks to
+        // rebuild state while keeping the block log: replay reindexes every block, which is
+        // far cheaper than a network resync and is enough whenever the block log itself is
+        // intact. The marker is removed before the work starts; a crash mid-replay leaves an
+        // empty state plus an intact block log, and the normal "revision != head" replay picks
+        // it up on the next boot.
+        {
+            auto force_replay_marker = my->shared_memory_dir / "force_replay";
+            if (boost::filesystem::exists(force_replay_marker)) {
+                boost::system::error_code _fr_ec;
+                if (resync_marker_seen) {
+                    // Both markers asked for a rebuild. The resync above has already wiped state
+                    // AND the block log; replaying an empty log would fail, so the resync wins
+                    // and the stale request is dropped rather than left to crash the next boot.
+                    boost::filesystem::remove(force_replay_marker, _fr_ec);
+                    wlog("force_replay ignored and removed: force_resync already wiped state and "
+                         "the block log in this same startup.");
+                } else {
+                    wlog("Detected force_replay marker (admin repair). Wiping state and replaying the block log.");
+                    std::cerr << "   force_replay marker found — rebuilding state from the block log.\n";
+                    my->force_replay = true;
+                    my->replay = true;
+                    boost::filesystem::remove(force_replay_marker, _fr_ec);
+                    if (_fr_ec)
+                        wlog("force_replay: failed to remove marker (${e}); may re-trigger next boot.",
+                             ("e", _fr_ec.message()));
+                }
             }
         }
 
@@ -1013,6 +1051,8 @@ namespace chain {
             return;
         }
 
+        std::unique_lock<std::mutex> readers(my->recovery_read_mutex);
+
         // Guard against infinite recovery loops: if the same block keeps
         // failing after recovery, the snapshot or block log may be corrupted.
         // Reset the counter after a cooldown period to allow eventual retry.
@@ -1132,6 +1172,111 @@ namespace chain {
             elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.what()));
             appbase::app().quit();
         }
+    }
+
+    bool plugin::restore_from_snapshot(const std::string& snapshot_path, std::string& error) {
+        bool expected = false;
+        if (!my->recovery_in_progress.compare_exchange_strong(expected, true)) {
+            error = "another recovery or restore is already in progress";
+            return false;
+        }
+        struct flag_reset {
+            std::atomic<bool>& flag;
+            ~flag_reset() { flag.store(false, std::memory_order_release); }
+        } reset_guard{my->recovery_in_progress};
+        std::unique_lock<std::mutex> readers(my->recovery_read_mutex);
+
+        if (snapshot_path.empty()) {
+            error = "empty snapshot path";
+            return false;
+        }
+        if (!snapshot_load_callback) {
+            error = "snapshot plugin is not loaded (add 'plugin = snapshot' to config.ini)";
+            return false;
+        }
+        if (!bfs::exists(snapshot_path) || !bfs::is_regular_file(snapshot_path)) {
+            error = "snapshot file not found: " + snapshot_path;
+            return false;
+        }
+
+        wlog("=== RESTORE FROM SNAPSHOT: ${p} ===", ("p", snapshot_path));
+
+        // 1. Stop P2P from pushing blocks into a database that is about to be rebuilt.
+        //    pause_block_processing() itself must run on the p2p thread; this method is
+        //    called from an fc thread, so use the sync wrapper.
+        try {
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->pause_block_processing_sync();
+                wlog("Restore: P2P block processing paused");
+            }
+        } catch (const fc::exception& e) {
+            wlog("Restore: failed to pause P2P: ${e}", ("e", e.to_detail_string()));
+        } catch (...) {
+            wlog("Restore: failed to pause P2P");
+        }
+
+        // 2. Gate block production (validator reads is_syncing()).
+        my->currently_syncing.store(true, std::memory_order_release);
+
+        // 3. Close the current database. open_from_snapshot() in do_snapshot_load()
+        //    reopens it and wipes shared memory for a recovery load.
+        try {
+            my->db.close(false);
+        } catch (...) {
+            wlog("Restore: ignoring error while closing the database");
+        }
+
+        my->snapshot_path = snapshot_path;
+        auto data_dir = appbase::app().data_dir() / "state";
+
+        try {
+            do_snapshot_load(data_dir, true);
+        } catch (const fc::exception& e) {
+            error = e.to_detail_string();
+            elog("Restore FAILED during snapshot load: ${e}", ("e", error));
+        } catch (const std::exception& e) {
+            error = e.what();
+            elog("Restore FAILED during snapshot load: ${e}", ("e", error));
+        } catch (...) {
+            error = "unknown exception during snapshot load";
+            elog("Restore FAILED during snapshot load: unknown exception");
+        }
+
+        uint32_t head = 0;
+        try {
+            head = my->db.head_block_num();
+        } catch (...) {
+        }
+
+        // do_snapshot_load() handles a failed import by wiping the state and requesting
+        // shutdown, then returns normally. A zero head is the observable trace of that.
+        if (!error.empty() || head == 0) {
+            if (error.empty()) error = "snapshot import did not produce state";
+            elog("Restore FAILED: ${e}", ("e", error));
+            // P2P stays paused and the syncing flag stays set: the state on disk is not
+            // safe to consume. do_snapshot_load() has already asked the process to quit;
+            // if it did not, the node must not resume as if nothing happened.
+            return false;
+        }
+
+        my->currently_syncing.store(false, std::memory_order_release);
+
+        // 4. Resume P2P. reset_peers_after_recovery() clears soft bans and stale sync
+        //    state, so peers can serve blocks immediately after the import.
+        try {
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->reset_peers_after_recovery();
+                p2p_plug->resume_block_processing();
+                wlog("Restore: P2P block processing resumed");
+            }
+        } catch (...) {
+            wlog("Restore: failed to resume P2P");
+        }
+
+        wlog("=== RESTORE COMPLETE: node resumed at block ${n} ===", ("n", head));
+        return true;
     }
 
     void plugin::wipe_state() {

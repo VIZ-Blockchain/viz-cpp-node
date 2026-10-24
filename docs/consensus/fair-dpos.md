@@ -1,5 +1,8 @@
 # Fair-DPOS Consensus
 
+> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+
+
 VIZ Ledger uses **Fair Delegated Proof of Stake (Fair-DPOS)**, an extension of the classic DPoS algorithm that adds participation enforcement and miss penalties to prevent validators from collecting rewards without actually producing blocks.
 
 ---
@@ -9,7 +12,7 @@ VIZ Ledger uses **Fair Delegated Proof of Stake (Fair-DPOS)**, an extension of t
 In standard DPoS:
 - Token holders vote for validator accounts (weighted by their SHARES).
 - The top-voted validators are scheduled to produce blocks in a round-robin schedule.
-- Every 3 seconds one slot fires; the scheduled validator either produces a block or misses the slot.
+- Every 3 seconds before HF16 (1 second after activation) one slot fires; the scheduled validator either produces a block or misses the slot.
 
 VIZ runs with **21 active validators** per schedule round.
 
@@ -167,7 +170,7 @@ See [Fork Resolution](./fork-resolution.md) for the full fork collision algorith
 | `enable-stale-production` | `false` | Bypass participation check (testnet only) |
 | `emergency-private-key` | — | Optional emergency consensus signing key |
 | Active validators | 21 | Hardcoded in `CHAIN_MAX_VALIDATORS` |
-| Block interval | 3 s | `CHAIN_BLOCK_INTERVAL` |
+| Block interval | 3 s before HF16; 1 s after | runtime `get_config` |
 | LIB threshold | ⌈21 × 2/3⌉ = 14 | Blocks confirming irreversibility |
 | Emergency timeout | 3600 s | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` |
 

@@ -2,7 +2,7 @@
 
 网络服务器插件提供 HTTP 和 WebSocket 端点，将 JSON-RPC 请求转发到 `json_rpc` 插件。它包含以 `method + params`（不含 `id`）为键的响应缓存（每个应用的区块使其失效），以及用于并发请求处理的线程池。
 
-**源码：** [plugins/webserver/webserver_plugin.cpp](../../plugins/webserver/webserver_plugin.cpp)
+**源码：** [plugins/webserver/webserver_plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/webserver/webserver_plugin.cpp)
 
 ---
 
@@ -201,3 +201,9 @@ location /ws {
 ---
 
 参见：[插件概述](./overview.md)、[Database API](./database-api.md)、[JSON-RPC API](../api/json-rpc.md)。
+
+### 可信反向代理与策略持久化
+
+默认按 TCP 对端限流，忽略转发头。nginx 后方请显式配置 `webserver-trusted-proxy = 127.0.0.1`（每个真实代理 IP 一项）并转发 `X-Forwarded-For`。从右向左检查代理链，遇到第一个不可信节点即停止；勿信任任意客户端 IP。
+
+达到 200000 个 IP 时清理超过一天的旧记录，容量仍满时拒绝未跟踪的新来源，不清空现有客户端窗口。关闭统计日志不关闭已启用的限流。定期只记录变更行，格式化和磁盘 I/O 在 admission mutex 外执行。`config_policy` 指纹确保修改 config.ini 后采用新策略，同时保留 IP 名单。

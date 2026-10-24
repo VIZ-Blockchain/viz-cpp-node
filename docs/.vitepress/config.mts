@@ -78,6 +78,7 @@ interface SidebarLabels {
   jsonRpc: string;
   cliWallet: string;
   clientLibraries: string;
+  idsAndHashes: string;
   development: string;
   buildingDev: string;
   testing: string;
@@ -166,6 +167,7 @@ const en: SidebarLabels = {
   jsonRpc: 'JSON-RPC',
   cliWallet: 'CLI Wallet',
   clientLibraries: 'Client Libraries',
+  idsAndHashes: 'Transaction and Block IDs',
   development: 'Development',
   buildingDev: 'Building',
   testing: 'Testing',
@@ -254,6 +256,7 @@ const ru: SidebarLabels = {
   jsonRpc: 'JSON-RPC',
   cliWallet: 'CLI-кошелёк',
   clientLibraries: 'Клиентские библиотеки',
+  idsAndHashes: 'Идентификаторы транзакций и блоков',
   development: 'Разработка',
   buildingDev: 'Сборка',
   testing: 'Тестирование',
@@ -342,6 +345,7 @@ const zhCN: SidebarLabels = {
   jsonRpc: 'JSON-RPC',
   cliWallet: 'CLI 钱包',
   clientLibraries: '客户端库',
+  idsAndHashes: '交易与区块 ID',
   development: '开发',
   buildingDev: '构建',
   testing: '测试',
@@ -401,6 +405,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
     {
       text: t.consensus,
       items: [
+        { text: 'HF16 / 4.2.0', link: p('/consensus/hf16') },
         { text: t.fairDpos, link: p('/consensus/fair-dpos') },
         { text: t.blockProcessing, link: p('/consensus/block-processing') },
         { text: t.forkResolution, link: p('/consensus/fork-resolution') },
@@ -429,6 +434,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.databaseApi, link: p('/plugins/database-api') },
         { text: t.predictionMarketApi, link: p('/plugins/prediction-market-api') },
         { text: t.webserver, link: p('/plugins/webserver') },
+        { text: 'Node Admin · UI · MCP', link: p('/plugins/node-admin') },
       ],
     },
     {
@@ -482,6 +488,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.jsonRpc, link: p('/api/json-rpc') },
         { text: t.cliWallet, link: p('/api/cli-wallet') },
         { text: t.clientLibraries, link: p('/api/client-libraries') },
+        { text: t.idsAndHashes, link: p('/api/ids-and-hashes') },
       ],
     },
     {

@@ -2,7 +2,7 @@
 
 Плагин chain — это ключевой компонент каждого узла VIZ Ledger. Он управляет разделяемой памятью базы данных chainbase, принимает и проверяет блоки и транзакции, поддерживает состояние fork database и block log, координирует запуск с плагинами snapshot и P2P. Все остальные плагины зависят от него.
 
-**Исходник:** [plugins/chain/plugin.cpp](../../plugins/chain/plugin.cpp)
+**Исходник:** [plugins/chain/plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/chain/plugin.cpp)
 
 ---
 

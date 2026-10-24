@@ -41,7 +41,16 @@ enum dlt_message_type_enum {
     dlt_soft_ban_message_type            = 5114,
     dlt_gap_fill_request_type           = 5115,
     dlt_gap_fill_reply_type             = 5116,
+    dlt_block_vote_message_type         = 5117,
+    dlt_timeout_vote_message_type       = 5118,
 };
+
+// ── Capability bits advertised in hello.capabilities ────────────────
+// Sent as an optional trailing hello field: peers that predate it ignore the
+// extra bytes (unpack_hello_compat), and we never send them a message type they
+// would score as an unknown packet.
+static const uint32_t DLT_CAP_BLOCK_VOTE = 0x1;   // understands dlt_block_vote_message
+static const uint32_t DLT_CAP_TIMEOUT_VOTE = 0x2; // understands dlt_timeout_vote_message
 
 // ── DLT node status ─────────────────────────────────────────────────
 enum dlt_node_status {
@@ -85,6 +94,7 @@ struct dlt_hello_message {
     // sharing the same NAT IP (different ports).  Each node generates a random
     // keypair at startup.  Zero-value means "unknown" (old protocol peer).
     node_id_t     node_id;
+    uint32_t      capabilities = 0;  // DLT_CAP_* bits; optional trailing field (absent = 0)
 };
 
 // ── DLT Hello Reply ─────────────────────────────────────────────────
@@ -235,6 +245,34 @@ struct dlt_gap_fill_reply {
     std::vector<signed_block> blocks;  // requested blocks (may be partial)
 };
 
+// ── Block vote (QC building block) ──────────────────────────────────
+// A scheduled validator's signature over block_vote_digest(chain_id,
+// block_num, block_id, round). Gossiped to capable fork peers; a quorum of
+// votes for one (block_num, round, block_id) forms a quorum certificate.
+// Replaces the pre-HF16 post-validation broadcast, which the DLT network
+// redesign reduced to a signature-less fork_status.
+struct dlt_block_vote_message {
+    static const dlt_message_type_enum type;
+
+    uint32_t        block_num = 0;
+    block_id_type   block_id;
+    uint32_t        round = 0;
+    std::string     validator;
+    signature_type  signature;
+};
+
+// HF16 timeout vote: `validator` gave up on `round` without a QC. Signs
+// block_timeout_digest(round, high_qc_round); a quorum for one round forms a
+// timeout certificate (TC) that lets the next producer skip a QC-less head.
+struct dlt_timeout_vote_message {
+    static const dlt_message_type_enum type;
+
+    uint32_t        round = 0;
+    uint32_t        high_qc_round = 0;
+    std::string     validator;
+    signature_type  signature;
+};
+
 } // namespace network
 } // namespace graphene
 
@@ -257,7 +295,9 @@ FC_REFLECT_ENUM(graphene::network::dlt_message_type_enum,
     (dlt_transaction_message_type)
     (dlt_soft_ban_message_type)
     (dlt_gap_fill_request_type)
-    (dlt_gap_fill_reply_type))
+    (dlt_gap_fill_reply_type)
+    (dlt_block_vote_message_type)
+    (dlt_timeout_vote_message_type))
 
 FC_REFLECT_ENUM(graphene::network::dlt_node_status,
     (DLT_NODE_STATUS_SYNC)(DLT_NODE_STATUS_FORWARD))
@@ -273,7 +313,7 @@ FC_REFLECT_ENUM(graphene::network::dlt_peer_lifecycle_state,
 FC_REFLECT((graphene::network::dlt_hello_message),
     (protocol_version)(head_block_id)(head_block_num)(lib_block_id)(lib_block_num)
     (dlt_earliest_block)(dlt_latest_block)(emergency_active)(has_emergency_key)
-    (fork_status)(node_status)(node_id))
+    (fork_status)(node_status)(node_id)(capabilities))
 
 FC_REFLECT((graphene::network::dlt_hello_reply_message),
     (exchange_enabled)(fork_alignment)(initiator_head_seen)(initiator_lib_seen)
@@ -325,3 +365,9 @@ FC_REFLECT((graphene::network::dlt_gap_fill_request),
 
 FC_REFLECT((graphene::network::dlt_gap_fill_reply),
     (blocks))
+
+FC_REFLECT((graphene::network::dlt_block_vote_message),
+    (block_num)(block_id)(round)(validator)(signature))
+
+FC_REFLECT((graphene::network::dlt_timeout_vote_message),
+    (round)(high_qc_round)(validator)(signature))

@@ -4,7 +4,7 @@
 
 该插件不改变共识，不需要硬分叉，也不影响区块处理：启用与未启用它的节点完全兼容。
 
-**源码：** [plugins/block_archive/plugin.cpp](../../plugins/block_archive/plugin.cpp)
+**源码：** [plugins/block_archive/plugin.cpp](https://github.com/VIZ-Blockchain/viz-cpp-node/blob/pm/plugins/block_archive/plugin.cpp)
 
 ---
 

@@ -35,6 +35,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | `snapshot` | Recommended | `chain` | — |
 | `block_archive` | Optional | `chain` | — |
 | `validator_guard` | Recommended for validators | `chain`, `p2p` | — |
+| `node_admin` | Optional (operator/AI agent) | `chain` | Its own loopback listener |
 
 ### API
 

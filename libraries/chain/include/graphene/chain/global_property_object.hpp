@@ -195,6 +195,17 @@ namespace graphene {
              * by epoch) would become unreachable.
              */
             uint64_t pm_batch_settle_bet_cursor = 0;
+
+            /**
+             * Round anchor (#6737, Q#3109=A): the consensus round of time t is
+             * round_anchor_round + (t - round_anchor_time) / block_interval().
+             * Rounds are stored in QC/TC, so they must never be renumbered: every hardfork that
+             * changes the slot length re-anchors at the block that applies it (its actual time,
+             * not the scheduled one: the fork applies once 17/21 voted, possibly later).
+             * Zero time = never re-anchored, round = t / CHAIN_BLOCK_INTERVAL (pre-HF16).
+             */
+            fc::time_point_sec round_anchor_time;
+            uint32_t round_anchor_round = 0;
         };
 
         typedef multi_index_container <
@@ -248,5 +259,7 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (pm_oracle_gauges_seeded)
                 (pm_batch_settle_cursor)
                 (pm_batch_settle_bet_cursor)
+                (round_anchor_time)
+                (round_anchor_round)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

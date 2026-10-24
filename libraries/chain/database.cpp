@@ -26,6 +26,7 @@
 #include <graphene/chain/pm_evaluator.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
+#include <graphene/protocol/block_vote.hpp>
 
 #include <fc/bitutil.hpp>
 #include <fc/smart_ref_impl.hpp>
@@ -1939,9 +1940,8 @@ namespace graphene { namespace chain {
                         // have the full signed_block from the peer — fixes that.
                         // _repair_child_prev_links reconnects the start_block root
                         // so fetch_branch_from can walk the full slave chain.
-                        if (!_fork_db.is_known_block(new_block.id())) {
-                            _fork_db.insert_as_base(new_block);
-                        }
+                        // insert_as_base also fills an existing data-less anchor.
+                        _fork_db.insert_as_base(new_block);
                         return false;
                     }
                     // Block is at or before head but on a different fork.
@@ -2104,6 +2104,38 @@ namespace graphene { namespace chain {
                     }
                     _maybe_warn_multiple_production(new_head->num);
 
+                    // Signature admission controls certificate priority only. A legitimate
+                    // competing branch can have a different key/schedule from current state;
+                    // if cheap verification cannot establish its certificate, retain the
+                    // historical longer-chain path and let full branch replay validate it.
+                    const auto admitted_round = [&](const signed_block &b) -> uint32_t {
+                        try { return verified_fork_cert_round(b); }
+                        catch (const fc::exception &) { return 0; }
+                    };
+
+                    // HF16: fork_db keeps the first block at a height as its head, so a
+                    // same-height sibling never reached the certificate comparison below:
+                    // a TC replacement of a QC-less head (Jolteon) was stored and never
+                    // applied, every next producer built one more sibling and the chain
+                    // stalled for good (21-validator stand, netem 300 ms: 5 blocks #194).
+                    // Offer the pushed block as the candidate when it proves a later
+                    // round; signatures and quorum are checked before changing the fork head.
+                    // It may also sit LOWER than head: after a TC the proposal extends the
+                    // highest certified block, below a late-QC head and its parent.
+                    if (has_hardfork(CHAIN_HARDFORK_16) &&
+                        !get_dynamic_global_properties().emergency_consensus_active &&
+                        new_head && !new_head->anchor_only &&
+                        new_head->id != new_block.id() &&
+                        new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
+                        new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
+                        admitted_round(new_block) > block_cert_round(new_head->data)) {
+                        auto pushed = _fork_db.fetch_block(new_block.id());
+                        if (pushed && !pushed->invalid) {
+                            _fork_db.set_head(pushed);
+                            new_head = pushed;
+                        }
+                    }
+
                     // If the block we just pushed directly extends our database head,
                     // it is a simple linear extension regardless of what fork_db thinks
                     // is the longest chain. This handles the case where fork_db's _head
@@ -2126,7 +2158,24 @@ namespace graphene { namespace chain {
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
                         try {
-                        if (has_hardfork(CHAIN_HARDFORK_12)) {
+                        // HF16: the branch whose tip carries the certificate of the
+                        // later round wins, even at the same height. The certificate
+                        // has passed signature/quorum admission before rollback. Full
+                        // branch-dependent validation still runs during apply_block.
+                        // Equal rounds fall through to the HF12 rule.
+                        int cert_cmp = 0;
+                        if (has_hardfork(CHAIN_HARDFORK_16) &&
+                            !get_dynamic_global_properties().emergency_consensus_active) {
+                            const auto head_blk = fetch_block_by_id(head_block_id());
+                            if (head_blk) {
+                                const uint32_t new_r = admitted_round(new_head->data);
+                                const uint32_t head_r = block_cert_round(*head_blk);
+                                if (new_r) cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
+                            }
+                        }
+                        if (cert_cmp != 0) {
+                            should_switch = cert_cmp > 0;
+                        } else if (has_hardfork(CHAIN_HARDFORK_12)) {
                             // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
                             if (new_head->data.block_num() >= head_block_num() &&
                                 _fork_db.is_known_block(head_block_id())) {
@@ -2695,11 +2744,13 @@ namespace graphene { namespace chain {
                 fc::time_point_sec when,
                 const account_name_type &validator_owner,
                 const fc::ecc::private_key &block_signing_private_key,
-                uint32_t skip /* = 0 */
+                uint32_t skip /* = 0 */,
+                const fc::optional<protocol::block_timeout_certificate> &tc,
+                const fc::optional<protocol::block_qc_certificate> &qc_override
         ) {
             signed_block result;
             try {
-                result = _generate_block(when, validator_owner, block_signing_private_key, skip);
+                result = _generate_block(when, validator_owner, block_signing_private_key, skip, tc, qc_override);
             }
             FC_CAPTURE_AND_RETHROW((validator_owner))
             return result;
@@ -2710,7 +2761,9 @@ namespace graphene { namespace chain {
                 fc::time_point_sec when,
                 const account_name_type &validator_owner,
                 const fc::ecc::private_key &block_signing_private_key,
-                uint32_t skip
+                uint32_t skip,
+                const fc::optional<protocol::block_timeout_certificate> &tc,
+                const fc::optional<protocol::block_qc_certificate> &qc_override
         ) {
             // Apply any deferred resize BEFORE the lockless reads below.
             // This is critical: get_slot_at_time(), get_validator(), find_account()
@@ -2742,9 +2795,12 @@ namespace graphene { namespace chain {
 
                 const auto &validator_obj = get_validator(validator_owner);
 
-                if (!(skip & skip_validator_signature))
-                    FC_ASSERT(validator_obj.signing_key ==
-                              block_signing_private_key.get_public_key());
+                // NOTE: the signing-key check is deliberately NOT done here. At this point
+                // the session-visible validator object may already contain a pending
+                // validator_update that changes our own signing key, while the block header
+                // is validated against the pre-block (committed) key by
+                // validate_block_header(). The check is done below, after
+                // _pending_tx_session.reset() has restored committed head state.
 
                 // Lockless hint: does the validator account exist?
                 // op_guard coordinates with resize only — it does NOT exclude writers.
@@ -2797,6 +2853,9 @@ namespace graphene { namespace chain {
             size_t total_block_size = max_block_header_size;
 
             signed_block pending_block;
+            // Signing key of our validator as committed at the head block, captured
+            // while no pending session is active (see the assert below).
+            public_key_type committed_signing_key;
 
             with_strong_write_lock([&]() {
                 //
@@ -2857,6 +2916,12 @@ namespace graphene { namespace chain {
                 }
 
                 _pending_tx_session.reset();
+
+                // Committed head state is visible again. Capture the key here, under the
+                // same write lock: a concurrent push_transaction() after the lock is
+                // released could otherwise re-apply a pending key change and make the
+                // post-lock read see uncommitted state again.
+                committed_signing_key = get_validator(validator_owner).signing_key;
             });
 
             // We have temporarily broken the invariant that
@@ -2872,9 +2937,60 @@ namespace graphene { namespace chain {
 
             const auto &validator = get_validator(validator_owner);
 
+            // The header of THIS block is validated against the validator signing key
+            // committed at the previous (head) block — a pending validator_update that
+            // changes our own key takes effect only for the NEXT block. Verify against
+            // the committed object (visible again after the session reset above), not
+            // against the session-visible one used at the top of this function.
+            if (!(skip & skip_validator_signature))
+                FC_ASSERT(committed_signing_key == block_signing_private_key.get_public_key(),
+                          "Block signing key does not match the signing key committed at head "
+                          "(a pending validator_update must not change the key used to sign "
+                          "the current block)",
+                          ("validator", validator_owner)
+                          ("committed_key", committed_signing_key)
+                          ("signing_key", block_signing_private_key.get_public_key()));
+
             if (validator.running_version != CHAIN_VERSION) {
                 pending_block.extensions.insert(block_header_extensions(CHAIN_VERSION));
             }
+
+            // HF16: hand the turn over only on a certified parent. The validator
+            // plugin waits for the QC before calling us; reaching here without
+            // one is a bug, and the block would be rejected anyway.
+            if (block_needs_parent_qc(validator_owner)) {
+                fc::optional<protocol::block_qc_certificate> cert = qc_override;
+                if (!cert) cert = parent_qc_for_next_block(validator_owner);
+                FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
+                          ("n", head_block_num()));
+                FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
+                pending_block.extensions.insert(block_header_extensions(*cert));
+                if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
+
+                // Double-vote proofs: newest round per validator that the chain has
+                // not punished yet; a few per block keeps headers small.
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                const uint32_t own_round = round_of(when);
+                std::map<account_name_type, const protocol::block_equivocation_proof *> pick;
+                for (auto it = _pending_equivocations.begin(); it != _pending_equivocations.end(); ) {
+                    const auto &p = it->second;
+                    const auto *v = find_validator(p.validator);
+                    if (!v || p.round <= v->last_equivocation_round || uint64_t(p.round) + 3600 / block_interval() < own_round) {
+                        it = _pending_equivocations.erase(it);          // punished already or too old
+                        continue;
+                    }
+                    auto &slot = pick[p.validator];
+                    if (!slot || slot->round < p.round) slot = &p;
+                    ++it;
+                }
+                size_t n = 0;
+                for (const auto &kv : pick) {
+                    if (n++ >= 5) break;
+                    pending_block.extensions.insert(block_header_extensions(*kv.second));
+                }
+            }
+            FC_ASSERT(!tc || block_needs_parent_qc(validator_owner),
+                      "A TC goes only next to a parent QC");
 
             const auto &hfp = get_hardfork_property_object();
 
@@ -3059,7 +3175,7 @@ namespace graphene { namespace chain {
                 return fc::time_point_sec();
             }
 
-            auto interval = CHAIN_BLOCK_INTERVAL;
+            auto interval = block_interval();
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
 
             if (head_block_num() == 0) {
@@ -3084,7 +3200,26 @@ namespace graphene { namespace chain {
                 return 0;
             }
             return (when - first_slot_time).to_seconds() /
-                   CHAIN_BLOCK_INTERVAL + 1;
+                   block_interval() + 1;
+        }
+
+        uint32_t database::block_interval() const {
+            return has_hardfork(CHAIN_HARDFORK_16) ? CHAIN_BLOCK_INTERVAL_HF16 : CHAIN_BLOCK_INTERVAL;
+        }
+
+        uint32_t database::round_of(fc::time_point_sec t) const {
+            const auto& dgp = get_dynamic_global_properties();
+            const auto a = dgp.round_anchor_time;
+            if (a == fc::time_point_sec()) {
+                return t.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            }
+            if (t <= a) {
+                // Parents/QCs just before the anchor. Only one re-anchor exists (HF16), so the
+                // segment before it is 3 s; a later re-anchoring HF must keep its own previous
+                // interval here instead of CHAIN_BLOCK_INTERVAL.
+                return dgp.round_anchor_round - (a.sec_since_epoch() - t.sec_since_epoch()) / CHAIN_BLOCK_INTERVAL;
+            }
+            return dgp.round_anchor_round + (t.sec_since_epoch() - a.sec_since_epoch()) / block_interval();
         }
 
         void database::shares_sender_recalc_energy(const account_object &sender, asset tokens) {
@@ -3143,7 +3278,8 @@ namespace graphene { namespace chain {
         }
 
         void database::update_bandwidth_reserve_candidates() {
-            if ((head_block_num() % CHAIN_BLOCKS_PER_HOUR ) != 0) return;
+            // HF16: keep the hourly cadence in wall time (3x more blocks per hour at 1 s).
+            if ((head_block_num() % (CHAIN_BLOCKS_PER_HOUR * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
             uint32_t bandwidth_reserve_candidates = 1;
             const auto &gprops = get_dynamic_global_properties();
             const validator_schedule_object &consensus = get_validator_schedule_object();
@@ -3329,7 +3465,8 @@ namespace graphene { namespace chain {
                     }
                 }
             }
-            if ((head_block_num() % COMMITTEE_REQUEST_PROCESSING ) != 0) return;
+            // HF16: same wall-time cadence as with 3 s slots.
+            if ((head_block_num() % (COMMITTEE_REQUEST_PROCESSING * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
             uint32_t committee_payment_request_count = 1;
             const auto &idx4_count = get_index<committee_request_index>().indices().get<by_status>();
             auto itr3 = idx4_count.lower_bound(4);
@@ -5917,6 +6054,14 @@ namespace graphene { namespace chain {
 
                 const validator_object &signing_validator = validate_block_header(skip, next_block);
 
+                // HF16: must run before current_validator is set to this block's
+                // producer below — the handoff rule compares against the parent's.
+                validate_block_qc(next_block, skip);
+                apply_equivocation_proofs(next_block, skip);
+                for (const auto &e : next_block.extensions) {
+                    if (e.which() == 3) remember_block_qc(e.get<protocol::block_qc_certificate>());
+                }
+
                 _current_block_num = next_block_num;
                 _current_trx_in_block = 0;
                 _current_virtual_op = 0;
@@ -6069,6 +6214,10 @@ namespace graphene { namespace chain {
 
                         break;
                     }
+                    case 3: // block_qc_certificate — verified in validate_block_qc()
+                    case 4: // block_timeout_certificate — verified in validate_block_qc()
+                    case 5: // block_equivocation_proof — verified in apply_equivocation_proofs()
+                        break;
                     default:
                         FC_ASSERT(false, "Unknown extension in block header");
                 }
@@ -6258,7 +6407,14 @@ namespace graphene { namespace chain {
                 uint32_t missed_blocks = 0;
                 if (head_block_time() != fc::time_point_sec()) {
                     missed_blocks = get_slot_at_time(b.timestamp);
-                    assert(missed_blocks != 0);
+                    // assert() is compiled out in release builds: a slot of 0 (block time
+                    // before the first slot, e.g. post-HF16 1 s blocks replayed while the
+                    // node still applies the 3 s interval) wrapped missed_blocks to 2^32-1
+                    // and the miss loop below ran for hours (21-validator stand, replay with
+                    // the fork forced only after replay: block numbers past #20M, 7 GB log).
+                    FC_ASSERT(missed_blocks != 0,
+                              "Block #${n} time ${t} is before the first slot ${s} (interval ${i} s)",
+                              ("n", b.block_num())("t", b.timestamp)("s", get_slot_time(1))("i", block_interval()));
                     missed_blocks--;
                     for (uint32_t i = 0; i < missed_blocks; ++i) {
                         const auto &validator_missed = get_validator(get_scheduled_validator(i + 1));
@@ -6320,11 +6476,11 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS) {
+                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
                                     elog("Emergency consensus: Validator ${w} missed ${missed} blocks since last confirmed ${lc} "
                                          "(threshold=${t}), blanking signing_key",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
-                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS));
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())));
                                     w.signing_key = public_key_type();
                                     push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
@@ -6350,7 +6506,7 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS) {
+                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
                                     elog("Validator ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("k", w.signing_key));
@@ -6394,7 +6550,7 @@ namespace graphene { namespace chain {
        *  If the network reserve ratio falls under 100 then it is probably time to
        *  increase the capacity of the network.
        */
-                    if (dgp.head_block_number % 20 == 0) {
+                    if (dgp.head_block_number % (60 / block_interval()) == 0) {
                         if (dgp.average_block_size > dgp.maximum_block_size / 4) {
                             dgp.current_reserve_ratio /= 2; /// exponential back up
                         } else { /// linear growth... not much fine grain control near full capacity
@@ -6416,18 +6572,23 @@ namespace graphene { namespace chain {
                                                  dgp.current_reserve_ratio *
                                                  CHAIN_BANDWIDTH_PRECISION *
                                                  CHAIN_BANDWIDTH_AVERAGE_WINDOW_SECONDS) /
-                                                CHAIN_BLOCK_INTERVAL;
+                                                block_interval();
                 });
 
                 if (!(skip & skip_undo_history_check)) {
+                    // HF16 (1 s blocks, Q#3108=A): the undo window is counted in blocks, so keep it equal in TIME —
+                    // 3× the blocks, otherwise a LIB stall halts the chain after 2.8 h instead of 8.3 h.
+                    const uint32_t max_undo = has_hardfork(CHAIN_HARDFORK_16)
+                        ? CHAIN_MAX_UNDO_HISTORY * (CHAIN_BLOCK_INTERVAL / CHAIN_BLOCK_INTERVAL_HF16)
+                        : CHAIN_MAX_UNDO_HISTORY;
                     CHAIN_ASSERT(
-                        _dgp.head_block_number - _dgp.last_irreversible_block_num < CHAIN_MAX_UNDO_HISTORY,
+                        _dgp.head_block_number - _dgp.last_irreversible_block_num < max_undo,
                         undo_database_exception,
                         "The database does not have enough undo history to support a blockchain with so many missed blocks. "
                         "Please add a checkpoint if you would like to continue applying blocks beyond this point.",
                         ("last_irreversible_block_num", _dgp.last_irreversible_block_num)
                         ("head", _dgp.head_block_number)
-                        ("max_undo", CHAIN_MAX_UNDO_HISTORY));
+                        ("max_undo", max_undo));
                 }
 
                 // === HARDFORK 12: EMERGENCY CONSENSUS MODE ACTIVATION ===
@@ -6452,7 +6613,7 @@ namespace graphene { namespace chain {
                     // dgp.time is advanced to b.timestamp), so it is identical on
                     // every node and during every replay. No block_log fetch,
                     // config flag, wall-clock time, or skip-flag gates it.
-                    uint32_t gap_sec = (missed_blocks + 1) * CHAIN_BLOCK_INTERVAL;
+                    uint32_t gap_sec = (missed_blocks + 1) * block_interval();
 
                     {
                         if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
@@ -6723,8 +6884,13 @@ namespace graphene { namespace chain {
                                     });
                                 }
 
-                                _fork_db.set_max_size(dpo.head_block_number -
-                                                    dpo.last_irreversible_block_num + 1);
+                                // fork_db may be ahead of applied state after linking a deferred batch.
+                                // Its pruning window is measured from ITS head, so retain through
+                                // our LIB rather than pruning still-needed ancestors during catchup.
+                                _fork_db.set_max_size(
+                                    std::max(dpo.head_block_number,
+                                             _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                                    dpo.last_irreversible_block_num + 1);
                                 remove_validated=true;
                             }
                         }
@@ -6931,8 +7097,13 @@ namespace graphene { namespace chain {
                                     });
                                 }
 
-                                _fork_db.set_max_size(dpo.head_block_number -
-                                                    dpo.last_irreversible_block_num + 1);
+                                // fork_db may be ahead of applied state after linking a deferred batch.
+                                // Its pruning window is measured from ITS head, so retain through
+                                // our LIB rather than pruning still-needed ancestors during catchup.
+                                _fork_db.set_max_size(
+                                    std::max(dpo.head_block_number,
+                                             _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                                    dpo.last_irreversible_block_num + 1);
                             }
                         }
                     }
@@ -6974,6 +7145,548 @@ namespace graphene { namespace chain {
         //create block post validation object with current shuffled validators
         //remove old block post validation objects
         //remove old blocks from post validation list if it is full (CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
+        uint32_t database::block_qc_quorum(uint32_t num_scheduled) {
+            const uint32_t two_thirds_plus = num_scheduled * 2 / 3 + 1;
+            const uint32_t threshold = uint32_t(uint64_t(num_scheduled) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT);
+            return std::max(two_thirds_plus, threshold);
+        }
+
+        bool database::verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                         const account_name_type &validator, const signature_type &signature) const {
+            const auto &wso = get_validator_schedule_object();
+            bool scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
+            }
+            if (!scheduled) return false;
+
+            const auto *v = find_validator(validator);
+            if (!v || v->signing_key == public_key_type()) return false;
+
+            const auto digest = protocol::block_vote_digest(get_chain_id(), block_num, block_id, round);
+            try {
+                return public_key_type(fc::ecc::public_key(signature, digest)) == v->signing_key;
+            } catch (const fc::exception &) {
+                return false;                                                 // unrecoverable signature
+            }
+        }
+
+        bool database::verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                           const account_name_type &validator, const signature_type &signature) const {
+            // A QC seen while timing out round r is from an earlier round.
+            if (high_qc_round >= round) return false;
+            const auto &wso = get_validator_schedule_object();
+            bool scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
+            }
+            if (!scheduled) return false;
+
+            const auto *v = find_validator(validator);
+            if (!v || v->signing_key == public_key_type()) return false;
+
+            const auto digest = protocol::block_timeout_digest(get_chain_id(), round, high_qc_round);
+            try {
+                return public_key_type(fc::ecc::public_key(signature, digest)) == v->signing_key;
+            } catch (const fc::exception &) {
+                return false;                                                 // unrecoverable signature
+            }
+        }
+
+        bool database::push_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                         const account_name_type &validator, const signature_type &signature) {
+            // Same window as block votes: bounded memory for valid-but-absurd rounds.
+            static constexpr uint32_t MAX_VOTE_AHEAD_ROUNDS = 64;
+            const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval(); // preserve the one-hour evidence window
+            const uint32_t head_round = round_of(head_block_time());
+            if (uint64_t(round) + MAX_VOTE_ROUND_BEHIND < head_round) return false;
+            // Bound "ahead" by the wall-clock round, not head's: timeout votes exist
+            // precisely while head is stuck. Measured from head, every vote is refused
+            // ~64 s into a stall, no TC can form any more and the chain never recovers,
+            // even after the network heals (21-validator stand, netem 300 ms, 22.10).
+            // The vote pool is off-chain state, so a local clock bound is fine here.
+            const uint32_t now_round = std::max(head_round,
+                    round_of(fc::time_point_sec(fc::time_point::now())));
+            if (round > now_round + MAX_VOTE_AHEAD_ROUNDS) return false;
+
+            if (!verify_timeout_vote(round, high_qc_round, validator, signature)) return false;
+
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+
+            const uint32_t floor_round = head_round > MAX_VOTE_ROUND_BEHIND ? head_round - MAX_VOTE_ROUND_BEHIND : 0;
+            for (auto it = _timeout_votes.begin(); it != _timeout_votes.end() && it->first < floor_round; )
+                it = _timeout_votes.erase(it);
+            for (auto it = _timeout_certs.begin(); it != _timeout_certs.end() && it->first < floor_round; )
+                it = _timeout_certs.erase(it);
+
+            // One timeout vote per (validator, round); a repeat (even with another
+            // high_qc_round) is ignored, the first one stands.
+            auto &votes = _timeout_votes[round];
+            if (votes.count(validator)) return false;
+            protocol::block_timeout_vote tv;
+            tv.high_qc_round = high_qc_round;
+            tv.signature = signature;
+            votes.emplace(validator, tv);
+
+            if (votes.size() >= quorum && _timeout_certs.find(round) == _timeout_certs.end()) {
+                protocol::block_timeout_certificate tc;
+                tc.round = round;
+                tc.votes.insert(votes.begin(), votes.end());
+                ilog("TC formed for round ${r}: ${k}/${q} timeout votes", ("r", round)("k", votes.size())("q", quorum));
+                _timeout_certs.emplace(round, std::move(tc));
+            }
+            return true;
+        }
+
+        void database::apply_equivocation_proofs(const signed_block &b, uint32_t skip) {
+            std::vector<const protocol::block_equivocation_proof *> proofs;
+            for (const auto &e : b.extensions)
+                if (e.which() == 5) proofs.push_back(&e.get<protocol::block_equivocation_proof>());
+            if (proofs.empty()) return;
+            FC_ASSERT(has_hardfork(CHAIN_HARDFORK_16), "Double-vote proof in block #${n} before HF16", ("n", b.block_num()));
+            FC_ASSERT(proofs.size() <= 5, "Block #${n} carries ${k} double-vote proofs, at most 5",
+                      ("n", b.block_num())("k", proofs.size()));
+
+            const uint32_t own_round = round_of(b.timestamp);
+            std::set<account_name_type> seen;
+            const auto &props = get_validator_schedule_object().median_props;
+            for (const auto *p : proofs) {
+                FC_ASSERT(seen.insert(p->validator).second, "Two double-vote proofs for ${v} in one block", ("v", p->validator));
+                FC_ASSERT(p->first.block_id != p->second.block_id, "Double-vote proof for ${v}: same block twice", ("v", p->validator));
+                FC_ASSERT(p->round < own_round && uint64_t(p->round) + 3600 / block_interval() >= own_round,
+                          "Double-vote proof for ${v}: round ${r} outside the window", ("v", p->validator)("r", p->round));
+                const auto &w = get_validator(p->validator);
+                FC_ASSERT(p->round > w.last_equivocation_round,
+                          "Double vote of ${v} in round ${r} is already punished", ("v", p->validator)("r", p->round));
+                if (!(skip & skip_validator_signature)) {
+                    FC_ASSERT(verify_block_vote(p->first.block_num, p->first.block_id, p->round, p->validator, p->first.signature) &&
+                              verify_block_vote(p->second.block_num, p->second.block_id, p->round, p->validator, p->second.signature),
+                              "Double-vote proof for ${v} does not verify", ("v", p->validator));
+                }
+
+                // Same punishment as a missed block (owner 20.10): penalty for the
+                // configured duration and one more total_missed.
+                modify(w, [&](validator_object &v) {
+                    v.last_equivocation_round = p->round;
+                    v.total_missed++;
+                    v.penalty_percent += props.validator_miss_penalty_percent;
+                    v.counted_votes = (fc::uint128_t(v.votes) - (fc::uint128_t(v.votes) *
+                            std::min(v.penalty_percent, uint32_t(CHAIN_100_PERCENT)) / CHAIN_100_PERCENT)).to_uint64();
+                });
+                create<validator_penalty_expire_object>([&](validator_penalty_expire_object &wpe) {
+                    wpe.validator = p->validator;
+                    wpe.penalty_percent = props.validator_miss_penalty_percent;
+                    wpe.expires = b.timestamp + fc::seconds(props.validator_miss_penalty_duration);
+                });
+                push_virtual_operation(protocol::validator_equivocation_operation(
+                        p->validator, p->round, p->first.block_id, p->second.block_id));
+                wlog("Validator ${v} punished for a double vote in round ${r} (block #${n})",
+                     ("v", p->validator)("r", p->round)("n", b.block_num()));
+            }
+        }
+
+        void database::remember_block_qc(const protocol::block_qc_certificate &cert) {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            // Same rule as the tally path: per height keep the QC with the HIGHEST round. A re-proposal after a
+            // TC carries a newer-round QC; keeping the first (possibly for an equivocating twin) pinned the height.
+            auto held = _block_qcs.find(cert.block_num);
+            if (held != _block_qcs.end()) {
+                if (held->second.round >= cert.round) return;
+                _block_qcs.erase(held);
+            }
+            block_qc qc;
+            qc.block_num = cert.block_num;
+            qc.block_id = cert.block_id;
+            qc.round = cert.round;
+            qc.signatures.assign(cert.signatures.begin(), cert.signatures.end());
+            _block_qcs.emplace(cert.block_num, std::move(qc));
+        }
+
+        fc::optional<protocol::block_timeout_certificate> database::get_timeout_cert(uint32_t round) const {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            auto it = _timeout_certs.find(round);
+            if (it == _timeout_certs.end()) return {};
+            return it->second;
+        }
+
+        bool database::block_needs_parent_qc(const account_name_type &producer) const {
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dgp = get_dynamic_global_properties();
+            if (dgp.emergency_consensus_active) return false;      // committee alone cannot form a QC
+            if (dgp.head_block_number < 1) return false;
+            const auto &parent_producer = dgp.current_validator;    // producer of head
+            if (parent_producer == account_name_type()) return false;
+            // No exemption for a validator's own series: the Jolteon commit rule
+            // needs every block certified, or a series could build past a parent
+            // that never gathered a quorum and LIB would stall on it.
+            (void)producer;
+            // First block after an emergency: committee blocks never get a QC
+            // (validators re-enter with fresh keys), so their child is exempt.
+            if (parent_producer == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) return false;
+            // Child of the HF16 activation block (the round anchor, the last 3 s slot):
+            // nothing below it carries a QC, so if its own QC does not form (votes lost to
+            // a network-wide restart, a hiccup at the switch) a TC cannot rescue it either
+            // (a TC needs the head's parent certified) and the chain stalls for good.
+            // 21-validator stand, 22.10: head #65 waited for a QC over 100+ slots.
+            if (dgp.round_anchor_time != fc::time_point_sec() && dgp.time <= dgp.round_anchor_time) return false;
+            return true;
+        }
+
+        fc::optional<protocol::block_qc_certificate> database::parent_qc_for_next_block(const account_name_type &producer) const {
+            fc::optional<protocol::block_qc_certificate> result;
+            if (!block_needs_parent_qc(producer)) return result;
+            const auto qc = get_block_qc(head_block_num());
+            if (!qc || qc->block_id != head_block_id()) return result;
+
+            protocol::block_qc_certificate cert;
+            cert.block_num = qc->block_num;
+            cert.block_id = qc->block_id;
+            cert.round = qc->round;
+            // Re-verify against current state: the schedule or a signing key may
+            // have changed since the votes were tallied (round boundary), and the
+            // block must carry only signatures the consensus check will accept.
+            for (const auto &sv : qc->signatures) {
+                if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
+                    cert.signatures.emplace(sv.first, sv.second);
+            }
+            const auto &wso = get_validator_schedule_object();
+            if (cert.signatures.size() < block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT))
+                return result;
+            result = std::move(cert);
+            return result;
+        }
+
+        fc::optional<protocol::block_qc_certificate> database::grandparent_qc_for_next_block(
+                const account_name_type &producer, uint32_t own_round) const {
+            fc::optional<protocol::block_qc_certificate> result;
+            if (!block_needs_parent_qc(producer) || head_block_num() < 2) return result;
+            const uint32_t head_round = round_of(head_block_time());
+            if (head_round + 1 != own_round) return result;          // rounds must run on, no gap
+            const auto head = fetch_block_by_number(head_block_num());
+            if (!head) return result;
+            const protocol::block_qc_certificate *gp = nullptr;
+            for (const auto &e : head->extensions)
+                if (e.which() == 3) gp = &e.get<protocol::block_qc_certificate>();
+            if (!gp || gp->block_id != head->previous || gp->round + 1 != head_round) return result;
+
+            protocol::block_qc_certificate cert;
+            cert.block_num = gp->block_num;
+            cert.block_id = gp->block_id;
+            cert.round = gp->round;
+            for (const auto &sv : gp->signatures) {
+                if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
+                    cert.signatures.emplace(sv.first, sv.second);
+            }
+            const auto &wso = get_validator_schedule_object();
+            if (cert.signatures.size() < block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT))
+                return result;
+            result = std::move(cert);
+            return result;
+        }
+
+        uint32_t database::block_cert_round(const signed_block &b) {
+            // Highest round a block proves: its parent QC, or a TC it carries
+            // (a TC for round r outranks any QC below r). Validity is checked
+            // when the block is applied.
+            uint32_t r = 0;
+            for (const auto &e : b.extensions) {
+                if (e.which() == 3)        // block_qc_certificate
+                    r = std::max(r, e.get<protocol::block_qc_certificate>().round);
+                else if (e.which() == 4)   // block_timeout_certificate
+                    r = std::max(r, e.get<protocol::block_timeout_certificate>().round);
+            }
+            return r;
+        }
+
+        // Admission check only: branch-dependent parent/schedule checks still run in apply_block.
+        // An unauthenticated peer must not buy a rollback with a made-up certificate round.
+        uint32_t database::verified_fork_cert_round(const signed_block &b) const {
+            const uint32_t round = block_cert_round(b);
+            if (!round) return 0;
+            const auto *producer = find_validator(b.validator);
+            FC_ASSERT(producer && b.validate_signee(producer->signing_key), "Invalid fork producer signature");
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
+            bool producer_scheduled = false;
+            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT)
+                if (wso.current_shuffled_validators[i] == b.validator) producer_scheduled = true;
+            FC_ASSERT(producer_scheduled, "Fork producer is not in the current schedule");
+            const uint32_t quorum = block_qc_quorum(scheduled);
+            unsigned qcs = 0, tcs = 0;
+            for (const auto &e : b.extensions) {
+                if (e.which() == 3) {
+                    FC_ASSERT(++qcs == 1, "Duplicate fork QC");
+                    const auto &qc = e.get<protocol::block_qc_certificate>();
+                    FC_ASSERT(qc.signatures.size() >= quorum && qc.signatures.size() <= scheduled,
+                              "Fork QC does not have a scheduled quorum");
+                    FC_ASSERT(protocol::block_header::num_from_id(qc.block_id) == qc.block_num &&
+                              qc.block_num < b.block_num() && qc.round < round_of(b.timestamp),
+                              "Invalid fork QC height/round");
+                    for (const auto &v : qc.signatures)
+                        FC_ASSERT(verify_block_vote(qc.block_num, qc.block_id, qc.round, v.first, v.second),
+                                  "Invalid fork QC vote");
+                } else if (e.which() == 4) {
+                    FC_ASSERT(++tcs == 1, "Duplicate fork TC");
+                    const auto &tc = e.get<protocol::block_timeout_certificate>();
+                    FC_ASSERT(tc.votes.size() >= quorum && tc.votes.size() <= scheduled &&
+                              tc.round < round_of(b.timestamp), "Invalid fork TC quorum/round");
+                    for (const auto &v : tc.votes)
+                        FC_ASSERT(verify_timeout_vote(tc.round, v.second.high_qc_round, v.first, v.second.signature),
+                                  "Invalid fork timeout vote");
+                }
+            }
+            FC_ASSERT(!tcs || qcs, "Fork TC without QC");
+            return round;
+        }
+
+        void database::validate_block_qc(const signed_block &next_block, uint32_t skip) const {
+            const protocol::block_qc_certificate *cert = nullptr;
+            const protocol::block_timeout_certificate *tc = nullptr;
+            for (const auto &e : next_block.extensions) {
+                if (e.which() == 3) {        // block_qc_certificate (index in block_header_extensions)
+                    FC_ASSERT(cert == nullptr, "Block #${n} carries two parent QCs", ("n", next_block.block_num()));
+                    cert = &e.get<protocol::block_qc_certificate>();
+                } else if (e.which() == 4) { // block_timeout_certificate
+                    FC_ASSERT(tc == nullptr, "Block #${n} carries two TCs", ("n", next_block.block_num()));
+                    tc = &e.get<protocol::block_timeout_certificate>();
+                }
+            }
+            if (!has_hardfork(CHAIN_HARDFORK_16)) {
+                FC_ASSERT(cert == nullptr, "Parent QC in block #${n} before HF16", ("n", next_block.block_num()));
+                FC_ASSERT(tc == nullptr, "TC in block #${n} before HF16", ("n", next_block.block_num()));
+                return;
+            }
+            if (block_needs_parent_qc(next_block.validator)) {
+                FC_ASSERT(cert != nullptr,
+                          "Block #${n} by ${w} carries no QC of its parent (produced by ${p})",
+                          ("n", next_block.block_num())("w", next_block.validator)
+                          ("p", get_dynamic_global_properties().current_validator));
+            }
+            // A TC only makes sense next to the parent QC it is checked against.
+            FC_ASSERT(cert != nullptr || tc == nullptr, "Block #${n} carries a TC without a parent QC",
+                      ("n", next_block.block_num()));
+            if (cert == nullptr) return;
+
+            const uint32_t parent_round = round_of(head_block_time());
+            if (cert->block_id == next_block.previous) {
+                FC_ASSERT(cert->block_num + 1 == next_block.block_num(),
+                          "Parent QC certifies #${qn}, not the parent", ("qn", cert->block_num));
+                // Round = slot of the certified block. The parent is head here.
+                FC_ASSERT(cert->round == parent_round,
+                          "Parent QC round ${r} is not the parent's slot", ("r", cert->round));
+            } else {
+                // Late-QC fallback: QC of the grandparent, three consecutive rounds
+                // (grandparent r-2, parent r-1, this block r). The parent must itself
+                // carry this very QC, so nothing certified is skipped. Safety rests on
+                // one QC per round and the commit rule needing consecutive rounds.
+                const uint32_t own_round = round_of(next_block.timestamp);
+                FC_ASSERT(tc == nullptr, "The late-QC fallback carries no TC");
+                FC_ASSERT(parent_round + 1 == own_round && cert->round + 1 == parent_round &&
+                          cert->block_num + 2 == next_block.block_num(),
+                          "QC #${qn} round ${r} is neither the parent's nor a consecutive grandparent's",
+                          ("qn", cert->block_num)("r", cert->round));
+                const auto parent = fetch_block_by_id(next_block.previous);
+                FC_ASSERT(parent.valid(), "Parent of block #${n} not found", ("n", next_block.block_num()));
+                bool parent_carries = false;
+                for (const auto &e : parent->extensions)
+                    if (e.which() == 3) {
+                        const auto &pc = e.get<protocol::block_qc_certificate>();
+                        parent_carries = pc.block_id == cert->block_id && pc.round == cert->round;
+                    }
+                FC_ASSERT(parent_carries && parent->previous == cert->block_id,
+                          "Grandparent QC #${qn} is not the one the parent carries", ("qn", cert->block_num));
+            }
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
+            FC_ASSERT(cert->signatures.size() <= scheduled, "Parent QC has more signatures than scheduled validators");
+            FC_ASSERT(cert->signatures.size() >= block_qc_quorum(scheduled),
+                      "Parent QC has ${k} signatures, quorum is ${q}",
+                      ("k", cert->signatures.size())("q", block_qc_quorum(scheduled)));
+
+            // TC(r): a quorum gave up on round r, i.e. on a QC-less block that was
+            // built on our parent. Jolteon: r lies strictly between the parent's
+            // round and ours, and our parent QC is at least as high as every QC a
+            // timeout voter reported (nobody saw a newer certified block we skip).
+            if (tc != nullptr) {
+                const uint32_t own_round = round_of(next_block.timestamp);
+                FC_ASSERT(tc->round > cert->round && tc->round < own_round,
+                          "TC round ${t} not between parent round ${p} and block round ${o}",
+                          ("t", tc->round)("p", cert->round)("o", own_round));
+                FC_ASSERT(tc->votes.size() <= scheduled, "TC has more votes than scheduled validators");
+                FC_ASSERT(tc->votes.size() >= block_qc_quorum(scheduled),
+                          "TC has ${k} votes, quorum is ${q}",
+                          ("k", tc->votes.size())("q", block_qc_quorum(scheduled)));
+                for (const auto &tv : tc->votes) {
+                    FC_ASSERT(tv.second.high_qc_round <= cert->round,
+                              "TC vote by ${v} saw QC round ${h}, above the parent QC round ${p}",
+                              ("v", tv.first)("h", tv.second.high_qc_round)("p", cert->round));
+                }
+            }
+
+            if (skip & skip_validator_signature) return;
+            for (const auto &sv : cert->signatures) {
+                FC_ASSERT(verify_block_vote(cert->block_num, cert->block_id, cert->round, sv.first, sv.second),
+                          "Parent QC carries an invalid vote by ${v}", ("v", sv.first));
+            }
+            if (tc != nullptr) {
+                for (const auto &tv : tc->votes) {
+                    FC_ASSERT(verify_timeout_vote(tc->round, tv.second.high_qc_round, tv.first, tv.second.signature),
+                              "TC carries an invalid timeout vote by ${v}", ("v", tv.first));
+                }
+            }
+        }
+
+        bool database::push_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
+                                       const account_name_type &validator, const signature_type &signature) {
+            // Bounds first: a scheduled validator's valid signature over an
+            // absurd (height, round) must still not buy unbounded memory.
+            static constexpr uint32_t MAX_VOTE_AHEAD_BLOCKS = 64;
+            // Round = slot (block timestamp / interval). Accept a window around
+            // head: far-past rounds are below LIB anyway, far-future ones are junk.
+            const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval(); // preserve the one-hour evidence window
+            if (block_num == 0 || block_id == block_id_type()) return false;
+            if (protocol::block_header::num_from_id(block_id) != block_num) return false;
+
+            const auto &dpo = get_dynamic_global_properties();
+            const uint32_t head_round = round_of(head_block_time());
+            if (uint64_t(round) + MAX_VOTE_ROUND_BEHIND < head_round) return false;
+            if (round > head_round + MAX_VOTE_AHEAD_BLOCKS) return false;
+            // With a tiny schedule (one validator: testnet, consensus_sim) the
+            // classic LIB reaches head itself, yet head still needs a QC before
+            // the next block can be produced. Settle only what lies below head.
+            const uint32_t lib = std::min(dpo.last_irreversible_block_num,
+                                          dpo.head_block_number > 0 ? dpo.head_block_number - 1 : 0);
+            // HF16 diagnostics (21-validator stand): a vote for head that is turned away
+            // is logged once per block, so a QC that never forms names its cause.
+            const auto reject_head = [&](const char *why) {
+                if (block_num == dpo.head_block_number && _head_reject_logged.exchange(block_num) != block_num) {
+                    wlog("Vote for head #${n} from ${w} round ${r} rejected: ${why} (LIB ${l}, head round ${h})",
+                         ("n", block_num)("w", validator)("r", round)("why", why)("l", lib)("h", head_round));
+                }
+                return false;
+            };
+            if (block_num <= lib) return reject_head("at or below LIB");     // already final
+            if (block_num > dpo.head_block_number + MAX_VOTE_AHEAD_BLOCKS) return false;
+
+            if (!verify_block_vote(block_num, block_id, round, validator, signature)) return reject_head("signature/schedule check failed");
+
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+
+            // Forget everything at or below LIB: those heights are settled.
+            for (auto it = _block_vote_tallies.begin(); it != _block_vote_tallies.end() && std::get<0>(it->first) <= lib; )
+                it = _block_vote_tallies.erase(it);
+            for (auto it = _block_vote_by_validator.begin(); it != _block_vote_by_validator.end(); ) {
+                if (it->second.first <= lib) { _block_vote_sigs.erase(it->first); it = _block_vote_by_validator.erase(it); }
+                else ++it;
+            }
+            // Keep certificates a little below LIB: the next block header (and
+            // a lagging peer) may still need the parent's QC.
+            for (auto it = _block_qcs.begin(); it != _block_qcs.end() && it->first + MAX_VOTE_AHEAD_BLOCKS <= lib; )
+                it = _block_qcs.erase(it);
+
+            // One vote per (validator, round). A second, different id in the same
+            // round is equivocation: never counted, logged as evidence (both
+            // signatures verify against the same signing key).
+            const auto vkey = std::make_pair(validator, round);
+            auto prev = _block_vote_by_validator.find(vkey);
+            if (prev != _block_vote_by_validator.end()) {
+                if (prev->second.second != block_id) {
+                    wlog("Equivocation: validator ${v} voted for two blocks in round ${r}: #${an} ${a} and #${n} ${b}",
+                         ("v", validator)("r", round)("an", prev->second.first)("a", prev->second.second)
+                         ("n", block_num)("b", block_id));
+                    // Both signatures verified against the same key: keep the pair as
+                    // a proof for the next block we produce.
+                    auto sig = _block_vote_sigs.find(vkey);
+                    if (sig != _block_vote_sigs.end() && _pending_equivocations.size() < 256 &&
+                        !_pending_equivocations.count(vkey)) {
+                        protocol::block_equivocation_proof proof;
+                        proof.validator = validator;
+                        proof.round = round;
+                        proof.first = protocol::block_vote_evidence{prev->second.first, prev->second.second, sig->second};
+                        proof.second = protocol::block_vote_evidence{block_num, block_id, signature};
+                        _pending_equivocations.emplace(vkey, std::move(proof));
+                    }
+                }
+                return false;
+            }
+            _block_vote_by_validator.emplace(vkey, std::make_pair(block_num, block_id));
+            _block_vote_sigs.emplace(vkey, signature);
+
+            auto &tally = _block_vote_tallies[std::make_tuple(block_num, round, block_id)];
+            if (tally.votes.empty()) tally.first_seen = fc::time_point::now();
+            tally.votes.emplace(validator, signature);
+
+            // One QC per height, but the HIGHEST round wins: after a TC the height is
+            // rebuilt in a later round, and keeping the first QC forever made every
+            // rebuild uncertifiable (21-validator stand, double signer: QC for one twin
+            // of #546 in round 649, fork choice took another, then 40+ rebuilds of #546
+            // with 15/15 votes each and no QC; chain stuck for 20+ min).
+            auto held_qc = _block_qcs.find(block_num);
+            if (tally.votes.size() >= quorum && (held_qc == _block_qcs.end() || held_qc->second.round < round)) {
+                if (held_qc != _block_qcs.end()) _block_qcs.erase(held_qc);
+                block_qc qc;
+                qc.block_num = block_num;
+                qc.block_id = block_id;
+                qc.round = round;
+                qc.signatures.assign(tally.votes.begin(), tally.votes.end());
+                qc.formed_after = fc::time_point::now() - tally.first_seen;
+                ilog("QC formed for #${n} ${id} round ${r}: ${k}/${q} votes, ${ms} ms after first vote",
+                     ("n", block_num)("id", block_id)("r", round)("k", qc.signatures.size())("q", quorum)
+                     ("ms", qc.formed_after.count() / 1000));
+                _block_qcs.emplace(block_num, std::move(qc));
+            }
+            return true;
+        }
+
+        uint32_t database::highest_qc_on_main_branch(uint32_t max_num) const {
+            std::vector<std::pair<uint32_t, block_id_type>> certified;
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                for (auto it = _block_qcs.rbegin(); it != _block_qcs.rend(); ++it) {
+                    if (it->first <= max_num) certified.emplace_back(it->first, it->second.block_id);
+                }
+            }
+            // 2-chain rule: a certified block is final only when its child at the
+            // next height is certified too, both on our branch. One QC is not
+            // enough once voting has rounds: a validator that voted for X need
+            // not see X's QC, may vote for Y in a later round, and a second QC
+            // at the same height becomes possible. Requiring a certified child
+            // (whose header carries X's QC) closes that window. Highest first.
+            for (size_t i = 0; i + 1 < certified.size(); ++i) {
+                const auto &child = certified[i];
+                const auto &parent = certified[i + 1];
+                if (child.first != parent.first + 1) continue;
+                if (find_block_id_for_num(child.first) != child.second ||
+                    find_block_id_for_num(parent.first) != parent.second) continue;
+                // Jolteon commit rule: the two certified blocks must also be in
+                // consecutive ROUNDS (round = slot). A child after skipped slots
+                // was built on a timeout certificate, and a parent certified
+                // before that timeout is not yet safe to commit.
+                const auto pb = fetch_block_by_id(parent.second);
+                const auto cb = fetch_block_by_id(child.second);
+                if (!pb || !cb) continue;
+                // Compare rounds, not timestamps: the slot is 1 s after HF16, and a
+                // compile-time 3 s step never matched there, so QC-LIB was always 0
+                // and LIB fell back to post-validation (stand: lag exactly 14 blocks).
+                if (round_of(cb->timestamp) != round_of(pb->timestamp) + 1) continue;
+                return parent.first;
+            }
+            return 0;
+        }
+
+        fc::optional<database::block_qc> database::get_block_qc(uint32_t block_num) const {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            auto it = _block_qcs.find(block_num);
+            if (it == _block_qcs.end()) return fc::optional<block_qc>();
+            return it->second;
+        }
+
         void database::create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type& validator_account){
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
             //remove blocks if they height is less than last irreversible block
@@ -7096,6 +7809,26 @@ namespace graphene { namespace chain {
                         ? dpo.head_block_number - 1
                         : 0;
                 }
+
+                // === HARDFORK 16: LIB FROM QUORUM CERTIFICATES ===
+                // A QC is >2/3 of scheduled validators signing one block id at one
+                // height; the one-vote-per-height guard makes a conflicting QC at
+                // the same height impossible without equivocation, so the certified
+                // block and its ancestors are final. Take the highest certified
+                // height that is on OUR main branch (a QC for a block we do not
+                // have, or for a sibling, proves nothing about our chain).
+                // Capped at HEAD-1, same reason as the emergency cap: committing
+                // HEAD would drop the undo session of the block being applied.
+                // Node-local, like the pre-DLT post-validation LIB it replaces:
+                // no evaluator reads LIB, so state stays deterministic.
+                if (has_hardfork(CHAIN_HARDFORK_16) && !dpo.emergency_consensus_active &&
+                    dpo.head_block_number > 1) {
+                    const uint32_t qc_lib = highest_qc_on_main_branch(dpo.head_block_number);
+                    if (qc_lib > new_last_irreversible_block_num) {
+                        new_last_irreversible_block_num = qc_lib;
+                    }
+                }
+                // === END HARDFORK 16 ===
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: update_last_irreversible_block: new_lib=${lib} old_lib=${old} head=${h}",
                      ("lib", new_last_irreversible_block_num)("old", dpo.last_irreversible_block_num)("h", dpo.head_block_number));
@@ -7245,8 +7978,13 @@ namespace graphene { namespace chain {
                 }
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: fork_db set_max_size=${s}", ("s", dpo.head_block_number - dpo.last_irreversible_block_num + 1));
-                _fork_db.set_max_size(dpo.head_block_number -
-                                      dpo.last_irreversible_block_num + 1);
+                // fork_db may be ahead of applied state after linking a deferred batch.
+                // Its pruning window is measured from ITS head, so retain through
+                // our LIB rather than pruning still-needed ancestors during catchup.
+                _fork_db.set_max_size(
+                    std::max(dpo.head_block_number,
+                             _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                    dpo.last_irreversible_block_num + 1);
                 if (_debug_block_production) ilog("DEBUG_CRASH: update_last_irreversible_block done");
             } FC_CAPTURE_AND_RETHROW()
         }

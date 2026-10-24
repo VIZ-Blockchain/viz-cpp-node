@@ -42,6 +42,7 @@ struct dlt_peer_state {
     bool                         peer_has_emergency_key = false;
     uint8_t                      peer_fork_status = DLT_FORK_STATUS_NORMAL;
     uint8_t                      peer_node_status = DLT_NODE_STATUS_SYNC;
+    uint32_t                     peer_capabilities = 0;     // DLT_CAP_* from hello (0 = pre-capability peer)
 
     // Our view of this peer
     bool                         exchange_enabled = false;  // "our fork"

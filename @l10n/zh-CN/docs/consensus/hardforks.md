@@ -1,5 +1,8 @@
 # 硬分叉
 
+> **HF16 / 4.2.0：** 1 秒时隙、QC/TC 和 2-chain 规则参见 [HF16](./hf16.md)。下文旧的 3 秒和 14 个确认描述适用于激活前，不能作为 HF16 QC 门槛。
+
+
 硬分叉是改变共识规则的网络升级。所有节点必须在计划的激活时间戳之前升级；运行旧版软件的节点将在激活后与网络分叉。
 
 ---
@@ -9,7 +12,7 @@
 每个硬分叉包含：
 - 唯一**编号**（N）。
 - **Unix 时间戳** — 硬分叉可以激活的最早系统时间。
-- **验证者投票超多数** — 当前验证者集合中 >80% 必须通过 `validator_update_operation` 发出新硬分叉版本信号。
+- **验证者投票超多数** — 当前验证者集合中 >80% 必须通过区块头 `hardfork_version_vote`（通常由 validator 插件自动发出） 发出新硬分叉版本信号。
 
 两个条件必须同时满足。验证者可以通过即使在计划时间戳后仍不提交版本投票来阻止不需要的硬分叉。
 
@@ -32,7 +35,7 @@ HF12（版本 3.1.0）引入了：
 
 1. **Fork 碰撞计数器** — `fork_collision_count` 和 `last_fork_collision_block_num` 添加到 `dynamic_global_property_object`。可通过 `get_dynamic_global_properties` 观察。
 2. **投票加权 fork 比较**（`compare_fork_branches()`）— fork 选择使用每个验证者分支的总委托 SHARES + 较长链 10% 奖励。
-3. **紧急共识模式** — 1 小时无区块后自动激活；"committee"账户接管所有 21 个槽位。参见[紧急共识](./emergency-consensus.md)。
+3. **紧急共识模式** — 20 分钟无区块后自动激活；"committee"账户接管所有 21 个槽位。参见[紧急共识](./emergency-consensus.md)。
 4. **少数派 fork 自动重新同步** — 验证者插件检测节点隔离（连续 21 个自己的区块）并回滚到 LIB。
 5. **NTP 改进** — 专用 NTP 客户端，可配置服务器、间隔和往返时间阈值。
 
@@ -46,7 +49,7 @@ HF13（版本 3.2.0）引入了：
 
 - `validator_object` 上的新字段：`reward_percent` — 与投票者共享的区块奖励比例（0–10000 基点）。
 - 新虚拟操作：`validator_reward_virtual_operation` — 每次奖励分配触发一次。
-- 通过 `validator_update_operation` 设置。
+- 通过区块头 `hardfork_version_vote`（通常由 validator 插件自动发出） 设置。
 
 ---
 
@@ -169,3 +172,11 @@ case CHAIN_HARDFORK_N: {
 ---
 
 参见：[Fair-DPOS](./fair-dpos.md)、[紧急共识](./emergency-consensus.md)、[快照](../node/snapshot.md)。
+
+## 4.x 版本
+
+| HF | 版本 | 内容 |
+|---|---|---|
+| 14 | 4.0.0 | 预测市场与治理 |
+| 15 | 4.1.0 | PM 修复、代理授权与永久密钥历史 |
+| 16 | 4.2.0 | QC/TC、1 秒时隙、DAO 上限和 no-contest 冻结；[激活说明](./hf16.md) |

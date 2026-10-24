@@ -377,6 +377,13 @@
 
 Всё движение средств PM строго zero-sum (без эмиссии); расчёт сохраняет `Σ out == Σ ставок + принципал LP + forfeit_pool`.
 
+
+### Консенсус (HF16 QC)
+
+| ID | Операция | Триггер |
+|----|----------|---------|
+| 106 | `validator_equivocation_operation` | Блок принёс доказательство, что `validator` подписал голоса за два разных блока (`first_block_id`, `second_block_id`) в одном `round`. Наказание как за пропуск блока (`total_missed++`, `penalty_percent += validator_miss_penalty_percent` на `validator_miss_penalty_duration`); не чаще раза за раунд (`last_equivocation_round`) |
+
 ---
 
 См. также: [Обзор операций](./operations/overview.md), [Награды](./operations/awards.md), [Комитет](./operations/committee.md).

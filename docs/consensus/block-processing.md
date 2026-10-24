@@ -1,5 +1,8 @@
 # Block Processing
 
+> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+
+
 Internal mechanics of block application, pending transaction management, and fork switching.
 
 ---
@@ -298,6 +301,7 @@ Classic DPOS path (~63 s) remains active as a fallback if confirmation messages 
 ### Constraints
 
 - Only validators in the **current shuffled schedule** count toward the 2/3 threshold; off-schedule validators are skipped.
+- **One vote per round (Jolteon safety rule).** A validator votes for a block of round *r* (round = the block's slot, `timestamp / CHAIN_BLOCK_INTERVAL`) only when *r* is above the highest round it has voted in. The validator plugin keeps that round per validator in `<data-dir>/block-vote-round.txt`, writes it **before** the vote leaves (a vote whose round cannot be persisted is not sent) and logs `Not voting for … already voted for … in round …` when a different block of the same round shows up. Unlike a one-signature-per-height rule, a validator may vote for a different block at the same height in a later round — that is what lets a split vote resolve instead of stalling. Two conflicting quorum certificates in one round need validators that vote twice; nodes log such votes as `Equivocation: …`. Re-broadcasting the same vote stays allowed.
 - During **emergency consensus** (`emergency_consensus_active = true`), `check_block_post_validation_chain()` returns immediately — LIB is advanced solely by the classic path to avoid deadlocking recovery.
 - The confirmation list is capped at **20 entries** (`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`). Entries below the current LIB are pruned after every block.
 
@@ -311,7 +315,7 @@ Classic DPOS path (~63 s) remains active as a fallback if confirmation messages 
 | `CHAIN_BLOCK_GENERATION_POSTPONED_TX_LIMIT` | 5 | Max consecutive oversized transactions skipped during generation |
 | `CHAIN_BLOCK_SIZE` | 65536 bytes | Hard block size limit |
 | `maximum_block_size` | Dynamic (validator median) | Soft block size limit |
-| `CHAIN_BLOCK_INTERVAL` | 3 s | Block production interval |
+| `CHAIN_BLOCK_INTERVAL` | 3 s before HF16; runtime 1 s after | Block production interval |
 
 ---
 

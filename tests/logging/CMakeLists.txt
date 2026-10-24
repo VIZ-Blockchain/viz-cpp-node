@@ -1,0 +1,15 @@
+# Bounded file appender (optional log with a line cap). The live behaviour is wired in
+# programs/vizd/main.cpp; these checks pin the tail-trim contract and the compaction
+# that happens while logging.
+
+add_executable(capped_file_appender_tests capped_file_appender_test.cpp)
+
+target_link_libraries(capped_file_appender_tests
+    PRIVATE graphene_utilities
+            fc
+            Boost::unit_test_framework
+)
+
+# Static libboost_unit_test_framework — do NOT define BOOST_TEST_DYN_LINK.
+
+add_test(NAME capped_file_appender COMMAND capped_file_appender_tests)

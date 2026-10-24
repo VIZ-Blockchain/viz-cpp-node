@@ -37,6 +37,7 @@ docker pull vizblockchain/vizd:latest
 ```bash
 docker run -d \
   --name vizd \
+  --restart unless-stopped \
   -p 2001:2001 \
   -p 8090:8090 \
   -p 8091:8091 \
@@ -161,7 +162,7 @@ curl -s -X POST http://localhost:8090 \
   | python3 -m json.tool
 ```
 
-Проверьте `head_block_number` — после синхронизации он должен увеличиваться каждые 3 секунды.
+Проверьте `head_block_number` — после синхронизации он должен увеличиваться каждые 3 секунды до HF16 и каждую 1 секунду после HF16.
 
 ---
 

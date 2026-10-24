@@ -1,6 +1,6 @@
 # 紧急共识模式
 
-紧急共识模式（在 HF12 中引入）在网络停滞 1 小时后自动激活。特殊的"committee"验证者接管区块生产，以在真实验证者恢复其签名密钥之前维持链的连续性。
+紧急共识模式（在 HF12 中引入）在网络停滞 20 分钟后自动激活。特殊的"committee"验证者接管区块生产，以在真实验证者恢复其签名密钥之前维持链的连续性。
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 常量 | 值 | 含义 |
 |------|---|------|
-| `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 秒 | 激活前的不活动时间 |
+| `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 1200 秒 | 激活前的不活动时间 |
 | `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` | `"committee"` | 紧急区块生产者账户 |
 | `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` | `VIZ75CR...` | 确定性紧急签名密钥 |
 | `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | 退出所需的连续真实验证者区块数 |
@@ -31,7 +31,7 @@
 1. **HF12 门控** — 如果硬分叉尚未激活则跳过。
 2. **已激活** — 如果紧急模式已经开启则跳过。
 3. **block log 中有 LIB 区块** — 如果 LIB 区块不在 block log 中则跳过（快照恢复后的 DLT 节点有空的 block log；缺少 LIB 区块将计算数百万过时秒数并触发错误的激活死锁）。
-4. **超时** — 计算 `seconds_since_lib = current_block.timestamp − lib_block.timestamp`。如果 `< 3600` 则跳过。
+4. **超时** — 计算 `seconds_since_lib = current_block.timestamp − lib_block.timestamp`。如果 `< 1200` 则跳过。
 
 所有检查仅使用区块内嵌的时间戳——没有系统时钟，没有跳过标志。这保证了在每个节点上，包括重放，具有相同的确定性激活。
 

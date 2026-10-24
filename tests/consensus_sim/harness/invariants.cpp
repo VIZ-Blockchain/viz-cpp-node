@@ -61,7 +61,7 @@ std::optional<violation_report> no_double_signed_in_canonical(
         std::map<std::pair<std::string, uint32_t>,
                  graphene::protocol::block_id_type> seen;
         for (auto& b : blocks) {
-            uint32_t slot = b.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            uint32_t slot = n->db().round_of(b.timestamp);
             std::pair<std::string, uint32_t> key{b.witness, slot};
             auto it = seen.find(key);
             if (it != seen.end() && !(it->second == b.id)) {

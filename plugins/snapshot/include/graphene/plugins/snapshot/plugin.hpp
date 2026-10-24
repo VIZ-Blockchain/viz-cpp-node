@@ -52,6 +52,17 @@ namespace graphene { namespace plugins { namespace snapshot {
         bool                is_last = false;
     };
 
+    /// One snapshot file on disk, as seen by the admin API. `block_num` is parsed from the
+    /// standard `snapshot-block-<N>.vizjson` name; files with other names report 0 and are
+    /// still listed (and downloadable), but never chosen as "latest".
+    struct snapshot_file_info {
+        std::string name;
+        std::string path;
+        uint32_t    block_num = 0;
+        uint64_t    size_bytes = 0;
+        uint32_t    modified = 0;   // unixtime of last write
+    };
+
     class snapshot_plugin final : public appbase::plugin<snapshot_plugin> {
     public:
         APPBASE_PLUGIN_REQUIRES((chain::plugin))
@@ -82,6 +93,29 @@ namespace graphene { namespace plugins { namespace snapshot {
 
         /// Create snapshot at the given path
         void create_snapshot_at(const std::string& path);
+
+        /// Directory where auto-generated snapshots live (`snapshot-dir`, default <data-dir>/snapshots).
+        std::string snapshot_directory() const;
+
+        /// Every *.vizjson / *.json file in snapshot_directory(), newest block first.
+        std::vector<snapshot_file_info> list_snapshots() const;
+
+        /// Path of the highest-block snapshot in snapshot_directory(), empty when none exists.
+        std::string latest_snapshot_path() const;
+
+        /// Schedule a snapshot of the current head in snapshot_directory(), asynchronously.
+        /// Returns "started", "exists" (same block already captured), "busy" (another snapshot
+        /// is running) or "empty" (head is 0). `path` receives the target file path.
+        std::string request_snapshot_creation(std::string& path);
+
+        /// Restore chain state from `path` (empty = latest snapshot in snapshot_directory()),
+        /// asynchronously. The restore pauses P2P, closes and wipes shared memory, imports the
+        /// snapshot, replays dlt_block_log and resumes P2P. Returns false and sets `error` when
+        /// the restore cannot start; once started, progress is visible via is_restoring().
+        bool restore_snapshot_now(const std::string& path, std::string& error);
+
+        /// True while a restore requested through restore_snapshot_now() is running.
+        bool is_restoring() const;
 
         /// Returns the list of trusted-snapshot-peer endpoints (IP:port strings)
         /// Used by the P2P plugin to apply reduced soft-ban duration for trusted peers

@@ -197,6 +197,28 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
+The `file` appender is configured to rotate by time (a new file every hour, kept for a
+day), but the rotation only fires while the fc fiber queue is serviced, and `vizd` does not
+service it after startup (measured 2026-10-20: a testnet node wrote one 37 MB file in nine
+hours at `info`, with no hourly files; the mainnet node ran four days without a new one).
+Do not count on it to bound a file, and be aware that at `debug` a node can write
+gigabytes per hour. If all you need is the recent tail, use the optional capped appender:
+a single file that keeps only the last `max_lines` lines (default 10000, `0` = unlimited).
+It counts lines as it writes and compacts itself in place, so the file stays between
+`max_lines` and about 1.1 x `max_lines`, with no timer involved. Nodes whose config has no
+`log.capped_file_appender.*` section behave exactly as before, and the section itself is
+safe to roll out ahead of the upgrade: an older binary ignores it and keeps logging to
+stderr. If the configured path cannot be opened, the node still starts, prints one
+`capped_file_appender: cannot open log file …` line to stderr, and simply leaves no file.
+
+```ini
+log.capped_file_appender.node.filename = logs/node/node.log
+log.capped_file_appender.node.max_lines = 10000
+
+# Route whatever you want into it; the appender alone writes nothing.
+logger.default.appenders = stderr, node
+```
+
 ---
 
 ## Complete Reference
