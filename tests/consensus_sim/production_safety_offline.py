@@ -73,7 +73,7 @@ int main() {
   return failures?1:0;
 }
 '''
-        root = os.environ.get('TMPDIR', str(pathlib.Path.home()/'.hermes/cache/scratch'))
+        root = os.environ.get('TMPDIR')
         with tempfile.TemporaryDirectory(prefix='production-safety-', dir=root) as tmp:
             src = pathlib.Path(tmp)/'selection.cpp'
             exe = pathlib.Path(tmp)/'selection'
@@ -136,7 +136,7 @@ int main() {
  }
 }
 '''
-        root = os.environ.get('TMPDIR', str(pathlib.Path.home()/'.hermes/cache/scratch'))
+        root = os.environ.get('TMPDIR')
         with tempfile.TemporaryDirectory(prefix='production-budget-', dir=root) as tmp:
             src = pathlib.Path(tmp)/'budget.cpp'
             exe = pathlib.Path(tmp)/'budget'

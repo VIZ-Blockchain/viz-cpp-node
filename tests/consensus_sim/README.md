@@ -65,7 +65,7 @@ keys, the absolute size cap and count-prefix growth. It **does not** execute the
 database, actual signature recovery, FC serialization or consensus validation,
 and does not replace the native scenarios. `PRODUCTION_SOURCE=/path/database.cpp`
 can select an unmodified baseline for a RED comparison. Temporary compiler
-artifacts use `TMPDIR` (or the Hermes scratch directory).
+artifacts use `TMPDIR`, or the platform's default temporary directory.
 
 ## Coverage
 
