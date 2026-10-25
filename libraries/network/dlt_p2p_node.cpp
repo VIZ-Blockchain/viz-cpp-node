@@ -60,6 +60,10 @@ dlt_p2p_node::~dlt_p2p_node() {
 // ── Configuration ────────────────────────────────────────────────────
 
 void dlt_p2p_node::set_delegate(dlt_p2p_delegate* del) { _delegate = del; }
+uint32_t dlt_p2p_node::slot_scale() const {
+    const uint32_t iv = _delegate ? _delegate->block_interval() : CHAIN_BLOCK_INTERVAL;
+    return (iv > 0 && iv < CHAIN_BLOCK_INTERVAL) ? CHAIN_BLOCK_INTERVAL / iv : 1;
+}
 void dlt_p2p_node::set_listen_endpoint(const fc::ip::endpoint& ep, bool wait) {
     _listen_endpoint = ep;
     _wait_if_busy = wait;
@@ -1305,7 +1309,7 @@ void dlt_p2p_node::on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_messag
             // fallen behind (missed broadcast blocks) — transition to SYNC
             // and request the missing range.
             uint32_t our_head = _delegate->get_head_block_num();
-            if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+            if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD * slot_scale()) {
                 ilog(DLT_LOG_ORANGE "Falling behind in FORWARD mode: peer ${ep} at #${pn}, our head #${hn} — transitioning to SYNC" DLT_LOG_RESET,
                      ("ep", state.endpoint)("pn", state.peer_head_num)("hn", our_head));
                 transition_to_sync();
@@ -1368,7 +1372,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     // on the majority fork, giving the chain a chance to switch forks.
     uint32_t start = our_head;
     uint32_t gap = (peer_latest > our_head) ? (peer_latest - our_head) : 0;
-    if (gap > FORWARD_FALLBEHIND_THRESHOLD) {
+    if (gap > FORWARD_FALLBEHIND_THRESHOLD * slot_scale()) {
         uint32_t our_lib = _delegate->get_lib_block_num();
         if (our_lib > 0 && our_lib < our_head) {
             ilog(DLT_LOG_ORANGE "Large gap (${g} blocks behind peer ${ep}), starting sync from LIB #${lib} instead of head #${head}" DLT_LOG_RESET,
@@ -3083,7 +3087,7 @@ void dlt_p2p_node::check_sync_catchup() {
         // the stagnation timer each time and delaying fork-switch recovery by
         // many minutes (p68 scenario).  Stay in SYNC so the stagnation check
         // can fire at the right time and request the full alternative chain.
-        if (_highest_seen_block_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+        if (_highest_seen_block_num > our_head + FORWARD_FALLBEHIND_THRESHOLD * slot_scale()) {
             dlog("Staying in SYNC: highest seen block #${h} is ${d} blocks ahead of our head #${o} — unlinked fork_db blocks pending",
                  ("h", _highest_seen_block_num)("d", _highest_seen_block_num - our_head)("o", our_head));
             return;
@@ -3152,7 +3156,7 @@ void dlt_p2p_node::check_forward_behind() {
         const auto& state = _peer_item.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
         if (state.peer_head_num == 0) continue;
-        if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+        if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD * slot_scale()) {
             ilog(DLT_LOG_ORANGE "Falling behind in FORWARD mode: our head #${h}, peer ${ep} at #${p} — transitioning to SYNC" DLT_LOG_RESET,
                  ("h", our_head)("ep", state.endpoint)("p", state.peer_head_num));
             transition_to_sync();
@@ -3469,7 +3473,7 @@ void dlt_p2p_node::track_fork_state(const signed_block& block) {
     }
 
     if (_fork_detected &&
-        block.block_num() - _fork_detection_block_num >= FORK_RESOLUTION_BLOCK_THRESHOLD) {
+        block.block_num() - _fork_detection_block_num >= FORK_RESOLUTION_BLOCK_THRESHOLD * slot_scale()) {
         resolve_fork();
         // _fork_detected is cleared inside resolve_fork() only when resolution completes
     }
@@ -4154,11 +4158,12 @@ void dlt_p2p_node::check_wedge_watchdog() {
     // "Stuck behind" gate: far enough behind the CORROBORATED tip to be
     // suspicious.  An under-corroborated tip is 0, collapsing `behind` to 0 and
     // tripping this branch — so an eclipsed / low-peer node never arms.
-    if (behind <= WEDGE_BEHIND_THRESHOLD) {
+    const uint32_t wedge_behind_threshold = WEDGE_BEHIND_THRESHOLD * slot_scale();
+    if (behind <= wedge_behind_threshold) {
         if (_wedge_since != fc::time_point()) {
             ilog(DLT_LOG_GREEN "Wedge watchdog: caught up / under-corroborated (behind=${b} <= ${thr}, "
                  "corroborating_peers=${p}), clearing wedge timer (our_head=#${h})" DLT_LOG_RESET,
-                 ("b", behind)("thr", WEDGE_BEHIND_THRESHOLD)("p", established_peers)("h", our_head));
+                 ("b", behind)("thr", wedge_behind_threshold)("p", established_peers)("h", our_head));
         }
         _wedge_since = fc::time_point();
         return;
@@ -4211,7 +4216,7 @@ void dlt_p2p_node::check_wedge_watchdog() {
              ("rc", rejects_climbed ? "climbing" : "flat")("r", _gap_rejected_total));
     }
 
-    if (!is_wedged(behind, head_advanced, rejects_climbed, elapsed_sec)) return;
+    if (!is_wedged(behind, head_advanced, rejects_climbed, elapsed_sec, wedge_behind_threshold)) return;
 
     // ── Confirmed wedge ──────────────────────────────────────────
     elog(DLT_LOG_RED "Wedge watchdog: CONFIRMED network wedge — head frozen at #${h} for ${s}s while "

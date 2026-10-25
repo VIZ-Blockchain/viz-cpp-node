@@ -102,6 +102,8 @@ Block processing is paused only during Phase 1; API and P2P reads are unaffected
 | Daily | 28,800 | ~24 hours |
 | Weekly | 100,000 | ~3.5 days |
 
+Times assume 3-second blocks. After HF16 (1-second blocks) the same block count covers one third of the time; multiply by three to keep the duration.
+
 ### Method 4: Combining at-block and periodic
 
 Both settings can be active simultaneously:
@@ -197,7 +199,7 @@ In DLT mode the main `block_log` stays empty. The `dlt_block_log` (files `dlt_bl
 - **API access** — `get_block` works for blocks in the rolling window.
 
 ```ini
-dlt-block-log-max-blocks = 100000   # keep last ~3.5 days of blocks
+dlt-block-log-max-blocks = 100000   # ~3.5 days before HF16, ~28 h after; use 300000 to keep 3.5 days
 ```
 
 When the log exceeds this size, old blocks are pruned from the front. The implementation tracks logical file sizes independently of the memory-mapped file to prevent stale-size bugs after thousands of resize cycles.
@@ -347,7 +349,7 @@ snapshot-every-n-blocks = 28800
 snapshot-dir = /data/viz-snapshots
 snapshot-max-age-days = 90
 
-# DLT rolling block log: keep last ~3.5 days
+# DLT rolling block log: ~3.5 days before HF16, ~28 h after (300000 keeps 3.5 days)
 dlt-block-log-max-blocks = 100000
 
 shared-file-size = 4G

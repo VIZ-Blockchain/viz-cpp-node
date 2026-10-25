@@ -110,6 +110,9 @@ public:
     virtual bool           is_emergency_consensus_active() const = 0;
     virtual bool           has_emergency_private_key() const = 0;
     virtual bool           is_dlt_mode() const = 0;
+    /// Live slot length in seconds (3 before HF16, 1 after). Block-count
+    /// thresholds in the node are multiplied by CHAIN_BLOCK_INTERVAL / this.
+    virtual uint32_t       block_interval() const { return CHAIN_BLOCK_INTERVAL; }
 
     // ── Block queries ────────────────────────────────────────────
     virtual fc::optional<signed_block> read_block_by_num(uint32_t block_num) const = 0;
@@ -385,7 +388,7 @@ public:
     // Thresholds feeding the pure wedge predicate below.  Public (with the
     // predicate) so the truth-table unit test can assert the boundaries
     // symbolically rather than hard-coding magic numbers.
-    static constexpr uint32_t       WEDGE_BEHIND_THRESHOLD = 200;  ///< Blocks behind network tip to be considered "behind"
+    static constexpr uint32_t       WEDGE_BEHIND_THRESHOLD = 200;  ///< Blocks (3 s slots) behind network tip to be considered "behind"; × slot_scale() at runtime
     static constexpr uint32_t       WEDGE_CONFIRM_SEC      = 900;  ///< Wedge condition must hold this long (15 min) before acting
 
     // Pure predicate for the wedge state machine — no I/O, table-testable.
@@ -403,8 +406,9 @@ public:
     //     (recency matters: one early rejection then silence must NOT confirm)
     //   - genuine divergence trips all three, and only after WEDGE_CONFIRM_SEC.
     static bool is_wedged(uint32_t behind, bool head_advanced,
-                          bool rejects_climbed, uint32_t elapsed_sec) {
-        return behind > WEDGE_BEHIND_THRESHOLD
+                          bool rejects_climbed, uint32_t elapsed_sec,
+                          uint32_t behind_threshold = WEDGE_BEHIND_THRESHOLD) {
+        return behind > behind_threshold
             && !head_advanced
             && rejects_climbed
             && elapsed_sec >= WEDGE_CONFIRM_SEC;
@@ -440,6 +444,10 @@ private:
 
 private:
     dlt_p2p_delegate*               _delegate = nullptr;
+    /// CHAIN_BLOCK_INTERVAL / live slot (1 pre-HF16, 3 after). Block-count
+    /// thresholds below are written for 3 s slots; multiply by this to keep
+    /// their wall-clock meaning.
+    uint32_t                        slot_scale() const;
     std::string                     _user_agent;
     fc::ip::endpoint                _listen_endpoint;
     bool                            _wait_if_busy = true;
@@ -464,7 +472,7 @@ private:
     static constexpr uint32_t       SYNC_STAGNATION_MAX_RETRIES = 3;
 
     // ── FORWARD fallbehind ──────────────────────────────────────
-    static constexpr uint32_t       FORWARD_FALLBEHIND_THRESHOLD = 2; ///< Blocks behind peer before FORWARD→SYNC
+    static constexpr uint32_t       FORWARD_FALLBEHIND_THRESHOLD = 2; ///< Blocks (3 s slots) behind peer before FORWARD→SYNC; × slot_scale() at runtime
     static constexpr uint32_t       FORWARD_BEHIND_GRACE_SEC = 15;   ///< Grace period after SYNC→FORWARD before checking peers
     fc::time_point                  _forward_entered_time;            ///< When we last entered FORWARD mode
 
@@ -543,7 +551,7 @@ private:
     static constexpr uint32_t       BAN_DURATION_SEC = 3600;
 
     // ── Fork resolution ──────────────────────────────────────────
-    static constexpr uint32_t       FORK_RESOLUTION_BLOCK_THRESHOLD = 42;
+    static constexpr uint32_t       FORK_RESOLUTION_BLOCK_THRESHOLD = 42;  ///< 3 s slots; × slot_scale() at runtime
 
     // ── Gap fill ──────────────────────────────────────────────
     static constexpr uint32_t       GAP_FILL_MAX_BLOCKS = 100;  ///< Max blocks per gap fill request

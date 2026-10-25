@@ -73,6 +73,10 @@ BOOST_AUTO_TEST_CASE(behind_boundary_is_strictly_greater) {
     BOOST_CHECK(!dlt_p2p_node::is_wedged(BEHIND, false, true, LONG_ENOUGH));
     // One block past the threshold does.
     BOOST_CHECK(dlt_p2p_node::is_wedged(BEHIND + 1, false, true, LONG_ENOUGH));
+    // HF16 (1 s slots): the node passes WEDGE_BEHIND_THRESHOLD * 3 so 200 blocks
+    // keeps meaning ~10 minutes; the boundary moves with the threshold.
+    BOOST_CHECK(!dlt_p2p_node::is_wedged(BEHIND * 3, false, true, LONG_ENOUGH, BEHIND * 3));
+    BOOST_CHECK(dlt_p2p_node::is_wedged(BEHIND * 3 + 1, false, true, LONG_ENOUGH, BEHIND * 3));
 }
 
 BOOST_AUTO_TEST_CASE(confirm_boundary_is_inclusive) {

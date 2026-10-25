@@ -95,6 +95,12 @@ public:
         return chain.db()._dlt_mode;
     }
 
+    // Lock-free like get_head_block_num(): a single size_t read that changes
+    // once at HF16; a lock timeout here would throw inside P2P hot paths.
+    uint32_t block_interval() const override {
+        return chain.db().block_interval();
+    }
+
     // ── Block queries ────────────────────────────────────────────
     fc::optional<signed_block> read_block_by_num(uint32_t block_num) const override {
         auto& db = chain.db();

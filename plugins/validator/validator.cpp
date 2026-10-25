@@ -341,7 +341,7 @@ namespace graphene {
 
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
-                uint32_t _fork_collision_timeout_blocks = 21;  // one full validator round (21 blocks = 63s)
+                uint32_t _fork_collision_timeout_blocks = 21;  // one full validator round (21 slots: 63 s before HF16, 21 s after)
 
                 // Minority fork recovery state: tracks when we rolled back to
                 // LIB and are waiting for P2P sync to catch up before
