@@ -1211,9 +1211,16 @@ namespace chain {
                 wlog("Restore: P2P block processing paused");
             }
         } catch (const fc::exception& e) {
-            wlog("Restore: failed to pause P2P: ${e}", ("e", e.to_detail_string()));
+            error = "failed to pause P2P: " + e.to_detail_string();
+        } catch (const std::exception& e) {
+            error = std::string("failed to pause P2P: ") + e.what();
         } catch (...) {
-            wlog("Restore: failed to pause P2P");
+            error = "unknown exception while pausing P2P";
+        }
+        if (!error.empty()) {
+            elog("Restore aborted before database close: ${e}", ("e", error));
+            // No DB mutation or syncing change is safe without a successful pause.
+            return false;
         }
 
         // 2. Gate block production (validator reads is_syncing()).
@@ -1223,8 +1230,19 @@ namespace chain {
         //    reopens it and wipes shared memory for a recovery load.
         try {
             my->db.close(false);
+        } catch (const fc::exception& e) {
+            error = "failed to close database: " + e.to_detail_string();
+        } catch (const std::exception& e) {
+            error = std::string("failed to close database: ") + e.what();
         } catch (...) {
-            wlog("Restore: ignoring error while closing the database");
+            error = "unknown exception while closing database";
+        }
+        if (!error.empty()) {
+            elog("Restore FAILED: ${e}", ("e", error));
+            // close() may have partially changed state. Keep P2P paused and
+            // production gated; neither importing nor resuming is safe now.
+            appbase::app().quit();
+            return false;
         }
 
         my->snapshot_path = snapshot_path;
@@ -1255,12 +1273,10 @@ namespace chain {
             if (error.empty()) error = "snapshot import did not produce state";
             elog("Restore FAILED: ${e}", ("e", error));
             // P2P stays paused and the syncing flag stays set: the state on disk is not
-            // safe to consume. do_snapshot_load() has already asked the process to quit;
-            // if it did not, the node must not resume as if nothing happened.
+            // safe to consume. do_snapshot_load() may already have requested shutdown;
+            // even if it did not, the node must not resume as if nothing happened.
             return false;
         }
-
-        my->currently_syncing.store(false, std::memory_order_release);
 
         // 4. Resume P2P. reset_peers_after_recovery() clears soft bans and stale sync
         //    state, so peers can serve blocks immediately after the import.
@@ -1271,10 +1287,21 @@ namespace chain {
                 p2p_plug->resume_block_processing();
                 wlog("Restore: P2P block processing resumed");
             }
+        } catch (const fc::exception& e) {
+            error = "failed to resume P2P: " + e.to_detail_string();
+        } catch (const std::exception& e) {
+            error = std::string("failed to resume P2P: ") + e.what();
         } catch (...) {
-            wlog("Restore: failed to resume P2P");
+            error = "unknown exception while resuming P2P";
+        }
+        if (!error.empty()) {
+            // Resume may have changed P2P flags before throwing. Retain the
+            // production gate; do not report this as a resumed node.
+            elog("Restore imported state but failed to resume: ${e}", ("e", error));
+            return false;
         }
 
+        my->currently_syncing.store(false, std::memory_order_release);
         wlog("=== RESTORE COMPLETE: node resumed at block ${n} ===", ("n", head));
         return true;
     }

@@ -2,6 +2,7 @@
 
 #include <graphene/network/dlt_p2p_messages.hpp>
 #include <graphene/network/dlt_p2p_peer_state.hpp>
+#include <graphene/network/dlt_vote_cache.hpp>
 #include <graphene/network/message.hpp>
 
 #include <graphene/protocol/block.hpp>
@@ -506,10 +507,11 @@ private:
 
     // ── Mempool ──────────────────────────────────────────────────
     std::map<graphene::protocol::transaction_id_type, dlt_mempool_entry> _mempool_by_id;
-    // Relay dedup for block votes: digest of the vote message -> seen time.
-    // Bounded by pruning entries older than DLT_BLOCK_VOTE_SEEN_SEC.
-    std::map<fc::sha256, fc::time_point> _block_votes_seen;
-    std::map<fc::sha256, fc::time_point> _timeout_votes_seen;
+    // Accepted vote hashes only, with hard capacity and bounded expiry work.
+    dlt_vote_cache _block_votes_seen;
+    dlt_vote_cache _timeout_votes_seen;
+    // Local accepted retries must not be evicted by remote relay traffic.
+    dlt_vote_cache _local_block_votes_seen;
     std::multimap<fc::time_point_sec, graphene::protocol::transaction_id_type> _mempool_by_expiry;
     uint32_t                        _mempool_total_bytes = 0;
 

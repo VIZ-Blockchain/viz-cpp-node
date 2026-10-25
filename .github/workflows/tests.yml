@@ -23,6 +23,15 @@ jobs:
       - name: P2P corruption recovery regression (offline)
         run: python3 tests/p2p/test_corruption_recovery.py -v
 
+      - name: HF16 offline regression checks
+        run: |
+          set -euo pipefail
+          python3 tests/p2p/test_vote_ingress.py
+          python3 tests/validator/test_signing_cache.py
+          python3 tests/chain/test_snapshot_restore.py
+          python3 tests/consensus_sim/production_safety_offline.py
+          node --test tests/block_log/archive_merge.test.cjs
+
       - name: Install build deps
         run: |
           set -euo pipefail
@@ -125,7 +134,7 @@ jobs:
           set -euo pipefail
           cd build
           if [ "${{ matrix.validators }}" = "2" ]; then
-            tests/consensus_sim/consensus_sim_tests --run_test=hf16_boundary_suite --log_level=test_suite
+            tests/consensus_sim/consensus_sim_tests --run_test=hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite --log_level=test_suite
           else
             ctest -R '^consensus_sim$' --output-on-failure
           fi
