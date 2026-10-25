@@ -28,6 +28,7 @@ jobs:
           set -euo pipefail
           python3 tests/p2p/test_vote_ingress.py
           python3 tests/validator/test_signing_cache.py
+          python3 tests/chain/test_snapshot_restore.py
           python3 tests/consensus_sim/production_safety_offline.py
           node --test tests/block_log/archive_merge.test.cjs
 

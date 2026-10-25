@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline real-handler regression; fake time/hash/delegate, never a live node.
 
---baseline extracts the committed versions of the production handlers/members.
+--baseline extracts release 4.2.0 (d4fd4bcd), not the moving current HEAD.
 --probe reports resource measurements without imposing post-fix assertions.
 SANITIZE=1 enables ASan/UBSan. No production source is rewritten by this runner.
 """
@@ -219,7 +219,7 @@ def main():
     args = parser.parse_args()
     def source(path):
         if args.baseline:
-            return subprocess.check_output(['git', 'show', 'HEAD:' + path], cwd=ROOT, text=True)
+            return subprocess.check_output(['git', 'show', 'd4fd4bcd:' + path], cwd=ROOT, text=True)
         return (ROOT / path).read_text()
     cpp, hpp = source(CPP), source(HPP)
     signatures = ['void dlt_p2p_node::' + name + '(' for name in (

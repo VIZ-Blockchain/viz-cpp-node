@@ -242,6 +242,61 @@ P2P sync fills the gap to the live chain head.
 
 ---
 
+## Admin-Requested In-Process Restore
+
+`admin.snapshot.restore` schedules a restore on the snapshot worker thread. Its
+`status: started` response means the job was accepted, not that import or resume
+succeeded. `admin.snapshot.status` exposes whether the job is still running;
+completion and failure details are logged by the worker.
+
+The chain restore method applies these failure boundaries:
+
+- With a started P2P plugin, a synchronous pause exception aborts before database
+  close/import and leaves the pre-restore syncing flag unchanged. Missing or
+  unstarted P2P is skipped, as before.
+- After pause, block production is gated through `is_syncing()`. If database
+  close throws, the method does not import or resume: close may have partially
+  changed state. It keeps the gate set and requests application shutdown.
+- An import exception, zero imported head, or unreadable head returns failure
+  without resuming P2P or clearing the production gate. Import handling may
+  already have requested shutdown; the restore method does not assume that it
+  has, and does not automatically recover from this state.
+- An immediate peer-reset/resume exception returns failure and retains the
+  production gate. P2P flags may already have changed before the exception; this
+  is not a guarantee that P2P remains paused after a failed resume.
+- Only after a nonzero head and no immediate resume error does the method clear
+  the syncing gate and report success. The existing post-pause P2P catchup gate
+  still applies.
+
+These are local error-handling boundaries, **not whole-node quiescence**. The
+recovery mutex only excludes cooperating users; pausing P2P and setting the
+production gate do not establish that all API calls, transactions or already
+in-flight validator/database work have drained. P2P reset and the resume queue
+are asynchronous, so later errors in those posted tasks are not observed by
+this method. Plugin lifecycle changes during restore are not synchronized here.
+After a post-close failure, inspect the logs and use the normal stopped-node
+recovery procedure rather than assuming the old database is intact.
+
+### Offline regression
+
+Run from the repository root with a C++17 compiler available:
+
+```bash
+python3 tests/chain/test_snapshot_restore.py
+```
+
+The test extracts the production `restore_from_snapshot()` method and compiles
+it against controlled storage, P2P, filesystem and application dependencies. It
+covers preflight, absent/unstarted P2P, pause exceptions with both initial syncing
+values, partially mutating close failures, failed/empty import, unreadable head,
+peer-reset/resume exceptions (including partially changed resume flags), and
+successful restore ordering. It starts no node and performs no real DB restore;
+it does not prove thread quiescence or test the queued P2P task bodies.
+`CXX` selects the compiler; `RESTORE_SOURCE` can select an alternate `plugin.cpp`
+for baseline regression checks.
+
+---
+
 ## Automatic Runtime Recovery: `--auto-recover-from-snapshot`
 
 Enabled by default. When shared memory corruption is detected during block processing or block generation, the node:
