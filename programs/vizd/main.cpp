@@ -1,6 +1,7 @@
 #include <appbase/application.hpp>
 #include <graphene/protocol/types.hpp>
 #include <fc/log/logger_config.hpp>
+#include <graphene/utilities/file_appender_options.hpp>
 #include <graphene/utilities/key_conversion.hpp>
 #include <fc/git_revision.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
@@ -194,11 +195,12 @@ void set_logging_program_options(bpo::options_description &options) {
         ("log.console_appender.stderr.stream", bpo::value<string>()->default_value("std_error"), "console appender stream")
         ("log.file_appender.p2p.", "declare an appender named \"p2p\" that writes messages to p2p.log")
         ("log.file_appender.p2p.filename", bpo::value<string>()->default_value("logs/p2p/p2p.log"), "filename can be absolute or relative to this config file")
-        // The following 4 options can be implemented in load_logging_config()
-        // ("log.file_appender.p2p.flush", bpo::value<bool>()->default_value(true), "use flush (true|false|yes|no|1|0)")
-        // ("log.file_appender.p2p.rotate", bpo::value<bool>()->default_value(true), "use rotate (true|false|yes|no|1|0)")
-        // ("log.file_appender.p2p.rotation_interval", bpo::value<int64_t>()->default_value(fc::hours(1).to_seconds()), "rotation interval in seconds")
-        // ("log.file_appender.p2p.rotation_limit", bpo::value<int64_t>()->default_value(fc::days(1).to_seconds()), "rotation limit in seconds")
+        // Besides filename, a file appender section accepts flush, rotate,
+        // rotation_interval and rotation_limit — they are read by load_logging_config()
+        // (graphene/utilities/file_appender_options.hpp). They are not declared here
+        // because the config file is parsed with allow_unregistered: a declaration here
+        // would only advertise command-line flags that do not reach the appender.
+        // An unknown key in such a section is reported to stderr rather than ignored.
 
         // Optional bounded file appender: one file, always the last max_lines lines.
         // Nodes that do not configure this section behave exactly as before.
@@ -285,15 +287,15 @@ fc::optional<fc::logging_config> load_logging_config(const boost::filesystem::pa
                     file_name = fc::absolute(pwd).parent_path() / file_name;
                 }
 
-                // construct a default file appender config here
-                // filename will be taken from ini file, everything else hard-coded here
-                fc::file_appender::config file_appender_config;
-                file_appender_config.filename = file_name;
-                // NOTE: the following 4 options can be loaded too, sample code in cli_wallet
-                file_appender_config.flush = true;
-                file_appender_config.rotate = true;
-                file_appender_config.rotation_interval = fc::hours(1);
-                file_appender_config.rotation_limit = fc::days(1);
+                // filename and the four rotation options come from the ini; keys the
+                // section does not set keep the historical defaults. Invalid values and
+                // unknown keys are reported to stderr instead of being silently ignored.
+                std::vector<std::string> appender_warnings;
+                fc::file_appender::config file_appender_config =
+                   graphene::utilities::make_file_appender_config(section_name, file_name, options,
+                                                                  &appender_warnings);
+                for (const std::string& warning : appender_warnings)
+                   std::cerr << warning << "\n";
                 logging_config.appenders.emplace_back(file_appender_name, "file", fc::variant(file_appender_config));
                 found_logging_config = true;
             } else if (boost::starts_with(section_name, capped_file_appender_section_prefix)) {

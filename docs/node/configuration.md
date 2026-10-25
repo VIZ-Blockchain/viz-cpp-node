@@ -197,8 +197,29 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
-The `file` appender rotates by time: a new file every hour, kept for a day. Since
-2026-10-25 the rotation is serviced by the appender's own thread, so it fires regardless of
+The `file` appender rotates by time: a new file every hour, kept for a day.
+
+Both numbers and both switches are configuration of the section, not constants:
+
+```ini
+log.file_appender.p2p.filename = logs/p2p/p2p.log
+log.file_appender.p2p.flush = true
+log.file_appender.p2p.rotate = true
+log.file_appender.p2p.rotation_interval = 3600   # seconds in one file
+log.file_appender.p2p.rotation_limit = 86400     # seconds rotated files are kept
+```
+
+`flush`, `rotate`, `rotation_interval` and `rotation_limit` are read from the ini; a section
+without them keeps the historical values above, so an existing config behaves exactly as
+before. Rotation requires `rotation_interval` >= 1 s and `rotation_limit` >=
+`rotation_interval` (the appender asserts this pair). A value that cannot be parsed, a
+violating pair, or an unknown key in a `log.file_appender.*` section is reported on stderr
+and the default is kept — a typo must not cost the operator the log file, and a key that
+does nothing is no longer accepted in silence. Binaries built before 2026-10-25 read only
+`filename`: they honoured none of these keys and always rotated hourly with a one-day
+retention.
+
+Since 2026-10-25 the rotation is serviced by the appender's own thread, so it fires regardless of
 what the main thread does. Binaries built before that date only rotated while the fc fiber
 queue was serviced, and `vizd` does not service it after startup (measured 2026-10-20: a
 testnet node wrote one 37 MB file in nine hours at `info`, with no hourly files; the mainnet
