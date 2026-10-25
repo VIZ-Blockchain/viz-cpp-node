@@ -197,12 +197,14 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
-The `file` appender is configured to rotate by time (a new file every hour, kept for a
-day), but the rotation only fires while the fc fiber queue is serviced, and `vizd` does not
-service it after startup (measured 2026-10-20: a testnet node wrote one 37 MB file in nine
-hours at `info`, with no hourly files; the mainnet node ran four days without a new one).
-Do not count on it to bound a file, and be aware that at `debug` a node can write
-gigabytes per hour. If all you need is the recent tail, use the optional capped appender:
+The `file` appender rotates by time: a new file every hour, kept for a day. Since
+2026-10-25 the rotation is serviced by the appender's own thread, so it fires regardless of
+what the main thread does. Binaries built before that date only rotated while the fc fiber
+queue was serviced, and `vizd` does not service it after startup (measured 2026-10-20: a
+testnet node wrote one 37 MB file in nine hours at `info`, with no hourly files; the mainnet
+node ran four days without a new one) — such nodes still need external logrotate. Either
+way, rotation bounds the file by time, not by size: at `debug` a node can write gigabytes
+per hour. If all you need is the recent tail, use the optional capped appender:
 a single file that keeps only the last `max_lines` lines (default 10000, `0` = unlimited).
 It counts lines as it writes and compacts itself in place, so the file stays between
 `max_lines` and about 1.1 x `max_lines`, with no timer involved. Nodes whose config has no
