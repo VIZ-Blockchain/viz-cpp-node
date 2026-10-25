@@ -371,6 +371,15 @@ namespace graphene { namespace chain {
             boost::signals2::signal<void(const signed_block &), applied_block_timing_combiner> applied_block;
 
             /**
+             * Emitted synchronously after a successful push_block has selected its
+             * committed head, before pending transactions are restored. Includes
+             * fork switches and changes not represented in the incoming block.
+             * Runs under the database write lock: callbacks must not yield, acquire
+             * database locks, or retain references into chain state.
+             */
+            fc::signal<void()> committed_chain_state;
+
+            /**
              * Emitted when dlt_block_log is reset due to a gap between
              * dlt_block_log end and fork_db start.  The snapshot plugin
              * listens for this to create a fresh snapshot so other DLT

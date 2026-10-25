@@ -28,6 +28,7 @@
 
 #include <websocketpp/config/asio.hpp>
 #include <websocketpp/server.hpp>
+#include <graphene/plugins/node_admin/http_only.hpp>
 
 #include <algorithm>
 #include <array>
@@ -2467,7 +2468,7 @@ void node_admin_plugin::impl::start() {
         }
         connections.insert(hdl);
     });
-    server.set_http_handler([this](connection_hdl hdl) { this->handle_http(hdl); });
+    util::configure_http_only(server, [this](connection_hdl hdl) { this->handle_http(hdl); });
 
     server.listen(*endpoint);
     server.start_accept();

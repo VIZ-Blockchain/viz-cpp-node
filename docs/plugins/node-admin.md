@@ -29,6 +29,10 @@ request arrives **from 127.0.0.1**, so checking the source address on the public
 protects nothing. `node_admin` therefore opens its own HTTP listener, bound to loopback by
 default, that is never proxied.
 
+This listener is HTTP-only, including MCP. WebSocket upgrade requests are rejected
+with HTTP 403 and the connection is closed, even when a bearer token is supplied;
+there is no admin WebSocket API on this port.
+
 An endpoint on a non-loopback address is refused unless `admin-allow-remote = true` is set
 explicitly. A bearer token on an open port is a different threat model, not a convenience.
 

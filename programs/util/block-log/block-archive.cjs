@@ -116,17 +116,19 @@ function merge(files, from, to, out) {
   let next = from;
   for (const f of sel) {
     if (f.first > next) { console.error(`GAP ${next}-${f.first - 1}, merge stopped`); process.exit(1); }
-    next = Math.min(to, f.last) + 1;
+    next = Math.max(next, Math.min(to, f.last) + 1);
   }
   if (!sel.length || next <= to) { console.error(`archive does not cover ${from}-${to}`); process.exit(1); }
   const log = fs.openSync(logPath, 'wx'), idx = fs.openSync(idxPath, 'wx');
   fs.writeSync(idx, u64(from));
   let pos = 0, count = 0;
+  next = from;
   for (const f of sel) {
     const src = fs.openSync(f.path, 'r');
     const ix = fs.readFileSync(f.path + '.index');
     const size = fs.fstatSync(src).size;
-    const a = Math.max(from, f.first), z = Math.min(to, f.last);
+    const a = Math.max(next, f.first), z = Math.min(to, f.last);
+    next = Math.max(next, z + 1);
     for (let n = a; n <= z; n++) {
       const i = 8 + (n - f.first) * 8;
       const start = Number(ix.readBigUInt64LE(i));
@@ -160,7 +162,7 @@ function main() {
     process.exit(1);
   }
   const from = o.from ? Number(o.from) : files[0].first;
-  const to = o.to ? Number(o.to) : files[files.length - 1].last;
+  const to = o.to ? Number(o.to) : files.reduce((last, f) => Math.max(last, f.last), files[0].last);
 
   if (cmd === 'info') {
     let prev = null;

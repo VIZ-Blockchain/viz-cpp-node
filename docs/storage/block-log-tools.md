@@ -75,7 +75,7 @@ node block-archive.cjs merge /var/lib/vizd/block-archive --from=83700000 --out=/
 
 Order matters: the merged log must reach at least the snapshot block minus one. If it ends earlier, snapshot import sees a gap and resets the log (`plugins/snapshot/plugin.cpp`, "gap detected"). If it ends after the snapshot, the node replays the extra blocks locally before P2P sync.
 
-It refuses gaps in the range (`GAP a-b, merge stopped`) and never overwrites existing files.
+It refuses gaps in the range (`GAP a-b, merge stopped`) and never overwrites existing files. Overlapping ranges emit each height once, including nested ranges. Without `--to`, the upper bound is the highest archived height, not the last filename's end.
 
 ### Filters
 

@@ -6,6 +6,12 @@ DLT P2P uses a binary protocol over raw TCP. Each message is framed with a 4-byt
 
 ---
 
+## Vote relay bounds
+
+Block and timeout vote relay caches retain only chain-accepted hashes. Each cache has at most 8192 entries and a 120-second lifetime. Expiry cleanup examines at most 64 oldest entries per lookup.
+
+Accepted local block votes have a separate bounded retry cache, so remote relay churn cannot suppress their rebroadcast. Malformed names/heights use the existing strike policy; a generic delegate refusal is not proof of peer misconduct.
+
 ## Message Type Summary
 
 | Type ID | Name | Direction | Purpose |

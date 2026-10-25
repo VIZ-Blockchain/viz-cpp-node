@@ -1753,6 +1753,7 @@ namespace graphene { namespace chain {
                         try {
                             result = _push_block(new_block, skip);
                             check_free_memory(false, new_block.block_num());
+                            CHAIN_TRY_NOTIFY(committed_chain_state);
                         } catch (const fc::exception &e) {
                             auto msg = std::string(e.what());
                             // TODO: there is no easy way to catch boost::interprocess::bad_alloc
@@ -2857,6 +2858,121 @@ namespace graphene { namespace chain {
             // while no pending session is active (see the assert below).
             public_key_type committed_signing_key;
 
+            auto assemble_header = [&]() {
+                pending_block.previous = head_block_id();
+                pending_block.timestamp = when;
+                pending_block.validator = validator_owner;
+
+                const auto &validator = get_validator(validator_owner);
+
+                // The header of THIS block is validated against the validator signing key
+                // committed at the previous (head) block — a pending validator_update that
+                // changes our own key takes effect only for the NEXT block. Verify against
+                // the committed object (visible again after the session reset above), not
+                // against the session-visible one used at the top of this function.
+                if (!(skip & skip_validator_signature))
+                    FC_ASSERT(committed_signing_key == block_signing_private_key.get_public_key(),
+                              "Block signing key does not match the signing key committed at head "
+                              "(a pending validator_update must not change the key used to sign "
+                              "the current block)",
+                              ("validator", validator_owner)
+                              ("committed_key", committed_signing_key)
+                              ("signing_key", block_signing_private_key.get_public_key()));
+
+                if (validator.running_version != CHAIN_VERSION) {
+                    pending_block.extensions.insert(block_header_extensions(CHAIN_VERSION));
+                }
+
+                // HF16: hand the turn over only on a certified parent. The validator
+                // plugin waits for the QC before calling us; reaching here without
+                // one is a bug, and the block would be rejected anyway.
+                if (block_needs_parent_qc(validator_owner)) {
+                    fc::optional<protocol::block_qc_certificate> cert = qc_override;
+                    if (!cert) cert = parent_qc_for_next_block(validator_owner);
+                    FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
+                              ("n", head_block_num()));
+                    FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
+                    pending_block.extensions.insert(block_header_extensions(*cert));
+                    if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
+
+                    // Double-vote proofs: newest round per validator that the chain has
+                    // not punished yet; a few per block keeps headers small.
+                    std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                    const uint32_t own_round = round_of(when);
+                    std::map<account_name_type, const protocol::block_equivocation_proof *> pick;
+                    for (auto it = _pending_equivocations.begin(); it != _pending_equivocations.end(); ) {
+                        const auto &p = it->second;
+                        const auto *v = find_validator(p.validator);
+                        if (!v || p.round <= v->last_equivocation_round || uint64_t(p.round) + 3600 / block_interval() < own_round) {
+                            it = _pending_equivocations.erase(it);          // punished already or too old
+                            continue;
+                        }
+                        // Votes may arrive up to 64 rounds ahead of head. Keep such
+                        // evidence queued, but it cannot be punished in this block.
+                        if (p.round >= own_round) {
+                            ++it;
+                            continue;
+                        }
+                        // The schedule/key may have changed since these votes arrived.
+                        // Match apply_equivocation_proofs() against committed head state,
+                        // not pending validator_update transactions.
+                        if (!verify_block_vote(p.first.block_num, p.first.block_id, p.round, p.validator, p.first.signature) ||
+                            !verify_block_vote(p.second.block_num, p.second.block_id, p.round, p.validator, p.second.signature)) {
+                            it = _pending_equivocations.erase(it);
+                            continue;
+                        }
+                        auto &slot = pick[p.validator];
+                        if (!slot || slot->round < p.round) slot = &p;
+                        ++it;
+                    }
+                    size_t n = 0;
+                    for (const auto &kv : pick) {
+                        if (n++ >= 5) break;
+                        pending_block.extensions.insert(block_header_extensions(*kv.second));
+                    }
+                }
+                FC_ASSERT(!tc || block_needs_parent_qc(validator_owner),
+                          "A TC goes only next to a parent QC");
+
+                const auto &hfp = get_hardfork_property_object();
+
+                // Emergency committee validator should NOT vote for future hardforks
+                // via block extensions. Its on-chain vote is set to
+                // current_hardfork_version (status quo) and is synced every
+                // schedule update. Auto-injection would overwrite this and
+                // make committee vote for the next hardfork, defeating its
+                // neutral-voter design.
+                const auto &dgp_block = get_dynamic_global_properties();
+                bool is_emergency_committee =
+                    has_hardfork(CHAIN_HARDFORK_12) &&
+                    dgp_block.emergency_consensus_active &&
+                    validator_owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
+
+                if (!is_emergency_committee) {
+                    if (hfp.current_hardfork_version <
+                        CHAIN_HARDFORK_VERSION // Binary is newer hardfork than has been applied
+                        && (validator.hardfork_version_vote !=
+                            _hardfork_versions[hfp.last_hardfork + 1] ||
+                            validator.hardfork_time_vote !=
+                            _hardfork_times[hfp.last_hardfork +
+                                            1])) // Witness vote does not match binary configuration
+                    {
+                        // Make vote match binary configuration
+                        pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[
+                                hfp.last_hardfork + 1], _hardfork_times[
+                                hfp.last_hardfork + 1])));
+                    } else if (hfp.current_hardfork_version ==
+                               CHAIN_HARDFORK_VERSION // Binary does not know of a new hardfork
+                               && validator.hardfork_version_vote >
+                                  CHAIN_HARDFORK_VERSION) // Voting for hardfork in the future, that we do not know of...
+                    {
+                        // Make vote match binary configuration. This is vote to not apply the new hardfork.
+                        pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[hfp.last_hardfork], _hardfork_times[hfp.last_hardfork])));
+                    }
+                }
+
+            };
+
             with_strong_write_lock([&]() {
                 //
                 // The following code throws away existing pending_tx_session and
@@ -2870,6 +2986,15 @@ namespace graphene { namespace chain {
                 // re-apply pending transactions in this method.
                 //
                 _pending_tx_session.reset();
+                if (has_hardfork(CHAIN_HARDFORK_16)) {
+                    committed_signing_key = get_validator(validator_owner).signing_key;
+                    assemble_header();
+                    // QC, TC, proofs and version votes are fixed before packing
+                    // transactions. Reserve four additional bytes for growth of
+                    // the transaction-vector varuint (one byte is already packed).
+                    total_block_size = fc::raw::pack_size(pending_block) + 4;
+                    maximum_block_size = std::min(get_dynamic_global_properties().maximum_block_size, uint32_t(CHAIN_BLOCK_SIZE));
+                }
                 _pending_tx_session = start_undo_session();
 
                 uint64_t postponed_tx_count = 0;
@@ -2930,104 +3055,8 @@ namespace graphene { namespace chain {
             // However, the push_block() call below will re-create the
             // _pending_tx_session.
 
-            pending_block.previous = head_block_id();
-            pending_block.timestamp = when;
+            if (!has_hardfork(CHAIN_HARDFORK_16)) assemble_header();
             pending_block.transaction_merkle_root = pending_block.calculate_merkle_root();
-            pending_block.validator = validator_owner;
-
-            const auto &validator = get_validator(validator_owner);
-
-            // The header of THIS block is validated against the validator signing key
-            // committed at the previous (head) block — a pending validator_update that
-            // changes our own key takes effect only for the NEXT block. Verify against
-            // the committed object (visible again after the session reset above), not
-            // against the session-visible one used at the top of this function.
-            if (!(skip & skip_validator_signature))
-                FC_ASSERT(committed_signing_key == block_signing_private_key.get_public_key(),
-                          "Block signing key does not match the signing key committed at head "
-                          "(a pending validator_update must not change the key used to sign "
-                          "the current block)",
-                          ("validator", validator_owner)
-                          ("committed_key", committed_signing_key)
-                          ("signing_key", block_signing_private_key.get_public_key()));
-
-            if (validator.running_version != CHAIN_VERSION) {
-                pending_block.extensions.insert(block_header_extensions(CHAIN_VERSION));
-            }
-
-            // HF16: hand the turn over only on a certified parent. The validator
-            // plugin waits for the QC before calling us; reaching here without
-            // one is a bug, and the block would be rejected anyway.
-            if (block_needs_parent_qc(validator_owner)) {
-                fc::optional<protocol::block_qc_certificate> cert = qc_override;
-                if (!cert) cert = parent_qc_for_next_block(validator_owner);
-                FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
-                          ("n", head_block_num()));
-                FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
-                pending_block.extensions.insert(block_header_extensions(*cert));
-                if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
-
-                // Double-vote proofs: newest round per validator that the chain has
-                // not punished yet; a few per block keeps headers small.
-                std::lock_guard<std::mutex> guard(_block_votes_mutex);
-                const uint32_t own_round = round_of(when);
-                std::map<account_name_type, const protocol::block_equivocation_proof *> pick;
-                for (auto it = _pending_equivocations.begin(); it != _pending_equivocations.end(); ) {
-                    const auto &p = it->second;
-                    const auto *v = find_validator(p.validator);
-                    if (!v || p.round <= v->last_equivocation_round || uint64_t(p.round) + 3600 / block_interval() < own_round) {
-                        it = _pending_equivocations.erase(it);          // punished already or too old
-                        continue;
-                    }
-                    auto &slot = pick[p.validator];
-                    if (!slot || slot->round < p.round) slot = &p;
-                    ++it;
-                }
-                size_t n = 0;
-                for (const auto &kv : pick) {
-                    if (n++ >= 5) break;
-                    pending_block.extensions.insert(block_header_extensions(*kv.second));
-                }
-            }
-            FC_ASSERT(!tc || block_needs_parent_qc(validator_owner),
-                      "A TC goes only next to a parent QC");
-
-            const auto &hfp = get_hardfork_property_object();
-
-            // Emergency committee validator should NOT vote for future hardforks
-            // via block extensions. Its on-chain vote is set to
-            // current_hardfork_version (status quo) and is synced every
-            // schedule update. Auto-injection would overwrite this and
-            // make committee vote for the next hardfork, defeating its
-            // neutral-voter design.
-            const auto &dgp_block = get_dynamic_global_properties();
-            bool is_emergency_committee =
-                has_hardfork(CHAIN_HARDFORK_12) &&
-                dgp_block.emergency_consensus_active &&
-                validator_owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
-
-            if (!is_emergency_committee) {
-                if (hfp.current_hardfork_version <
-                    CHAIN_HARDFORK_VERSION // Binary is newer hardfork than has been applied
-                    && (validator.hardfork_version_vote !=
-                        _hardfork_versions[hfp.last_hardfork + 1] ||
-                        validator.hardfork_time_vote !=
-                        _hardfork_times[hfp.last_hardfork +
-                                        1])) // Witness vote does not match binary configuration
-                {
-                    // Make vote match binary configuration
-                    pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[
-                            hfp.last_hardfork + 1], _hardfork_times[
-                            hfp.last_hardfork + 1])));
-                } else if (hfp.current_hardfork_version ==
-                           CHAIN_HARDFORK_VERSION // Binary does not know of a new hardfork
-                           && validator.hardfork_version_vote >
-                              CHAIN_HARDFORK_VERSION) // Voting for hardfork in the future, that we do not know of...
-                {
-                    // Make vote match binary configuration. This is vote to not apply the new hardfork.
-                    pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[hfp.last_hardfork], _hardfork_times[hfp.last_hardfork])));
-                }
-            }
 
             if (!(skip & skip_validator_signature)) {
                 pending_block.sign(block_signing_private_key);
@@ -7675,6 +7704,18 @@ namespace graphene { namespace chain {
                 // compile-time 3 s step never matched there, so QC-LIB was always 0
                 // and LIB fell back to post-validation (stand: lag exactly 14 blocks).
                 if (round_of(cb->timestamp) != round_of(pb->timestamp) + 1) continue;
+                // The late-QC exception permits a child justified by its grandparent.
+                // A locally collected QC for the parent does not prove that the
+                // child's quorum learned it before voting. Require that causal link
+                // in the signed child header, not merely two adjacent cached QCs.
+                bool carries_parent_qc = false;
+                for (const auto &ext : cb->extensions) {
+                    if (ext.which() != 3) continue;
+                    const auto &qc = ext.get<protocol::block_qc_certificate>();
+                    if (qc.block_num == parent.first && qc.block_id == parent.second &&
+                        qc.round == round_of(pb->timestamp)) carries_parent_qc = true;
+                }
+                if (!carries_parent_qc) continue;
                 return parent.first;
             }
             return 0;

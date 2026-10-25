@@ -4,6 +4,10 @@ VIZ Ledger uses Boost.Test for unit tests and provides utility programs for inte
 
 ---
 
+## Pull-request Docker builds
+
+Fork pull requests build images without registry login or publication. Internal pull requests retain Docker Hub login and image publication. The separate master/release workflows are unchanged.
+
 ## Unit Tests
 
 The unit test binary is built via CMake as part of the `libraries/chain` target.

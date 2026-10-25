@@ -30,6 +30,43 @@ The chain code has pre-existing ASan/UBSan findings (a base-pointer delete in
 with `ASAN_OPTIONS=new_delete_type_mismatch=0:detect_leaks=0
 UBSAN_OPTIONS=halt_on_error=0:print_stacktrace=0` to get past them.
 
+## HF16 production safety regressions
+
+Build with `BUILD_TESTNET=ON` and `BUILD_CONSENSUS_TESTS=ON`, including
+`scenarios/test_hf16_production_safety.cpp` in the testnet `SCENARIO_SOURCES`, then run:
+
+```
+./tests/consensus_sim/consensus_sim_tests --run_test=hf16_production_safety_suite
+```
+
+These native scenarios exercise `database::generate_block` with real signatures
+and FC serialization: future/equal-round evidence is deferred until a strictly
+later round; old-key evidence is discarded; header certificates/proofs are
+budgeted before transactions, and postponed transactions remain pending. The
+key-rotation and near-full-block scenarios use isolated fixture state changes;
+none connects to a network or uses a live database.
+
+HF16 production assembles its header against committed head state before
+re-applying pending transactions. The budget includes QC/TC, proofs, version
+extensions, the producer name, and transaction-count varuint growth, and is
+bounded by both configured and absolute block limits. Consensus validation,
+wire formats and pre-HF16 packing policy are unchanged.
+
+For a fast offline check without the native dependency build:
+
+```
+python3 tests/consensus_sim/production_safety_offline.py
+```
+
+This compiles the actual evidence-selection and transaction-packing loops from
+`database.cpp` with explicit mock state/size/signature functions, and checks
+header/budget ordering. It covers rejection/retention boundaries, replaced
+keys, the absolute size cap and count-prefix growth. It **does not** execute the
+database, actual signature recovery, FC serialization or consensus validation,
+and does not replace the native scenarios. `PRODUCTION_SOURCE=/path/database.cpp`
+can select an unmodified baseline for a RED comparison. Temporary compiler
+artifacts use `TMPDIR`, or the platform's default temporary directory.
+
 ## Coverage
 
 ```
