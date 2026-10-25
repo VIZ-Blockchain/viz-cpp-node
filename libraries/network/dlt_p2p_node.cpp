@@ -2547,8 +2547,13 @@ void dlt_p2p_node::broadcast_block_post_validation(
     // die in the relay dedup and in the pool's one-vote-per-round check, so it
     // goes straight to the peers. Peers that already have it drop it there.
     const auto key = fc::sha256::hash(fc::raw::pack(msg));
-    if (_block_votes_seen.count(key)) {
-        _block_votes_seen[key] = fc::time_point::now();
+    const auto now = fc::time_point::now();
+    if (_local_block_votes_seen.contains(key, now)) {
+        gossip_to_capable(message(msg), DLT_CAP_BLOCK_VOTE, INVALID_PEER_ID);
+        return;
+    }
+    if (_block_votes_seen.contains(key, now)) {
+        _local_block_votes_seen.insert(key, now);
         gossip_to_capable(message(msg), DLT_CAP_BLOCK_VOTE, INVALID_PEER_ID);
         return;
     }
@@ -2560,18 +2565,14 @@ void dlt_p2p_node::on_dlt_block_vote(peer_id peer, const dlt_block_vote_message&
 }
 
 void dlt_p2p_node::process_block_vote(const dlt_block_vote_message& msg, peer_id from) {
-    static constexpr int64_t DLT_BLOCK_VOTE_SEEN_SEC = 120;
     const auto now = fc::time_point::now();
-
-    // Prune the relay-dedup map. Votes older than two minutes are far below LIB
-    // at any block interval we run, so re-accepting one is harmless (the pool
-    // already counted it or dropped it as stale).
-    for (auto it = _block_votes_seen.begin(); it != _block_votes_seen.end(); ) {
-        if (now - it->second > fc::seconds(DLT_BLOCK_VOTE_SEEN_SEC)) it = _block_votes_seen.erase(it);
-        else ++it;
+    if (msg.validator.empty() || msg.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH ||
+        msg.block_num == 0 || graphene::protocol::block_header::num_from_id(msg.block_id) != msg.block_num) {
+        if (from != INVALID_PEER_ID) record_packet_result(from, false);
+        return;
     }
     const auto key = fc::sha256::hash(fc::raw::pack(msg));
-    if (!_block_votes_seen.emplace(key, now).second) return;   // already handled
+    if (_block_votes_seen.contains(key, now)) return;
 
     // Verification lives in the chain: scheduled validator + signature over
     // block_vote_digest. An invalid vote is neither counted nor relayed, so a
@@ -2584,6 +2585,10 @@ void dlt_p2p_node::process_block_vote(const dlt_block_vote_message& msg, peer_id
         return;
     }
 
+    _block_votes_seen.insert(key, now);
+    // Socket writes may yield to remote traffic. Enrol accepted local retries
+    // before gossip, while the accepted hash cannot yet have been evicted.
+    if (from == INVALID_PEER_ID) _local_block_votes_seen.insert(key, now);
     // Gossip to capable fork peers only: a peer without DLT_CAP_BLOCK_VOTE
     // would score the message as an unknown packet against us.
     gossip_to_capable(message(msg), DLT_CAP_BLOCK_VOTE, from);
@@ -2619,14 +2624,13 @@ void dlt_p2p_node::on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_mess
 }
 
 void dlt_p2p_node::process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from) {
-    static constexpr int64_t DLT_TIMEOUT_VOTE_SEEN_SEC = 120;
     const auto now = fc::time_point::now();
-    for (auto it = _timeout_votes_seen.begin(); it != _timeout_votes_seen.end(); ) {
-        if (now - it->second > fc::seconds(DLT_TIMEOUT_VOTE_SEEN_SEC)) it = _timeout_votes_seen.erase(it);
-        else ++it;
+    if (msg.validator.empty() || msg.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) {
+        if (from != INVALID_PEER_ID) record_packet_result(from, false);
+        return;
     }
     const auto key = fc::sha256::hash(fc::raw::pack(msg));
-    if (!_timeout_votes_seen.emplace(key, now).second) return;   // already handled
+    if (_timeout_votes_seen.contains(key, now)) return;
 
     // Invalid votes are neither counted nor relayed (no amplification).
     if (!_delegate || !_delegate->accept_timeout_vote(msg)) {
@@ -2636,6 +2640,7 @@ void dlt_p2p_node::process_timeout_vote(const dlt_timeout_vote_message& msg, pee
         }
         return;
     }
+    _timeout_votes_seen.insert(key, now);
     gossip_to_capable(message(msg), DLT_CAP_TIMEOUT_VOTE, from);
 }
 

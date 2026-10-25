@@ -363,8 +363,17 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     const auto qc = db.grandparent_qc_for_next_block(producer, db.round_of(when) + 1);
     BOOST_REQUIRE(qc.valid());
     when += fc::seconds(db.block_interval());
+    const uint32_t fallback_parent = db.head_block_num();
     db.generate_block(when, producer, key_for(gp, producer), database::skip_nothing, {}, qc);
     relay();
+
+    // Two consecutive certified blocks are not sufficient when the child used
+    // the late-QC fallback: its voters need not have learned the parent's QC.
+    // Tally the child's real quorum separately, as delayed vote delivery can do.
+    vote_for_head(node, gp);
+    BOOST_REQUIRE(db.get_block_qc(fallback_parent).valid());
+    BOOST_REQUIRE(db.get_block_qc(fallback_parent + 1).valid());
+    BOOST_CHECK_LT(db.highest_qc_on_main_branch(db.head_block_num()), fallback_parent);
 
     // A quorum times out a stalled round; its signatures survive wire inclusion.
     vote_for_head(node, gp);

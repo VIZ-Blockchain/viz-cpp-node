@@ -30,3 +30,14 @@ target_include_directories(node_admin_objects_tests
 )
 
 add_test(NAME node_admin_objects COMMAND node_admin_objects_tests)
+
+# Real websocketpp handshake/state machine via its iostream transport: no listener
+# sockets, live node, chain fixtures or FC runtime required.
+find_package(Threads REQUIRED)
+add_executable(node_admin_http_tests node_admin_http_test.cpp)
+target_include_directories(node_admin_http_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/node_admin/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/fc/vendor/websocketpp"
+)
+target_link_libraries(node_admin_http_tests PRIVATE Boost::boost Threads::Threads)
+add_test(NAME node_admin_http COMMAND node_admin_http_tests)

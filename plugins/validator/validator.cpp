@@ -166,11 +166,13 @@ namespace graphene {
                 // (validate_block_header). Production must therefore sign with the
                 // committed key, not with the session-visible one.
                 //
-                // Seeded at startup and refreshed from applied block CONTENTS: an
-                // applied_block callback runs after push_block() has re-applied the
-                // pending pool, so reading the DB there would see uncommitted state.
+                // Seeded at startup and refreshed synchronously at the committed
+                // chain boundary, before pending transactions are restored. Reading
+                // applied block contents misses rotations reverted by a fork switch;
+                // reading the DB in deferred applied_block sees pending state.
                 std::map<string, public_key_type> _committed_signing_keys;
                 uint64_t _committed_keys_block_num = 0;
+                block_id_type _committed_keys_block_id;
                 std::mutex _committed_keys_mutex;
 
                 /** Key the next block header must be signed with (the key committed
@@ -180,6 +182,7 @@ namespace graphene {
                         return visible; // blanked / disabled: production is skipped anyway
                     public_key_type committed;
                     uint64_t snapshot_block = 0;
+                    block_id_type snapshot_id;
                     {
                         std::lock_guard<std::mutex> lk(_committed_keys_mutex);
                         auto it = _committed_signing_keys.find(name);
@@ -187,9 +190,10 @@ namespace graphene {
                             return visible;
                         committed = it->second;
                         snapshot_block = _committed_keys_block_num;
+                        snapshot_id = _committed_keys_block_id;
                     }
                     // DB access outside the lock: a writer must never wait on it.
-                    if (snapshot_block != database().head_block_num())
+                    if (snapshot_block != database().head_block_num() || snapshot_id != database().head_block_id())
                         return visible; // snapshot behind head: trust the chain
                     // Snapshot is for head and differs from the session-visible key:
                     // the difference comes from a pending validator_update. Keep
@@ -198,20 +202,21 @@ namespace graphene {
                     return committed;
                 }
 
-                /** Record the signing keys committed by an applied block. */
-                void update_committed_signing_keys(const graphene::chain::signed_block &block) {
-                    std::lock_guard<std::mutex> lk(_committed_keys_mutex);
-                    _committed_keys_block_num = block.block_num();
-                    for (const auto &trx : block.transactions) {
-                        for (const auto &op : trx.operations) {
-                            if (op.which() != operation::tag<validator_update_operation>::value)
-                                continue;
-                            const auto &up = op.get<validator_update_operation>();
-                            auto it = _committed_signing_keys.find(up.owner);
-                            if (it != _committed_signing_keys.end())
-                                it->second = up.block_signing_key;
-                        }
+                /** Called under the DB write lock, with no pending session. */
+                void update_committed_signing_keys() {
+                    auto &d = database();
+                    std::map<string, public_key_type> keys;
+                    for (const auto &name : _validators) {
+                        const auto *validator = d.find_validator(name);
+                        if (validator)
+                            keys[name] = validator->signing_key;
                     }
+                    const auto head_num = d.head_block_num();
+                    const auto head_id = d.head_block_id();
+                    std::lock_guard<std::mutex> lk(_committed_keys_mutex);
+                    _committed_signing_keys.swap(keys);
+                    _committed_keys_block_num = head_num;
+                    _committed_keys_block_id = head_id;
                 }
 
                 fc::time_point last_block_post_validation_time;
@@ -408,6 +413,7 @@ namespace graphene {
                 uint64_t _last_applied_block_num = 0;
 
                 boost::signals2::connection _applied_block_connection;
+                boost::signals2::scoped_connection _committed_chain_state_connection;
 
                 // Protects cross-thread diagnostic fields shared between
                 // production_io_thread_ and the P2P thread (on_block_applied /
@@ -583,14 +589,19 @@ namespace graphene {
                             pimpl->_committed_signing_keys[w] = d.get_validator(w).signing_key;
                         } catch (const fc::exception& e) {
                             wlog("Validator ${w} is not on chain yet; its committed signing key "
-                                 "will be learned from applied blocks", ("w", w));
+                                 "will be learned from committed chain state", ("w", w));
                         }
                     }
                     pimpl->_committed_keys_block_num = d.head_block_num();
+                    pimpl->_committed_keys_block_id = d.head_block_id();
 
                     if (!pimpl->_validators.empty()) {
                         ilog("Launching block production for ${n} validators.", ("n", pimpl->_validators.size()));
                         pimpl->p2p().set_block_production(true);
+
+                        pimpl->_committed_chain_state_connection = d.committed_chain_state.connect([this]() {
+                            pimpl->update_committed_signing_keys();
+                        });
 
                         // Connect to applied_block signal to detect missed slots
                         // that belong to our validators and log diagnostic state.
@@ -615,6 +626,7 @@ namespace graphene {
                 graphene::time::shutdown_ntp_time();
                 if (!pimpl->_validators.empty()) {
                     pimpl->_applied_block_connection.disconnect();
+                    pimpl->_committed_chain_state_connection.disconnect();
                     ilog("shutting downing production timer");
                     // Stop the dedicated io_service so the production thread exits.
                     // io_service::stop() is thread-safe; it causes run() to return
@@ -807,10 +819,6 @@ namespace graphene {
                     uint64_t block_num = block.block_num();
                     uint64_t prev_num = _last_applied_block_num;
                     _last_applied_block_num = block_num;
-
-                    // Keep the committed signing-key snapshot current from block
-                    // contents (a DB read here would also see re-applied pending txs).
-                    update_committed_signing_keys(block);
 
                     // === SLOT-HIJACK DETECTION (runs for every block) ===
                     // In DLT emergency mode, the emergency master may blank our validator's

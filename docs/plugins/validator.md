@@ -157,6 +157,40 @@ Production resumes automatically on the next tick.
 ## `on_block_applied()` — Signal Handler
 
 Connected to `database::applied_block`. Runs for every incoming block.
+This deferred callback does not refresh the signing-key snapshot.
+
+### Committed signing-key snapshot
+
+Block headers must use the key committed at the current head, not a pending
+`validator_update_operation` key. The plugin seeds configured validators' keys at
+startup, then replaces the complete snapshot on `database::committed_chain_state`.
+That signal runs synchronously under the database write lock after successful
+`_push_block()` and memory checking, inside the callback that temporarily removes
+pending transactions. It fires before those transactions are restored. Signal
+callbacks must not yield or acquire database locks.
+
+Reading all configured validators at this boundary also captures rotations
+reverted by a fork switch, including cases where the adopted blocks contain no
+rotation at all. Applying only incoming block operations cannot undo such a
+rotation; reading the database in deferred `applied_block` instead sees pending
+state. The snapshot stores both head height and ID, and removes validators absent
+from the committed index. Visible null keys still disable production; a committed
+null key is not replaced by a pending re-enable.
+
+Offline regression (requires Python 3 and a C++14 compiler):
+
+```sh
+python3 tests/validator/test_signing_cache.py
+# Negative control against the pre-fix source; expected to exit 1:
+python3 tests/validator/test_signing_cache.py --source-ref d4fd4bcd
+```
+
+The test extracts and compiles the real plugin helpers with a controlled database
+fixture, and guards the source hook placement and connection lifecycle. It does
+not replace a native chain integration run. The companion scenario
+`tests/validator/test_committed_chain_state.cpp` is included in the testnet
+`consensus_sim_tests` target and verifies that real `push_block()` exposes committed keys in
+the synchronous signal and restored pending keys in deferred `applied_block`.
 
 ### Missed slot detection
 
@@ -205,7 +239,7 @@ Included in P2P FORWARD stagnation logs when the node is stuck with no peer ahea
 5. **Slaves must sync before producing in emergency mode** — producing on stale head = minority fork.
 6. **Participation < 33% stops production** — network partition guard (overridable).
 7. **21 consecutive own-validator blocks → rollback to LIB** — minority fork recovery.
-8. **All database reads are fresh** — no state caching; emergency mode can activate/deactivate any block.
+8. **Committed signing keys are refreshed at each successful push boundary** — other production state is read fresh; emergency mode can activate/deactivate any block.
 
 ---
 
