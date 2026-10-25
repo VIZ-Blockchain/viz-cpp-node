@@ -1,3 +1,4 @@
+#include <atomic>
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 
 #include <graphene/network/dlt_p2p_node.hpp>
@@ -93,6 +94,23 @@ public:
 
     bool is_dlt_mode() const override {
         return chain.db()._dlt_mode;
+    }
+
+    // The DB interval reads hardfork shared state, not an atomic scalar.
+    // Refresh under the standard guarded read; a transient lock/resize/recovery
+    // failure must not unwind P2P. Keep the last successfully observed interval
+    // and retry on the next call (including after snapshot restore or a reorg).
+    uint32_t block_interval() const override {
+        try {
+            const auto interval = chain.db().with_weak_read_lock([&]() {
+                return chain.db().block_interval();
+            });
+            if (interval > 0)
+                _cached_block_interval.store(interval, std::memory_order_relaxed);
+        } catch (...) {
+            // Thresholds remain usable while the chain is temporarily unavailable.
+        }
+        return _cached_block_interval.load(std::memory_order_relaxed);
     }
 
     // ── Block queries ────────────────────────────────────────────
@@ -481,6 +499,7 @@ public:
         chain.clear_syncing();
     }
 
+    mutable std::atomic<uint32_t> _cached_block_interval{CHAIN_BLOCK_INTERVAL};
     chain::plugin& chain;
     fc::time_point _startup_time;  ///< P22: startup timestamp for dead-fork grace period
 };

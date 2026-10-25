@@ -102,6 +102,8 @@ snapshot-max-age-days = 90
 | 每日 | 28,800 | 约 24 小时 |
 | 每周 | 100,000 | 约 3.5 天 |
 
+以上时间按 3 秒出块计算。HF16 之后（1 秒出块）相同区块数只覆盖三分之一的时间；要保持原时长，请将数值乘以三。
+
 ### 方法 4：结合 at-block 和周期性
 
 两个设置可同时激活：
@@ -197,7 +199,7 @@ DLT 模式下主 `block_log` 保持为空。`dlt_block_log`（文件 `dlt_block_
 - **API 访问** — `get_block` 对滚动窗口内的区块有效。
 
 ```ini
-dlt-block-log-max-blocks = 100000   # 保留最近约 3.5 天的区块
+dlt-block-log-max-blocks = 100000   # HF16 前约 3.5 天，之后约 28 小时；300000 可保持 3.5 天
 ```
 
 当日志超过此大小时，旧区块从前端修剪。实现独立于内存映射文件跟踪逻辑文件大小，以防止数千次调整大小循环后出现过期大小错误。
@@ -347,7 +349,7 @@ snapshot-every-n-blocks = 28800
 snapshot-dir = /data/viz-snapshots
 snapshot-max-age-days = 90
 
-# DLT 滚动 block log：保留最近约 3.5 天
+# DLT 滚动 block log：HF16 前约 3.5 天，之后约 28 小时（300000 可保持 3.5 天）
 dlt-block-log-max-blocks = 100000
 
 shared-file-size = 4G

@@ -26,6 +26,7 @@ jobs:
       - name: HF16 offline regression checks
         run: |
           set -euo pipefail
+          python3 tests/p2p/test_slot_interval.py
           python3 tests/p2p/test_vote_ingress.py
           python3 tests/validator/test_signing_cache.py
           python3 tests/chain/test_snapshot_restore.py
