@@ -28,7 +28,9 @@ jobs:
       - uses: docker/setup-buildx-action@v4
         id: setup-buildx
 
+      # Fork PRs build without registry secrets and never publish images.
       - uses: docker/login-action@v4
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -84,7 +86,7 @@ jobs:
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-production
-          push: true
+          push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}
           cache-from: type=gha,scope=pr-${{ github.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
@@ -97,7 +99,7 @@ jobs:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet
           build-args: TESTNET_VALIDATORS=21
-          push: true
+          push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}-testnet21
           cache-from: type=gha,scope=pr-testnet21
           cache-to:   type=gha,scope=pr-testnet21,mode=max
