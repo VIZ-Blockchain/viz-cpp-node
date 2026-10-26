@@ -10,6 +10,16 @@ endif()
 
 cmake_minimum_required(VERSION 3.16)
 
+# CMake 4 removed compatibility with cmake_minimum_required(VERSION < 3.5), and all three
+# bundled submodules (thirdparty/appbase, chainbase, fc) still declare 2.8.12. Without this
+# floor the tree stops at configure time on the current ubuntu-latest image — not in our
+# code, in the submodule build files we do not control. Raise the policy floor for the
+# subprojects instead of patching the submodule forks; CMake 3.x ignores the variable.
+# CI also passes -DCMAKE_POLICY_VERSION_MINIMUM=3.5 so the value is a cache entry before
+# any subproject's cmake_minimum_required() runs, regardless of scope propagation.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING
+    "Policy floor for bundled third-party projects that declare CMake < 3.5")
+
 # Default to a Release build when the caller doesn't specify one. Without this,
 # a bare `cmake ..` (or an IDE that doesn't pass -DCMAKE_BUILD_TYPE) configures
 # with empty optimization flags, producing an unoptimized node. Single-config

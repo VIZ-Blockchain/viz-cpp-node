@@ -66,6 +66,7 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache \
                 -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
                 -DBUILD_SHARED_LIBRARIES=FALSE \
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
                 -DBUILD_CONSENSUS_TESTS=ON ..
@@ -133,6 +134,7 @@ jobs:
             multi=(-DCHAIN_TESTNET_VALIDATORS=2)
           fi
           cmake -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
                 -DBUILD_SHARED_LIBRARIES=FALSE \
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
                 -DBUILD_TESTNET=TRUE \
