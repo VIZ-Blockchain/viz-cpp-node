@@ -7,10 +7,9 @@ on:
     # immediately triggers a run — the label-gated build_boost_183 job below
     # would otherwise only be evaluated on the next push.
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths-ignore:
-      - 'docs/**'
-      - '@l10n/**'
-      - '**.md'
+    # No paths-ignore on purpose: this job is a required status check on master,
+    # and a required check that never runs keeps the PR blocked forever. See
+    # tests.yml for the same reasoning.
 
 jobs:
   build:
