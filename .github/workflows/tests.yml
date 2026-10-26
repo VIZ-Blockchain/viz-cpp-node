@@ -43,10 +43,18 @@ jobs:
           node --test tests/block_log/archive_merge.test.cjs
 
       - name: Install build deps
+        # Same guard as the other jobs: runners fetch packages from azure.archive.ubuntu.com,
+        # and when that mirror goes quiet apt retries it until the job's 180-minute timeout
+        # instead of failing (seen 2026-08-19; the guarded form had been added everywhere
+        # except here, the one job that runs on every code PR and every master push).
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update
+          $apt install -y --no-install-recommends \
             build-essential ccache cmake libboost-all-dev libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
