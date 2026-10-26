@@ -23,6 +23,15 @@ jobs:
       - name: P2P corruption recovery regression (offline)
         run: python3 tests/p2p/test_corruption_recovery.py -v
 
+      # Every field in FC_REFLECT travels to the snapshot file, but the importer is written
+      # by hand; a field added to a struct and forgotten there is dropped silently on
+      # restore. Runs first because it takes a second and needs no submodules.
+      - name: Snapshot import coverage (offline)
+        run: |
+          set -euo pipefail
+          python3 scripts/check_snapshot_import_coverage.py --selftest
+          python3 scripts/check_snapshot_import_coverage.py
+
       - name: HF16 offline regression checks
         run: |
           set -euo pipefail
