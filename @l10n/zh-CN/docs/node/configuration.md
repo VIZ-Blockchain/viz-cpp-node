@@ -197,8 +197,26 @@ logger.p2p.level = warn
 logger.p2p.appenders = p2p
 ```
 
-`file` appender 按时间轮转：每小时一个新文件，保留一天。自 2026-10-25 起，轮转由
-appender 自己的线程处理，因此无论主线程在做什么都会触发。更早构建的版本只有在 fc
+`file` appender 按时间轮转：每小时一个新文件，保留一天。
+
+这两个数值和两个开关都属于该节的配置，而不是常量：
+
+```ini
+log.file_appender.p2p.filename = logs/p2p/p2p.log
+log.file_appender.p2p.flush = true
+log.file_appender.p2p.rotate = true
+log.file_appender.p2p.rotation_interval = 3600   # 单个文件的秒数
+log.file_appender.p2p.rotation_limit = 86400     # 轮转文件的保留秒数
+```
+
+`flush`、`rotate`、`rotation_interval` 和 `rotation_limit` 从 ini 读取；没有这些键的节
+保持上面的历史值，因此现有配置的行为与之前完全一致。轮转要求 `rotation_interval` >= 1 秒
+且 `rotation_limit` >= `rotation_interval`（appender 会校验这一对）。无法解析的值、
+不满足关系的组合或 `log.file_appender.*` 节中的未知键都会打印到 stderr，并保留默认值——
+笔误不应让操作者失去日志文件，而无效的键也不再被静默接受。2026-10-25 之前的构建只读取
+`filename`：这些键完全不起作用，轮转始终是一小时一个文件、保留一天。
+
+自 2026-10-25 起，轮转由 appender 自己的线程处理，因此无论主线程在做什么都会触发。更早构建的版本只有在 fc
 纤程队列被处理时才会轮转，而 `vizd` 启动后不再处理它（2026-10-20 实测：测试网节点在
 `info` 级别下九小时写了一个 37 MB 的文件，没有任何按小时的文件；主网节点运行四天也没有
 产生新文件）——这类节点仍需要外部 logrotate。无论哪种情况，轮转都按时间而不是按大小限制
