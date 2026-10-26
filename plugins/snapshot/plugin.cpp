@@ -844,6 +844,12 @@ inline uint32_t import_pm_oracles(graphene::chain::database& db, const fc::varia
             obj.bans_received      = static_cast<uint32_t>(v["bans_received"].as_uint64());
             if (v.get_object().contains("last_penalty_stamp_time"))
                 obj.last_penalty_stamp_time = v["last_penalty_stamp_time"].as<fc::time_point_sec>();
+            // Resolver that set the current ban (may pm_unban). Present since HF14, but the
+            // importer never copied it: after a restore the ban could no longer be lifted,
+            // because pm_unban matches banned_by. contains() keeps the older test snapshots
+            // (and hand-trimmed ones) working, like the neighbours below.
+            if (v.get_object().contains("banned_by"))
+                obj.banned_by = v["banned_by"].as<account_name_type>();
             if (v.get_object().contains("auto_accept_creator"))
                 obj.auto_accept_creator  = v["auto_accept_creator"].as<account_name_type>();
             if (v.get_object().contains("auto_accept_resolver"))
@@ -855,6 +861,11 @@ inline uint32_t import_pm_oracles(graphene::chain::database& db, const fc::varia
             // stay zeroed and pm_seed_oracle_gauges() re-derives the gauges on the next block.
             if (v.get_object().contains("markets_in_dispute_window"))
                 obj.markets_in_dispute_window  = static_cast<uint32_t>(v["markets_in_dispute_window"].as_uint64());
+            // Live-market gauge, seeded once per oracle from dgpo.pm_active_markets_seeded.
+            // Present since HF14, but the importer never copied it; the one-time seed does not
+            // re-run, so a restore left the gauge at 0 for good.
+            if (v.get_object().contains("active_markets"))
+                obj.active_markets = static_cast<uint32_t>(v["active_markets"].as_uint64());
             if (v.get_object().contains("disputes_awaiting_response"))
                 obj.disputes_awaiting_response = static_cast<uint32_t>(v["disputes_awaiting_response"].as_uint64());
             if (v.get_object().contains("disputes_awaiting_decision"))
