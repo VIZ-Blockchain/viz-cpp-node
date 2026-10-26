@@ -20,6 +20,26 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING
     "Policy floor for bundled third-party projects that declare CMake < 3.5")
 
+# fc prefers static OpenSSL on Unix: thirdparty/fc/CMakeLists.txt sets
+# CMAKE_FIND_LIBRARY_SUFFIXES to ".a;.so" before find_package(OpenSSL), so the link takes
+# libcrypto.a. OpenSSL 3.5 builds that archive with the vendored jitter entropy source,
+# whose jent_* symbols live in a companion archive the distribution does not install, so
+# every executable fails to link ("undefined reference to jent_entropy_collector_alloc").
+# Pin the shared libraries instead: FindOpenSSL honours these cache entries and skips its
+# own search, and fc's suffix override then has nothing to pick from. Skipped on Windows,
+# and for FULL_STATIC_BUILD, where the archives are wanted on purpose.
+if(NOT WIN32 AND NOT FULL_STATIC_BUILD)
+    find_library(_viz_openssl_crypto NAMES crypto)
+    find_library(_viz_openssl_ssl NAMES ssl)
+    if(_viz_openssl_crypto AND _viz_openssl_ssl
+       AND NOT _viz_openssl_crypto MATCHES "\\.a$"
+       AND NOT _viz_openssl_ssl MATCHES "\\.a$")
+        set(OPENSSL_CRYPTO_LIBRARY "${_viz_openssl_crypto}" CACHE FILEPATH "OpenSSL crypto library" FORCE)
+        set(OPENSSL_SSL_LIBRARY "${_viz_openssl_ssl}" CACHE FILEPATH "OpenSSL SSL library" FORCE)
+        message(STATUS "Using shared OpenSSL: ${OPENSSL_SSL_LIBRARY}; ${OPENSSL_CRYPTO_LIBRARY}")
+    endif()
+endif()
+
 # Default to a Release build when the caller doesn't specify one. Without this,
 # a bare `cmake ..` (or an IDE that doesn't pass -DCMAKE_BUILD_TYPE) configures
 # with empty optimization flags, producing an unoptimized node. Single-config
