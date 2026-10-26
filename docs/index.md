@@ -35,3 +35,5 @@ features:
     details: Building, testing, debugging and plugin development.
     link: /development/building
 ---
+
+<!-- probe: docs-only diff to prove the removed paths-ignore; not merged -->
