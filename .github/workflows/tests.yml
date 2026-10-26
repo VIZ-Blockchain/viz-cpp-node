@@ -3,11 +3,11 @@ name: Tests
 on:
   push:
     branches: [master]
+  # No paths-ignore on purpose: this workflow provides required status checks on
+  # master, and a check that is skipped because the PR only touched docs never
+  # reports, leaving the PR blocked forever. A docs-only PR costs one matrix run;
+  # public-repo minutes are free.
   pull_request:
-    paths-ignore:
-      - 'documentation/**'
-      - 'docs/**'
-      - '**.md'
 
 jobs:
   consensus-and-pm:
