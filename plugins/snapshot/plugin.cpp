@@ -229,6 +229,17 @@ inline uint32_t import_dynamic_global_properties(
             ? v["round_anchor_time"].as<fc::time_point_sec>() : fc::time_point_sec();
         obj.round_anchor_round = v.get_object().contains("round_anchor_round")
             ? v["round_anchor_round"].as<uint32_t>() : 0;
+        // PM one-time seed flags. Export is reflection-based and carries them;
+        // without these lines a restored node re-seeds on its first block and its
+        // own later snapshots disagree with the network. Absent or null = not seeded.
+        obj.pm_frozen_counters_seeded = v.get_object().contains("pm_frozen_counters_seeded")
+            && !v["pm_frozen_counters_seeded"].is_null() && v["pm_frozen_counters_seeded"].as_bool();
+        obj.pm_frozen_counters_reseeded_v1 = v.get_object().contains("pm_frozen_counters_reseeded_v1")
+            && !v["pm_frozen_counters_reseeded_v1"].is_null() && v["pm_frozen_counters_reseeded_v1"].as_bool();
+        obj.pm_active_markets_seeded = v.get_object().contains("pm_active_markets_seeded")
+            && !v["pm_active_markets_seeded"].is_null() && v["pm_active_markets_seeded"].as_bool();
+        obj.pm_oracle_gauges_seeded = v.get_object().contains("pm_oracle_gauges_seeded")
+            && !v["pm_oracle_gauges_seeded"].is_null() && v["pm_oracle_gauges_seeded"].as_bool();
     });
     return 1;
 }
