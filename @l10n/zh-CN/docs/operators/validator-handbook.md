@@ -44,7 +44,7 @@
 | | 大小 | 由什么限制 |
 |---|---|---|
 | `shared_memory.bin` | 2 GB，按 2 GB 步进增长 | `shared-file-size` / `inc-shared-file-size` |
-| DLT 滚动区块日志 | 约 3.5 天的区块 | `dlt-block-log-max-blocks = 100000` |
+| DLT 滚动区块日志 | HF16 前约 3.5 天，之后约 28 小时 | `dlt-block-log-max-blocks = 100000`；要保有 3.5 天请设 300000 |
 | 本地快照 | 2 个文件；每个小于 2 GB | 数量由 `snapshot-every-n-blocks` + `snapshot-max-age-days` 决定。2 GB 是 P2P 传输上限，因此它是天花板 —— 真实的主网快照更小。在按最坏情况规划前，先用 `du -sh` 看看你自己的。 |
 | Docker 日志 | 30 MB | `compose.yml` 中的 `max-size` × `max-file` |
 

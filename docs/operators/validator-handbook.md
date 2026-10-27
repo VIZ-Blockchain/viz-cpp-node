@@ -45,7 +45,7 @@ Where the disk goes, so you can check the numbers rather than trust them:
 | | Size | Bounded by |
 |---|---|---|
 | `shared_memory.bin` | 2 GB, growing in 2 GB steps | `shared-file-size` / `inc-shared-file-size` |
-| DLT rolling block log | ~3.5 days of blocks | `dlt-block-log-max-blocks = 100000` |
+| DLT rolling block log | ~3.5 days of blocks before HF16, ~28 h after | `dlt-block-log-max-blocks = 100000`; raise to 300000 to keep 3.5 days |
 | Local snapshots | 2 files; under 2 GB each | count: `snapshot-every-n-blocks` + `snapshot-max-age-days`. The 2 GB is the P2P transfer cap, so it is a ceiling — a real mainnet snapshot is smaller. Check yours with `du -sh` before trusting the worst case. |
 | Docker logs | 30 MB | `max-size` × `max-file` in `compose.yml` |
 
