@@ -25,7 +25,7 @@ plugin = validator_guard
 | Option | Default | Description |
 |--------|---------|-------------|
 | `validator-guard-enabled` | `true` | Enable or disable the plugin globally. |
-| `validator-guard-interval` | `20` | Check interval in blocks (~60 s at 3 s/block). |
+| `validator-guard-interval` | `20` | Check interval in blocks (~60 s before HF16, ~20 s after). |
 | `validator-guard-validator` | — | JSON triplet `[name, signing_wif, active_wif]`. Repeatable. |
 | `validator-guard-disable` | `5` | Consecutive blocks produced by a single validator before auto-disabling it. `0` = disabled. |
 | `validator-guard-disable-on-shutdown` | `true` | On graceful shutdown, null the signing key of every configured validator still enabled on-chain so the network stops scheduling this node while it is offline. |

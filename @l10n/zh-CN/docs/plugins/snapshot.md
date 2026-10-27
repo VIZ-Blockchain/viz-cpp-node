@@ -81,6 +81,11 @@ snapshot-max-age-days = 90
 | 每日 | 28,800 | ~24 小时 |
 | 每周 | 100,000 | ~3.5 天 |
 
+表中时间为 HF16 之前的 3 秒槽位。HF16 后槽位为 1 秒，同样的区块数只覆盖三分之一的时间：`28800`
+约为 8 小时而不是一天，"每日"任务会悄悄让文件数增至三倍。`snapshot-max-age-days` 只按天数清理，
+因此磁盘占用取决于频率而非保留期：若要保持原时间间隔，请把区块数乘以三（每日用 86,400）。该选项
+默认关闭（`0`），属于节点配置而非链上属性，硬分叉时不会被自动换算。
+
 ### 方法 4：结合 at-block 和周期性
 
 两个选项可以同时设置；`snapshot-at-block` 触发一次，`snapshot-every-n-blocks` 重复触发。
@@ -318,7 +323,7 @@ sync-snapshot-from-trusted-peer = true
 ```ini
 plugin = snapshot
 
-# 每日快照（3 秒/区块时约 24 小时）
+# 每日快照：HF16 前 3 秒/区块约 24 小时；HF16 后 28800 区块约 8 小时，要一天请用 86400
 snapshot-every-n-blocks = 28800
 snapshot-dir = /data/viz-snapshots
 

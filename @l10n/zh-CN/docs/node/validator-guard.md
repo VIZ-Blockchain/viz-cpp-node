@@ -25,7 +25,7 @@ plugin = validator_guard
 | 选项 | 默认值 | 描述 |
 |------|-------|------|
 | `validator-guard-enabled` | `true` | 全局启用或禁用插件。 |
-| `validator-guard-interval` | `20` | 检查间隔，以区块为单位（按 3 秒/区块计约 60 秒）。 |
+| `validator-guard-interval` | `20` | 检查间隔，以区块为单位（HF16 前约 60 秒、HF16 后约 20 秒）。 |
 | `validator-guard-validator` | — | JSON 三元组 `[name, signing_wif, active_wif]`。可重复。 |
 | `validator-guard-disable` | `5` | 同一验证者连续生产的区块数，超过后自动禁用。`0` = 禁用。 |
 | `validator-guard-disable-on-shutdown` | `true` | 优雅关闭时，将每个仍在链上启用的已配置验证者的签名密钥清空，使网络在本节点离线期间停止调度它。 |

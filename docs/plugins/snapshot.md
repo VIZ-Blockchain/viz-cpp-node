@@ -81,6 +81,13 @@ Files are named `snapshot-block-<N>.json`. Recommended intervals:
 | Daily | 28,800 | ~24 h |
 | Weekly | 100,000 | ~3.5 days |
 
+The timings above assume the pre-HF16 3-second slot. From HF16 the slot is 1 second, so the same
+block count covers one third of the time — `28800` is ~8 h, not a day — and a "daily" job silently
+triples its file count. `snapshot-max-age-days` prunes by age only, so disk use follows cadence, not
+retention: to keep a wall-clock interval, multiply the block count by three (86,400 for daily). The
+option defaults to `0` (periodic snapshots off) and is node config, not a chain property — nothing
+rescales it for you at the fork.
+
 ### Method 4: Combining at-block and periodic
 
 Both options can be set together; `snapshot-at-block` fires once and `snapshot-every-n-blocks` fires repeatedly.
@@ -373,7 +380,7 @@ All operations happen inside `chain::plugin_startup()`, before P2P and validator
 ```ini
 plugin = snapshot
 
-# Daily snapshots (~24 h at 3 s/block)
+# Daily snapshots pre-HF16 (~24 h at 3 s/block); 28800 blocks = ~8 h after HF16, use 86400 for a day
 snapshot-every-n-blocks = 28800
 snapshot-dir = /data/viz-snapshots
 

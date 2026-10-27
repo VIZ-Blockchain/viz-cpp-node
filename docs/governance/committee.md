@@ -68,7 +68,7 @@ If all conditions pass → **approved**, payout = calculated value.
             ├── Net negative / below min   → [Expired, status=3]
             ├── Creator cancels            → [Canceled, status=1]
             └── Approved                  → [Approved, status=4]
-                                                └── payouts (every 200 blocks)
+                                                └── payouts (every 200 blocks; 600 after HF16)
                                                     └── [Completed, status=5]
 ```
 
@@ -76,7 +76,9 @@ If all conditions pass → **approved**, payout = calculated value.
 
 ## Payout Processing
 
-Approved requests (status 4) receive payouts from the committee fund every 200 blocks (~10 minutes). The fund is split equally across all currently approved requests:
+Approved requests (status 4) receive payouts from the committee fund every 200 blocks — 600 blocks
+after HF16, the same ~10 minutes, because the cadence is scaled by the slot at activation. The fund
+is split equally across all currently approved requests:
 
 ```
 payment = min(committee_fund / count_approved_requests, remain_payout_amount)

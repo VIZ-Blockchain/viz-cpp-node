@@ -74,8 +74,8 @@ When an account performs an award with `energy = 500` (5%), that fraction of the
 - Any account can register as a validator via `validator_update_operation`.
 - Token holders vote for validators using their SHARES weight.
 - The top validators by vote are scheduled round-robin to produce blocks.
-- Each block slot is exactly 3 seconds.
-- A round of 21 validators = 21 blocks = 63 seconds.
+- Each block slot is 3 seconds before HF16 and 1 second from HF16.
+- A round of 21 validators = 21 blocks = 63 seconds before HF16, 21 seconds after.
 
 ### Fair-DPOS Participation
 

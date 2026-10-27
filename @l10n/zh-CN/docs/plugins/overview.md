@@ -229,7 +229,8 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 
 **配置选项：**
 - `track-account-range` — 索引的账户名范围（默认：所有账户）
-- `history-count-blocks` — 保留 N 个区块的历史
+- `history-count-blocks` — 保留 N 个区块的历史（HF16 时不会重算：同样的 N 只覆盖三分之一的时间，
+  要维持原有窗口请乘以三）
 
 > **依赖关系：** `account_history` **需要** `operation_history` 作为父插件
 > （`APPBASE_PLUGIN_REQUIRES`）。若缺少 `operation_history`，节点将无法启动。
@@ -263,8 +264,9 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 **配置选项：**
 - `history-whitelist-ops` / `history-blacklist-ops` — 过滤存储的操作类型
 - `history-start-block` — 从此区块号开始索引
-- `history-count-blocks` — 保留 N 个区块的历史
-- `history-purge-interval` — 每 N 个区块清理旧条目，而非每个区块（默认：4800 ≈ 3 秒/区块时约 4 小时）。减少 shared-memory 碎片化和 write-lock 争用。每个清理周期最多处理 `history-purge-interval` 个区块的条目；若积压更大，剩余部分推迟到下一周期。
+- `history-count-blocks` — 保留 N 个区块的历史（HF16 时不会重算：同样的 N 只覆盖三分之一的时间，
+  要维持原有窗口请乘以三）
+- `history-purge-interval` — 每 N 个区块清理旧条目，而非每个区块（默认：4800 个区块 ≈ HF16 前 4 小时、HF16 后 80 分钟）。减少 shared-memory 碎片化和 write-lock 争用。每个清理周期最多处理 `history-purge-interval` 个区块的条目；若积压更大，剩余部分推迟到下一周期。
 
 ---
 
