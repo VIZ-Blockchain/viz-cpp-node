@@ -39,7 +39,7 @@ Every `CHAIN_WITNESS_SCHEDULE_BLOCK_NUM` blocks (21) the chain recomputes the ac
 2. Add the **time-share validators** — a rotating slot for lower-ranked validators to participate occasionally, preventing complete concentration.
 3. Shuffle the resulting 21 slots using the head block ID as entropy seed (deterministic shuffle = same result on all nodes).
 
-The resulting ordered list becomes the **current schedule**. Each position corresponds to a 3-second slot.
+The resulting ordered list becomes the **current schedule**. Each position corresponds to one slot (3 s before HF16, 1 s after).
 
 ### Slot assignment
 
@@ -57,7 +57,7 @@ block_time = genesis_time + slot_num × 3s
 
 ### Missed slots
 
-When a validator misses their slot, `update_global_dynamic_data()` increments `current_aslot` and marks the slot as missed in the participation bitmask. Other validators do not fill in for a missed slot — the 3-second rhythm continues on the next slot regardless.
+When a validator misses their slot, `update_global_dynamic_data()` increments `current_aslot` and marks the slot as missed in the participation bitmask. Other validators do not fill in for a missed slot — the slot rhythm continues on the next slot regardless.
 
 ---
 
