@@ -65,6 +65,7 @@ set(SCENARIO_SOURCES
     scenarios/test_pm_lifecycle.cpp
     scenarios/test_wedge_predicate.cpp
     scenarios/test_routable_endpoint.cpp
+    scenarios/test_p2p_slot_scale.cpp
 )
 
 # These scenarios require an actual HF14 activation and never soft-skip.
@@ -86,6 +87,7 @@ target_link_libraries(consensus_sim_tests
     PRIVATE consensus_sim_harness
             graphene::network         # test_wedge_predicate.cpp: dlt_p2p_node::is_wedged
                                       # test_routable_endpoint.cpp: is_routable_endpoint
+                                      # test_p2p_slot_scale.cpp: dlt_p2p_node handlers
             Boost::unit_test_framework
 )
 
