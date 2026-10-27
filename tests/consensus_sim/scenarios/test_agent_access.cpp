@@ -28,6 +28,7 @@
 #include <graphene/protocol/config.hpp>
 #include <fc/crypto/sha256.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -201,6 +202,7 @@ struct agent_fixture {
     account_name_type bot = "trading-bot";
     fc::ecc::private_key principal_key = derive_key("principal-key");
     fc::ecc::private_key agent_key = derive_key("agent-key");
+    uint32_t hf15_block = 0;   // head height at which the HF15 marker was pushed (see replay_into)
 
     agent_fixture(uint64_t seed, const char* label, bool hf15 = true)
             : gp(make_genesis_params(seed, 1)), clk(sim_start()), node(label, gp, clk),
@@ -208,7 +210,7 @@ struct agent_fixture {
         bring_to_hf14(node, gp, when);
         BOOST_REQUIRE_MESSAGE(node.db().has_hardfork(CHAIN_HARDFORK_14),
                               "harness could not reach HF14 (needs BUILD_TESTNET)");
-        if (hf15) enable_hf15(node);
+        if (hf15) { enable_hf15(node); hf15_block = node.head_block_num(); }
         create_account(node, gp, when, principal, principal_key, 100000);
         vest(node, gp, when, principal, principal_key, 50000);
     }
@@ -730,6 +732,174 @@ BOOST_AUTO_TEST_CASE(agent_access_proposals_create_no_approval) {
 // Every key an account stops standing behind is kept forever: a DLT node has no past blocks, so
 // without these rows nobody could prove which key an account held when it signed something.
 
+
+// Expiration boundary: a row is usable while expiration > head_block_time and dead the moment they
+// are equal. Transactions inside a block see the PREVIOUS block's time (update_global_dynamic_data
+// runs after the transactions), so the last block that can carry the agent's transaction is the one
+// stamped exactly `expiration`.
+BOOST_AUTO_TEST_CASE(agent_access_expiration_is_exclusive_at_head_time) {
+    agent_fixture f(0xAA9E30, "aa-exp-edge");
+    const fc::time_point_sec exp = f.node.head_block_time() + uint32_t(CHAIN_BLOCK_INTERVAL * 4);
+    f.issue({"transfer"}, exp);                       // +1
+    produce(f.node, f.gp, f.when);                    // +2
+    produce(f.node, f.gp, f.when);                    // +3
+    BOOST_REQUIRE(f.node.head_block_time() == exp - uint32_t(CHAIN_BLOCK_INTERVAL));
+
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);                    // block stamped == exp
+    BOOST_REQUIRE(f.node.head_block_time() == exp);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node, 1), "agent signed at expiration == head time");
+    BOOST_CHECK_MESSAGE(has_row(f.node, f.principal, f.bot), "expired row must stay until the next grant sweeps it");
+}
+
+// Key uniqueness is per principal: two accounts may hand the same key to their own bots, and
+// revoking one leaves the other's grant intact.
+BOOST_AUTO_TEST_CASE(agent_access_same_key_under_two_principals) {
+    agent_fixture f(0xAA9E31, "aa-two-principals");
+    const account_name_type other = "principal-two";
+    const auto other_key = derive_key("principal-two-key");
+    create_account(f.node, f.gp, f.when, other, other_key, 100000);
+    vest(f.node, f.gp, f.when, other, other_key, 50000);
+
+    f.issue({"transfer"});
+    grant(f.node, f.gp, f.when, other, other_key, "shared-bot", f.agent_key.get_public_key(), {"transfer"});
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.bot));
+    BOOST_REQUIRE(has_row(f.node, other, "shared-bot"));
+
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    f.node.push_pending_transaction(
+        sign_ops({transfer_op(other, f.gp.initiator_name, 2000, TOKEN_SYMBOL)}, f.agent_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 3000);
+
+    // A transaction mixing both principals is one signature covering two accounts — fine, the key
+    // is listed by both.
+    f.node.push_pending_transaction(
+        sign_ops({f.pay(100), transfer_op(other, f.gp.initiator_name, 100, TOKEN_SYMBOL)}, f.agent_key, f.node, 2));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 3200);
+
+    // Revoke (empty lists) on the first principal only.
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.bot, f.agent_key.get_public_key(), {});
+    BOOST_CHECK(!has_row(f.node, f.principal, f.bot));
+    BOOST_CHECK(has_row(f.node, other, "shared-bot"));
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node, 3), "revoked agent still signs");
+    f.node.push_pending_transaction(
+        sign_ops({transfer_op(other, f.gp.initiator_name, 500, TOKEN_SYMBOL)}, f.agent_key, f.node, 4));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 3700);
+}
+
+// The sweep runs before the uniqueness check, so an expired agent's key can be re-issued under a
+// new name in one grant; the stale name is gone afterwards.
+BOOST_AUTO_TEST_CASE(agent_access_expired_key_reusable_under_new_name) {
+    agent_fixture f(0xAA9E32, "aa-reuse-expired");
+    f.issue({"transfer"}, f.node.head_block_time() + uint32_t(CHAIN_BLOCK_INTERVAL * 2));
+    for (int i = 0; i < 3; ++i) produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.bot));
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node), "expired agent still signs");
+
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, "bot-v2", f.agent_key.get_public_key(), {"transfer"});
+    BOOST_CHECK(has_row(f.node, f.principal, "bot-v2"));
+    BOOST_CHECK_MESSAGE(!has_row(f.node, f.principal, f.bot), "expired row survived the sweep");
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node, 1));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
+// A principal with a 2-of-2 active authority: one of the two owner keys plus the agent key is
+// neither a complete ordinary signature set nor a clean agent one. The agent path must refuse the
+// extra owner signature as irrelevant rather than let the two half-proofs add up.
+BOOST_AUTO_TEST_CASE(agent_access_partial_multisig_plus_agent_is_rejected) {
+    agent_fixture f(0xAA9E33, "aa-partial-multisig");
+    const auto k1 = derive_key("owner-1");
+    const auto k2 = derive_key("owner-2");
+    account_update_operation au;
+    au.account = f.principal;
+    authority two_of_two;
+    two_of_two.weight_threshold = 2;
+    two_of_two.key_auths[k1.get_public_key()] = 1;
+    two_of_two.key_auths[k2.get_public_key()] = 1;
+    au.active = two_of_two;
+    f.node.push_pending_transaction(sign_ops({au}, f.principal_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    set_agent_permission_operation g;
+    g.account = f.principal;
+    g.agent_name = f.bot;
+    g.agent_key = f.agent_key.get_public_key();
+    g.operations.insert("transfer");
+    signed_transaction gt = sign_ops({g}, k1, f.node);
+    gt.sign(k2, f.node.chain_id());
+    f.node.push_pending_transaction(gt);
+    produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE(has_row(f.node, f.principal, f.bot));
+
+    signed_transaction mixed = sign_ops({f.pay(1000)}, k1, f.node);
+    mixed.sign(f.agent_key, f.node.chain_id());
+    expect_rejected(f.node, mixed, "half of a 2-of-2 active plus the agent key was accepted");
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, k1, f.node, 1), "half of a 2-of-2 active was accepted alone");
+
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node, 2));
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
+}
+
+// Pre-HF15 the operation does not exist for the chain: the grant is refused and nothing is written.
+BOOST_AUTO_TEST_CASE(agent_access_grant_rejected_before_hf15) {
+    agent_fixture f(0xAA9E35, "aa-pre-hf15", false);
+    BOOST_REQUIRE(!f.node.db().has_hardfork(CHAIN_HARDFORK_15));
+    set_agent_permission_operation g;
+    g.account = f.principal;
+    g.agent_name = f.bot;
+    g.agent_key = f.agent_key.get_public_key();
+    g.operations.insert("transfer");
+    expect_rejected(f.node, sign_ops({g}, f.principal_key, f.node), "agent grant accepted before HF15");
+    BOOST_CHECK(!has_row(f.node, f.principal, f.bot));
+    expect_rejected(f.node, sign_ops({f.pay(1000)}, f.agent_key, f.node, 1), "agent key signed before HF15");
+}
+
+// Replay a node's canonical chain into a fresh node. The HF15 marker is pushed out-of-band (not by
+// a block), so the receiver gets the same marker at the same height.
+void replay_into(agent_fixture& f, simulated_node& peer) {
+    for (const auto& b : f.node.canonical_blocks_from(1)) {
+        const auto out = peer.receive_block(b);
+        BOOST_REQUIRE_MESSAGE(out == block_outcome::accepted_extends_head,
+                              "peer refused block " << b.block_num() << " (outcome " << static_cast<int>(out) << ")");
+        if (b.block_num() == f.hf15_block) enable_hf15(peer);
+    }
+}
+
+// Two nodes: a block carrying an agent-signed transaction (and the grant before it) is validated
+// from scratch by a peer through push_block(skip_nothing) — the same path a live validator uses,
+// including the agent-proof recheck in _apply_transaction.
+BOOST_AUTO_TEST_CASE(agent_access_block_validates_on_a_second_node) {
+    agent_fixture f(0xAA9E36, "aa-peer-a");
+    f.issue({"transfer"});
+    f.node.push_pending_transaction(sign_ops({f.pay(1000)}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+    const auto before = liquid(f.node, f.gp.initiator_name);
+    // Grant, agent-signed transfer, and the revoke that follows all travel in blocks.
+    grant(f.node, f.gp, f.when, f.principal, f.principal_key, f.bot, f.agent_key.get_public_key(), {});
+
+    simulated_node peer("aa-peer-b", f.gp, f.clk);
+    replay_into(f, peer);
+    BOOST_CHECK_EQUAL(peer.head_block_num(), f.node.head_block_num());
+    BOOST_CHECK(peer.head_block_id() == f.node.head_block_id());
+    BOOST_CHECK_EQUAL(liquid(peer, f.gp.initiator_name), before);
+    BOOST_CHECK(!has_row(peer, f.principal, f.bot));
+
+    // The peer applies the same rules going forward: a block with an agent signature after the
+    // revoke is invalid state on both sides.
+    expect_rejected(peer, sign_ops({f.pay(1000)}, f.agent_key, peer, 1), "peer accepted a revoked agent");
+}
+
 namespace {
 
 std::vector<key_history_object> history(simulated_node& n, const account_name_type& who) {
@@ -932,6 +1102,47 @@ BOOST_AUTO_TEST_CASE(key_history_lookup_by_key) {
 }
 
 // Before HF15 nothing is written and the hourly limit does not exist.
+// Recovery rewrites master only: it records one master row and leaves the other roles' cooldowns
+// untouched, so the recovered owner can rotate active in the very next block.
+BOOST_AUTO_TEST_CASE(key_history_recovery_records_master_only) {
+    agent_fixture f(0xAB0011, "kh-recover");
+    const auto stolen = derive_key("kh-master-stolen");
+    const auto restored = derive_key("kh-master-restored");
+    account_update_operation au;
+    au.account = f.principal;
+    au.master = single_key_auth(stolen.get_public_key());
+    update(f, au);
+    BOOST_REQUIRE_EQUAL(rows_of(f.node, f.principal, key_role_master), 1u);
+
+    request_account_recovery_operation rq;
+    rq.recovery_account = f.gp.initiator_name;
+    rq.account_to_recover = f.principal;
+    rq.new_master_authority = single_key_auth(restored.get_public_key());
+    f.node.push_pending_transaction(sign_ops({rq}, f.gp.initiator_key, f.node));
+    produce(f.node, f.gp, f.when);
+    recover_account_operation rc;
+    rc.account_to_recover = f.principal;
+    rc.new_master_authority = single_key_auth(restored.get_public_key());
+    rc.recent_master_authority = single_key_auth(f.principal_key.get_public_key());
+    signed_transaction tx = sign_ops({rc}, restored, f.node);
+    tx.sign(f.principal_key, f.node.chain_id());
+    f.node.push_pending_transaction(tx);
+    produce(f.node, f.gp, f.when);
+    BOOST_REQUIRE_EQUAL(rows_of(f.node, f.principal, key_role_master), 2u);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_active), 0u);
+    const auto& master_rows = history(f.node, f.principal);
+    BOOST_CHECK(std::any_of(master_rows.begin(), master_rows.end(), [&](const key_history_object& r) {
+        return r.role == key_role_master && r.key == stolen.get_public_key();
+    }));
+
+    account_update_operation rotate;
+    rotate.account = f.principal;
+    rotate.active = single_key_auth(derive_key("kh-active-after-recovery").get_public_key());
+    f.node.push_pending_transaction(sign_ops({rotate}, f.principal_key, f.node, 1));   // active still the old key
+    produce(f.node, f.gp, f.when);
+    BOOST_CHECK_EQUAL(rows_of(f.node, f.principal, key_role_active), 1u);
+}
+
 BOOST_AUTO_TEST_CASE(key_history_inactive_before_hf15) {
     agent_fixture f(0xAB0009, "kh-pre", false);
     BOOST_REQUIRE(!f.node.db().has_hardfork(CHAIN_HARDFORK_15));

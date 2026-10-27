@@ -18,6 +18,8 @@
 #include <graphene/protocol/exceptions.hpp>
 #include <fc/crypto/sha256.hpp>
 #include <fc/crypto/elliptic.hpp>
+#include <fc/io/raw.hpp>
+#include <fc/variant.hpp>
 
 using namespace graphene::protocol;
 
@@ -299,6 +301,57 @@ BOOST_AUTO_TEST_CASE(discovery_keeps_independent_agent_and_ordinary_partial_cont
         CHAIN_MAX_SIG_CHECK_DEPTH, {}, direct);
     BOOST_CHECK(regular == std::set<public_key_type>({agent, partial}));
     BOOST_CHECK_THROW(verify_authority(tx.operations, {agent, partial}, getter, getter, getter), tx_missing_regular_auth);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// Serialization: the op must survive both wire forms byte-for-byte in meaning. Binary is what the
+// chain hashes and signs; JSON is what every client sends. flat_set ordering is part of the
+// contract (the chain stores the names ','-joined in flat_set order).
+BOOST_AUTO_TEST_SUITE(agent_access_serialization)
+
+BOOST_AUTO_TEST_CASE(binary_and_json_round_trip) {
+    set_agent_permission_operation op = grant({"transfer", "award", "custom"});
+    op.addons = {"a2", "a1"};
+    op.expiration = fc::time_point_sec(1800000000);
+    op.validate();
+
+    const auto bin = fc::raw::pack(op);
+    const auto back = fc::raw::unpack<set_agent_permission_operation>(bin);
+    BOOST_CHECK(back.account == op.account);
+    BOOST_CHECK(back.agent_name == op.agent_name);
+    BOOST_CHECK(back.agent_key == op.agent_key);
+    BOOST_CHECK(back.operations == op.operations);
+    BOOST_CHECK(back.addons == op.addons);
+    BOOST_CHECK(back.expiration == op.expiration);
+    BOOST_CHECK(fc::raw::pack(back) == bin);
+
+    fc::variant v;
+    fc::to_variant(op, v);
+    set_agent_permission_operation from_json;
+    fc::from_variant(v, from_json);
+    BOOST_CHECK(fc::raw::pack(from_json) == bin);
+    BOOST_CHECK_EQUAL(v.get_object()["expiration"].as_string(), "2027-01-15T08:00:00");
+
+    // Inside a transaction the op travels as the static_variant: id 105 then the body.
+    signed_transaction tx;
+    tx.operations = {operation(op)};
+    const auto tx_bin = fc::raw::pack(tx);
+    const auto tx_back = fc::raw::unpack<signed_transaction>(tx_bin);
+    BOOST_REQUIRE_EQUAL(tx_back.operations.size(), 1u);
+    BOOST_CHECK_EQUAL(tx_back.operations[0].which(), 105);
+    BOOST_CHECK(fc::raw::pack(tx_back.operations[0].get<set_agent_permission_operation>()) == bin);
+}
+
+// Perpetual rows are the epoch, and the epoch is what a missing/zero JSON expiration decodes to.
+BOOST_AUTO_TEST_CASE(perpetual_expiration_is_epoch) {
+    set_agent_permission_operation op = grant({"transfer"});
+    fc::variant v;
+    fc::to_variant(op, v);
+    BOOST_CHECK_EQUAL(v.get_object()["expiration"].as_string(), "1970-01-01T00:00:00");
+    set_agent_permission_operation back;
+    fc::from_variant(v, back);
+    BOOST_CHECK(back.expiration == fc::time_point_sec());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
