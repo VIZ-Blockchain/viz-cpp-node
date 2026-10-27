@@ -68,7 +68,7 @@ actual_rshares = SUM(voter.effective_vesting_shares × vote_percent / 10000)
             ├── 净负数/低于最低值 → [已过期，status=3]
             ├── 创建者取消 → [已取消，status=1]
             └── 已批准    → [已批准，status=4]
-                                └── 支付（每 200 个区块）
+                                └── 支付（每 200 个区块；HF16 后为 600）
                                     └── [已完成，status=5]
 ```
 
@@ -76,7 +76,7 @@ actual_rshares = SUM(voter.effective_vesting_shares × vote_percent / 10000)
 
 ## 支付处理
 
-已批准请求（status 4）每 200 个区块（~10 分钟）从委员会基金获得支付。基金在所有当前已批准请求之间均等分配：
+已批准请求（status 4）每 200 个区块（~10 分钟；HF16 后为 600 个区块，仍约 10 分钟——激活时该间隔按槽位换算）从委员会基金获得支付。基金在所有当前已批准请求之间均等分配：
 
 ```
 payment = min(committee_fund / count_approved_requests, remain_payout_amount)
