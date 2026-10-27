@@ -79,8 +79,9 @@ gated — they derive from the same state the settlement will read:
   same reason: the shelter testnet is a **production-config** deployment, so a testnet-only fork could
   never activate there. See `pm-audit-fix-upgrade.md` §2 for the full argument.
 * **Activation: 2026-10-31 00:00:00 UTC** (`CHAIN_HARDFORK_16_TIME` = 1793404800 in both configs, set
-  by the owner on 2026-10-20). The validator announcement must name this moment, and 17 of 21
-  validators must run the 4.2.0 binary before it. Keep the value in the **future**:
+  by the owner on 2026-10-20). The validator announcement must name this moment, and 17 schedule
+  slots must vote 4.2.0 before it (only validators with a signing key are scheduled; check with
+  `scripts/hardfork_readiness.py`, see [HF16](../consensus/hf16.md#verify-readiness)). Keep the value in the **future**:
   a past timestamp activates the fork in whatever block quorum is reached, with no announceable
   moment. Change it together with the announcement text, never after it is published.
 * **Version, not revision.** `CHAIN_VERSION` moves to `4.2.0` in **both** `config.hpp` and
