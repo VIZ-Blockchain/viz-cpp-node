@@ -157,6 +157,7 @@ public:
  *  @brief DLT-specific P2P node replacing the old Graphene synopsis-based node.
  */
 class dlt_p2p_node {
+    friend struct dlt_p2p_node_test_access;  // tests/consensus_sim/scenarios/test_p2p_slot_scale.cpp
 public:
     explicit dlt_p2p_node(const std::string& user_agent);
     ~dlt_p2p_node();
