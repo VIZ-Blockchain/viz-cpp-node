@@ -39,7 +39,7 @@ VIZ 每个调度轮次运行 **21 个活跃验证者**。
 2. 添加**时间份额验证者**——为排名较低的验证者提供偶尔参与的旋转槽位，防止完全集中。
 3. 使用头区块 ID 作为熵种子对结果 21 个槽位进行洗牌（确定性洗牌 = 所有节点结果相同）。
 
-生成的有序列表成为**当前计划**。每个位置对应一个 3 秒槽位。
+生成的有序列表成为**当前计划**。每个位置对应一个槽位（HF16 前 3 秒，之后 1 秒）。
 
 ### 槽位分配
 
@@ -57,7 +57,7 @@ block_time = genesis_time + slot_num × 3s
 
 ### 错过的槽位
 
-当验证者错过其槽位时，`update_global_dynamic_data()` 递增 `current_aslot` 并在参与位掩码中将该槽位标记为已错过。其他验证者不会填充错过的槽位——无论如何，3 秒节奏继续到下一个槽位。
+当验证者错过其槽位时，`update_global_dynamic_data()` 递增 `current_aslot` 并在参与位掩码中将该槽位标记为已错过。其他验证者不会填充错过的槽位——无论如何，槽位节奏继续到下一个槽位。
 
 ---
 
@@ -170,7 +170,7 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 | `enable-stale-production` | `false` | 绕过参与度检查（仅限测试网） |
 | `emergency-private-key` | — | 可选的紧急共识签名密钥 |
 | 活跃验证者 | 21 | 在 `CHAIN_MAX_VALIDATORS` 中硬编码 |
-| 区块间隔 | 3 秒 | `CHAIN_BLOCK_INTERVAL` |
+| 区块间隔 | HF16 前 3 秒；之后 1 秒 | 运行时 `get_config` |
 | LIB 阈值 | ⌈21 × 2/3⌉ = 14 | 确认不可逆性所需的区块数 |
 | 紧急超时 | 3600 秒 | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` |
 
