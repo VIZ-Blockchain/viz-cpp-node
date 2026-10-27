@@ -8,10 +8,16 @@ committee validator while emergency consensus is active, groups the slot owners 
 CHAIN_HARDFORK_REQUIRED_VALIDATORS (17) slots. Otherwise next_hardfork falls back to the
 current version.
 
-A validator with a null signing key is not scheduled, so its vote does not count. On
-2026-10-26 mainnet scheduled 13 validators: 17 votes for 4.2.0 were unreachable however
-many of them had upgraded. Counting "upgraded validators in the top 21 by vote" hides
-this; this script counts slots.
+The recount runs every CHAIN_MAX_VALIDATORS * REPEAT (21) blocks, and a promoted fork whose
+time has passed applies in that same block (process_hardforks runs after the schedule update).
+
+A validator with a null signing key is not scheduled, so its vote does not count. At the
+time of writing (2026-10-26) mainnet scheduled 13 validators: 17 votes for 4.2.0 were
+unreachable however many of them had upgraded. Counting "upgraded validators in the top 21
+by vote" hides this; this script counts slots.
+
+The quorum constants are the production ones from protocol/config.hpp, not read from the
+node: against a testnet node (quorum 1) the cross-check honestly reports DISAGREE.
 
 Usage:
     python3 scripts/hardfork_readiness.py [--url URL]
@@ -21,8 +27,9 @@ Exit codes:
     0  a vote group has the quorum and the chain agrees
     1  no group has the quorum (the chain agrees: next_hardfork is the current version)
     2  the recount disagrees with the chain's next_hardfork, or the API answer is unusable.
-       Right after a vote change this can be transient: the chain recounts at the next
-       shuffle (next_shuffle_block_num); rerun after it.
+       Right after a vote change this can be transient: the chain recounts every 21
+       blocks; rerun after the printed recount block.
+    4  --selftest failed: the check itself is broken (not a readiness verdict)
 """
 
 import argparse
@@ -34,6 +41,7 @@ import urllib.request
 
 REQUIRED = 17                 # CHAIN_HARDFORK_REQUIRED_VALIDATORS, protocol/config.hpp
 REPEAT = 1                    # CHAIN_BLOCK_VALIDATOR_REPEAT
+MAX_VALIDATORS = 21           # CHAIN_MAX_VALIDATORS
 COMMITTEE = "committee"       # CHAIN_EMERGENCY_VALIDATOR_ACCOUNT
 NULL_KEY = "VIZ1111111111111111111111111111111114T1Anm"
 NAME_BYTES = 32               # account_name_type is a fixed_string<32>
@@ -97,10 +105,15 @@ def check(url):
     groups, promoted = tally(slots, votes, emergency)
 
     print(f"head #{dgp['head_block_number']}, current hardfork {cur}, emergency: {'yes' if emergency else 'no'}")
-    print(f"scheduled slots: {n} (recount at shuffle #{wso['next_shuffle_block_num']}), quorum {REQUIRED}")
+    # update_validator_schedule returns early unless head % (MAX_VALIDATORS * REPEAT) == 0.
+    # (wso.next_shuffle_block_num is write-only in the chain and is not this block.)
+    period = MAX_VALIDATORS * REPEAT
+    next_recount = (dgp["head_block_number"] // period + 1) * period
+    print(f"scheduled slots: {n}, quorum {REQUIRED}, next recount at #{next_recount}")
     if n < REQUIRED:
+        more = REQUIRED - n
         print(f"  !! only {n} slots: no vote can reach {REQUIRED} until "
-              f"{REQUIRED - n} more validators set a signing key")
+              f"{more} more validator{'s' if more > 1 else ''} set{'' if more > 1 else 's'} a signing key")
     lead = max(groups, key=lambda g: (groups[g], vkey(g[0]))) if groups else None
     for g in sorted(groups, key=lambda g: -groups[g]):
         short = f"  short {REQUIRED - groups[g]}" if groups[g] < REQUIRED else "  QUORUM"
@@ -116,7 +129,10 @@ def check(url):
                 if w["signing_key"] == NULL_KEY
                 and (w["hardfork_version_vote"], w["hardfork_time_vote"]) == lead]
         if idle:
-            print(f"vote {lead[0]} but unscheduled (null signing key; a validator_update brings them back):")
+            # get_validators_by_vote stops at the first validator with zero votes, so a null-key
+            # validator with no votes is missing here even though it can hold a support slot.
+            print(f"vote {lead[0]} but unscheduled (null signing key, votes > 0 only; "
+                  f"a validator_update brings them back):")
             print("  " + ", ".join(w["owner"] for w in idle))
 
     chain = (nxt["hf_version"], nxt["live_time"])
@@ -144,7 +160,7 @@ def selftest():
         if not ok:
             fails.append(f"{label}: got {got!r}, want {want!r}")
 
-    votes = {k: hf16 for k in names[:16]} | {k: hf15 for k in names[16:]}
+    votes = {**{k: hf16 for k in names[:16]}, **{k: hf15 for k in names[16:]}}
     arm("16 of 21 -> no promotion", tally(names, votes, False)[1], None)
     votes[names[16]] = hf16
     arm("17 of 21 -> promoted", tally(names, votes, False)[1], hf16)
@@ -159,15 +175,26 @@ def selftest():
     arm("decode hex schedule", decode_slots(blob, 2), ["denis-skripnik", "rusiniu"])
     arm("decode list schedule", decode_slots(["a", "b", ""], 2), ["a", "b"])
     # The constants above are copies; fail if the production config moves.
-    cfg = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "../libraries/protocol/include/graphene/protocol/config.hpp")).read()
-    for macro, mine in (("CHAIN_HARDFORK_REQUIRED_VALIDATORS", REQUIRED), ("CHAIN_BLOCK_VALIDATOR_REPEAT", REPEAT)):
-        m = re.search(rf"#define\s+{macro}\s+(\d+)", cfg)
-        arm(f"{macro} matches config.hpp", int(m.group(1)) if m else None, mine)
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "../libraries/protocol/include/graphene/protocol/config.hpp")
+    if not os.path.exists(cfg_path):
+        print("  skip constants vs config.hpp (script is outside the repo tree)")
+    else:
+        cfg = open(cfg_path).read()
+
+        def define(macro):
+            m = re.search(rf"#define\s+{macro}\s+(\d+)", cfg)
+            return int(m.group(1)) if m else None
+
+        arm("CHAIN_HARDFORK_REQUIRED_VALIDATORS matches config.hpp",
+            define("CHAIN_HARDFORK_REQUIRED_VALIDATORS"), REQUIRED)
+        arm("CHAIN_BLOCK_VALIDATOR_REPEAT matches config.hpp", define("CHAIN_BLOCK_VALIDATOR_REPEAT"), REPEAT)
+        top, sup = define("CHAIN_MAX_TOP_VALIDATORS"), define("CHAIN_MAX_SUPPORT_VALIDATORS")
+        arm("CHAIN_MAX_VALIDATORS matches config.hpp", top + sup if top and sup else None, MAX_VALIDATORS)
 
     for f in fails:
         print(f, file=sys.stderr)
-    return 1 if fails else 0
+    return 4 if fails else 0
 
 
 def main():
