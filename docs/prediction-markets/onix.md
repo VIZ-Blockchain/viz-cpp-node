@@ -43,7 +43,7 @@ or bearing impermanent loss.
 
 ::: tip 3 · Native to the chain, zero-sum
 Markets are first-class consensus operations (`pm_*`), not smart contracts: censorship-resistant,
-composable, ~3-second blocks, no oracle bridge. The protocol never emits tokens — it only redistributes.
+composable, ~3-second blocks (~1 s from HF16), no oracle bridge. The protocol never emits tokens — it only redistributes.
 :::
 
 ## How a bet works

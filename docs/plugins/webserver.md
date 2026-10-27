@@ -206,7 +206,7 @@ This allows browser-based wallets and dApps to call the JSON-RPC endpoint direct
 | High memory usage | Reduce `webserver-cache-size` or disable caching |
 | Slow responses under load | Increase `webserver-thread-pool-size`; check CPU saturation |
 | WebSocket subscriptions not firing | Subscriptions require a WebSocket connection, not HTTP |
-| Stale responses | If `webserver-cache-enabled = true`, responses are fresh within one block interval (~3 s); for real-time use disable the cache |
+| Stale responses | If `webserver-cache-enabled = true`, responses are fresh within one block interval (~3 s before HF16, ~1 s after); for real-time use disable the cache |
 
 ---
 

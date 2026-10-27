@@ -566,7 +566,7 @@ The protocol began as a Telegram WebApp with a centralized backend (all market l
 
 ### 8.2 Migration Architecture
 
-VIZ DLT is a Distributed Ledger Technology with ~3-second block times, DPoS consensus, named accounts (Graphene-style), and no general-purpose smart contracts. Prediction market operations will be implemented as **first-class consensus-validated operations** — not smart contracts, not `custom_json` payloads.
+VIZ DLT is a Distributed Ledger Technology with ~3-second block times (~1 second from HF16), DPoS consensus, named accounts (Graphene-style), and no general-purpose smart contracts. Prediction market operations will be implemented as **first-class consensus-validated operations** — not smart contracts, not `custom_json` payloads.
 
 | Layer | Examples | Consensus-Validated? |
 |-------|---------|---------------------|
