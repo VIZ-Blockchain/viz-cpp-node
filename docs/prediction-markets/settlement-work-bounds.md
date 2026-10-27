@@ -553,7 +553,7 @@ Release build, no sanitizers, no account_history plugin:
 
 Settlement is linear in rows at **~1.7 µs/row**, garbage collection at ~0.62 µs/row. Extrapolating:
 roughly **600 000 rows fill one second** of block time and ~1.7 M rows fill the whole three-second
-interval. Treat that as a **lower** bound — the benchmark bets from ten accounts (a real market has
+interval (from HF16 a block is 1 s, so that same row count spans three blocks). Treat that as a **lower** bound — the benchmark bets from ten accounts (a real market has
 thousands, so lookups are less cache-friendly) and the simulated node runs no account_history
 plugin, so the virtual operation pushed per row costs almost nothing there while an API node pays
 to index it.

@@ -68,7 +68,7 @@ Batch requests (JSON array) are treated as a single atomic cache entry keyed on 
 
 ### Invalidation
 
-The cache is cleared on every applied block. Responses are never served stale beyond one block interval (3 seconds).
+The cache is cleared on every applied block. Responses are never served stale beyond one block interval (3 seconds before HF16, 1 second after).
 
 ### Disabling the cache
 
@@ -76,7 +76,7 @@ The cache is cleared on every applied block. Responses are never served stale be
 webserver-cache-enabled = false
 ```
 
-Disable for nodes that serve highly latency-sensitive or real-time clients where a 3-second cache window is unacceptable.
+Disable for nodes that serve highly latency-sensitive or real-time clients where a one-slot cache window (3 s before HF16, 1 s after) is unacceptable.
 
 ---
 

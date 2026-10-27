@@ -54,10 +54,10 @@ without a bound you set, which is why 20 GB is a real number and not a
 hope — but see the snapshot-retention warning in Part 2, because that is the one
 setting that can quietly break it.
 
-Do not undersize the RAM. Signing happens inside a 3-second slot; a node that
-swaps while producing misses the slot and reports `lag`. The 2 GB swap is a
-safety valve for the memory spike during snapshot import, not a substitute for
-RAM.
+Do not undersize the RAM. Signing happens inside a single slot (3 s before
+HF16, 1 s after); a node that swaps while producing misses the slot and
+reports `lag`. The 2 GB swap is a safety valve for the memory spike during
+snapshot import, not a substitute for RAM.
 
 Both profiles want that swap — a relay imports snapshots the same way, so it
 takes the same spike. The difference is only what swapping costs you: a relay
@@ -148,10 +148,10 @@ validator.
 
 ### Time synchronization
 
-**This is not optional.** Block production is slot-scheduled at 3-second
-intervals. A clock that drifts by more than a fraction of a slot signs blocks
-the network rejects, or misses its slot entirely, and the symptom looks exactly
-like a network problem.
+**This is not optional.** Block production is slot-scheduled at fixed
+intervals (3 s before HF16, 1 s after). A clock that drifts by more than a
+fraction of a slot signs blocks the network rejects, or misses its slot
+entirely, and the symptom looks exactly like a network problem.
 
 ```bash
 sudo apt install -y systemd-timesyncd
@@ -354,7 +354,7 @@ accept peers. Do not "fix" it.
 
 ::: warning Snapshot retention is by age only — there is no keep-N cap
 Snapshots on disk = cadence × retention, and nothing else limits it.
-`snapshot-every-n-blocks = 28800` is roughly one per day (28800 × 3 s), so with
+`snapshot-every-n-blocks = 28800` is roughly one per day before HF16 (28800 × 3 s), or one per ~8 hours after (28800 × 1 s), so with
 `snapshot-max-age-days = 2` you hold about two files. Drop the cadence to
 `1200` and you are asking for ~240 files at up to 2 GB each, which will fill any
 disk in this handbook's sizing table long before the age limit prunes anything.

@@ -63,7 +63,7 @@ Slot at T=6.000s:
   Tick at T=6.000 → now=6.250 → lag=250ms → still within 500ms threshold
 ```
 
-**Lag skip:** After a `lag` result, the same slot would re-trigger every tick for the rest of the 3-second slot interval. A guard skips ahead to the next slot boundary so the loop yields CPU instead of spinning.
+**Lag skip:** After a `lag` result, the same slot would re-trigger every tick for the rest of the slot interval (3 s before HF16, 1 s after). A guard skips ahead to the next slot boundary so the loop yields CPU instead of spinning.
 
 ---
 
@@ -106,7 +106,7 @@ The following checks run **in order** on every tick where `slot > 0`.
 When a competing block exists at `head_block_num + 1`:
 
 1. **Vote-weighted comparison (HF12+):** `compare_fork_branches()` computes total SHARES delegated to each branch. If our branch is heavier, proceed and remove the competing block. If tied or lighter, defer.
-2. **Stuck-head timeout:** After `fork-collision-timeout-blocks` consecutive deferrals (default 21 = 63 seconds), the competing block is removed and production resumes. This handles dead-fork blocks from disconnected peers.
+2. **Stuck-head timeout:** After `fork-collision-timeout-blocks` consecutive deferrals (default 21 blocks = 63 seconds before HF16, 21 seconds after), the competing block is removed and production resumes. This handles dead-fork blocks from disconnected peers.
 
 **Emergency mode:** Any competing block triggers a defer; the vote-weight path is not taken.
 

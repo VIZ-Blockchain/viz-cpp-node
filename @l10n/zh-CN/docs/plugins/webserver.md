@@ -57,7 +57,7 @@ webserver-ws-endpoint   = 0.0.0.0:8091
 
 ### 失效
 
-缓存在每个应用的区块上被清除。响应永远不会超过一个区块间隔（3 秒）地服务过时内容。
+缓存在每个应用的区块上被清除。响应永远不会超过一个区块间隔（HF16 前 3 秒、HF16 后 1 秒）地服务过时内容。
 
 ### 禁用缓存
 
@@ -65,7 +65,7 @@ webserver-ws-endpoint   = 0.0.0.0:8091
 webserver-cache-enabled = false
 ```
 
-对于服务高延迟敏感或实时客户端（3 秒缓存窗口不可接受）的节点，请禁用。
+对于服务高延迟敏感或实时客户端（HF16 前 3 秒、HF16 后 1 秒的缓存窗口不可接受）的节点，请禁用。
 
 ---
 
@@ -131,7 +131,7 @@ webserver 插件原生处理浏览器的跨域（cross-origin）请求 — 本�
 | 高内存使用 | 减少 `webserver-cache-size` 或禁用缓存 |
 | 负载下响应慢 | 增加 `webserver-thread-pool-size`；检查 CPU 饱和 |
 | WebSocket 订阅未触发 | 订阅需要 WebSocket 连接，而非 HTTP |
-| 过时响应 | 如果 `webserver-cache-enabled = true`，响应在一个区块间隔内（~3 秒）是新鲜的；对于实时使用请禁用缓存 |
+| 过时响应 | 如果 `webserver-cache-enabled = true`，响应在一个区块间隔内（HF16 前 ~3 秒、HF16 后 ~1 秒）是新鲜的；对于实时使用请禁用缓存 |
 
 ---
 
