@@ -232,7 +232,8 @@ All-operations index for block-level and transaction queries.
 **Config options:**
 - `history-whitelist-ops` / `history-blacklist-ops` — filter which op types are stored
 - `history-start-block` — start indexing from this block number
-- `history-count-blocks` — retain N blocks of history
+- `history-count-blocks` — retain N blocks of history (not rescaled at HF16: the same N covers one
+  third of the wall-clock retention, so multiply by three to keep the old window)
 - `history-purge-interval` — purge old entries every N blocks instead of every block (default: 4800 blocks ≈ 4 hours before HF16, ≈ 80 minutes after). Reduces shared-memory fragmentation and write-lock contention. Each purge cycle processes at most `history-purge-interval` blocks worth of entries; if the backlog is larger, remaining purging is deferred to the next cycle.
 
 ---
@@ -247,7 +248,8 @@ Per-account operation history, paginated.
 
 **Config options:**
 - `track-account-range` — account name range to index (default: all accounts)
-- `history-count-blocks` — retain N blocks of history
+- `history-count-blocks` — retain N blocks of history (not rescaled at HF16: the same N covers one
+  third of the wall-clock retention, so multiply by three to keep the old window)
 
 > **Dependency:** `account_history` **requires** `operation_history` as a parent plugin
 > (`APPBASE_PLUGIN_REQUIRES`). The node will not start if `operation_history` is absent.
