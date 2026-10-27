@@ -6720,12 +6720,10 @@ namespace graphene { namespace chain {
                                 remove(current);
                             }
 
-                            // Override validator schedule: all slots -> emergency validator
-                            // Also update next_shuffle_block_num so the hybrid override
-                            // runs on the next schedule update. Without this, if
-                            // next_shuffle_block_num is still N blocks away, the node
-                            // would run an all-committee schedule until then, rejecting
-                            // blocks from real validators during that window.
+                            // Override validator schedule: all slots -> emergency validator.
+                            // The hybrid schedule replaces it at the next update_validator_schedule,
+                            // which runs when head % (CHAIN_MAX_VALIDATORS * REPEAT) == 0.
+                            // next_shuffle_block_num is informational only: nothing reads it.
                             const validator_schedule_object &wso = get_validator_schedule_object();
                             modify(wso, [&](validator_schedule_object &_wso) {
                                 for (int i = 0; i < _wso.num_scheduled_validators; i++) {

@@ -127,6 +127,8 @@ namespace graphene { namespace chain {
             id_type id;
 
             fc::uint128_t current_virtual_time;
+            // Write-only: head + num_scheduled_validators at the last rebuild. The schedule
+            // is rebuilt when head % (CHAIN_MAX_VALIDATORS * REPEAT) == 0, not at this block.
             uint32_t next_shuffle_block_num = 1;
             fc::array<account_name_type, CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT> current_shuffled_validators;
             uint8_t num_scheduled_validators = 1;
