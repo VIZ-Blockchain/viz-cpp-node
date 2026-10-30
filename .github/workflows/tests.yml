@@ -115,7 +115,7 @@ jobs:
           cd tests/consensus_sim
           # --min-cases: floor of enabled cases in a non-testnet build. Raise it when adding
           # cases; a drop below it means a test file fell out of the build.
-          python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 117
+          python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 118
 
       - name: Upload consensus_sim failure logs
         if: failure()
@@ -196,7 +196,7 @@ jobs:
           set -euo pipefail
           cd build/tests/consensus_sim
           # --min-cases: floor of enabled cases in a testnet build (checked before --filter).
-          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 172)
+          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 173)
           if [ "${{ matrix.validators }}" = "2" ]; then
             "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite
           else
