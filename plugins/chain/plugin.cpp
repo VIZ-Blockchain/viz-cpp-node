@@ -6,6 +6,8 @@
 #include <fc/io/json.hpp>
 #include <fc/string.hpp>
 
+#include <boost/signals2/connection.hpp>
+
 #include <fstream>
 #include <iostream>
 #include <graphene/protocol/protocol.hpp>
@@ -39,6 +41,7 @@ namespace chain {
         bool readonly = false;
         bool check_locks = false;
         bool validate_invariants = false;
+        int64_t validate_invariants_residual = 0;
         uint32_t flush_interval = 0;
         flat_map<uint32_t, protocol::block_id_type> loaded_checkpoints;
 
@@ -76,6 +79,9 @@ namespace chain {
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
 
+        // --validate-database-invariants: per-block supply re-check (issue #204)
+        boost::signals2::connection invariant_check_connection;
+
         plugin_impl() {
             // get default settings
             read_wait_micro = db.read_wait_micro();
@@ -106,6 +112,7 @@ namespace chain {
         void wipe_db(const bfs::path &data_dir, bool wipe_block_log);
         void replay_db(const bfs::path &data_dir, bool force_replay);
         fc::path find_latest_snapshot();
+        void arm_invariant_checks();
     };
 
     void plugin::plugin_impl::check_time_in_block(const protocol::signed_block &block) {
@@ -424,6 +431,11 @@ namespace chain {
             ) (
                 "validate-database-invariants", boost::program_options::bool_switch()->default_value(false),
                 "Validate all supply invariants check out"
+            ) (
+                "validate-database-invariants-residual", boost::program_options::value<int64_t>()->default_value(0),
+                "Expected TOKEN supply residual for --validate-database-invariants: a testnet state "
+                "carrying frozen pre-fix PM dust uses the same value as snapshot-pm-legacy-residual; "
+                "0 (default) is strict, satoshi-exact"
             );
     }
 
@@ -475,6 +487,7 @@ namespace chain {
         my->auto_recover_from_snapshot = options.at("auto-recover-from-snapshot").as<bool>();
         my->check_locks = options.at("check-locks").as<bool>();
         my->validate_invariants = options.at("validate-database-invariants").as<bool>();
+        my->validate_invariants_residual = options.at("validate-database-invariants-residual").as<int64_t>();
         if (options.count("flush-state-interval")) {
             my->flush_interval = options.at("flush-state-interval").as<uint32_t>();
         } else {
@@ -890,10 +903,52 @@ namespace chain {
             std::cerr << "   Add 'trusted-snapshot-peer = <ip>:<port>' to config.ini for fast bootstrap.\n";
         }
 
+        // --validate-database-invariants: issue #204 — the flag used to be accepted and never
+        // read anywhere.  The arming lives in a helper because this function is NOT the only
+        // exit path: with --replay-from-snapshot / a snapshot path, plugin_startup returns
+        // early (see do_snapshot_load below), and testnet-vizd runs exactly that way.  Arming
+        // here alone left the flag a silent no-op on the one deployment we accept it on.
+        my->arm_invariant_checks();
+
         on_sync();
     }
 
+    void plugin::plugin_impl::arm_invariant_checks() {
+        if (!validate_invariants)
+            return;
+        if (invariant_check_connection.connected())
+            return; // recovery re-entry: already armed against the same database
+
+        ilog("--validate-database-invariants: checking supply invariants at startup and "
+             "after every applied block (very slow, development only)");
+        if (validate_invariants_residual != 0)
+            wlog("--validate-database-invariants: expecting TOKEN delta=${d} "
+                 "(validate-database-invariants-residual — frozen pre-fix testnet dust); "
+                 "this value must be 0 on mainnet", ("d", validate_invariants_residual));
+        // Startup: a divergent state is fatal — do not serve it to peers.
+        db.validate_invariants(validate_invariants_residual);
+        // Per block: report loudly but keep running.  Throwing here would be caught by
+        // CHAIN_TRY_NOTIFY (applied_block is wrapped in it) and only logged anyway, and a
+        // rethrow as plugin_exception would surface as a block-processing failure, which
+        // mislabels a LOCAL state problem as an invalid block.
+        invariant_check_connection = db.applied_block.connect(
+            [this](const protocol::signed_block &blk) {
+                try {
+                    // verbose=false: the per-pool breakdown is startup/manual only, so a
+                    // clean run leaves node.log untouched (a divergence still prints it).
+                    db.validate_invariants(validate_invariants_residual, false);
+                } catch (const fc::exception &e) {
+                    elog("DATABASE INVARIANT VIOLATED after block ${n}: ${e}", ("n", blk.block_num())
+                                                                            ("e", e.to_detail_string()));
+                    elog("--validate-database-invariants: this node's state no longer reconciles. "
+                         "Stop it and restore from a trusted snapshot or peer; do not keep serving.");
+                }
+            });
+    }
+
     void plugin::plugin_shutdown() {
+        if (my->invariant_check_connection.connected())
+            my->invariant_check_connection.disconnect();
         ilog("closing chain database");
         my->db.close();
         ilog("database closed successfully");
@@ -995,6 +1050,11 @@ namespace chain {
         }
 
         if (is_recovery) write_schema_version(data_dir);
+        // Arm --validate-database-invariants on the snapshot path too: testnet-vizd boots with
+        // --replay-from-snapshot, and plugin_startup() returns before its arming point, so a
+        // flag armed only there is a silent no-op on that deployment.  State is final here
+        // (snapshot loaded, dlt_block_log replayed), which is exactly what the check wants.
+        my->arm_invariant_checks();
         // During auto-recovery, on_sync() must NOT fire again —
         // webserver/P2P plugins are already running and calling
         // start_webserver() twice destroys joinable threads (std::terminate).

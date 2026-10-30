@@ -29,7 +29,8 @@ These are one-time recovery or maintenance operations; they cause the node to pe
 | `--auto-recover-from-snapshot` | Default `true`. Automatically recover at runtime when shared memory corruption is detected during block processing or generation, without a restart. Disable with `--no-auto-recover-from-snapshot`. |
 | `--resync-blockchain` | Wipe both shared memory and the block log; start from genesis or from a snapshot. Destructive — use only when recovering from complete data loss. |
 | `--check-locks` | Validate lock ordering (development only). |
-| `--validate-database-invariants` | Run database consistency checks on every block (very slow; development only). |
+| `--validate-database-invariants` | Recompute the supply invariants — SHARES (`dgp.total_vesting_shares` vs the sum of account vesting) and TOKEN (`dgp.current_supply` vs every pool holding tokens outside account balances, prediction-market pools included) — once at startup and after every applied block. A divergence at startup aborts the start; after a block it is logged as `DATABASE INVARIANT VIOLATED` and the node keeps running. One linear pass over the whole state per block (all accounts plus every prediction-market pool); the per-pool breakdown is printed at startup and on any divergence, never on a clean block. Development only. A state carrying frozen pre-fix dust needs `--validate-database-invariants-residual` (next row). |
+| `--validate-database-invariants-residual` | Expected TOKEN supply residual for `--validate-database-invariants`. A state carrying frozen pre-fix prediction-market dust (some testnet snapshots) uses the same value as `--snapshot-pm-legacy-residual`; `0` (the default) is strict, satoshi-exact, and the only valid value on mainnet. |
 
 ### Config file options
 

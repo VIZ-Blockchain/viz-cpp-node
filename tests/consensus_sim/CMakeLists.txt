@@ -66,6 +66,7 @@ set(SCENARIO_SOURCES
     scenarios/test_wedge_predicate.cpp
     scenarios/test_routable_endpoint.cpp
     scenarios/test_p2p_slot_scale.cpp
+    scenarios/test_db_invariants.cpp
 )
 
 # These scenarios require an actual HF14 activation and never soft-skip.

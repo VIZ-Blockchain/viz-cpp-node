@@ -640,7 +640,21 @@ namespace graphene { namespace chain {
                number. Empty when this binary knows no hardfork with that version. */
             fc::optional<uint32_t> get_hardfork_number(const protocol::hardfork_version &v) const;
 
-            void validate_invariants() const;
+            /* For testing and debugging only. Recomputes the supply invariants from the live
+               state — SHARES (dgp.total_vesting_shares vs sum of account vesting_shares) and
+               TOKEN (dgp.current_supply vs every pool that holds TOKEN outside account
+               balances, PM pools included) — logs the full breakdown, and THROWS on any
+               divergence from the expected residual. O(state): one pass over accounts and the
+               PM indexes. Wired by the chain plugin to --validate-database-invariants, which
+               runs it once at startup and after every applied block.
+
+               `pm_legacy_residual` is the frozen pre-fix leverage-exit dust some TESTNET
+               snapshots carry. Default 0 is the only value valid on mainnet; the snapshot
+               plugin keeps its own copy of these checks with its configurable anchor.
+
+               `verbose` prints the per-pool breakdown (~600 bytes); a divergence is always
+               reported in full, so a per-block caller passes false to keep node.log quiet. */
+            void validate_invariants(int64_t pm_legacy_residual = 0, bool verbose = true) const;
 
             /**
              * @}
