@@ -28,10 +28,10 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Cache-mount key hashes BOTH Dockerfiles so the testnet and
-      # production jobs (which install identical packages) compute the
-      # same key prefix — letting build_prod restore what build_testnet
-      # just saved.
+      # Testnet and production keep separate key prefixes (see below), so neither job's
+      # save can be an exact hit for the other. Both still read the same apt caches and
+      # the same content-addressed ccache, so the general prefix stays as a read-only
+      # fallback — the last restore-key line.
       - name: Restore BuildKit cache mounts from Actions Cache
         uses: actions/cache@v5
         id: cache-mounts
@@ -42,10 +42,17 @@ jobs:
           # key, production then got an exact hit on them, missed every chain TU, and
           # never saved its own cache (exact hit = no save). PR builds fall back to
           # `viz-cache-mount-<os>-main-`, which therefore only matches production now.
+          #
+          # The last restore-key is that general prefix, and it must stay: the testnet
+          # prefix started empty, and a fresh testnet key alone only ever holds the ~170
+          # vizd objects it compiled itself (29-58 MiB), never the dependency objects that
+          # live in the shared cache (190-250 MiB). Without the fallback every master push
+          # recompiles the chain from scratch — measured on 30.10.2026, see the PR.
           key: viz-cache-mount-testnet-${{ runner.os }}-main-${{ hashFiles('share/vizd/docker/Dockerfile-testnet') }}-${{ github.sha }}
           restore-keys: |
             viz-cache-mount-testnet-${{ runner.os }}-main-${{ hashFiles('share/vizd/docker/Dockerfile-testnet') }}-
             viz-cache-mount-testnet-${{ runner.os }}-main-
+            viz-cache-mount-${{ runner.os }}-main-
 
       - name: Inject cache mounts into BuildKit
         uses: reproducible-containers/buildkit-cache-dance@v3
