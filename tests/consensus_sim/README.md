@@ -22,7 +22,8 @@ Run a specific suite:
 
 ```
 ./tests/consensus_sim/consensus_sim_tests --run_test=equivocation_suite
-./tests/consensus_sim/consensus_sim_tests --run_test=equivocation_suite/seed_sweep_one_hundred
+./tests/consensus_sim/consensus_sim_tests --run_test=equivocation_suite/seed_sweep_one_hundred_all_fire     # all 100 seeds
+./tests/consensus_sim/consensus_sim_tests --run_test=equivocation_suite/seed_sweep_one_hundred_all_fire/_3  # seeds 30-39
 ```
 
 Run every case as its own process, N at a time (what CI does; prints the
@@ -33,6 +34,11 @@ cd build/tests/consensus_sim
 python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j4
 python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests --filter equivocation_suite
 ```
+
+The case list is read from two Boost.Test listings that must agree, and CI
+passes `--min-cases` (117 for a regular build, 172 with `BUILD_TESTNET=ON`) so
+a test file dropped from the build fails the job instead of shrinking it.
+Raise the floors in `.github/workflows/tests.yml` when you add cases.
 
 The chain code has pre-existing ASan/UBSan findings (a base-pointer delete in
 `evaluator_registry`, version/asset alignment) unrelated to the harness. Run
