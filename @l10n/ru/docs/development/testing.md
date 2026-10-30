@@ -101,7 +101,7 @@ echo '{"digest":"...","wif":"5K..."}' | ./sign_digest
 
 ## Тестовый API-плагин
 
-Плагин `test_api` предоставляет два JSON-RPC API (`test_api_a` и `test_api_b`) для интеграционных тестов. Регистрируется в `programs/vizd/main.cpp` и загружается процессом узла.
+Плагин `test_api` предоставляет два JSON-RPC API (`test_api_a` и `test_api_b`) для интеграционных тестов. Он лежит в `examples-plugins/test_api/` и не зарегистрирован в `vizd`; чтобы им воспользоваться, добавьте его в `register_plugins()` в `programs/vizd/main.cpp` в локальной сборке.
 
 ---
 

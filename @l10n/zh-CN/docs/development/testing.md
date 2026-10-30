@@ -101,7 +101,7 @@ echo '{"digest":"...","wif":"5K..."}' | ./sign_digest
 
 ## 测试 API 插件
 
-`test_api` 插件为集成测试公开两个 JSON-RPC API（`test_api_a` 和 `test_api_b`）。在 `programs/vizd/main.cpp` 中注册，由节点进程加载。
+`test_api` 插件为集成测试公开两个 JSON-RPC API（`test_api_a` 和 `test_api_b`）。它位于 `examples-plugins/test_api/`，未在 `vizd` 中注册；如需使用，请在本地构建中将其加入 `programs/vizd/main.cpp` 的 `register_plugins()`。
 
 ---
 

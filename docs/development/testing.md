@@ -136,7 +136,7 @@ Both utilities print computed `digest`, `sig_digest`, signing key, and signature
 
 ## Test API Plugin
 
-The `test_api` plugin exposes two JSON-RPC APIs (`test_api_a` and `test_api_b`) for integration tests. It is registered in `programs/vizd/main.cpp` and loaded by the node process.
+The `test_api` plugin exposes two JSON-RPC APIs (`test_api_a` and `test_api_b`) for integration tests. It lives in `examples-plugins/test_api/` and is not registered in `vizd`; to use it, add it to `register_plugins()` in `programs/vizd/main.cpp` in a local build.
 
 ---
 
