@@ -79,6 +79,7 @@ COPY libraries $APPDIR/libraries
 # because ccache is not concurrent-safe; `shared` would risk cache corruption
 # under any future matrix-build setup.
 RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
+    ccache -z && \
     cd $APPDIR && \
     git submodule update --init --recursive -f && \
     sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt && \
