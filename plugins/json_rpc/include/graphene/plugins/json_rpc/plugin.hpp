@@ -10,6 +10,9 @@
 #include <boost/config.hpp>
 #include <boost/any.hpp>
 
+#include <map>
+#include <string>
+
 /**
  * This plugin holds bindings for all APIs and their methods
  * and can dispatch JSONRPC requests to the appropriate API.
@@ -56,7 +59,6 @@
 namespace graphene {
     namespace plugins {
         namespace json_rpc {
-
 
             /**
              * @brief Internal type used to bind api methods

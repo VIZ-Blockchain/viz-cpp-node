@@ -41,8 +41,6 @@ namespace graphene {
             DEFINE_API_ARGS(broadcast_block,                     msg_pack, void_type)
             DEFINE_API_ARGS(broadcast_transaction_with_callback, msg_pack, void_type)
 
-
-
             class network_broadcast_api_plugin final : public appbase::plugin<network_broadcast_api_plugin> {
             public:
                 APPBASE_PLUGIN_REQUIRES((json_rpc::plugin) (chain::plugin) (p2p::p2p_plugin))
