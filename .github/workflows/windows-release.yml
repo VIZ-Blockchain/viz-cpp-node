@@ -15,6 +15,13 @@ jobs:
   build-windows-mingw:
     name: Build vizd (MSYS2/MinGW UCRT64)
     runs-on: windows-latest
+    env:
+      # CCACHE_DIR is set in a step from RUNNER_TEMP (the `runner` context is not
+      # available in job-level env).
+      CCACHE_MAXSIZE: 1G
+      # MSYS2 reinstalls the toolchain on every run (update: true); hash the
+      # compiler binary instead of trusting its mtime, or every run is a miss.
+      CCACHE_COMPILERCHECK: content
 
     defaults:
       run:
@@ -44,6 +51,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-perl
             mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-ccache
             autoconf
             automake
             libtool
@@ -149,12 +157,30 @@ jobs:
       # -------------------------------------------------------
       # 9. Configure CMake
       # -------------------------------------------------------
+      # vizd itself was rebuilt from scratch on every push (~18 min); only Boost and
+      # OpenSSL were cached. The ccache dir lives outside the workspace so the
+      # checkout stays clean; ccache is a native MinGW binary, so a Windows path
+      # works for it and for actions/cache alike. Saved per commit, restored from
+      # the newest one.
+      - name: Set ccache dir
+        shell: pwsh
+        run: '"CCACHE_DIR=$env:RUNNER_TEMP\ccache" >> $env:GITHUB_ENV'
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: windows-ccache-mingw-ucrt64-${{ github.sha }}
+          restore-keys: windows-ccache-mingw-ucrt64-
+
       - name: CMake Configure
         run: |
           cd $GITHUB_WORKSPACE
           mkdir -p build
           cmake -G "MinGW Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_STANDARD=14 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
@@ -182,11 +208,13 @@ jobs:
       - name: Build vizd
         run: |
           cd $GITHUB_WORKSPACE/build
+          ccache -z
           mingw32-make -j$(nproc) vizd
       - name: Build cli_wallet
         run: |
           cd $GITHUB_WORKSPACE/build
           mingw32-make -j$(nproc) cli_wallet
+          ccache -s
       # -------------------------------------------------------
       # 10b. Build the tray launcher (Go, static, GUI subsystem)
       # -------------------------------------------------------
