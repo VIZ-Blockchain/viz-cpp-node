@@ -9,6 +9,13 @@ on:
   # public-repo minutes are free.
   pull_request:
 
+# A new push to a PR makes the previous run's result irrelevant; cancel it instead
+# of letting a ~30 min run hold runners. Master pushes are never cancelled
+# (group includes the unique run id there), so every merged commit is tested.
+concurrency:
+  group: tests-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   consensus-and-pm:
     name: consensus_sim + pm unit tests (distro Boost)

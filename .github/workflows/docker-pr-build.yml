@@ -11,6 +11,13 @@ on:
     # and a required check that never runs keeps the PR blocked forever. See
     # tests.yml for the same reasoning.
 
+# A new push to a PR makes the previous run's result irrelevant; cancel it instead
+# of letting a ~30 min run hold runners. Master pushes are never cancelled
+# (group includes the unique run id there), so every merged commit is tested.
+concurrency:
+  group: docker-pr-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build and push Docker image to Docker Hub
