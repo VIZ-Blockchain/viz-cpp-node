@@ -16,10 +16,25 @@ if [[ ! -z "$VIZD_PRIVATE_KEY" ]]; then
     ARGS+=" --private-key=$VIZD_PRIVATE_KEY"
 fi
 
-# overwrite local config with image one
-cp /etc/vizd/config.ini $HOME/config.ini
+# Config: ONE copy, shared with the mounted source through a symlink.
+#
+# node_admin applies edits atomically: canonicalize -> mkstemp next to the target -> fsync ->
+# rename. `canonical` resolves symlinks, so a write through $HOME/config.ini lands in
+# /etc/vizd/config.ini, i.e. straight in the mounted host source. Two conditions must hold:
+#   * /etc/vizd is mounted as a DIRECTORY (rename over a file mount point fails with EBUSY);
+#   * that directory is writable by the node user `vizd` (mkstemp lives next to the target).
+# A regular file left by the old `cp` would shadow the link, so it is replaced once.
+if [ -e "$HOME/config.ini" ] && [ ! -L "$HOME/config.ini" ]; then
+    rm -f "$HOME/config.ini"
+fi
+ln -sfn /etc/vizd/config.ini "$HOME/config.ini"
+chown -h vizd:vizd "$HOME/config.ini"
 
-chown vizd:vizd $HOME/config.ini
+# Say it out loud at startup instead of leaving the operator to discover it from a rejected
+# admin.config.apply: without write access here the node cannot create its temp file.
+if ! chpst -uvizd test -w /etc/vizd; then
+    echo "vizd.sh: WARNING: /etc/vizd is not writable by user vizd (uid $(id -u vizd)) — admin config apply will fail with EACCES. Chown the mounted config directory to that uid." >&2
+fi
 
 if [[ ! -d $HOME/blockchain ]]; then
     if [[ -e /var/cache/vizd/blocks.tbz2 ]]; then
