@@ -1,4 +1,6 @@
 #include <boost/test/unit_test.hpp>
+#include <boost/test/data/test_case.hpp>
+#include <boost/test/data/monomorphic.hpp>
 
 #include "fault_injector.hpp"
 #include "failure_log.hpp"
@@ -47,14 +49,26 @@ BOOST_AUTO_TEST_CASE(seed_deadbeef_fires_chains_consistent) {
     BOOST_CHECK_EQUAL(result->block_num, 2u);
 }
 
-BOOST_AUTO_TEST_CASE(seed_sweep_one_hundred_all_fire) {
-    constexpr uint64_t kSweepCount = 100;
+// 100 seeds, 9 s each under ASan, used to be one ~15 min test case. Split into
+// kSweepChunks data-driven cases (seed_sweep_one_hundred_all_fire/_0 .. /_9),
+// each covering a contiguous block of seeds, so run_parallel.py can spread
+// them across cores. The union is still seeds 0..kSweepCount-1.
+namespace {
+constexpr uint64_t kSweepCount = 100;
+constexpr uint64_t kSweepChunks = 10;
+static_assert(kSweepCount % kSweepChunks == 0, "chunks must cover every seed exactly once");
+}
+
+BOOST_DATA_TEST_CASE(seed_sweep_one_hundred_all_fire,
+                     boost::unit_test::data::xrange(kSweepChunks), chunk) {
+    constexpr uint64_t per_chunk = kSweepCount / kSweepChunks;
+    const uint64_t first = static_cast<uint64_t>(chunk) * per_chunk;
     uint32_t missed = 0;
 
     // Every seed should produce the same equivocation outcome: chains_consistent
     // fires at slot 2. The sweep proves the mechanism is robust across seeds,
     // and that the violation is reproducible per-seed.
-    for (uint64_t seed = 0; seed < kSweepCount; ++seed) {
+    for (uint64_t seed = first; seed < first + per_chunk; ++seed) {
         scenario_config cfg;
         cfg.seed = seed;
         cfg.num_witnesses = 7;
