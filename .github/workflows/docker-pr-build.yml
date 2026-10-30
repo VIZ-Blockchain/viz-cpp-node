@@ -59,9 +59,14 @@ jobs:
         with:
           path: cache-mount
           key: viz-cache-mount-${{ runner.os }}-pr-${{ github.base_ref }}-${{ hashFiles('share/vizd/docker/Dockerfile-production') }}-${{ github.sha }}
+          # Actions caches saved by one PR are invisible to every other PR (scoped to
+          # refs/pull/N/merge), so the pr-* keys only help re-runs of the same PR. Fall
+          # back to the cache docker-main.yml saves on master, which every PR can read;
+          # both builds use the same viz-ccache mount.
           restore-keys: |
             viz-cache-mount-${{ runner.os }}-pr-${{ github.base_ref }}-${{ hashFiles('share/vizd/docker/Dockerfile-production') }}-
             viz-cache-mount-${{ runner.os }}-pr-${{ github.base_ref }}-
+            viz-cache-mount-${{ runner.os }}-main-
 
       - name: Inject cache mounts into BuildKit
         uses: reproducible-containers/buildkit-cache-dance@v3
