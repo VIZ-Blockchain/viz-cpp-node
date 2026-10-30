@@ -1,0 +1,83 @@
+name: Delete caches of closed PRs
+
+# A PR's caches (ccache, BuildKit) are scoped to refs/pull/<N>/merge: no other
+# branch or PR can read them, so once the PR is closed or merged they are
+# dead weight. They still count against the repo's 10 GB cache quota, and when
+# the quota is full GitHub evicts least-recently-used entries, which can be
+# master's warm ccache that every PR falls back to. Delete them on close.
+#
+# Run it manually (Actions -> Delete caches of closed PRs -> Run workflow) to
+# sweep every closed PR that still has caches, e.g. the backlog from before
+# this workflow existed.
+#
+# pull_request_target (not pull_request) so the token can delete caches for
+# PRs from forks too. Safe here: the job never checks out or runs PR code, it
+# only calls the cache API with the PR number from the event payload.
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  actions: write        # delete caches
+  pull-requests: read   # manual sweep: look up whether a PR is closed
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          repo="$GITHUB_REPOSITORY"
+
+          # A failed API call must fail the job. If it read as "nothing to delete",
+          # a revoked token or a rate limit would keep this job green while it
+          # silently stopped doing anything.
+          die() { echo "::error::$*"; exit 1; }
+
+          if [ -n "$PR_NUMBER" ]; then
+            prs="$PR_NUMBER"
+          else
+            # Manual sweep: every PR ref that owns caches and is no longer open.
+            refs=$(gh api --paginate "repos/$repo/actions/caches?per_page=100" \
+                     --jq '.actions_caches[].ref') || die "could not list caches"
+            prs=""
+            for n in $(sed -n 's#^refs/pull/\([0-9]*\)/merge$#\1#p' <<< "$refs" | sort -un); do
+              state=$(gh api "repos/$repo/pulls/$n" --jq .state) || die "could not read state of PR #$n"
+              if [ "$state" = "closed" ]; then prs="$prs $n"; else echo "keep #$n (open)"; fi
+            done
+          fi
+
+          deleted=0
+          failures=0
+          for n in $prs; do
+            ref="refs/pull/$n/merge"
+            rows=$(gh api --paginate "repos/$repo/actions/caches?ref=$ref&per_page=100" \
+                     --jq '.actions_caches[] | "\(.id)\t\(.size_in_bytes)\t\(.key)"') \
+              || die "could not list caches for $ref"
+            if [ -z "$rows" ]; then
+              echo "#$n: no caches"
+              continue
+            fi
+            echo "$rows" | awk -F'\t' -v n="$n" '{c++; s+=$2} END {printf "#%s: deleting %d cache(s), %.2f GB\n", n, c, s/1e9}'
+            while IFS=$'\t' read -r id size key; do
+              if err=$(gh api -X DELETE "repos/$repo/actions/caches/$id" 2>&1 >/dev/null); then
+                deleted=$((deleted + 1))
+              elif grep -q 'HTTP 404' <<< "$err"; then
+                # Evicted between list and delete: already gone, not an error.
+                echo "gone already: $key"
+              else
+                echo "::warning::could not delete $id $key: $err"
+                failures=$((failures + 1))
+              fi
+            done <<< "$rows"
+          done
+          echo "Done: $deleted deleted, $failures failure(s)."
+          # Any delete that failed for a reason other than "already gone" is a real
+          # problem (permissions, API outage), so surface it as a red run.
+          [ "$failures" -eq 0 ] || die "$failures cache(s) could not be deleted"
