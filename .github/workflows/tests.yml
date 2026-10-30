@@ -98,7 +98,15 @@ jobs:
           # Pre-existing ASan/UBSan findings in chain code, see tests/consensus_sim/README.md
           ASAN_OPTIONS: new_delete_type_mismatch=0:detect_leaks=0
           UBSAN_OPTIONS: halt_on_error=0:print_stacktrace=0
-        run: cd build && ctest --output-on-failure
+        run: |
+          set -euo pipefail
+          cd build
+          ctest -E '^consensus_sim$' --output-on-failure
+          # consensus_sim is one Boost.Test binary that ran ~15 min on a single core.
+          # Run its cases as separate processes across all cores instead; same cases,
+          # same working directory as ctest (failure logs land in the same place).
+          cd tests/consensus_sim
+          python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)"
 
       - name: Upload consensus_sim failure logs
         if: failure()
@@ -174,9 +182,10 @@ jobs:
       - name: Run the simulator
         run: |
           set -euo pipefail
-          cd build
+          cd build/tests/consensus_sim
+          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)")
           if [ "${{ matrix.validators }}" = "2" ]; then
-            tests/consensus_sim/consensus_sim_tests --run_test=hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite --log_level=test_suite
+            "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite
           else
-            ctest -R '^consensus_sim$' --output-on-failure
+            "${run[@]}"
           fi

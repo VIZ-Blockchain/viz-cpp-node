@@ -25,6 +25,15 @@ Run a specific suite:
 ./tests/consensus_sim/consensus_sim_tests --run_test=equivocation_suite/seed_sweep_one_hundred
 ```
 
+Run every case as its own process, N at a time (what CI does; prints the
+slowest cases at the end):
+
+```
+cd build/tests/consensus_sim
+python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j4
+python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests --filter equivocation_suite
+```
+
 The chain code has pre-existing ASan/UBSan findings (a base-pointer delete in
 `evaluator_registry`, version/asset alignment) unrelated to the harness. Run
 with `ASAN_OPTIONS=new_delete_type_mismatch=0:detect_leaks=0
