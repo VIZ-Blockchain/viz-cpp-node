@@ -42,7 +42,6 @@ namespace graphene {
             DEFINE_API_ARGS(broadcast_transaction_with_callback, msg_pack, void_type)
 
 
-            using namespace appbase;
 
             class network_broadcast_api_plugin final : public appbase::plugin<network_broadcast_api_plugin> {
             public:

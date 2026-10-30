@@ -57,7 +57,6 @@ namespace graphene {
     namespace plugins {
         namespace json_rpc {
 
-            using namespace appbase;
 
             /**
              * @brief Internal type used to bind api methods
@@ -74,7 +73,7 @@ namespace graphene {
              * name defined by the API class. The api_call functions
              * are compile time bindings of names to methods.
              */
-            using api_description = std::map<string, api_method>;
+            using api_description = std::map<std::string, api_method>;
 
             struct api_method_signature {
                 fc::variant args;
@@ -106,10 +105,10 @@ namespace graphene {
 
                 void plugin_shutdown() override;
 
-                void add_api_method(const string &api_name, const string &method_name,
+                void add_api_method(const std::string &api_name, const std::string &method_name,
                                     const api_method &api/*, const api_method_signature& sig */);
 
-                void call(const string &body, response_handler_type);
+                void call(const std::string &body, response_handler_type);
 
             private:
                 class impl;

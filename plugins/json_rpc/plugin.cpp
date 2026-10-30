@@ -11,6 +11,12 @@
 namespace graphene {
     namespace plugins {
         namespace json_rpc {
+
+            // Used to arrive through `using namespace appbase;` in plugin.hpp (appbase
+            // re-exports them). Declared here so the header no longer leaks appbase.
+            using std::map;
+            using std::string;
+            using std::vector;
             struct json_rpc_error {
                 json_rpc_error() : code(0) {
                 }

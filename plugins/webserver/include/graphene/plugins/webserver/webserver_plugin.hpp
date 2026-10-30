@@ -18,7 +18,6 @@ namespace graphene {
     namespace plugins {
         namespace webserver {
 
-            using namespace appbase;
 
             /// Per-IP request accounting, filled only while `webserver-stats-enabled` is on.
             struct webserver_ip_stats {
