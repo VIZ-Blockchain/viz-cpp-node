@@ -57,6 +57,12 @@ Requires Xcode Command Line Tools and Homebrew. The script installs: `boost`, `c
 ./build-mac.sh --boost-root /opt/boost_1_74_0
 ```
 
+Apple Silicon builds natively: the tree contains no x86-only code (the SSE-only `equihash` that fc once vendored was unused and has been removed), and CMake adds the Homebrew library directories to the link path so the static Boost.Iostreams dependencies (`zstd`, `lzma`, `icu*`) resolve. A cold `vizd` build takes about 10 minutes on an 8-core M-series laptop, against roughly an hour for the same build under amd64 emulation in Docker.
+
+### Where compile time goes
+
+Measured with clang `-ftime-trace` on a Release build. Five translation units account for a third of the project's compile time: `libraries/chain/database.cpp` (~250 s), `libraries/wallet/wallet.cpp`, `libraries/network/dlt_p2p_node.cpp`, `libraries/protocol/operations.cpp` and `plugins/snapshot/plugin.cpp` (100–160 s each). In a typical unit about two thirds of the time is the optimizer, not the parser: every file that serializes a `signed_block` instantiates the `fc::raw` pack/unpack visitors for every field of every operation (about 1,500 functions), and `-O3` then optimizes each of them again. Precompiled headers (`-DENABLE_PCH=ON`) therefore shave only the parsing third; `ccache` is what makes rebuilds fast.
+
 ---
 
 ## Windows (MinGW)
