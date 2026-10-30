@@ -29,7 +29,7 @@ json_rpc::plugin
 | `--auto-recover-from-snapshot` | 默认 `true`。当区块处理或生成期间检测到共享内存损坏时，无需重启即可自动运行时恢复。通过 `--no-auto-recover-from-snapshot` 禁用。 |
 | `--resync-blockchain` | 清除共享内存和区块日志；从 genesis 或快照重新开始。具有破坏性 — 仅在从完全数据损失中恢复时使用。 |
 | `--check-locks` | 验证锁排序（仅开发用）。 |
-| `--validate-database-invariants` | 在每个区块上运行数据库一致性检查（非常慢；仅开发用）。 |
+| `--validate-database-invariants` | 重新计算供应不变量 — SHARES（`dgp.total_vesting_shares` 与各账户 vesting 之和）和 TOKEN（`dgp.current_supply` 与所有持有账户余额之外代币的池，包括预测市场池）— 启动时一次，并在每个已应用区块之后。启动时的偏差会中止启动；区块之后的偏差记录为 `DATABASE INVARIANT VIOLATED`，节点继续运行。非常慢（每个区块完整遍历状态）；仅开发用。 |
 
 ### 配置文件选项
 

@@ -6,6 +6,8 @@
 #include <fc/io/json.hpp>
 #include <fc/string.hpp>
 
+#include <boost/signals2/connection.hpp>
+
 #include <fstream>
 #include <iostream>
 #include <graphene/protocol/protocol.hpp>
@@ -75,6 +77,9 @@ namespace chain {
         std::atomic<bool> recovery_in_progress{false}; // true while auto-recovery is running
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
+
+        // --validate-database-invariants: per-block supply re-check (issue #204)
+        boost::signals2::connection invariant_check_connection;
 
         plugin_impl() {
             // get default settings
@@ -890,10 +895,39 @@ namespace chain {
             std::cerr << "   Add 'trusted-snapshot-peer = <ip>:<port>' to config.ini for fast bootstrap.\n";
         }
 
+        // --validate-database-invariants: issue #204 — the flag used to be accepted and never
+        // read anywhere.  Check the loaded state once (every open path — plain open, replay,
+        // snapshot import — has finished by now), then re-check after every applied block.
+        // The re-check is O(state), which is exactly the "very slow; development only" the
+        // docs promise; it is not throttled so the operator gets the whole chain, not a sample.
+        if (my->validate_invariants) {
+            ilog("--validate-database-invariants: checking supply invariants at startup and "
+                 "after every applied block (very slow, development only)");
+            // Startup: a divergent state is fatal — do not serve it to peers.
+            my->db.validate_invariants();
+            // Per block: report loudly but keep running.  Throwing here would be caught by
+            // CHAIN_TRY_NOTIFY (applied_block is wrapped in it) and only logged anyway, and a
+            // rethrow as plugin_exception would surface as a block-processing failure, which
+            // mislabels a LOCAL state problem as an invalid block.
+            my->invariant_check_connection = my->db.applied_block.connect(
+                [this](const protocol::signed_block &blk) {
+                    try {
+                        my->db.validate_invariants();
+                    } catch (const fc::exception &e) {
+                        elog("DATABASE INVARIANT VIOLATED after block ${n}: ${e}", ("n", blk.block_num())
+                                                                                ("e", e.to_detail_string()));
+                        elog("--validate-database-invariants: this node's state no longer reconciles. "
+                             "Stop it and restore from a trusted snapshot or peer; do not keep serving.");
+                    }
+                });
+        }
+
         on_sync();
     }
 
     void plugin::plugin_shutdown() {
+        if (my->invariant_check_connection.connected())
+            my->invariant_check_connection.disconnect();
         ilog("closing chain database");
         my->db.close();
         ilog("database closed successfully");
