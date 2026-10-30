@@ -267,6 +267,15 @@ else(WIN32) # Apple AND Linux
         # Apple Specific Options Here
         message(STATUS "Configuring VIZ on OS X")
         set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++14 -stdlib=libc++ -Wall -Wno-conversion -Wno-deprecated-declarations")
+        # Homebrew's static Boost.Iostreams config names its dependencies bare (bz2, lzma,
+        # zstd, icuuc, ...). The Apple linker does not search the Homebrew prefix on its own,
+        # and icu4c is keg-only, so without these -L paths every executable fails to link
+        # with "library 'zstd' not found".
+        execute_process(COMMAND brew --prefix
+                        OUTPUT_VARIABLE _brew_prefix OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_brew_prefix)
+            link_directories("${_brew_prefix}/lib" "${_brew_prefix}/opt/icu4c/lib")
+        endif()
     else(APPLE)
         # Linux Specific Options Here
         message(STATUS "Configuring VIZ on Linux")

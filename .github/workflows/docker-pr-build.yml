@@ -149,6 +149,45 @@ jobs:
                 -DCHAINBASE_CHECK_LOCKING=FALSE ..
           make -j"$(nproc)" vizd
 
+  # arm64 end of the platform range: nothing in the tree may be x86-only. fc used to vendor an
+  # SSE-only equihash that no VIZ code called, and it kept every arm64 host (Apple Silicon,
+  # Graviton, Ampere) from linking vizd for years because amd64 CI never saw it. Label-gated
+  # like check-boost-range: add `check-arm64` to any PR that touches thirdparty submodule
+  # pointers, vendored C, intrinsics, or the build files.
+  build_arm64:
+    name: Build on arm64 (distro Boost)
+    runs-on: ubuntu-24.04-arm
+    if: contains(github.event.pull_request.labels.*.name, 'check-arm64')
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install distro Boost and build deps
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update
+          $apt install -y --no-install-recommends \
+            build-essential cmake libboost-all-dev libssl-dev \
+            libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
+            libtool ncurses-dev pkg-config zlib1g-dev
+
+      - name: Configure and build
+        run: |
+          set -euo pipefail
+          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
+          mkdir -p build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBRARIES=FALSE \
+                -DCHAINBASE_CHECK_LOCKING=FALSE ..
+          make -j"$(nproc)" vizd cli_wallet
+          programs/vizd/vizd --version
+
   # L3 (audit 2026-08-13): the tree's PM unit tests (LMSR vector parity, parimutuel
   # conservation, leverage math, meta parsing, chain-properties validate() sweep) were
   # only ever run manually — CI proved compilation alone. Gated on the `pm-tests` label
