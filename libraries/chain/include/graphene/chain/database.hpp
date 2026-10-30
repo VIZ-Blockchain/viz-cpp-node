@@ -650,8 +650,11 @@ namespace graphene { namespace chain {
 
                `pm_legacy_residual` is the frozen pre-fix leverage-exit dust some TESTNET
                snapshots carry. Default 0 is the only value valid on mainnet; the snapshot
-               plugin keeps its own copy of these checks with its configurable anchor. */
-            void validate_invariants(int64_t pm_legacy_residual = 0) const;
+               plugin keeps its own copy of these checks with its configurable anchor.
+
+               `verbose` prints the per-pool breakdown (~600 bytes); a divergence is always
+               reported in full, so a per-block caller passes false to keep node.log quiet. */
+            void validate_invariants(int64_t pm_legacy_residual = 0, bool verbose = true) const;
 
             /**
              * @}

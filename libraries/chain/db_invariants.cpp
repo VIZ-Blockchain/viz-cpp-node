@@ -23,7 +23,7 @@
 namespace graphene {
     namespace chain {
 
-        void database::validate_invariants(int64_t pm_legacy_residual) const {
+        void database::validate_invariants(int64_t pm_legacy_residual, bool verbose) const {
             const auto& dgp = get_dynamic_global_properties();
 
             // ── (1) SHARES ────────────────────────────────────────────────────
@@ -160,23 +160,30 @@ namespace graphene {
             const int64_t expected_supply = dgp.current_supply.amount.value;
             const int64_t token_delta = summed_token - expected_supply;
 
-            ilog("Database invariants: head_block_num=${h} SHARES summed=${sv} expected=${ev} "
-                 "delta=${sd}; TOKEN current_supply=${cs} summed=${sm} (base=${bt} + pm=${pm}) "
-                 "delta=${d}. Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} "
-                 "escrow_fee=${ef} invite_balance=${ib} validator_pending=${vp} "
-                 "vesting_fund=${vf} reward_fund=${rf} committee_fund=${cf}. "
-                 "PM: bets=${pb} user_lp=${pl} lazy=${plz} commit=${pc} dispute=${pd} "
-                 "forfeit=${pf} insurance=${pi} leverage=${plv} settling=${pst}",
-                 ("h", dgp.head_block_number)("sv", summed_vesting_shares)
-                 ("ev", expected_vesting_shares)("sd", shares_delta)
-                 ("cs", expected_supply)("sm", summed_token)("bt", base_token)("pm", pm_token)
-                 ("d", token_delta)
-                 ("ab", acc_balance)("ar", acc_reserved)("eb", escrow_balance)("ef", escrow_fee)
-                 ("ib", invite_balance)("vp", validator_pending)("vf", vesting_fund)
-                 ("rf", reward_fund)("cf", committee_fund)
-                 ("pb", pm_bets)("pl", pm_user_lp)("plz", pm_lazy)("pc", pm_commit)
-                 ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage)
-                 ("pst", pm_settling));
+            // The per-pool breakdown is ~600 bytes.  At a one-second block interval a silent
+            // run would put ~50 MB a day into node.log for no information — so it is printed
+            // when asked (startup, manual call) and on ANY divergence, never on a clean
+            // per-block pass.  A divergence of either sum is "interesting" here regardless of
+            // the anchor: a delta equal to the anchor still has to be visible.
+            if (verbose || shares_delta != 0 || token_delta != pm_legacy_residual) {
+                ilog("Database invariants: head_block_num=${h} SHARES summed=${sv} expected=${ev} "
+                     "delta=${sd}; TOKEN current_supply=${cs} summed=${sm} (base=${bt} + pm=${pm}) "
+                     "delta=${d}. Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} "
+                     "escrow_fee=${ef} invite_balance=${ib} validator_pending=${vp} "
+                     "vesting_fund=${vf} reward_fund=${rf} committee_fund=${cf}. "
+                     "PM: bets=${pb} user_lp=${pl} lazy=${plz} commit=${pc} dispute=${pd} "
+                     "forfeit=${pf} insurance=${pi} leverage=${plv} settling=${pst}",
+                     ("h", dgp.head_block_number)("sv", summed_vesting_shares)
+                     ("ev", expected_vesting_shares)("sd", shares_delta)
+                     ("cs", expected_supply)("sm", summed_token)("bt", base_token)("pm", pm_token)
+                     ("d", token_delta)
+                     ("ab", acc_balance)("ar", acc_reserved)("eb", escrow_balance)("ef", escrow_fee)
+                     ("ib", invite_balance)("vp", validator_pending)("vf", vesting_fund)
+                     ("rf", reward_fund)("cf", committee_fund)
+                     ("pb", pm_bets)("pl", pm_user_lp)("plz", pm_lazy)("pc", pm_commit)
+                     ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage)
+                     ("pst", pm_settling));
+            }
 
             if (shares_delta != 0) {
                 elog("Database invariant FAILED at block ${h}: SHARES conservation violated — "

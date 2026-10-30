@@ -52,10 +52,15 @@ BOOST_AUTO_TEST_CASE(healthy_chain_reconciles_and_divergence_is_detected) {
 
     // (a) Healthy state: block production above must not have left a divergence.
     BOOST_CHECK_NO_THROW(db.validate_invariants());
+    // ...and the per-block (quiet) form is the same check: it must agree, or the flag would
+    // have two different verdicts depending on who calls it.
+    BOOST_CHECK_NO_THROW(db.validate_invariants(0, false));
 
     // (b) TOKEN: one raw of unbacked supply is a divergence, whatever the anchor says.
     set_supply(db, supply0 + graphene::protocol::asset(1, TOKEN_SYMBOL));
     BOOST_CHECK_THROW(db.validate_invariants(), fc::assert_exception);
+    // The quiet form must throw just the same — silence is about the LOG, not the verdict.
+    BOOST_CHECK_THROW(db.validate_invariants(0, false), fc::assert_exception);
     BOOST_CHECK_THROW(db.validate_invariants(2), fc::assert_exception);
     // ...and the anchor is READ, not decorative: it must absorb exactly the drift it names.
     BOOST_CHECK_NO_THROW(db.validate_invariants(-1));

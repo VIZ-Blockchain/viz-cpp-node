@@ -912,7 +912,9 @@ namespace chain {
             my->invariant_check_connection = my->db.applied_block.connect(
                 [this](const protocol::signed_block &blk) {
                     try {
-                        my->db.validate_invariants();
+                        // verbose=false: the per-pool breakdown is startup/manual only, so a
+                        // clean run leaves node.log untouched (a divergence still prints it).
+                        my->db.validate_invariants(0, false);
                     } catch (const fc::exception &e) {
                         elog("DATABASE INVARIANT VIOLATED after block ${n}: ${e}", ("n", blk.block_num())
                                                                                 ("e", e.to_detail_string()));
