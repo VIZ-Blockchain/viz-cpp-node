@@ -14,6 +14,9 @@ jobs:
     name: consensus_sim + pm unit tests (distro Boost)
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_MAXSIZE: 1G
 
     steps:
       - uses: actions/checkout@v6
@@ -60,10 +63,13 @@ jobs:
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
 
+      # ccache >= 4 keeps its cache in ~/.cache/ccache, not ~/.ccache, so the old path
+      # never existed and nothing was ever saved ("Path Validation Error"). Pin the
+      # directory so the restore/save path and ccache agree.
       - name: Restore ccache
         uses: actions/cache@v5
         with:
-          path: ~/.ccache
+          path: ${{ env.CCACHE_DIR }}
           key: tests-ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: tests-ccache-${{ runner.os }}-
 
@@ -85,6 +91,7 @@ jobs:
           TEST_CMAKE=$(find ../tests -mindepth 2 -maxdepth 2 -name CMakeLists.txt)
           TEST_BINS=$(grep -ho 'add_test(NAME [a-z_]* COMMAND [a-z_]*' $TEST_CMAKE | awk '{print $NF}')
           make -j"$(nproc)" $TEST_BINS
+          ccache -s
 
       - name: Run tests
         env:
@@ -111,6 +118,9 @@ jobs:
         validators: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_MAXSIZE: 1G
 
     steps:
       - uses: actions/checkout@v6
@@ -129,9 +139,17 @@ jobs:
           apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           $apt update
           $apt install -y --no-install-recommends \
-            build-essential cmake libboost-all-dev libssl-dev \
+            build-essential ccache cmake libboost-all-dev libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
+
+      # One cache per matrix arm: CHAIN_TESTNET_VALIDATORS changes compile flags.
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: testnet-ccache-${{ runner.os }}-v${{ matrix.validators }}-${{ github.sha }}
+          restore-keys: testnet-ccache-${{ runner.os }}-v${{ matrix.validators }}-
 
       - name: Configure and build the consensus simulator (testnet config)
         run: |
@@ -143,12 +161,15 @@ jobs:
             multi=(-DCHAIN_TESTNET_VALIDATORS=2)
           fi
           cmake -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
                 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
                 -DBUILD_SHARED_LIBRARIES=FALSE \
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
                 -DBUILD_TESTNET=TRUE \
                 -DBUILD_CONSENSUS_TESTS=ON "${multi[@]}" ..
           make -j"$(nproc)" consensus_sim_tests
+          ccache -s
 
       - name: Run the simulator
         run: |
