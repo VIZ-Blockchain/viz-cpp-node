@@ -44,6 +44,7 @@ using namespace graphene::utilities;
 using namespace graphene::chain;
 using namespace graphene::wallet;
 using namespace std;
+namespace bpo = boost::program_options;
 
 void daemon_mode();
 

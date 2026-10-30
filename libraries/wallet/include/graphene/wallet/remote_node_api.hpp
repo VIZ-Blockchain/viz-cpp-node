@@ -16,13 +16,21 @@ using std::vector;
 using fc::variant;
 using fc::optional;
 
-using namespace chain;
-using namespace plugins;
-//using namespace plugins::condenser_api;
-using namespace plugins::database_api;
-using namespace plugins::network_broadcast_api;
-using namespace graphene::api;
-using namespace plugins::validator_api;
+namespace database_api = graphene::plugins::database_api;
+namespace validator_api = graphene::plugins::validator_api;
+
+using graphene::protocol::account_name_type;
+using graphene::protocol::annotated_signed_transaction;
+using graphene::protocol::block_header;
+using graphene::protocol::hardfork_version;
+using graphene::protocol::public_key_type;
+using graphene::protocol::signed_block;
+using graphene::protocol::signed_transaction;
+using graphene::protocol::transaction_id_type;
+using graphene::chain::chain_properties;
+using graphene::chain::validator_id_type;
+using graphene::plugins::database_api::proposal_api_object;
+using graphene::plugins::network_broadcast_api::broadcast_transaction_synchronous_t;
 
 /**
  * This is a dummy class exists only to provide method signature information to fc::api, not to execute calls.
