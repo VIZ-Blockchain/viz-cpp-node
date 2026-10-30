@@ -41,6 +41,7 @@ namespace chain {
         bool readonly = false;
         bool check_locks = false;
         bool validate_invariants = false;
+        int64_t validate_invariants_residual = 0;
         uint32_t flush_interval = 0;
         flat_map<uint32_t, protocol::block_id_type> loaded_checkpoints;
 
@@ -429,6 +430,11 @@ namespace chain {
             ) (
                 "validate-database-invariants", boost::program_options::bool_switch()->default_value(false),
                 "Validate all supply invariants check out"
+            ) (
+                "validate-database-invariants-residual", boost::program_options::value<int64_t>()->default_value(0),
+                "Expected TOKEN supply residual for --validate-database-invariants: a testnet state "
+                "carrying frozen pre-fix PM dust uses the same value as snapshot-pm-legacy-residual; "
+                "0 (default) is strict, satoshi-exact"
             );
     }
 
@@ -480,6 +486,7 @@ namespace chain {
         my->auto_recover_from_snapshot = options.at("auto-recover-from-snapshot").as<bool>();
         my->check_locks = options.at("check-locks").as<bool>();
         my->validate_invariants = options.at("validate-database-invariants").as<bool>();
+        my->validate_invariants_residual = options.at("validate-database-invariants-residual").as<int64_t>();
         if (options.count("flush-state-interval")) {
             my->flush_interval = options.at("flush-state-interval").as<uint32_t>();
         } else {
@@ -903,8 +910,12 @@ namespace chain {
         if (my->validate_invariants) {
             ilog("--validate-database-invariants: checking supply invariants at startup and "
                  "after every applied block (very slow, development only)");
+            if (my->validate_invariants_residual != 0)
+                wlog("--validate-database-invariants: expecting TOKEN delta=${d} "
+                     "(validate-database-invariants-residual — frozen pre-fix testnet dust); "
+                     "this value must be 0 on mainnet", ("d", my->validate_invariants_residual));
             // Startup: a divergent state is fatal — do not serve it to peers.
-            my->db.validate_invariants();
+            my->db.validate_invariants(my->validate_invariants_residual);
             // Per block: report loudly but keep running.  Throwing here would be caught by
             // CHAIN_TRY_NOTIFY (applied_block is wrapped in it) and only logged anyway, and a
             // rethrow as plugin_exception would surface as a block-processing failure, which
@@ -914,7 +925,7 @@ namespace chain {
                     try {
                         // verbose=false: the per-pool breakdown is startup/manual only, so a
                         // clean run leaves node.log untouched (a divergence still prints it).
-                        my->db.validate_invariants(0, false);
+                        my->db.validate_invariants(my->validate_invariants_residual, false);
                     } catch (const fc::exception &e) {
                         elog("DATABASE INVARIANT VIOLATED after block ${n}: ${e}", ("n", blk.block_num())
                                                                                 ("e", e.to_detail_string()));

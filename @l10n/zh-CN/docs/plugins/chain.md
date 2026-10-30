@@ -29,7 +29,8 @@ json_rpc::plugin
 | `--auto-recover-from-snapshot` | 默认 `true`。当区块处理或生成期间检测到共享内存损坏时，无需重启即可自动运行时恢复。通过 `--no-auto-recover-from-snapshot` 禁用。 |
 | `--resync-blockchain` | 清除共享内存和区块日志；从 genesis 或快照重新开始。具有破坏性 — 仅在从完全数据损失中恢复时使用。 |
 | `--check-locks` | 验证锁排序（仅开发用）。 |
-| `--validate-database-invariants` | 重新计算供应不变量 — SHARES（`dgp.total_vesting_shares` 与各账户 vesting 之和）和 TOKEN（`dgp.current_supply` 与所有持有账户余额之外代币的池，包括预测市场池）— 启动时一次，并在每个已应用区块之后。启动时的偏差会中止启动；区块之后的偏差记录为 `DATABASE INVARIANT VIOLATED`，节点继续运行。每个区块对整个状态做一次线性遍历（所有账户及全部预测市场池）；按池的明细在启动时和任何偏差时打印，干净的区块不打印。仅开发用。 |
+| `--validate-database-invariants` | 重新计算供应不变量 — SHARES（`dgp.total_vesting_shares` 与各账户 vesting 之和）和 TOKEN（`dgp.current_supply` 与所有持有账户余额之外代币的池，包括预测市场池）— 启动时一次，并在每个已应用区块之后。启动时的偏差会中止启动；区块之后的偏差记录为 `DATABASE INVARIANT VIOLATED`，节点继续运行。每个区块对整个状态做一次线性遍历（所有账户及全部预测市场池）；按池的明细在启动时和任何偏差时打印，干净的区块不打印。仅开发用。带有冻结尘埃的状态需要 `--validate-database-invariants-residual`（下一行）。 |
+| `--validate-database-invariants-residual` | `--validate-database-invariants` 的预期 TOKEN 供应残差。带有修复前冻结预测市场尘埃的状态（部分测试网快照）使用与 `--snapshot-pm-legacy-residual` 相同的值；`0`（默认）为严格、精确到 satoshi，也是主网唯一正确的值。 |
 
 ### 配置文件选项
 
