@@ -11,7 +11,6 @@ namespace graphene {
     namespace plugins {
         namespace account_by_key {
 
-            using namespace std;
             using namespace graphene::chain;
             using namespace graphene::protocol;
 
