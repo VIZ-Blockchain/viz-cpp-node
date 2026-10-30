@@ -2521,16 +2521,12 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             //   leverage  Σ (collateral + loan)   (loan is debited from free_balance at
             //                                       open, so it is held in the position, not the pool)
             //
-            // TODO(pm): this PM accounting is NOT YET satoshi-validated against real PM
-            // snapshots (unlike the base pools). The status filters and double-count
-            // exclusions below are a best-effort static read of pm_evaluator.cpp and
-            // MUST be reconciled to delta==0 on real PM snapshots (all market lifecycle
-            // states: active / committed / revealed / disputed / settled / leveraged)
-            // before the TOKEN check is re-armed as a fatal FC_ASSERT. Until then this
-            // check is LOG-ONLY on the pm branch — it does NOT increment
-            // invariant_failures. The (4) SHARES check and the #125 count/referential/
-            // singleton checks stay fatal (PM holds no VESTS; those pools are unchanged).
-            // Tracking issue: https://github.com/VIZ-Blockchain/viz-cpp-node/issues/127
+            // The PM accounting below is ENFORCED: any divergence increments
+            // invariant_failures and fails the import (issue #127, after the leverage-exit
+            // residual fix routed total_bet-cv to forfeit_pool). The status filters are the
+            // held states from pm_objects.hpp; a filter that drops or double-counts a
+            // holding shows up as a non-zero delta. The only tolerance is the optional
+            // --snapshot-pm-legacy-residual anchor for frozen pre-fix testnet dust.
             {
                 const auto& dgp = db.get_dynamic_global_properties();
                 int64_t acc_balance = 0, acc_reserved = 0;
@@ -2561,14 +2557,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                     + escrow_balance + escrow_fee + invite_balance
                     + validator_pending + vesting_fund + reward_fund + committee_fund;
 
-                // ── PM pools (see TODO(pm) above — LOG-ONLY, unvalidated) ──
-                // Status codes are documented in pm_objects.hpp; held-state filters are
-                // marked UNVERIFIED and are the crux of the reconciliation task.
+                // ── PM pools (enforced, see above) ──
+                // Status codes are documented in pm_objects.hpp; each filter keeps only
+                // the states in which the object still holds TOKEN.
                 int64_t pm_bets = 0;
                 {
                     const auto& idx = db.get_index<pm_bet_index>().indices();
                     for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                        if (itr->status == 0 || itr->status == 5 || itr->status == 6) // UNVERIFIED: active/queued/revealed-pending held
+                        if (itr->status == 0 || itr->status == 5 || itr->status == 6) // active/queued/revealed-pending hold the stake
                             pm_bets += itr->amount.value;
                 }
                 int64_t pm_user_lp = 0;
@@ -2588,14 +2584,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 {
                     const auto& idx = db.get_index<pm_commit_index>().indices();
                     for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                        if (itr->status == 0)                                       // UNVERIFIED: escrow held only while committed
+                        if (itr->status == 0)                                       // escrow held only while committed
                             pm_commit += itr->escrow_amount.value;
                 }
                 int64_t pm_dispute = 0;
                 {
                     const auto& idx = db.get_index<pm_dispute_index>().indices();
                     for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                        if (itr->status == 0)                                       // UNVERIFIED: fee held only while dispute open
+                        if (itr->status == 0)                                       // fee held only while dispute open
                             pm_dispute += itr->dispute_fee.value;
                 }
                 int64_t pm_forfeit = 0;
@@ -2614,7 +2610,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 {
                     const auto& idx = db.get_index<pm_leverage_position_index>().indices();
                     for (auto itr = idx.begin(); itr != idx.end(); ++itr)
-                        if (itr->status == 0)                                       // UNVERIFIED: collateral+loan held only while active
+                        if (itr->status == 0)                                       // collateral+loan held only while active
                             pm_leverage += itr->collateral.value + itr->loan.value;
                 }
                 // #432 D: a settlement spans blocks, so a snapshot can catch one mid-flight. Rows
