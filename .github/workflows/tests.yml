@@ -122,7 +122,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: consensus-sim-failures
-          path: tests/consensus_sim/failures/
+          # The harness writes failures/ under its working directory, which is the
+          # BUILD tree (build/tests/consensus_sim); the source-tree dir only holds
+          # .gitkeep, so the old path uploaded an empty artifact.
+          path: build/tests/consensus_sim/failures/
           if-no-files-found: ignore
 
   # Mandatory on every code PR and master push: real two-signer BFT coverage
