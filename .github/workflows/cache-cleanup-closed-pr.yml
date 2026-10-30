@@ -1,0 +1,69 @@
+name: Delete caches of closed PRs
+
+# A PR's caches (ccache, BuildKit) are scoped to refs/pull/<N>/merge: no other
+# branch or PR can read them, so once the PR is closed or merged they are
+# dead weight. They still count against the repo's 10 GB cache quota, and when
+# the quota is full GitHub evicts least-recently-used entries, which can be
+# master's warm ccache that every PR falls back to. Delete them on close.
+#
+# Run it manually (Actions -> Delete caches of closed PRs -> Run workflow) to
+# sweep every closed PR that still has caches, e.g. the backlog from before
+# this workflow existed.
+#
+# pull_request_target (not pull_request) so the token can delete caches for
+# PRs from forks too. Safe here: the job never checks out or runs PR code, it
+# only calls the cache API with the PR number from the event payload.
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  actions: write        # delete caches
+  pull-requests: read   # manual sweep: look up whether a PR is closed
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          repo="$GITHUB_REPOSITORY"
+
+          if [ -n "$PR_NUMBER" ]; then
+            prs="$PR_NUMBER"
+          else
+            # Manual sweep: every PR ref that owns caches and is no longer open.
+            prs=""
+            for n in $(gh api --paginate "repos/$repo/actions/caches?per_page=100" \
+                         --jq '.actions_caches[].ref' \
+                       | sed -n 's#^refs/pull/\([0-9]*\)/merge$#\1#p' | sort -un); do
+              state=$(gh api "repos/$repo/pulls/$n" --jq .state) || continue
+              if [ "$state" = "closed" ]; then prs="$prs $n"; else echo "keep #$n (open)"; fi
+            done
+          fi
+
+          failures=0
+          for n in $prs; do
+            ref="refs/pull/$n/merge"
+            rows=$(gh api --paginate "repos/$repo/actions/caches?ref=$ref&per_page=100" \
+                     --jq '.actions_caches[] | "\(.id)\t\(.size_in_bytes)\t\(.key)"')
+            if [ -z "$rows" ]; then
+              echo "#$n: no caches"
+              continue
+            fi
+            echo "$rows" | awk -F'\t' -v n="$n" '{c++; s+=$2} END {printf "#%s: deleting %d cache(s), %.2f GB\n", n, c, s/1e9}'
+            # Best-effort: an entry evicted between list and delete is not an error worth failing on.
+            while IFS=$'\t' read -r id size key; do
+              if ! gh api -X DELETE "repos/$repo/actions/caches/$id" >/dev/null 2>&1; then
+                echo "WARN: could not delete $id $key"
+                failures=$((failures + 1))
+              fi
+            done <<< "$rows"
+          done
+          echo "Done, $failures failure(s)."
