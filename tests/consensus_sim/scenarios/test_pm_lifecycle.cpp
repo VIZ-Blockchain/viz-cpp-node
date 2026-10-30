@@ -32,6 +32,21 @@ using namespace graphene::chain;
 using namespace graphene::protocol;
 
 namespace {
+    // Wall clock is not a fixture here. The harness takes the genesis time from
+    // fc::time_point::now(), so a case that starts "now" silently changes the RULES it runs under
+    // on the day a date-gated hardfork activates: HF16 (2026-10-31T00:00:00Z) requires a QC over
+    // the parent on every block, and from that date on each case died at block 3 with
+    // "No QC for head #2" instead of testing what it is about (the first cut of
+    // test_pm_audit_fixes.cpp had exactly that time bomb and was fixed by pinning too).
+    //
+    // These cases test PM lifecycle under the rules that were live on 2026-10-30: after HF15,
+    // before HF16. Two days before the fork leaves room for the longest case (leverage interest
+    // runs ~11 h 26 min of virtual time), and keeps the pair ordered forever because both are
+    // compile-time constants.
+    fc::time_point_sec pm_lifecycle_start() {
+        return fc::time_point_sec(CHAIN_HARDFORK_16_TIME) - fc::days(2);
+    }
+
     account_name_type next_validator(simulated_node& n) { return n.db().get_scheduled_validator(1); }
 
     fc::ecc::private_key key_for(const genesis_params& gp, const account_name_type& v) {
@@ -305,7 +320,7 @@ BOOST_AUTO_TEST_SUITE(pm_lifecycle_suite)
 
 BOOST_AUTO_TEST_CASE(oracle_register_after_hf14) {
     auto gp = make_genesis_params(0x1234u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -341,7 +356,7 @@ BOOST_AUTO_TEST_CASE(oracle_register_after_hf14) {
 
 BOOST_AUTO_TEST_CASE(binary_market_lifecycle) {
     auto gp = make_genesis_params(0x2222u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -441,7 +456,7 @@ BOOST_AUTO_TEST_CASE(binary_market_lifecycle) {
 
 BOOST_AUTO_TEST_CASE(committee_dispute_flips_outcome) {
     auto gp = make_genesis_params(0x3333u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -558,7 +573,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_flips_outcome) {
 // and overturn the oracle. Without the lazy-pool credit her weight is ~0 → the dispute would uphold.
 BOOST_AUTO_TEST_CASE(committee_dispute_lazy_pool_voting_weight) {
     auto gp = make_genesis_params(0x3344u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -665,7 +680,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_lazy_pool_voting_weight) {
 // The non-refundable creation fee stays with the DAO, so the creator's net cost is just the fee.
 BOOST_AUTO_TEST_CASE(oracle_reject_refunds_liquidity_once) {
     auto gp = make_genesis_params(0x6666u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -732,7 +747,7 @@ BOOST_AUTO_TEST_CASE(oracle_reject_refunds_liquidity_once) {
 // flips to status 1, and the market's reserves/bets_sum are reversed by exactly the stake.
 BOOST_AUTO_TEST_CASE(bet_cancellation_reverses_cpmm) {
     auto gp = make_genesis_params(0x5555u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -825,7 +840,7 @@ BOOST_AUTO_TEST_CASE(bet_cancellation_reverses_cpmm) {
 // resolved_outcome=-1 / payout_status=3. Zero-sum: bettors made whole, oracle pays the fine.
 BOOST_AUTO_TEST_CASE(oracle_missed_refunds_and_slashes) {
     auto gp = make_genesis_params(0x4444u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -916,7 +931,7 @@ BOOST_AUTO_TEST_CASE(oracle_missed_refunds_and_slashes) {
 // in prediction_market_api, explicitly non-consensus — so it has no on-chain assertion.)
 BOOST_AUTO_TEST_CASE(lazy_active_market_penalty) {
     auto gp = make_genesis_params(0x7777u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1019,7 +1034,7 @@ BOOST_AUTO_TEST_CASE(lazy_active_market_penalty) {
 // watch alloc.check_step advance one notch per step_dur, holding steady between gates.
 BOOST_AUTO_TEST_CASE(lazy_recall_is_time_gated) {
     auto gp = make_genesis_params(0x8888u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1115,7 +1130,7 @@ BOOST_AUTO_TEST_CASE(lazy_recall_is_time_gated) {
 // (winner via forfeit_pool vs. lost) to confirm zero-sum is preserved.
 BOOST_AUTO_TEST_CASE(committee_dispute_upholds_oracle) {
     auto gp = make_genesis_params(0x9999u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1247,7 +1262,7 @@ BOOST_AUTO_TEST_CASE(committee_dispute_upholds_oracle) {
 // a carve-out of the dispute fee (|pp|/10000), and the disputer is refunded the remainder.
 BOOST_AUTO_TEST_CASE(dispute_good_faith_oracle_not_slashed) {
     auto gp = make_genesis_params(0xAAAAu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1365,7 +1380,7 @@ BOOST_AUTO_TEST_CASE(dispute_good_faith_oracle_not_slashed) {
 // unlock (the lock is now enforced) and returns principal exactly once it elapses.
 BOOST_AUTO_TEST_CASE(lazy_deposit_lock_and_withdraw) {
     auto gp = make_genesis_params(0xB111u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1462,7 +1477,7 @@ BOOST_AUTO_TEST_CASE(lazy_deposit_lock_and_withdraw) {
 // are emitted) plus the emergency penalty (penalty on profit retained in the pool).
 BOOST_AUTO_TEST_CASE(lazy_yield_and_emergency_penalty) {
     auto gp = make_genesis_params(0xB222u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1578,7 +1593,7 @@ BOOST_AUTO_TEST_CASE(lazy_yield_and_emergency_penalty) {
 // the trader gets the remainder. Zero-sum: the trader's net loss equals the pool's interest gain.
 BOOST_AUTO_TEST_CASE(leverage_open_and_close) {
     auto gp = make_genesis_params(0xC111u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1691,7 +1706,7 @@ BOOST_AUTO_TEST_CASE(leverage_open_and_close) {
 // shortfall (bad debt). The liquidated trader loses their collateral (gets nothing back).
 BOOST_AUTO_TEST_CASE(leverage_cancel_bet_cascade_bad_debt) {
     auto gp = make_genesis_params(0xC222u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1808,7 +1823,7 @@ BOOST_AUTO_TEST_CASE(leverage_cancel_bet_cascade_bad_debt) {
 // the fee + reward carve-out (same canon as committee mode). A non-resolver cannot resolve.
 BOOST_AUTO_TEST_CASE(account_mode_dispute_resolver_flips) {
     auto gp = make_genesis_params(0xD111u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -1932,7 +1947,7 @@ BOOST_AUTO_TEST_CASE(account_mode_dispute_resolver_flips) {
 // refunded bettors as compensation.
 BOOST_AUTO_TEST_CASE(oracle_no_contest_refund_and_compensate) {
     auto gp = make_genesis_params(0xD222u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2041,7 +2056,7 @@ BOOST_AUTO_TEST_CASE(oracle_no_contest_refund_and_compensate) {
 // outcome (not a refund) and the oracle is slashed for the wrongful no-contest.
 BOOST_AUTO_TEST_CASE(dispute_overrides_no_contest) {
     auto gp = make_genesis_params(0xD333u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2150,7 +2165,7 @@ BOOST_AUTO_TEST_CASE(dispute_overrides_no_contest) {
 // penalised, and — the path this guards — the disputer's escrowed fee is returned.
 BOOST_AUTO_TEST_CASE(dispute_auto_close_refunds_fee) {
     auto gp = make_genesis_params(0xD444u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2253,7 +2268,7 @@ BOOST_AUTO_TEST_CASE(dispute_auto_close_refunds_fee) {
 // rejected.
 BOOST_AUTO_TEST_CASE(position_transfer_changes_owner) {
     auto gp = make_genesis_params(0xE111u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2361,7 +2376,7 @@ BOOST_AUTO_TEST_CASE(position_transfer_changes_owner) {
 // forfeited: a penalty stays in the pool and the remainder is refunded.
 BOOST_AUTO_TEST_CASE(batch_commit_reveal_and_forfeit) {
     auto gp = make_genesis_params(0xF111u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2484,7 +2499,7 @@ BOOST_AUTO_TEST_CASE(batch_commit_reveal_and_forfeit) {
 // computed b, bettors back each outcome, the oracle resolves one, and only the winner is paid.
 BOOST_AUTO_TEST_CASE(lmsr_multi_market_lifecycle) {
     auto gp = make_genesis_params(0xF222u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2578,7 +2593,7 @@ BOOST_AUTO_TEST_CASE(lmsr_multi_market_lifecycle) {
 // consensus gate lives in pm_place_bet (the field alone was previously not enforced).
 BOOST_AUTO_TEST_CASE(instant_bet_disabled_gate) {
     auto gp = make_genesis_params(0x5511u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2649,7 +2664,7 @@ BOOST_AUTO_TEST_CASE(instant_bet_disabled_gate) {
 // force (the op field existed but was previously a no-op).
 BOOST_AUTO_TEST_CASE(dispute_bans_creator_from_new_markets) {
     auto gp = make_genesis_params(0x1401u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2764,7 +2779,7 @@ BOOST_AUTO_TEST_CASE(dispute_bans_creator_from_new_markets) {
 // remainder, then a full withdrawal closes it.
 BOOST_AUTO_TEST_CASE(fractional_liquidity_withdrawal) {
     auto gp = make_genesis_params(0x1501u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2832,7 +2847,7 @@ BOOST_AUTO_TEST_CASE(fractional_liquidity_withdrawal) {
 // market freezes the creator's own offer (0 here). Quote fields ride on pm_oracle_accept_market.
 BOOST_AUTO_TEST_CASE(oracle_fixed_fee_external_vs_self) {
     auto gp = make_genesis_params(0x5601u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -2942,7 +2957,7 @@ BOOST_AUTO_TEST_CASE(oracle_fixed_fee_external_vs_self) {
 // liquidity-fee bonus by principal × time-in-market: the earlier LP earns strictly more.
 BOOST_AUTO_TEST_CASE(time_weighted_lp_fee_split) {
     auto gp = make_genesis_params(0x0901u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3024,7 +3039,7 @@ BOOST_AUTO_TEST_CASE(time_weighted_lp_fee_split) {
 // stamps the oracle's penalty_stamps counter (lazy-pool spam defence, §4.10).
 BOOST_AUTO_TEST_CASE(zero_volume_resolution_stamps_oracle) {
     auto gp = make_genesis_params(0x3801u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3091,7 +3106,7 @@ BOOST_AUTO_TEST_CASE(zero_volume_resolution_stamps_oracle) {
 // pool loan clears, and the position becomes a plain parimutuel bet.
 BOOST_AUTO_TEST_CASE(leverage_convert_to_normal_bet) {
     auto gp = make_genesis_params(0x5201u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3202,7 +3217,7 @@ BOOST_AUTO_TEST_CASE(leverage_convert_to_normal_bet) {
 // create (auto-accept). Also covers the offer→quote rule on the % fee.
 BOOST_AUTO_TEST_CASE(market_accepted_vop_and_quote) {
     auto gp = make_genesis_params(0x7A11u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3303,7 +3318,7 @@ BOOST_AUTO_TEST_CASE(market_accepted_vop_and_quote) {
 //   M2: dave  + committee            → creator mismatch (pinned to carol)        → pending (0).
 BOOST_AUTO_TEST_CASE(auto_accept_resolver_and_creator_pins_gate_creation) {
     auto gp = make_genesis_params(0xA11Eu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3403,7 +3418,7 @@ BOOST_AUTO_TEST_CASE(auto_accept_resolver_and_creator_pins_gate_creation) {
 // each carrying the stake + the side it was on.
 BOOST_AUTO_TEST_CASE(payout_vop_per_bettor) {
     auto gp = make_genesis_params(0x7A22u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3499,7 +3514,7 @@ BOOST_AUTO_TEST_CASE(payout_vop_per_bettor) {
 // settlement (status → 2 won / 3 lost) and emits pm_leverage_resolve with the outcome + leverage.
 BOOST_AUTO_TEST_CASE(leverage_resolve_vop_at_settlement) {
     auto gp = make_genesis_params(0x7A33u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3612,7 +3627,7 @@ BOOST_AUTO_TEST_CASE(leverage_resolve_vop_at_settlement) {
 // cancel and still expects the position liquidated.
 BOOST_AUTO_TEST_CASE(leverage_disabled_keeps_liquidation_protection) {
     auto gp = make_genesis_params(0xC333u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3728,7 +3743,7 @@ BOOST_AUTO_TEST_CASE(leverage_disabled_keeps_liquidation_protection) {
 // tables are authoritative, not hand-math.
 BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table) {
     auto gp = make_genesis_params(0x0DD5u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -3965,7 +3980,7 @@ BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table) {
 //   1 + (Σ_{j≠i} pool_j) x (1 - commission) / pool_i.
 BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table_multi) {
     auto gp = make_genesis_params(0x0DD6u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4178,7 +4193,7 @@ BOOST_AUTO_TEST_CASE(betting_odds_and_payout_table_multi) {
 // both sides; nothing restricts it) so bandwidth/funding are never the bottleneck.
 BOOST_AUTO_TEST_CASE(odds_drift_long_market_1000_bets) {
     auto gp = make_genesis_params(0x0DD7u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4350,7 +4365,7 @@ BOOST_AUTO_TEST_CASE(odds_drift_long_market_1000_bets) {
 // favourite near x1.2, underdog ~x4-5. Shows the drift on a non-even market.
 BOOST_AUTO_TEST_CASE(odds_drift_binary_skewed) {
     auto gp = make_genesis_params(0x0DD8u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4402,7 +4417,7 @@ BOOST_AUTO_TEST_CASE(odds_drift_binary_skewed) {
 // board generalises (odds_i = 1 + Σ_other x (1-comm) / pool_i) and drifts the same way.
 BOOST_AUTO_TEST_CASE(odds_drift_multi_1000) {
     auto gp = make_genesis_params(0x0DD9u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4459,7 +4474,7 @@ BOOST_AUTO_TEST_CASE(odds_drift_multi_1000) {
 // dispute exists to rebut.
 BOOST_AUTO_TEST_CASE(oracle_rebuttal_and_decision_reason) {
     auto gp = make_genesis_params(0x58EEu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4569,7 +4584,7 @@ BOOST_AUTO_TEST_CASE(oracle_rebuttal_and_decision_reason) {
 // it early; a non-issuer is rejected; the creator can then open a market again.
 BOOST_AUTO_TEST_CASE(resolver_unban_lifts_ban) {
     auto gp = make_genesis_params(0x59BAu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4699,7 +4714,7 @@ BOOST_AUTO_TEST_CASE(resolver_unban_lifts_ban) {
 // clears it (banned_until → 0) and emits pm_ban_expired, after which the creator can act again.
 BOOST_AUTO_TEST_CASE(creator_ban_auto_expires) {
     auto gp = make_genesis_params(0x60AEu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4812,7 +4827,7 @@ BOOST_AUTO_TEST_CASE(creator_ban_auto_expires) {
 // (one per lifted ban, carrying the account and which ban(s) lifted).
 BOOST_AUTO_TEST_CASE(ban_expired_vop_emitted) {
     auto gp = make_genesis_params(0x61EEu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4927,7 +4942,7 @@ BOOST_AUTO_TEST_CASE(ban_expired_vop_emitted) {
 // #62 — No-contest stores its rationale on the market as decision_reason (readable via get_market).
 BOOST_AUTO_TEST_CASE(no_contest_records_decision_reason) {
     auto gp = make_genesis_params(0x62AAu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -4984,7 +4999,7 @@ BOOST_AUTO_TEST_CASE(no_contest_records_decision_reason) {
 // #63 — pm_unban guards: lifting a ban that does not exist / is not active is rejected.
 BOOST_AUTO_TEST_CASE(unban_rejected_when_not_banned) {
     auto gp = make_genesis_params(0x63BBu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5036,7 +5051,7 @@ BOOST_AUTO_TEST_CASE(unban_rejected_when_not_banned) {
 // Death #5 — resolved + auto-paid.
 BOOST_AUTO_TEST_CASE(gc_resolved_market_after_retention) {
     auto gp = make_genesis_params(0x6C01u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5094,7 +5109,7 @@ BOOST_AUTO_TEST_CASE(gc_resolved_market_after_retention) {
 // still ending with the whole cluster gone.
 BOOST_AUTO_TEST_CASE(gc_row_budget_spans_blocks) {
     auto gp = make_genesis_params(0x6C06u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5211,7 +5226,7 @@ BOOST_AUTO_TEST_CASE(gc_row_budget_spans_blocks) {
 // FC_ASSERT(escrow == 0) rides along: a resume path that pays twice or drops a row trips it.
 BOOST_AUTO_TEST_CASE(settle_row_budget_spans_blocks) {
     auto gp = make_genesis_params(0x6C07u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5354,7 +5369,7 @@ BOOST_AUTO_TEST_CASE(settle_row_budget_spans_blocks) {
 // stake back.
 BOOST_AUTO_TEST_CASE(void_refund_row_budget_spans_blocks) {
     auto gp = make_genesis_params(0x6C08u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5485,7 +5500,7 @@ BOOST_AUTO_TEST_CASE(void_refund_row_budget_spans_blocks) {
 // epoch boundary while a partial pass is in flight.
 BOOST_AUTO_TEST_CASE(batch_queue_row_budget_spans_blocks) {
     auto gp = make_genesis_params(0x6C09u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5646,7 +5661,7 @@ BOOST_AUTO_TEST_CASE(batch_queue_row_budget_spans_blocks) {
 // same block must therefore finalize in DIFFERENT blocks.
 BOOST_AUTO_TEST_CASE(dispute_tally_row_budget_defers_next) {
     auto gp = make_genesis_params(0x6C0Au, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5792,7 +5807,7 @@ BOOST_AUTO_TEST_CASE(dispute_tally_row_budget_defers_next) {
 // where a voter overwrites an existing ballot and the counter must NOT move.
 BOOST_AUTO_TEST_CASE(dispute_ballot_counter_matches_rows) {
     auto gp = make_genesis_params(0x6C0Bu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5892,7 +5907,7 @@ BOOST_AUTO_TEST_CASE(dispute_ballot_counter_matches_rows) {
 // Death #1 — oracle rejects the market's terms.
 BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
     auto gp = make_genesis_params(0x6C02u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5935,7 +5950,7 @@ BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
 // Death #2 — oracle never accepts; the accept window expires and the cron voids the market.
 BOOST_AUTO_TEST_CASE(gc_accept_window_expired_after_retention) {
     auto gp = make_genesis_params(0x6C03u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -5977,7 +5992,7 @@ BOOST_AUTO_TEST_CASE(gc_accept_window_expired_after_retention) {
 // Death #3 — oracle misses the resolution deadline; the cron refunds and closes the market.
 BOOST_AUTO_TEST_CASE(gc_oracle_missed_after_retention) {
     auto gp = make_genesis_params(0x6C04u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6027,7 +6042,7 @@ BOOST_AUTO_TEST_CASE(gc_oracle_missed_after_retention) {
 // Death #4 — a dispute is filed but nobody votes; the anti-freeze auto-close voids the market.
 BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
     auto gp = make_genesis_params(0x6C05u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6179,7 +6194,7 @@ namespace {
 // oldest idle market ate the whole budget every boundary and the bet stayed queued forever.
 BOOST_AUTO_TEST_CASE(batch_settle_idle_markets_do_not_starve) {
     auto gp = make_genesis_params(0xF331u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6226,7 +6241,7 @@ BOOST_AUTO_TEST_CASE(batch_settle_idle_markets_do_not_starve) {
 // persisted cursor resumes past market 0, so market 1 settles within a couple of epochs.
 BOOST_AUTO_TEST_CASE(batch_settle_round_robin_prevents_busy_starvation) {
     auto gp = make_genesis_params(0xF332u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6296,7 +6311,7 @@ BOOST_AUTO_TEST_CASE(batch_settle_round_robin_prevents_busy_starvation) {
 // current_supply grows by exactly block inflation across the full lifecycle (no PM mint/burn).
 BOOST_AUTO_TEST_CASE(supply_conserved_binary_lifecycle) {
     auto gp = make_genesis_params(0x5C01u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6409,7 +6424,7 @@ BOOST_AUTO_TEST_CASE(supply_conserved_binary_lifecycle) {
 // their side wins, and (c) the market still conserves VIZ through settlement.
 BOOST_AUTO_TEST_CASE(early_exit_deferred_claim_paid_from_bucket) {
     auto gp = make_genesis_params(0x5E02u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6564,7 +6579,7 @@ BOOST_AUTO_TEST_CASE(early_exit_deferred_claim_paid_from_bucket) {
 // price and cascade-liquidate) but asserts the money-supply invariant the other case omits.
 BOOST_AUTO_TEST_CASE(leverage_bad_debt_is_transfer_not_mint) {
     auto gp = make_genesis_params(0x5A31u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6681,7 +6696,7 @@ BOOST_AUTO_TEST_CASE(leverage_bad_debt_is_transfer_not_mint) {
 // asserts current_supply moved by block inflation alone and forfeit_pool never went negative.
 BOOST_AUTO_TEST_CASE(leverage_profit_close_never_mints) {
     auto gp = make_genesis_params(0x5A32u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6807,7 +6822,7 @@ BOOST_AUTO_TEST_CASE(leverage_profit_close_never_mints) {
 // the §2d throttle, closures per block would exceed cap and this test fails.
 BOOST_AUTO_TEST_CASE(leverage_sybil_settlement_is_cap_throttled) {
     auto gp = make_genesis_params(0x5A33u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -6926,7 +6941,7 @@ BOOST_AUTO_TEST_CASE(leverage_sybil_settlement_is_cap_throttled) {
 // above — which borrows exactly pm_min_liquidity — still opens; the floor bounds, not blocks).
 BOOST_AUTO_TEST_CASE(leverage_min_loan_floor_enforced) {
     auto gp = make_genesis_params(0x5A34u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7000,7 +7015,7 @@ BOOST_AUTO_TEST_CASE(leverage_min_loan_floor_enforced) {
 // position's cancel-refund bypass the liquidity-growth cap.
 BOOST_AUTO_TEST_CASE(partial_transfer_inherits_entry_liquidity) {
     auto gp = make_genesis_params(0x7a11u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7103,7 +7118,7 @@ BOOST_AUTO_TEST_CASE(partial_transfer_inherits_entry_liquidity) {
 // head, never pro-rata to later requests.
 BOOST_AUTO_TEST_CASE(lazy_withdraw_fifo_queue) {
     auto gp = make_genesis_params(0xF1F0u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7286,7 +7301,7 @@ BOOST_AUTO_TEST_CASE(lazy_withdraw_fifo_queue) {
 // which the per-block bound below rejects.
 BOOST_AUTO_TEST_CASE(lazy_withdraw_queue_row_budget_spans_blocks) {
     auto gp = make_genesis_params(0xF1F1u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7414,7 +7429,7 @@ BOOST_AUTO_TEST_CASE(lazy_withdraw_queue_row_budget_spans_blocks) {
 // fee_percent is capped by the median; a wrong signer cannot touch the profile.
 BOOST_AUTO_TEST_CASE(oracle_profile_update_and_insurance_gate) {
     auto gp = make_genesis_params(0x0A0Eu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7532,7 +7547,7 @@ BOOST_AUTO_TEST_CASE(oracle_profile_update_and_insurance_gate) {
 // "the floor works" (the trap the live dust probe fell into twice).
 BOOST_AUTO_TEST_CASE(min_bet_floor_blocks_row_spam) {
     auto gp = make_genesis_params(0x4320u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7664,7 +7679,7 @@ BOOST_AUTO_TEST_CASE(min_bet_floor_blocks_row_spam) {
 // market or top it up later.
 BOOST_AUTO_TEST_CASE(min_liquidity_floor_applies_to_topups) {
     auto gp = make_genesis_params(0x4321u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7742,7 +7757,7 @@ BOOST_AUTO_TEST_CASE(min_liquidity_floor_applies_to_topups) {
 // allocations) and the ban must still lapse, because sec 8 now counts against its own budget.
 BOOST_AUTO_TEST_CASE(ban_expiry_survives_saturated_cron_budget) {
     auto gp = make_genesis_params(0x69BAu, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -7885,7 +7900,7 @@ BOOST_AUTO_TEST_CASE(ban_expiry_survives_saturated_cron_budget) {
 // returned, the income earned, and any F1 uncovered charge. Lazy-pool allocations are market-level only.
 BOOST_AUTO_TEST_CASE(lp_payout_vop_and_fee_counter) {
     auto gp = make_genesis_params(0x7B22u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec start(pm_lifecycle_start());
     fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
     if (hf > start) start = hf;
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
