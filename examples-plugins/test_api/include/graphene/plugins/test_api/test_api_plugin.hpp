@@ -9,7 +9,6 @@ namespace graphene {
     namespace plugins {
         namespace test_api {
 
-            using namespace appbase;
             using json_rpc::msg_pack;
             using fc::variant;
 
