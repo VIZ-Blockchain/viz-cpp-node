@@ -8,6 +8,11 @@ on:
   # reports, leaving the PR blocked forever. A docs-only PR costs one matrix run;
   # public-repo minutes are free.
   pull_request:
+  # Manual re-run on master at a chosen moment (post-fork acceptance, confirming a
+  # flaky red). Without it the only ways to re-run this suite are an empty commit or
+  # another merged PR -- and an empty commit does NOT wake the docker/windows
+  # workflows, so it silently tested less than "everything".
+  workflow_dispatch:
 
 # A new push to a PR makes the previous run's result irrelevant; cancel it instead
 # of letting a ~30 min run hold runners. Master pushes are never cancelled
