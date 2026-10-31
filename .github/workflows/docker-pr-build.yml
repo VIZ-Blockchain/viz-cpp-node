@@ -102,10 +102,12 @@ jobs:
           cache-from: type=gha,scope=pr-${{ github.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
 
-      # HF16 QC stand (#6618): 21-validator testnet image for the tc-netem bench. Only built
-      # for PRs from `pm`, where the QC work lives; other PRs skip it.
+      # HF16 QC stand (#6618): 21-validator testnet image for the tc-netem bench. Built for
+      # PRs from `pm` (where the QC work used to live) and for any PR carrying the
+      # `testnet21-stand` label: a consensus change that has to be accepted on the bench
+      # needs its own image, and building it here keeps the compile off the shared host.
       - uses: docker/build-push-action@v7
-        if: github.head_ref == 'pm'
+        if: github.head_ref == 'pm' || contains(github.event.pull_request.labels.*.name, 'testnet21-stand')
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet

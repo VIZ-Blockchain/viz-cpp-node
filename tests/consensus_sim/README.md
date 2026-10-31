@@ -36,7 +36,7 @@ python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests --fil
 ```
 
 The case list is read from two Boost.Test listings that must agree, and CI
-passes `--min-cases` (118 for a regular build, 173 with `BUILD_TESTNET=ON`) so
+passes `--min-cases` (118 for a regular build, 174 with `BUILD_TESTNET=ON`) so
 a test file dropped from the build fails the job instead of shrinking it.
 Raise the floors in `.github/workflows/tests.yml` when you add cases.
 

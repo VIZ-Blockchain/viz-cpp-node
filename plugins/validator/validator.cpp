@@ -22,6 +22,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1844,7 +1845,15 @@ namespace graphene {
                                             const auto held = db.get_block_qc(c.num - 1);
                                             late_ok = !held || held->block_id == blk->previous;
                                         }
-                                        if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round && !late_ok) {
+                                        // Same window validate_block_qc accepts: a TC on ANY round
+                                        // strictly between the parent's QC round and ours covers the
+                                        // gap, so the block is chain-valid and may be voted for.
+                                        // Requiring exactly TC(round-1) refused every block a stalled
+                                        // chain can build (mainnet stall 31.10.2026: TCs formed for
+                                        // 245..372 while the producer's slot round was 600+, so not
+                                        // one rebuilt block ever collected a vote).
+                                        const bool tc_covers_gap = tc_round > qc_round && tc_round < c.round;
+                                        if (has_qc && qc_round + 1 != c.round && !tc_covers_gap && !late_ok) {
                                             wlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
                                                  ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
                                             continue;
@@ -2446,10 +2455,14 @@ namespace graphene {
                 // HF16: a handoff block needs the parent's QC. Without it we skip
                 // the slot rather than fork: votes keep arriving, and the next
                 // producer (or we, next slot) builds once the quorum is there.
-                // If a TC for head's round is here instead, head was given up on:
-                // drop it and build on its (certified) parent with the TC (Jolteon).
-                // Validators vote for a block of round r only if it carries QC(r-1) or
-                // TC(r-1); so after any empty or QC-less round we attach TC(r-1).
+                // If a TC for a round after head's QC is here instead, head was given up
+                // on: drop it and build on its (certified) parent with the TC (Jolteon).
+                // The chain accepts a TC on ANY round strictly between our parent's QC round
+                // and ours (validate_block_qc), so we look for the newest such TC rather
+                // than only for TC(own_round-1): a stalled chain forms TCs on whichever
+                // rounds time out, and requiring exactly own_round-1 never matches once
+                // timeouts have piled up (mainnet stall 31.10.2026: TC(245..372) formed,
+                // own_round-1 was 600, and the chain stood still).
                 fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
                 bool waiting_for_qc = false;
                 bool rebuild_on_anchor = false;
@@ -2458,14 +2471,12 @@ namespace graphene {
                 const uint32_t own_round = db.round_of(scheduled_time);
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
-                    auto tc = db.get_timeout_cert(own_round - 1);
                     const auto parent_cert = db.parent_qc_for_next_block(scheduled_validator);
                     if (parent_cert.valid()) {
-                        // Head certified. A gap after it needs TC(r-1) for our block to get votes.
-                        if (parent_cert->round + 1 >= own_round || !tc) return;
-                        for (const auto &tv : tc->votes)
-                            if (tv.second.high_qc_round > parent_cert->round) return;
-                        skip_tc = tc;
+                        // Head certified. A gap after it needs a TC between its round and
+                        // ours, or our block gets no votes.
+                        if (parent_cert->round + 1 >= own_round) return;
+                        skip_tc = db.get_timeout_cert_between(parent_cert->round, own_round, parent_cert->round);
                         return;
                     }
                     waiting_for_qc = true;
@@ -2480,7 +2491,6 @@ namespace graphene {
                         wlog("TC skip of QC-less head #${h} refused for slot round ${r}: ${why}",
                              ("h", db.head_block_num())("r", own_round)("why", why));
                     };
-                    if (!tc) { skip_refused("no TC for round r-1 yet"); return; }
                     const auto head = db.fetch_block_by_number(db.head_block_num());
                     if (!head) return;
                     const graphene::protocol::block_qc_certificate *parent_qc = nullptr;
@@ -2497,15 +2507,18 @@ namespace graphene {
                         const auto parent = db.fetch_block_by_id(head->previous);
                         if (parent && dgp.round_anchor_time != fc::time_point_sec() &&
                             parent->timestamp <= dgp.round_anchor_time) {
-                            skip_tc = tc;
+                            // Any TC proves some round after the anchor timed out; the TC
+                            // itself is not carried (the rebuild block has no parent QC).
+                            skip_tc = db.get_timeout_cert_between(0, own_round, std::numeric_limits<uint32_t>::max());
                             rebuild_on_anchor = true;
                         }
                         return;
                     }
                     // The parent must be certified, and nobody who timed out may
-                    // have seen a QC above it (else our block would be invalid).
-                    for (const auto &tv : tc->votes)
-                        if (tv.second.high_qc_round > parent_qc->round) { skip_refused("a timeout vote saw a QC above head's QC"); return; }
+                    // have seen a QC above it (else our block would be invalid); the
+                    // window search already keeps only such certificates.
+                    auto tc = db.get_timeout_cert_between(parent_qc->round, own_round, parent_qc->round);
+                    if (!tc) { skip_refused("no usable TC between head's QC round and our round"); return; }
                     // Late-QC head (it carries its grandparent's QC because its parent's
                     // never formed): nothing between the certified block and head can get
                     // a QC any more, so after the TC the proposal extends the certified
