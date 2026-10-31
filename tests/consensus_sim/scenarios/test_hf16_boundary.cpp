@@ -570,7 +570,8 @@ void tc_window_scenario() {
     // halves here — otherwise a rejected TC looks like a fork-choice bug.
     const auto head_child = db.fetch_block_by_number(db.head_block_num());
     BOOST_REQUIRE(head_child);
-    BOOST_REQUIRE_EQUAL(db.block_cert_round(*head_child), 0u);
+    // The QC-less head still carries its parent's QC; what it lacks is a QC of its own.
+    BOOST_REQUIRE_EQUAL(db.block_cert_round(*head_child), cert_round);
     BOOST_REQUIRE_EQUAL(db.verified_fork_cert_round(recovered), cert_round + 2);
     BOOST_REQUIRE(recovered.block_num() > db.get_dynamic_global_properties().last_irreversible_block_num);
 
