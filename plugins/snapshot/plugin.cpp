@@ -1,4 +1,5 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
+#include <graphene/plugins/snapshot/snapshot_floor.hpp>
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
 #include <graphene/plugins/validator/validator.hpp>
@@ -4293,6 +4294,29 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
 // Snapshot TCP client
 // ============================================================================
 
+namespace {
+
+/// max(head, LIB) — the newest state this node already considers final.
+/// Returns 0 when the head cannot be read (a state-less node), which callers treat
+/// as "no floor": see snapshot_ahead_of_floor().
+uint32_t read_own_snapshot_floor(graphene::chain::database& db) {
+    uint32_t floor = 0;
+    try {
+        db.with_weak_read_lock([&]() {
+            floor = db.head_block_num();
+            floor = std::max<uint32_t>(floor,
+                db.get_dynamic_global_properties().last_irreversible_block_num);
+        });
+    } catch (const fc::exception &e) {
+        wlog("Could not read own head/LIB: ${e}", ("e", e.to_detail_string()));
+    } catch (const std::exception &e) {
+        wlog("Could not read own head/LIB: ${e}", ("e", e.what()));
+    }
+    return floor;
+}
+
+} // namespace
+
 std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     FC_ASSERT(!trusted_snapshot_peers.empty(), "No trusted snapshot peers configured");
 
@@ -4306,18 +4330,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     // nodes to block 84792000 while their LIB was 84792899).
     // The floor is max(head, LIB) on purpose: after such a reload head < LIB, so reading
     // head alone would let the next check repeat the same mistake.
-    uint32_t own_floor = 0;
-    try {
-        db.with_weak_read_lock([&]() {
-            own_floor = db.head_block_num();
-            own_floor = std::max<uint32_t>(own_floor,
-                db.get_dynamic_global_properties().last_irreversible_block_num);
-        });
-    } catch (const fc::exception &e) {
-        wlog("Could not read own head/LIB before querying snapshot peers: ${e}", ("e", e.to_detail_string()));
-    } catch (const std::exception &e) {
-        wlog("Could not read own head/LIB before querying snapshot peers: ${e}", ("e", e.what()));
-    }
+    const uint32_t own_floor = read_own_snapshot_floor(db);
 
     // Phase 1: Query all peers for snapshot info
     struct peer_info {
@@ -4392,7 +4405,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                           << info.block_num << " (" << (info.compressed_size / 1048576) << " MB)\n";
                 ilog(CLOG_YELLOW "Peer ${p}: snapshot at block ${b}, size ${s} bytes" CLOG_RESET,
                      ("p", peer_str)("b", info.block_num)("s", info.compressed_size));
-                if (own_floor > 0 && info.block_num <= own_floor) {
+                if (!snapshot_ahead_of_floor(own_floor, info.block_num)) {
                     // Importing it would roll our finality backwards; there is nothing to gain.
                     std::cerr << "   Peer " << peer_str << ": snapshot at block " << info.block_num
                               << " is not ahead of our own head/LIB " << own_floor << " — ignoring\n";
@@ -4609,6 +4622,24 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             }
             ilog(CLOG_YELLOW "Snapshot checksum verified" CLOG_RESET);
             std::cerr << "   Checksum verified OK\n";
+
+            // Phase 1 measured the floor before the download started; fetching a multi-GB
+            // snapshot takes minutes, and our head may have grown past it since. Wiping the
+            // state now would roll back blocks already applied -- the very thing the floor
+            // guard exists to prevent. Re-measure immediately before the file can be picked
+            // for import, and discard it rather than leave a stale snapshot-block-* in the
+            // directory that --snapshot-auto-latest would pick up on the next start.
+            const uint32_t recheck_floor = read_own_snapshot_floor(db);
+            if (!snapshot_ahead_of_floor(recheck_floor, best->block_num)) {
+                std::cerr << "   Snapshot at block " << best->block_num
+                          << " fell behind our own head/LIB " << recheck_floor
+                          << " during the download — discarding it\n";
+                wlog(CLOG_RED "Downloaded snapshot at block ${b} fell behind our own head/LIB ${f} "
+                     "during the download; discarding it instead of rewinding" CLOG_RESET,
+                     ("b", best->block_num)("f", recheck_floor));
+                boost::filesystem::remove(temp_path);
+                return std::string();
+            }
 
             // Rename to final path
             std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
