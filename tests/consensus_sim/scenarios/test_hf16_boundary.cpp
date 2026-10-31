@@ -473,7 +473,11 @@ BOOST_AUTO_TEST_CASE(forged_certificate_cannot_enter_fork_choice) {
     BOOST_CHECK_EQUAL(db.verified_fork_cert_round(original), db.block_cert_round(original));
 }
 
-BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
+namespace {
+
+// fc::exception does not derive from std::exception, so one escaping the scenario reaches
+// Boost.Test as "unknown type" with no message at all. Keep the chain's own verdict instead.
+void tc_window_scenario() {
     // Mainnet stall 31.10.2026: a QC-less head blocked every producer because the client
     // looked for TC(own_round-1) only, while the chain accepts ANY TC strictly between the
     // parent's QC round and ours (validate_block_qc). Timeouts kept piling up on other
@@ -551,6 +555,16 @@ BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
     // The stalled node drops its QC-less head and follows the rebuilt block.
     BOOST_CHECK(db.head_block_id() == recovered.id());
     BOOST_CHECK_EQUAL(db.head_block_num(), recovered.block_num());
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
+    try {
+        tc_window_scenario();
+    } catch (const fc::exception &e) {
+        BOOST_ERROR("chain raised: " << e.to_detail_string());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
