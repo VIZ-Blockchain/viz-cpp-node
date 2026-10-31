@@ -1845,7 +1845,15 @@ namespace graphene {
                                             const auto held = db.get_block_qc(c.num - 1);
                                             late_ok = !held || held->block_id == blk->previous;
                                         }
-                                        if (has_qc && qc_round + 1 != c.round && tc_round + 1 != c.round && !late_ok) {
+                                        // Same window validate_block_qc accepts: a TC on ANY round
+                                        // strictly between the parent's QC round and ours covers the
+                                        // gap, so the block is chain-valid and may be voted for.
+                                        // Requiring exactly TC(round-1) refused every block a stalled
+                                        // chain can build (mainnet stall 31.10.2026: TCs formed for
+                                        // 245..372 while the producer's slot round was 600+, so not
+                                        // one rebuilt block ever collected a vote).
+                                        const bool tc_covers_gap = tc_round > qc_round && tc_round < c.round;
+                                        if (has_qc && qc_round + 1 != c.round && !tc_covers_gap && !late_ok) {
                                             wlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
                                                  ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
                                             continue;
