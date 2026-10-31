@@ -96,8 +96,14 @@ def wiring_problems(text):
     if import_call not in text:
         problems.append("load_snapshot() does not refuse a file at or below our head/LIB "
                         "(the direct paths --snapshot / --snapshot-auto-latest / callback)")
-    if import_call in text and "allow_snapshot_rewind ||" not in text:
+    if import_call in text and "!allow_snapshot_rewind &&" not in text:
         problems.append("load_snapshot() floor guard has no --allow-snapshot-rewind override")
+    if "snapshot_rewind_refused" not in text:
+        problems.append("refusal is not a distinct exception type: callers will wipe a healthy state "
+                        "treating the refusal as corruption")
+    if text.count("catch (const snapshot_rewind_refused&") < 2:
+        problems.append("fewer than two callers handle snapshot_rewind_refused: a refusal would "
+                        "take the corruption path and wipe a healthy state")
     guard_at = text.find(import_call)
     load_at = text.find("void snapshot_plugin::plugin_impl::load_snapshot")
     wipe_at = text.find("Clearing existing objects before snapshot import")
@@ -157,11 +163,19 @@ def selftest():
 
     # (e) the operator override deleted: an operator could no longer recover from a bad
     #     file without recompiling, so the wiring check must complain
-    no_override = text.replace("allow_snapshot_rewind || ", "", 1)
+    no_override = text.replace("!allow_snapshot_rewind && ", "", 1)
     if no_override == text:
         failures.append("selftest: could not remove the override clause")
     elif not any("no --allow-snapshot-rewind override" in p for p in wiring_problems(no_override)):
         failures.append("selftest: missing override clause was not reported")
+
+    # (f) the refusal handler removed from the callers: a refusal would take the
+    #     "corruption" path and wipe the state it was defending
+    no_handler = text.replace("catch (const snapshot_rewind_refused&", "catch (const std::runtime_error&")
+    if no_handler == text:
+        failures.append("selftest: could not remove the refusal handler")
+    elif not any("handle snapshot_rewind_refused" in p for p in wiring_problems(no_handler)):
+        failures.append("selftest: missing refusal handler was not reported")
 
     return failures
 

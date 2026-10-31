@@ -66,6 +66,21 @@ namespace graphene { namespace plugins { namespace snapshot {
 using namespace graphene::chain;
 using graphene::protocol::signed_block;
 
+/**
+ * A snapshot was refused because it would rewind our final state.
+ *
+ * Declared here, not in snapshot_floor.hpp, to keep that header dependency-free:
+ * the guard test compiles the header alone with plain g++ (no fc, no submodules).
+ *
+ * A distinct type on purpose: the import callers treat "load_snapshot threw" as
+ * "the state is corrupt, wipe it and restart". That is wrong for a refusal — the
+ * state was never touched, the file is just older than what we have. The startup
+ * callback keeps the existing state instead of wiping it, so a stale file reached
+ * through --snapshot / --snapshot-auto-latest no longer costs a resync.
+ */
+FC_DECLARE_EXCEPTION(snapshot_rewind_refused, 3030000,
+                     "Refusing to import a snapshot that would rewind final state")
+
 // ANSI color codes for console log messages
 #define CLOG_GREEN  "\033[92m"   // snapshot export
 #define CLOG_ORANGE "\033[33m"   // snapshot import
@@ -1854,10 +1869,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     // directly, and the peer's advertised block number is not the number inside the file.
     // Operator override: --allow-snapshot-rewind.
     const uint32_t own_floor = detail::read_own_snapshot_floor(db);
-    FC_ASSERT(allow_snapshot_rewind || snapshot_ahead_of_floor(own_floor, header.snapshot_block_num),
-        "Refusing to import snapshot at block ${b}: this node already has head/LIB ${f}, "
-        "so the import would rewind final state. Pass --allow-snapshot-rewind to override.",
-        ("b", header.snapshot_block_num)("f", own_floor));
+    if (!allow_snapshot_rewind && !snapshot_ahead_of_floor(own_floor, header.snapshot_block_num)) {
+        elog("Refusing to import snapshot at block ${b}: this node already has head/LIB ${f}",
+             ("b", header.snapshot_block_num)("f", own_floor));
+        std::cerr << "   Snapshot refused: block " << header.snapshot_block_num
+                  << " is not ahead of our head/LIB " << own_floor << "\n";
+        FC_THROW_EXCEPTION(snapshot_rewind_refused,
+            "Refusing to import snapshot at block ${b}: this node already has head/LIB ${f}, "
+            "so the import would rewind final state. Pass --allow-snapshot-rewind to override.",
+            ("b", header.snapshot_block_num)("f", own_floor));
+    }
 
     // Validate checksum
     std::cerr << "   Validating snapshot checksum...\n";
@@ -3366,6 +3387,18 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         // Reset timer to avoid immediate retry
                         last_block_received_time = fc::time_point::now();
                     }
+                } catch (const snapshot_rewind_refused& e) {
+                    // Not a failure: the downloaded snapshot is not ahead of us. State untouched.
+                    std::cerr << "   Snapshot refused (not ahead of our state), keeping it: " << e.what() << "\n";
+                    wlog("Stalled-sync snapshot refused, keeping current state: ${e}", ("e", e.what()));
+                    _snapshot_reloading.store(false, std::memory_order_release);
+                    try {
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->resume_block_processing();
+                        }
+                    } catch (...) {}
+                    stalled_sync_check_running.store(true);
+                    last_block_received_time = fc::time_point::now();
                 } catch (const fc::exception& e) {
                     std::cerr << "   Failed to reload snapshot: " << e.what() << "\n";
                     elog("Failed to reload snapshot: ${e}", ("e", e.to_detail_string()));
@@ -5141,6 +5174,12 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             auto start = fc::time_point::now();
             try {
                 my->load_snapshot(snap_path);
+            } catch (const snapshot_rewind_refused& e) {
+                // The file is older than our state; nothing was written. Keep the state.
+                wlog("Snapshot ${p} refused (older than our head/LIB) — continuing with existing state: ${e}",
+                     ("p", snap_path.string())("e", e.what()));
+                std::cerr << "   Keeping existing state, snapshot import skipped\n";
+                return;
             } catch (...) {
                 elog("Snapshot load failed — wiping corrupted shared memory before restart");
                 try {
