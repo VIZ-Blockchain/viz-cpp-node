@@ -6,6 +6,7 @@
 #include <graphene/chain/block_log.hpp>
 #include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/hardfork.hpp>
+#include <graphene/chain/timeout_vote_journal.hpp>
 #include <graphene/chain/key_history_objects.hpp>
 #include <graphene/protocol/protocol.hpp>
 
@@ -634,6 +635,14 @@ namespace graphene { namespace chain {
             void init_genesis(uint64_t initial_supply = CHAIN_INIT_SUPPLY);
 
             /**
+             * Opens the on-disk cache of accepted timeout votes and, unless the chain state was
+             * just wiped (snapshot import), replays it through push_timeout_vote. Called at the end
+             * of open()/open_from_snapshot(), i.e. before p2p starts, so the votes are back in
+             * memory before the first round of the new process.
+             */
+            void open_timeout_vote_journal(const fc::path &data_dir, bool replay_votes);
+
+            /**
              *  This method validates transactions without adding it to the pending state.
              *  @throw if an error occurs
              *  @return modified skip flags
@@ -902,6 +911,13 @@ namespace graphene { namespace chain {
             // HF16 timeouts: round -> (validator -> vote); one vote per (validator, round)
             std::map<uint32_t, std::map<account_name_type, protocol::block_timeout_vote>> _timeout_votes;
             std::map<uint32_t, protocol::block_timeout_certificate> _timeout_certs;
+
+            /// Disk cache of accepted timeout votes (survives restarts); null when it cannot be
+            /// opened, in which case the node runs exactly as before. See timeout_vote_journal.
+            std::unique_ptr<timeout_vote_journal> _timeout_vote_journal;
+            /// True while re-feeding the journal through push_timeout_vote: those votes are already
+            /// on disk and must not be appended again.
+            bool _timeout_vote_journal_replaying = false;
             mutable std::mutex _block_votes_mutex;
             std::atomic<uint32_t> _head_reject_logged{0};
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];
