@@ -491,11 +491,13 @@ BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
     fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
     BOOST_REQUIRE(bring_to_hf14(node, gp, when));
     auto &db = node.db();
-    db.set_hardfork(CHAIN_HARDFORK_16, true);
+    // Sync and only then lift both nodes to HF16: the peer must replay pre-fork blocks, and a
+    // peer that is not at HF16 cannot link blocks whose extensions are already HF16-shaped.
     for (int i = 0; i < 4; ++i) produce(node, gp, when);
     for (const auto &b : node.canonical_blocks_from(1)) peer.receive_block(b);
-    peer.db().set_hardfork(CHAIN_HARDFORK_16, true);
     BOOST_REQUIRE(peer.head_block_id() == node.head_block_id());
+    db.set_hardfork(CHAIN_HARDFORK_16, true);
+    peer.db().set_hardfork(CHAIN_HARDFORK_16, true);
 
     const uint32_t cert_round = db.round_of(db.head_block_time());
     // A QC-less child of the certified head: produced, never voted for.
