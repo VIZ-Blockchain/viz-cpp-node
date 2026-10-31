@@ -473,4 +473,151 @@ BOOST_AUTO_TEST_CASE(forged_certificate_cannot_enter_fork_choice) {
     BOOST_CHECK_EQUAL(db.verified_fork_cert_round(original), db.block_cert_round(original));
 }
 
+namespace {
+
+// fc::exception does not derive from std::exception, so one escaping the scenario reaches
+// Boost.Test as "unknown type" with no message at all. Keep the chain's own verdict instead.
+void tc_window_scenario() {
+    // Mainnet stall 31.10.2026: a QC-less head blocked every producer because the client
+    // looked for TC(own_round-1) only, while the chain accepts ANY TC strictly between the
+    // parent's QC round and ours (validate_block_qc). Timeouts kept piling up on other
+    // rounds, no exact match ever appeared, and the chain stood still for good.
+    // Here the only TC on own_round-1 is unusable (a voter saw a higher QC), so a client
+    // that stops at the first (or the exact) certificate still stalls: the window search
+    // must skip it and carry the newest usable one.
+    auto gp = make_genesis_params(0x7C3E7u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("tc-window-node", gp, clk);
+    simulated_node peer("tc-window-peer", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    auto &db = node.db();
+    // Sync and only then lift both nodes to HF16: the peer must replay pre-fork blocks, and a
+    // peer that is not at HF16 cannot link blocks whose extensions are already HF16-shaped.
+    for (int i = 0; i < 4; ++i) produce(node, gp, when);
+    for (const auto &b : node.canonical_blocks_from(1)) peer.receive_block(b);
+    BOOST_REQUIRE(peer.head_block_id() == node.head_block_id());
+    db.set_hardfork(CHAIN_HARDFORK_16, true);
+    peer.db().set_hardfork(CHAIN_HARDFORK_16, true);
+
+    // The child of the HF16 activation block is exempt from needing a parent QC, and a TC cannot
+    // rescue it either (there is no QC below it to certify against) — so the stall has to be built
+    // further along the chain. Two 1 s blocks leave the anchor behind; then certify the head on
+    // both nodes without producing on top of it, so the QC-less child below is a real stall.
+    produce(node, gp, when);
+    produce(node, gp, when);
+    vote_for_head(node, gp);
+    for (const auto &b : node.canonical_blocks_from(peer.head_block_num() + 1)) peer.receive_block(b);
+    BOOST_REQUIRE(peer.head_block_id() == node.head_block_id());
+    vote_for_head(peer, gp);
+    BOOST_REQUIRE(db.get_block_qc(db.head_block_num()).valid());
+    BOOST_REQUIRE(peer.db().get_block_qc(peer.head_block_num()).valid());
+
+    const uint32_t cert_round = db.round_of(db.head_block_time());
+    // A QC-less child of the certified head: produced, never voted for.
+    when += fc::seconds(db.block_interval());
+    const auto child_v = db.get_scheduled_validator(db.get_slot_at_time(when));
+    db.generate_block(when, child_v, key_for(gp, child_v), database::skip_nothing, {}, {});
+    BOOST_REQUIRE_EQUAL(db.round_of(when), cert_round + 1);
+    BOOST_REQUIRE(!db.get_block_qc(db.head_block_num()).valid());
+
+    // Three timeout certificates inside (cert_round, own_round = cert_round + 4).
+    auto &pdb = peer.db();
+    const auto &wso = pdb.get_validator_schedule_object();
+    const auto form_tc = [&](uint32_t round, uint32_t high_qc_round) {
+        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+            const auto v = wso.current_shuffled_validators[i];
+            const auto d = block_timeout_digest(pdb.get_chain_id(), round, high_qc_round);
+            BOOST_CHECK(pdb.push_timeout_vote(round, high_qc_round, v, key_for(gp, v).sign_compact(d)));
+        }
+        BOOST_REQUIRE(pdb.get_timeout_cert(round).valid());
+    };
+    form_tc(cert_round + 1, cert_round);
+    form_tc(cert_round + 2, cert_round);
+    form_tc(cert_round + 3, cert_round + 1); // own_round-1: a vote above our parent QC
+
+    const uint32_t own_round = cert_round + 4;
+    const auto tc = pdb.get_timeout_cert_between(cert_round, own_round, cert_round);
+    BOOST_REQUIRE(tc.valid());
+    BOOST_CHECK_EQUAL(tc->round, cert_round + 2);
+    // The exact-round lookup the stalled client used would have taken the unusable one.
+    BOOST_REQUIRE(pdb.get_timeout_cert(own_round - 1).valid());
+    // Empty windows answer empty instead of a neighbouring round.
+    BOOST_CHECK(!pdb.get_timeout_cert_between(cert_round + 2, own_round, cert_round).valid());
+    BOOST_CHECK(!pdb.get_timeout_cert_between(cert_round, cert_round + 1, cert_round).valid());
+
+    // Rebuild on the certified parent two slots later, carrying the usable TC.
+    when += fc::seconds(pdb.block_interval());
+    when += fc::seconds(pdb.block_interval());
+    when += fc::seconds(pdb.block_interval());
+    BOOST_REQUIRE_EQUAL(pdb.round_of(when), own_round);
+    const auto v = pdb.get_scheduled_validator(pdb.get_slot_at_time(when));
+    const auto recovered = pdb.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc, {});
+    bool carried = false;
+    for (const auto &e : recovered.extensions)
+        if (e.which() == 4) {
+            carried = true;
+            BOOST_CHECK_EQUAL(e.get<block_timeout_certificate>().round, cert_round + 2);
+        }
+    BOOST_CHECK(carried);
+
+    // The fork choice at equal height keys on fork admission: a sibling only replaces the
+    // head when it proves a later certificate round. Admission swallows its failure and
+    // reports round 0, which is indistinguishable from "no certificate", so check both
+    // halves here — otherwise a rejected TC looks like a fork-choice bug.
+    const auto head_child = db.fetch_block_by_number(db.head_block_num());
+    BOOST_REQUIRE(head_child);
+    // The QC-less head still carries its parent's QC; what it lacks is a QC of its own.
+    BOOST_REQUIRE_EQUAL(db.block_cert_round(*head_child), cert_round);
+    BOOST_REQUIRE_EQUAL(db.verified_fork_cert_round(recovered), cert_round + 2);
+    // The equal-height replacement gate only fires above LIB. Where does LIB sit? On the
+    // testnet arms the schedule holds ONE validator, and check_block_post_validation_chain
+    // needs count >= num_scheduled * CHAIN_IRREVERSIBLE_THRESHOLD / 100, which rounds down to
+    // zero: every applied block confirms itself and LIB tracks head exactly. Mainnet had 21
+    // scheduled validators (quorum 15) and LIB lagged three blocks behind the stalled head —
+    // that lag is what opens the gate. Measured, not assumed: CI printed lib=#35 head=#35.
+    const auto &dgp_now = db.get_dynamic_global_properties();
+    const uint32_t lib = dgp_now.last_irreversible_block_num;
+    const bool gate_reachable = recovered.block_num() > lib;
+    ilog("tc-window: head=#${h} certified_head=#${c} recovered=#${r} lib=#${l} scheduled=${s} gate=${g}",
+         ("h", db.head_block_num())("c", head_child->block_num())("r", recovered.block_num())
+         ("l", lib)("s", wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT)
+         ("g", gate_reachable));
+    if (!gate_reachable) {
+        // Single-validator shape: the gate is unreachable by construction, so the switch half
+        // cannot be proven here. The rebuild itself is already proven above (admission accepts
+        // the newest usable TC); the switch runs on the 21-validator stand, which the owner
+        // made the deployment gate (#3333=A). Fail loudly if a multi-validator schedule ever
+        // lands in this configuration instead of silently skipping the assertion.
+        BOOST_CHECK_EQUAL(wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 1u);
+        return;
+    }
+
+    try { db.push_block(recovered, database::skip_nothing); }
+    catch (const fc::exception &e) { BOOST_FAIL(e.to_detail_string()); }
+    BOOST_CHECK_MESSAGE(db.get_fork_db().head() && db.get_fork_db().head()->id == recovered.id(),
+        "after push: db_head=#" << db.head_block_num()
+        << " fork_head=#" << (db.get_fork_db().head() ? db.get_fork_db().head()->num : 0)
+        << " recovered=#" << recovered.block_num()
+        << " lib=" << db.get_dynamic_global_properties().last_irreversible_block_num
+        << " cert_round(recovered)=" << db.verified_fork_cert_round(recovered)
+        << " cert_round(head_child)=" << db.block_cert_round(*head_child));
+    // The stalled node drops its QC-less head and follows the rebuilt block.
+    BOOST_CHECK(db.head_block_id() == recovered.id());
+    BOOST_CHECK_EQUAL(db.head_block_num(), recovered.block_num());
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
+    try {
+        tc_window_scenario();
+    } catch (const fc::exception &e) {
+        BOOST_ERROR("chain raised: " << e.to_detail_string());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -201,7 +201,7 @@ jobs:
           set -euo pipefail
           cd build/tests/consensus_sim
           # --min-cases: floor of enabled cases in a testnet build (checked before --filter).
-          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 173)
+          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 174)
           if [ "${{ matrix.validators }}" = "2" ]; then
             "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite
           else
