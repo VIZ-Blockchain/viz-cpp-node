@@ -573,7 +573,15 @@ void tc_window_scenario() {
     // The QC-less head still carries its parent's QC; what it lacks is a QC of its own.
     BOOST_REQUIRE_EQUAL(db.block_cert_round(*head_child), cert_round);
     BOOST_REQUIRE_EQUAL(db.verified_fork_cert_round(recovered), cert_round + 2);
-    BOOST_REQUIRE(recovered.block_num() > db.get_dynamic_global_properties().last_irreversible_block_num);
+    // The equal-height replacement gate only fires above LIB. Print where LIB sits: with a
+    // one-validator schedule post-validation advances LIB by itself, and the number differs
+    // between the CI configs, so a bare magnitude check hides which premise actually broke.
+    const auto &dgp_now = db.get_dynamic_global_properties();
+    ilog("tc-window: head=#${h} certified_head=#${c} recovered=#${r} lib=#${l} scheduled=${s}",
+         ("h", db.head_block_num())("c", head_child->block_num())("r", recovered.block_num())
+         ("l", dgp_now.last_irreversible_block_num)
+         ("s", wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT));
+    BOOST_REQUIRE(recovered.block_num() > dgp_now.last_irreversible_block_num);
 
     try { db.push_block(recovered, database::skip_nothing); }
     catch (const fc::exception &e) { BOOST_FAIL(e.to_detail_string()); }
