@@ -1,6 +1,6 @@
 # Block Processing
 
-> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+> **HF16 / 4.2.0 is active since 2026-10-31 00:00 UTC.** The rules in force are the 1-second slot, QC/TC and the 2-chain LIB — see [HF16](./hf16.md). The 3-second/14-confirmation descriptions below are the pre-HF16 rules; they survive in code as fallback paths, not as the HF16 quorum.
 
 
 Internal mechanics of block application, pending transaction management, and fork switching.
@@ -51,7 +51,7 @@ push_block(new_block)
    - Apply new-fork blocks in order.
 5. `apply_block()` runs transaction evaluators, updates dynamic global properties, processes virtual operations.
 6. `check_block_post_validation_chain()` — advances LIB if ≥14 validators have sent post-validation signatures for the next block above LIB (fast path, ~4 s finality). See [Block Post-Validation](#block-post-validation-fast-lib-finality) below.
-7. `update_last_irreversible_block()` — classic DPOS fallback: advances LIB based on blocks produced by ≥14 validators after the target (slow path, ~63 s).
+7. `update_last_irreversible_block()` — classic DPOS fallback: advances LIB based on blocks produced by ≥14 validators after the target (slow path: ~63 s before HF16, ~14 s at the current 1-second slot).
 
 ---
 
@@ -296,7 +296,7 @@ struct block_post_validation_message {
 | `check_block_post_validation_chain()` collects ≥14 sigs | 1 – 2 s |
 | **Total finality** | **~3 – 5 s** |
 
-Classic DPOS path (~63 s) remains active as a fallback if confirmation messages are lost or not yet received.
+Classic DPOS path (14 blocks at the slot interval: ~63 s before HF16, ~14 s now) remains active as a fallback if confirmation messages are lost or not yet received.
 
 ### Constraints
 

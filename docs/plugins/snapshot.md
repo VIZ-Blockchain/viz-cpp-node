@@ -68,25 +68,25 @@ When block 5,000,000 is applied, the node writes `/data/snapshots/snapshot-block
 
 ```ini
 plugin = snapshot
-snapshot-every-n-blocks = 28800
+snapshot-every-n-blocks = 86400
 snapshot-dir = /data/snapshots
 snapshot-max-age-days = 90
 ```
 
 Files are named `snapshot-block-<N>.json`. Recommended intervals:
 
-| Interval | Blocks | Time (at 3 s/block) |
-|----------|--------|---------------------|
-| Frequent | 10,000 | ~8 h |
-| Daily | 28,800 | ~24 h |
-| Weekly | 100,000 | ~3.5 days |
+| Interval | Blocks | Time at 1 s/block (from HF16) | Time at 3 s/block (before HF16) |
+|----------|--------|-------------------------------|----------------------------------|
+| Frequent | 10,000 | ~2.8 h | ~8 h |
+| Daily | 86,400 | ~24 h | ~3 days |
+| Weekly | 300,000 | ~3.5 days | ~10.4 days |
 
-The timings above assume the pre-HF16 3-second slot. From HF16 the slot is 1 second, so the same
-block count covers one third of the time — `28800` is ~8 h, not a day — and a "daily" job silently
-triples its file count. `snapshot-max-age-days` prunes by age only, so disk use follows cadence, not
-retention: to keep a wall-clock interval, multiply the block count by three (86,400 for daily). The
-option defaults to `0` (periodic snapshots off) and is node config, not a chain property — nothing
-rescales it for you at the fork.
+The block counts target the 1-second slot in force since HF16 (2026-10-31 00:00 UTC). Before HF16 the
+slot was 3 seconds, so the same block count covered one third of the time — a node still configured
+with `snapshot-every-n-blocks = 28800` takes a snapshot every ~8 h, not every day, and a "daily" job
+silently triples its file count. `snapshot-max-age-days` prunes by age only, so disk use follows
+cadence, not retention. The option is node config, not a chain property — nothing rescales it for you
+at the fork, so re-check the value after a slot change. The default is `0` (periodic snapshots off).
 
 ### Method 4: Combining at-block and periodic
 

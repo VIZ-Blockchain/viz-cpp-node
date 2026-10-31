@@ -656,7 +656,7 @@ Risk-free LP → lower barrier for retail LPs
 
 ### 8.2 Архитектура миграции
 
-VIZ DLT — Distributed Ledger Technology с ~3-секундными блоками (~1 секунда после HF16), DPoS-консенсусом, именованными аккаунтами
+VIZ DLT — Distributed Ledger Technology с ~1-секундными блоками (3 с до HF16), DPoS-консенсусом, именованными аккаунтами
 (в стиле Graphene) и без general-purpose смарт-контрактов. Операции прогнозного рынка реализованы как
 **операции консенсуса первого класса** — не смарт-контракты, не `custom_json`-нагрузки.
 
