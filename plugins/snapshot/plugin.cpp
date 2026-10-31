@@ -79,6 +79,25 @@ using graphene::protocol::signed_block;
 
 namespace detail {
 
+/// max(head, LIB) — the newest state this node already considers final.
+/// Returns 0 when the head cannot be read (a state-less node), which callers treat
+/// as "no floor": see snapshot_ahead_of_floor().
+inline uint32_t read_own_snapshot_floor(graphene::chain::database& db) {
+    uint32_t floor = 0;
+    try {
+        db.with_weak_read_lock([&]() {
+            floor = db.head_block_num();
+            floor = std::max<uint32_t>(floor,
+                db.get_dynamic_global_properties().last_irreversible_block_num);
+        });
+    } catch (const fc::exception &e) {
+        wlog("Could not read own head/LIB: ${e}", ("e", e.to_detail_string()));
+    } catch (const std::exception &e) {
+        wlog("Could not read own head/LIB: ${e}", ("e", e.what()));
+    }
+    return floor;
+}
+
 /// Copy a string from variant into a shared_string
 inline void set_shared_string(shared_string& dst, const fc::variant& v) {
     auto s = v.as_string();
@@ -1114,6 +1133,7 @@ public:
 
     std::string snapshot_path;        // --snapshot: load from this path
     bool snapshot_auto_latest = false; // --snapshot-auto-latest: auto-find latest snapshot in snapshot-dir
+    bool allow_snapshot_rewind = false; // --allow-snapshot-rewind: import a snapshot older than head/LIB (dangerous)
     std::string create_snapshot_path; // --create-snapshot: create at this path
     uint32_t snapshot_at_block = 0;   // --snapshot-at-block: create when block N is reached
     uint32_t snapshot_every_n_blocks = 0; // --snapshot-every-n-blocks: periodic snapshot
@@ -1822,6 +1842,22 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         ("cid", std::string(header.chain_id)));
     std::cerr << "   Snapshot: block " << header.snapshot_block_num
               << ", LIB " << header.last_irreversible_block_num << "\n";
+
+    // Last line of defence against a silent rewind. The import below promotes the
+    // snapshot head to LIB and wipes every object above it, so a file older than our own
+    // final state takes back committed blocks without any error at import time: the node
+    // only starts failing later, when the next block is refused (mainnet 31.10.2026 — the
+    // stalled-sync recovery rewound nodes to 84792000 while their LIB was 84792899, and the
+    // fork was discovered by a minority-fork alarm an hour later).
+    // The download path filters peers by this floor in phase 1, but that is not enough:
+    // --snapshot, --snapshot-auto-latest and the hot-reload callback reach load_snapshot()
+    // directly, and the peer's advertised block number is not the number inside the file.
+    // Operator override: --allow-snapshot-rewind.
+    const uint32_t own_floor = detail::read_own_snapshot_floor(db);
+    FC_ASSERT(allow_snapshot_rewind || snapshot_ahead_of_floor(own_floor, header.snapshot_block_num),
+        "Refusing to import snapshot at block ${b}: this node already has head/LIB ${f}, "
+        "so the import would rewind final state. Pass --allow-snapshot-rewind to override.",
+        ("b", header.snapshot_block_num)("f", own_floor));
 
     // Validate checksum
     std::cerr << "   Validating snapshot checksum...\n";
@@ -4294,29 +4330,6 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
 // Snapshot TCP client
 // ============================================================================
 
-namespace {
-
-/// max(head, LIB) — the newest state this node already considers final.
-/// Returns 0 when the head cannot be read (a state-less node), which callers treat
-/// as "no floor": see snapshot_ahead_of_floor().
-uint32_t read_own_snapshot_floor(graphene::chain::database& db) {
-    uint32_t floor = 0;
-    try {
-        db.with_weak_read_lock([&]() {
-            floor = db.head_block_num();
-            floor = std::max<uint32_t>(floor,
-                db.get_dynamic_global_properties().last_irreversible_block_num);
-        });
-    } catch (const fc::exception &e) {
-        wlog("Could not read own head/LIB: ${e}", ("e", e.to_detail_string()));
-    } catch (const std::exception &e) {
-        wlog("Could not read own head/LIB: ${e}", ("e", e.what()));
-    }
-    return floor;
-}
-
-} // namespace
-
 std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     FC_ASSERT(!trusted_snapshot_peers.empty(), "No trusted snapshot peers configured");
 
@@ -4330,7 +4343,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     // nodes to block 84792000 while their LIB was 84792899).
     // The floor is max(head, LIB) on purpose: after such a reload head < LIB, so reading
     // head alone would let the next check repeat the same mistake.
-    const uint32_t own_floor = read_own_snapshot_floor(db);
+    const uint32_t own_floor = detail::read_own_snapshot_floor(db);
 
     // Phase 1: Query all peers for snapshot info
     struct peer_info {
@@ -4629,7 +4642,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             // guard exists to prevent. Re-measure immediately before the file can be picked
             // for import, and discard it rather than leave a stale snapshot-block-* in the
             // directory that --snapshot-auto-latest would pick up on the next start.
-            const uint32_t recheck_floor = read_own_snapshot_floor(db);
+            const uint32_t recheck_floor = detail::read_own_snapshot_floor(db);
             if (!snapshot_ahead_of_floor(recheck_floor, best->block_num)) {
                 std::cerr << "   Snapshot at block " << best->block_num
                           << " fell behind our own head/LIB " << recheck_floor
@@ -4963,6 +4976,9 @@ void snapshot_plugin::set_program_options(
             "Load state from snapshot file instead of replaying blockchain")
         ("snapshot-auto-latest", bpo::bool_switch()->default_value(false),
             "Auto-discover the latest snapshot in snapshot-dir (use with --replay-from-snapshot)")
+        ("allow-snapshot-rewind", bpo::value<bool>()->default_value(false),
+            "Allow importing a snapshot at or below this node's head/LIB. Refused by default: "
+            "the import would rewind final state.")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
     ;
@@ -4995,6 +5011,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
 
     my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
+    my->allow_snapshot_rewind = options.at("allow-snapshot-rewind").as<bool>();
 
     if (options.count("snapshot-include-pm-meta")) {
         my->include_pm_meta = options.at("snapshot-include-pm-meta").as<bool>();

@@ -8,7 +8,11 @@ asserts the rule is actually WIRED INTO both places in plugin.cpp where it matte
   1. phase 1 of download_snapshot_from_peers() filters peers by the floor;
   2. immediately before the downloaded file can be renamed for import, the floor is
      re-measured -- the download takes minutes, and a head that grew past the snapshot
-     would be rolled back by the state wipe.
+     would be rolled back by the state wipe;
+  3. load_snapshot() itself refuses a file at or below our head/LIB BEFORE it wipes any
+     object -- that is the only guard the direct paths (--snapshot, --snapshot-auto-latest,
+     hot-reload callback) pass through, and it checks the file's own header, not what a
+     peer advertised.
 
 Run: python3 tests/chain/test_snapshot_floor.py [--selftest]
 """
@@ -85,8 +89,23 @@ def wiring_problems(text):
         problems.append("download path does not re-check the floor before the file can be imported")
     if "read_own_snapshot_floor(db)" not in text:
         problems.append("floor is not measured by read_own_snapshot_floor()")
-    if text.count("snapshot_ahead_of_floor(") < 2:
-        problems.append("predicate used fewer than twice: a call site is missing")
+    if text.count("snapshot_ahead_of_floor(") < 3:
+        problems.append("predicate used fewer than three times: a call site is missing")
+
+    import_call = "snapshot_ahead_of_floor(own_floor, header.snapshot_block_num)"
+    if import_call not in text:
+        problems.append("load_snapshot() does not refuse a file at or below our head/LIB "
+                        "(the direct paths --snapshot / --snapshot-auto-latest / callback)")
+    if import_call in text and "allow_snapshot_rewind ||" not in text:
+        problems.append("load_snapshot() floor guard has no --allow-snapshot-rewind override")
+    guard_at = text.find(import_call)
+    load_at = text.find("void snapshot_plugin::plugin_impl::load_snapshot")
+    wipe_at = text.find("Clearing existing objects before snapshot import")
+    if guard_at >= 0:
+        if load_at < 0 or guard_at < load_at:
+            problems.append("floor guard is not inside load_snapshot()")
+        if wipe_at < 0 or guard_at > wipe_at:
+            problems.append("floor guard runs after the state wipe: the rewind already happened")
     recheck_at = text.find(recheck_call)
     if recheck_at >= 0:
         rename_at = text.find("boost::filesystem::rename(temp_path, final_path)")
@@ -128,6 +147,22 @@ def selftest():
     elif run_truth_table(head_only, tempfile.mkdtemp())[0] == 0:
         failures.append("selftest: unknown-floor mutation survived")
 
+    # (d) the load_snapshot() guard removed: the direct paths must be reported as unguarded
+    stripped_load = text.replace(
+        "snapshot_ahead_of_floor(own_floor, header.snapshot_block_num)", "true /* mutation */", 1)
+    if stripped_load == text:
+        failures.append("selftest: could not remove the load_snapshot() guard")
+    elif not any("load_snapshot() does not refuse" in p for p in wiring_problems(stripped_load)):
+        failures.append("selftest: missing load_snapshot() guard was not reported")
+
+    # (e) the operator override deleted: an operator could no longer recover from a bad
+    #     file without recompiling, so the wiring check must complain
+    no_override = text.replace("allow_snapshot_rewind || ", "", 1)
+    if no_override == text:
+        failures.append("selftest: could not remove the override clause")
+    elif not any("no --allow-snapshot-rewind override" in p for p in wiring_problems(no_override)):
+        failures.append("selftest: missing override clause was not reported")
+
     return failures
 
 
@@ -157,7 +192,7 @@ def main():
         for f in failures:
             print("FAIL: " + f)
         return 1
-    print("ok: snapshot floor truth table ({} cases) and both call sites".format(len(CASES)))
+    print("ok: snapshot floor truth table ({} cases) and three call sites".format(len(CASES)))
     return 0
 
 
