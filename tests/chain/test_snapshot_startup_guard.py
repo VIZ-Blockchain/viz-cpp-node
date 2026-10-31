@@ -205,25 +205,45 @@ def wiring_problems(sources):
     return problems
 
 
-def baseline_from_git(refs=("origin/master", "master")):
-    """Sources of a pre-fix revision, or None when the checkout has no such ref.
+def baseline_from_git():
+    """Sources of the revision BEFORE the fix landed, located from history.
 
-    GitHub's pull_request checkout has neither ref (it fetches refs/pull/N/merge at
-    depth 1), so the baseline is a best-effort check: the recorded manual measurement
-    against origin/master lives in the PR description and the knowledge note.
+    The first version assumed that origin/master is still pre-fix. That made this selftest turn red
+    the moment the fix was merged: on master the "baseline" carries the guard too, so it passes and
+    the required shortfall cannot be shown (observed on master b0b244f1, 2026-11-01 -- CI green on
+    the PR, red on the merge result). The pre-fix revision is found by asking git which commit
+    introduced the guard, then reading that commit's parent.
+
+    Returns None when history is not available (a pull_request checkout is depth 1) or when the
+    located revision still carries the guard -- nothing honest can be proven then, and the caller
+    says so instead of passing silently.
     """
-    for rev in refs:
-        out = {}
-        for path in (CHAIN_PLUGIN, P2P_PLUGIN, DATABASE_CPP, DATABASE_HPP):
-            r = subprocess.run(["git", "show", "%s:%s" % (rev, path)],
-                               cwd=ROOT, capture_output=True, text=True)
-            if r.returncode != 0:
-                out = None
-                break
-            out[path] = r.stdout
-        if out is not None:
-            return out
-    return None
+    try:
+        log = subprocess.run(["git", "log", "-S", MISSING_PLUGIN_GUARD, "--format=%H", "--", CHAIN_PLUGIN],
+                             cwd=str(ROOT), capture_output=True, text=True)
+    except OSError:
+        return None
+    commits = log.stdout.split()
+    if not commits:
+        return None
+    introducing = commits[-1]           # git log is newest first; the oldest match added the guard
+    parent = subprocess.run(["git", "rev-parse", "--verify", "%s^" % introducing],
+                            cwd=str(ROOT), capture_output=True, text=True)
+    if parent.returncode != 0:
+        return None
+    rev = parent.stdout.strip()
+    out = {}
+    for path in (CHAIN_PLUGIN, P2P_PLUGIN, DATABASE_CPP, DATABASE_HPP):
+        shown = subprocess.run(["git", "show", "%s:%s" % (rev, path)],
+                               cwd=str(ROOT), capture_output=True, text=True)
+        if shown.returncode != 0:
+            return None
+        out[path] = shown.stdout
+    if MISSING_PLUGIN_GUARD in out[CHAIN_PLUGIN]:
+        # The "pre-fix" revision already has the guard: the lookup is wrong, and a baseline taken
+        # from it would pass by construction. Say that instead of reporting a clean run.
+        return {"__baseline_has_fix__": rev}
+    return out
 
 
 def selftest():
@@ -288,7 +308,11 @@ def selftest():
     # a pull_request checkout carries no origin/master)
     baseline = baseline_from_git()
     if baseline is None:
-        print("selftest note: baseline RED skipped — this checkout has no origin/master")
+        print("selftest note: baseline RED skipped — no history to locate the pre-fix revision")
+    elif "__baseline_has_fix__" in baseline:
+        failures.append("baseline revision %s already carries the guard — the history lookup is "
+                        "wrong, the baseline would pass by construction"
+                        % baseline["__baseline_has_fix__"])
     else:
         found = wiring_problems(baseline)
         if len(found) < 5:
