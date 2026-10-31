@@ -55,6 +55,7 @@ jobs:
           python3 tests/validator/test_signing_cache.py
           python3 tests/chain/test_snapshot_restore.py
           python3 tests/chain/test_snapshot_floor.py --selftest
+          python3 tests/chain/test_snapshot_startup_guard.py --selftest
           python3 tests/consensus_sim/production_safety_offline.py
           python3 scripts/hardfork_readiness.py --selftest
           node --test tests/block_log/archive_merge.test.cjs

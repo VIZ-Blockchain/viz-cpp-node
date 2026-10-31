@@ -255,11 +255,13 @@ namespace graphene { namespace chain {
                 auto start = fc::time_point::now();
                 wlog("Start opening database. Please wait, don't break application...");
 
+                _state_open = false;  // from here until the indexes exist, object reads must not run
                 init_schema();
                 chainbase::database::open(shared_mem_dir, chainbase_flags, shared_file_size);
 
                 initialize_indexes();
                 initialize_evaluators();
+                _state_open = true;  // segment is mapped: object reads are now safe
 
                 auto end = fc::time_point::now();
                 wlog("Done opening database, elapsed time ${t} sec", ("t", double((end - start).count()) / 1000000.0));
@@ -620,6 +622,10 @@ namespace graphene { namespace chain {
                 wlog("Opening database for snapshot import. Please wait...");
 
                 _dlt_mode = true;  // Set before init_genesis so all subsequent code sees DLT mode
+                // The wipe below unmaps the segment this object may still be pointing at,
+                // and this path can run while P2P is live (snapshot hot-reload). Until the
+                // new segment and its indexes exist, readers must be told "no state".
+                _state_open = false;
 
                 // Clean up undo_all crash marker if present from a previous failed startup.
                 // chainbase::database::wipe() only removes shared_memory.bin, not other files
@@ -657,6 +663,11 @@ namespace graphene { namespace chain {
                         init_genesis(initial_supply);
                     });
                 }
+                // Indexes exist and the genesis DGP exists: queries are safe again.
+                // Set here rather than right after chainbase::open() because this path
+                // can race a live P2P periodic task (hot reload), and between the two
+                // points get_dynamic_global_properties() has nothing to return.
+                _state_open = true;
 
                 // Open block_log (creates empty files if they don't exist).
                 // In DLT mode we don't write to it, but it must be open so that
@@ -1214,6 +1225,7 @@ namespace graphene { namespace chain {
         }
 
         void database::close(bool rewind) {
+            _state_open = false;
             stop_push_block_monitor();
             try {
                 if (rewind) {
@@ -5407,10 +5419,16 @@ namespace graphene { namespace chain {
         }
 
         uint32_t database::head_block_num() const {
+            // Before open()/open_from_snapshot() there is no segment to read: the
+            // startup paths that defer the open leave P2P running against a database
+            // that does not exist yet (see _state_open in database.hpp). "No state" is
+            // block 0, not a segfault.
+            if (!_state_open) return 0;
             return get_dynamic_global_properties().head_block_number;
         }
 
         block_id_type database::head_block_id() const {
+            if (!_state_open) return block_id_type();
             return get_dynamic_global_properties().head_block_id;
         }
 
