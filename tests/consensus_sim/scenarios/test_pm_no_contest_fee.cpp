@@ -194,7 +194,14 @@ void announce_no_contest(simulated_node& node, const genesis_params& gp, fc::tim
 
 BOOST_AUTO_TEST_CASE(pm_no_contest_fee_three_states) {
     auto gp = make_genesis_params(0xA16C0u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    // Wall clock is not a fixture: the harness takes the genesis time from fc::time_point::now(),
+    // so from 2026-10-31T00:00:00Z on this case started POST-fork — process_hardforks applied
+    // HF15 at block 15 and HF16 at block 16 during bring_to_hf14, and market 0 ("announced BEFORE
+    // the fork") came out frozen at 1u. Master CI went red at 00:23Z with exactly that: frozen
+    // true, fee 1u, insurance delta 2u instead of 9u (run 41149337768).
+    // Pin the start two days before HF16 (same choice as pm_lifecycle_start): after HF15, before
+    // HF16, room for the settle cron's grace window, both bounds compile-time constants.
+    fc::time_point_sec start(fc::time_point_sec(CHAIN_HARDFORK_16_TIME) - fc::days(2));
     if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
     virtual_clock clk(start);
