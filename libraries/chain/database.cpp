@@ -6473,7 +6473,21 @@ namespace graphene { namespace chain {
                               ("n", b.block_num())("t", b.timestamp)("s", get_slot_time(1))("i", block_interval()));
                     missed_blocks--;
                     for (uint32_t i = 0; i < missed_blocks; ++i) {
-                        const auto &validator_missed = get_validator(get_scheduled_validator(i + 1));
+                        // A schedule slot can be EMPTY. `validator_schedule_object` is filled with
+                        // `num_scheduled_validators` names, but the chain may have fewer validators
+                        // than that (and on the 21-validator HF16 stand one genesis candidate never
+                        // got a validator object), so the shuffled array carries empty strings.
+                        // get_validator("") throws `unknown key`, and this loop runs on the APPLY
+                        // path: the throw rejects the very block that would carry the chain past
+                        // the empty slot, on every node, forever. Measured 01.11.2026 on the HF16
+                        // stand: freeze at #21, `_apply_block: unknown key {"name":""}` repeated.
+                        // There is nobody to charge for an empty slot -- it was not produced by a
+                        // validator and no validator can be blamed -- so skip it. The slot is
+                        // still counted in the slot arithmetic above; only the penalty is skipped.
+                        const string missed_validator = get_scheduled_validator(i + 1);
+                        if (missed_validator.empty())
+                            continue;
+                        const auto &validator_missed = get_validator(missed_validator);
 
                         // During emergency mode, skip penalties for offline validators.
                         // The hybrid schedule assigns committee to fill their slots, but

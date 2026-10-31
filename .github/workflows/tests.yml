@@ -60,6 +60,8 @@ jobs:
           python3 tests/chain/test_timeout_vote_journal.py --selftest
           python3 tests/chain/test_timeout_vote_persistence_wiring.py
           python3 tests/chain/test_timeout_vote_persistence_wiring.py --selftest
+          python3 tests/chain/test_empty_schedule_slot.py
+          python3 tests/chain/test_empty_schedule_slot.py --selftest
           python3 tests/consensus_sim/production_safety_offline.py
           python3 scripts/hardfork_readiness.py --selftest
           node --test tests/block_log/archive_merge.test.cjs
