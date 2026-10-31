@@ -7339,6 +7339,26 @@ namespace graphene { namespace chain {
             return it->second;
         }
 
+        fc::optional<protocol::block_timeout_certificate> database::get_timeout_cert_between(
+                uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round) const {
+            if (lo_exclusive + 1 >= hi_exclusive) return {};
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            // Newest round first: the freshest timeout proof keeps our block's proven
+            // round as close to its own as the window allows, and an older TC is only
+            // taken when every newer one carries a vote above our parent QC (such a
+            // block would be invalid, not merely stale).
+            auto it = _timeout_certs.lower_bound(hi_exclusive);
+            while (it != _timeout_certs.begin()) {
+                --it;
+                if (it->first <= lo_exclusive) break;
+                bool usable = true;
+                for (const auto &tv : it->second.votes)
+                    if (tv.second.high_qc_round > max_high_qc_round) { usable = false; break; }
+                if (usable) return it->second;
+            }
+            return {};
+        }
+
         bool database::block_needs_parent_qc(const account_name_type &producer) const {
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             const auto &dgp = get_dynamic_global_properties();

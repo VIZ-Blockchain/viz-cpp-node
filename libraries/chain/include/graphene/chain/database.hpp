@@ -767,6 +767,22 @@ namespace graphene { namespace chain {
             /// The timeout certificate formed for a round, if any (node-local view).
             fc::optional<protocol::block_timeout_certificate> get_timeout_cert(uint32_t round) const;
 
+            /**
+             * The newest timeout certificate whose round lies strictly between
+             * `lo_exclusive` and `hi_exclusive`, among those usable against a parent QC
+             * of round `max_high_qc_round` (every vote must have high_qc_round ≤ it).
+             *
+             * This is exactly the set `validate_block_qc()` accepts: a TC(r) is valid with
+             * `tc->round > cert->round && tc->round < own_round` and no vote above the
+             * parent QC. A producer that needs to drop a QC-less head must therefore look
+             * for ANY such certificate, not only for the round right before its own: a
+             * stalled chain forms TCs on whichever rounds the validators time out, and
+             * "exactly own_round-1" is a lottery (mainnet stall 31.10.2026, TC(245..372)
+             * never matched own_round-1).
+             */
+            fc::optional<protocol::block_timeout_certificate> get_timeout_cert_between(
+                    uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round) const;
+
             /// HF16: does a block by `producer` on top of head need the parent's QC?
             bool block_needs_parent_qc(const account_name_type &producer) const;
 
