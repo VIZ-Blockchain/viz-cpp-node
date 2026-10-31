@@ -4161,6 +4161,33 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
             return;
         }
 
+        // Do not hand out a state we ourselves consider non-final. A node that rewound to an
+        // old snapshot keeps serving that file from its own directory, and the peer that
+        // downloads it rewinds too — one bad node propagates (mainnet 31.10.2026: 84792000
+        // was re-served while LIB was already above it).
+        uint32_t serve_floor = 0;
+        try {
+            db.with_weak_read_lock([&]() {
+                serve_floor = db.get_dynamic_global_properties().last_irreversible_block_num;
+            });
+        } catch (const fc::exception &e) {
+            wlog("Snapshot server: cannot read own LIB: ${e}", ("e", e.to_detail_string()));
+        } catch (const std::exception &e) {
+            wlog("Snapshot server: cannot read own LIB: ${e}", ("e", e.what()));
+        }
+        if (serve_floor > 0 && cached_snap_block_num < serve_floor) {
+            elog(CLOG_RED "Snapshot server: newest snapshot at block ${b} is below our own LIB ${l}; "
+                 "refusing to serve it to ${remote}" CLOG_RESET,
+                 ("b", cached_snap_block_num)("l", serve_floor)("remote", remote_str));
+            try {
+                send_message_empty(sock, snapshot_not_available);
+            } catch (const fc::exception &e) {
+                wlog("Snapshot server: error sending NOT_AVAILABLE to ${remote}: ${e}",
+                     ("remote", remote_str)("e", e.to_detail_string()));
+            }
+            return;
+        }
+
         snapshot_info_reply_data reply;
         reply.block_num = cached_snap_block_num;
         reply.checksum = cached_snap_checksum;
@@ -4271,6 +4298,27 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     std::cerr << "   Querying " << trusted_snapshot_peers.size() << " trusted peer(s) for snapshot info...\n";
 
+    // Never import state this node already considers final. load_snapshot() makes the
+    // snapshot head irreversible (LIB = snapshot head), so a snapshot below our LIB silently
+    // takes back blocks we have already committed: from then on every block above it is
+    // refused with undo_database_exception, and the validator schedule is computed from a
+    // head no one else is on (mainnet 31.10.2026 — the stalled-sync recovery rewound four
+    // nodes to block 84792000 while their LIB was 84792899).
+    // The floor is max(head, LIB) on purpose: after such a reload head < LIB, so reading
+    // head alone would let the next check repeat the same mistake.
+    uint32_t own_floor = 0;
+    try {
+        db.with_weak_read_lock([&]() {
+            own_floor = db.head_block_num();
+            own_floor = std::max<uint32_t>(own_floor,
+                db.get_dynamic_global_properties().last_irreversible_block_num);
+        });
+    } catch (const fc::exception &e) {
+        wlog("Could not read own head/LIB before querying snapshot peers: ${e}", ("e", e.to_detail_string()));
+    } catch (const std::exception &e) {
+        wlog("Could not read own head/LIB before querying snapshot peers: ${e}", ("e", e.what()));
+    }
+
     // Phase 1: Query all peers for snapshot info
     struct peer_info {
         std::string endpoint_str;
@@ -4279,6 +4327,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         uint64_t compressed_size = 0;
     };
     std::vector<peer_info> available_peers;
+    size_t skipped_below_floor = 0;
 
     for (const auto& peer_str : trusted_snapshot_peers) {
         try {
@@ -4343,7 +4392,17 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                           << info.block_num << " (" << (info.compressed_size / 1048576) << " MB)\n";
                 ilog(CLOG_YELLOW "Peer ${p}: snapshot at block ${b}, size ${s} bytes" CLOG_RESET,
                      ("p", peer_str)("b", info.block_num)("s", info.compressed_size));
-                available_peers.push_back({peer_str, info.block_num, info.checksum, info.compressed_size});
+                if (own_floor > 0 && info.block_num <= own_floor) {
+                    // Importing it would roll our finality backwards; there is nothing to gain.
+                    std::cerr << "   Peer " << peer_str << ": snapshot at block " << info.block_num
+                              << " is not ahead of our own head/LIB " << own_floor << " — ignoring\n";
+                    wlog(CLOG_RED "Peer ${p}: snapshot at block ${b} is not ahead of our own head/LIB ${f}; "
+                         "refusing to import state below our finality" CLOG_RESET,
+                         ("p", peer_str)("b", info.block_num)("f", own_floor));
+                    ++skipped_below_floor;
+                } else {
+                    available_peers.push_back({peer_str, info.block_num, info.checksum, info.compressed_size});
+                }
             } else if (resp_msg_type == snapshot_not_available) {
                 std::cerr << "   Peer " << peer_str << ": no snapshot available\n";
                 ilog(CLOG_YELLOW "Peer ${p}: no snapshot available" CLOG_RESET, ("p", peer_str));
@@ -4367,8 +4426,17 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     }
 
     if (available_peers.empty()) {
-        wlog("No trusted peers have snapshots available. Falling back to P2P genesis sync.");
-        std::cerr << "   No peers have snapshots available. Will sync from genesis via P2P.\n";
+        if (skipped_below_floor > 0) {
+            // Every peer offered a state at or below what we already have: there is nothing
+            // to download, and saying "from genesis" here would be a lie about the cause.
+            wlog(CLOG_YELLOW "All ${n} peer snapshot(s) are at or below our own head/LIB ${f} — "
+                 "refusing to rewind, continuing with P2P" CLOG_RESET, ("n", skipped_below_floor)("f", own_floor));
+            std::cerr << "   All peer snapshots are at or below our own head/LIB " << own_floor
+                      << " — refusing to rewind. Continuing with P2P sync.\n";
+        } else {
+            wlog("No trusted peers have snapshots available. Falling back to P2P genesis sync.");
+            std::cerr << "   No peers have snapshots available. Will sync from genesis via P2P.\n";
+        }
         return std::string();  // empty = no snapshot downloaded
     }
 
