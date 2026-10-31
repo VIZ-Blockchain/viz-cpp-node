@@ -43,21 +43,29 @@ public:
     explicit dlt_delegate(chain::plugin& c) : chain(c), _startup_time(fc::time_point::now()) {}
 
     // ── Chain state queries ──────────────────────────────────────
+    // The P2P periodic task runs while the chain plugin may not have opened the
+    // shared memory yet (--snapshot defers the open until the snapshot plugin
+    // registers its callback). Reading a chainbase object then dereferences a null
+    // segment and kills the process; "no state" is block 0 / empty id.
     block_id_type get_head_block_id() const override {
+        if (!chain.db().is_state_open()) return block_id_type();
         return chain.db().head_block_id();
     }
 
     uint32_t get_head_block_num() const override {
+        if (!chain.db().is_state_open()) return 0;
         return chain.db().head_block_num();
     }
 
     block_id_type get_lib_block_id() const override {
+        if (!chain.db().is_state_open()) return block_id_type();
         return chain.db().with_weak_read_lock([&]() {
             return chain.db().get_dynamic_global_properties().last_irreversible_block_id;
         });
     }
 
     uint32_t get_lib_block_num() const override {
+        if (!chain.db().is_state_open()) return 0;
         return chain.db().with_weak_read_lock([&]() {
             return chain.db().get_dynamic_global_properties().last_irreversible_block_num;
         });
@@ -78,7 +86,7 @@ public:
     }
 
     bool is_emergency_consensus_active() const override {
-        return chain.db()._dlt_mode &&
+        return chain.db().is_state_open() && chain.db()._dlt_mode &&
                chain.db().with_weak_read_lock([&]() {
                    return chain.db().get_dynamic_global_properties().emergency_consensus_active;
                });
@@ -101,6 +109,10 @@ public:
     // failure must not unwind P2P. Keep the last successfully observed interval
     // and retry on the next call (including after snapshot restore or a reorg).
     uint32_t block_interval() const override {
+        // Unopened state (startup deferred the open) would dereference a null segment;
+        // the catch below cannot see a SIGSEGV. Fall back to the last known interval.
+        if (!chain.db().is_state_open())
+            return _cached_block_interval.load(std::memory_order_relaxed);
         try {
             const auto interval = chain.db().with_weak_read_lock([&]() {
                 return chain.db().block_interval();

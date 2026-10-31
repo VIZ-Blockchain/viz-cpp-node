@@ -24,7 +24,10 @@ cpp = r'''
 #include <cassert>
 constexpr uint32_t CHAIN_BLOCK_INTERVAL=3;
 struct DB {
-    bool available=true, guarded=false; uint32_t interval=3;
+    bool available=true, guarded=false; bool open_state=true; uint32_t interval=3;
+    // Реальный делегат спрашивает её до любого чтения состояния: при отложенном открытии
+    // базы (--snapshot без снапшот-плагина) сегмент не смонтирован и чтение = SIGSEGV.
+    bool is_state_open() const { return open_state; }
     uint32_t block_interval() const { assert(guarded); return interval; }
     template<class F> auto with_weak_read_lock(F f) -> decltype(f()) {
         if(!available) throw std::runtime_error("DB unavailable");
@@ -52,6 +55,8 @@ int main() {
     chain.value.available=false; assert(d.block_interval()==1); assert(node.slot_scale()==3);
     chain.value.available=true; chain.value.interval=3; assert(node.slot_scale()==1); // restored pre-HF state
     chain.value.interval=0; assert(d.block_interval()==3); // invalid value cannot poison cache
+    chain.value.open_state=false; chain.value.interval=1; assert(d.block_interval()==3); // closed state: cache, DB untouched
+    chain.value.open_state=true; assert(d.block_interval()==1);
     chain.value.interval=1;
     const auto s=node.slot_scale();
     assert(!(6>2*s)); assert(7>2*s);

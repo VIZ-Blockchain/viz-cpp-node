@@ -29,6 +29,34 @@ namespace chain {
     using fc::flat_map;
     using protocol::block_id_type;
 
+    namespace {
+
+    // Is the named plugin in the `plugin = ...` list? appbase enables plugins only from
+    // that option (plus its template autostart list, which vizd does not use for
+    // snapshot), and its by-name lookup is protected, so read the option it splits.
+    // The value may repeat and each entry may be space/tab/comma separated.
+    bool plugin_enabled_in_config(const std::string& name) {
+        const auto& args = appbase::app().get_args();
+        if (args.count("plugin") == 0) {
+            return false;
+        }
+        for (const auto& spec : args.at("plugin").as<std::vector<std::string>>()) {
+            std::string current;
+            for (const char c : spec) {
+                if (c == ' ' || c == '\t' || c == ',') {
+                    if (current == name) return true;
+                    current.clear();
+                } else {
+                    current += c;
+                }
+            }
+            if (current == name) return true;
+        }
+        return false;
+    }
+
+    } // namespace
+
     class plugin::plugin_impl {
     public:
 
@@ -709,6 +737,16 @@ namespace chain {
                 // Callback is already registered (snapshot plugin initialized before us) — proceed now.
                 do_snapshot_load(data_dir, false);
                 return;
+            } else if (!plugin_enabled_in_config("snapshot")) {
+                // --snapshot was accepted but nothing will ever register the callback,
+                // so the database would stay unopened for the whole run while P2P is
+                // already running (measured 01.11.2026: SIGSEGV ~250 ms after the
+                // banner). Name the misconfiguration instead of dying without a word.
+                elog("--snapshot ${p} requires the snapshot plugin, which is not enabled. "
+                     "Add 'snapshot' to the 'plugin = ...' list in config.ini.",
+                     ("p", my->snapshot_path));
+                throw std::runtime_error(
+                    "--snapshot requires the snapshot plugin: add 'snapshot' to 'plugin = ...' in config.ini");
             } else {
                 // Snapshot plugin hasn't registered its callback yet — defer until
                 // snapshot plugin calls trigger_snapshot_load().
@@ -735,6 +773,11 @@ namespace chain {
                 // Callback is already registered — proceed now.
                 do_snapshot_load(data_dir, true);
                 return;
+            } else if (!plugin_enabled_in_config("snapshot")) {
+                elog("--replay-from-snapshot requires the snapshot plugin, which is not enabled. "
+                     "Add 'snapshot' to the 'plugin = ...' list in config.ini.");
+                throw std::runtime_error(
+                    "--replay-from-snapshot requires the snapshot plugin: add 'snapshot' to 'plugin = ...' in config.ini");
             } else {
                 // Snapshot plugin hasn't registered its callback yet — defer.
                 ilog("Replay-from-snapshot configured but snapshot plugin callback not yet registered. "

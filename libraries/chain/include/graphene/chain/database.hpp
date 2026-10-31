@@ -85,6 +85,22 @@ namespace graphene { namespace chain {
             // DLT mode: node was loaded from a snapshot, block_log is empty/partial.
             // When true, block_log append operations are skipped.
             bool _dlt_mode = false;
+
+            // The shared-memory segment is mapped by open()/open_from_snapshot().
+            // Startup can defer that open (--snapshot waiting for the snapshot plugin
+            // to register its callback) while other plugins are already running, so
+            // "the object exists" is NOT the same as "the database is open": reading a
+            // chainbase object before the open dereferences a null segment and kills
+            // the process with SIGSEGV (measured 01.11.2026: --snapshot without
+            // 'plugin = snapshot' crashed 250 ms after the banner).
+            // Atomic: P2P threads read it while the chain thread opens/rebinds the
+            // segment; a stale "true" across the unmap in open_from_snapshot() would
+            // be the very crash this flag prevents.
+            std::atomic<bool> _state_open{false};
+
+            bool is_state_open() const {
+                return _state_open.load(std::memory_order_acquire);
+            }
             bool _debug_block_production = false;
 
             /// Set DLT mode flag. Should be called before loading snapshot data
