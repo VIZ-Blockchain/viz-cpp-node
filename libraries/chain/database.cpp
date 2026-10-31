@@ -606,6 +606,10 @@ namespace graphene { namespace chain {
                     }
                 }
 
+                // Last step of the open: the schedule and the head are final, so replayed votes
+                // are judged against the same window a live vote would be. p2p starts after this
+                // plugin, so nothing can slip in between.
+                open_timeout_vote_journal(data_dir, /*replay_votes=*/true);
             }
             FC_CAPTURE_LOG_AND_RETHROW((data_dir)(shared_mem_dir)(shared_file_size))
         }
@@ -662,6 +666,11 @@ namespace graphene { namespace chain {
                     with_strong_write_lock([&]() {
                         init_genesis(initial_supply);
                     });
+
+                    // The chain state was just wiped, so votes cached for the chain that used to
+                    // live here no longer describe anything: reset the journal instead of
+                    // replaying it. Only the file is opened, for votes this run will collect.
+                    open_timeout_vote_journal(data_dir, /*replay_votes=*/false);
                 }
                 // Indexes exist and the genesis DGP exists: queries are safe again.
                 // Set here rather than right after chainbase::open() because this path
@@ -7276,14 +7285,75 @@ namespace graphene { namespace chain {
             tv.signature = signature;
             votes.emplace(validator, tv);
 
+            // Cache the accepted vote so a restart does not reset the round to zero. During a
+            // replay the vote is already on disk -- appending it again would grow the file on
+            // every start. Only a vote that passed every check above reaches this line.
+            if (_timeout_vote_journal && !_timeout_vote_journal_replaying) {
+                timeout_vote_journal::signature_type raw_signature;
+                std::memcpy(raw_signature.data(), signature.data, raw_signature.size());
+                _timeout_vote_journal->append(round, high_qc_round, validator, raw_signature);
+            }
+
             if (votes.size() >= quorum && _timeout_certs.find(round) == _timeout_certs.end()) {
                 protocol::block_timeout_certificate tc;
                 tc.round = round;
                 tc.votes.insert(votes.begin(), votes.end());
                 ilog("TC formed for round ${r}: ${k}/${q} timeout votes", ("r", round)("k", votes.size())("q", quorum));
                 _timeout_certs.emplace(round, std::move(tc));
+                // A node that crashes right after producing the block carrying this certificate
+                // must find the votes behind it on the next start.
+                if (_timeout_vote_journal) _timeout_vote_journal->flush();
             }
             return true;
+        }
+
+        void database::open_timeout_vote_journal(const fc::path &data_dir, bool replay_votes) {
+            _timeout_vote_journal.reset();
+            const std::string path = (data_dir / "timeout-votes.log").string();
+            std::unique_ptr<timeout_vote_journal> journal(new timeout_vote_journal(path));
+            std::string error;
+            if (!journal->open(error)) {
+                // Not fatal: without the cache the node behaves exactly like before this feature.
+                elog("Timeout vote journal disabled: cannot open ${p}: ${e}", ("p", path)("e", error));
+                return;
+            }
+
+            if (!replay_votes) {
+                if (!journal->truncate(error))
+                    elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
+                else
+                    ilog("Timeout vote journal: chain state was wiped, starting with an empty cache ${p}", ("p", path));
+                _timeout_vote_journal = std::move(journal);
+                return;
+            }
+
+            // Same window push_timeout_vote() enforces, applied before the signature check so
+            // ageing-out a stale file costs no ECDSA work.
+            const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval();
+            const uint32_t head_round = round_of(head_block_time());
+            const uint32_t min_round = head_round > MAX_VOTE_ROUND_BEHIND ? head_round - MAX_VOTE_ROUND_BEHIND : 0;
+
+            _timeout_vote_journal_replaying = true;
+            const auto result = journal->replay(
+                    [this](uint32_t round, uint32_t high_qc_round, const std::string &validator,
+                           const timeout_vote_journal::signature_type &raw_signature) {
+                        // Re-check every line exactly as a live vote: schedule membership, a
+                        // non-empty signing key, the signature and both window edges. Nothing
+                        // from the file is trusted by itself.
+                        signature_type signature;
+                        std::memcpy(signature.data, raw_signature.data(), raw_signature.size());
+                        return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);
+                    },
+                    min_round, error);
+            _timeout_vote_journal_replaying = false;
+
+            if (!error.empty())
+                wlog("Timeout vote journal: ${e}", ("e", error));
+            if (result.lines > 0)
+                ilog("Timeout vote journal: restored ${a} of ${l} cached votes from ${p} (${d} stale or invalid)",
+                     ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped));
+
+            _timeout_vote_journal = std::move(journal);
         }
 
         void database::apply_equivocation_proofs(const signed_block &b, uint32_t skip) {

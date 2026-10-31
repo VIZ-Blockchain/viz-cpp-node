@@ -56,6 +56,10 @@ jobs:
           python3 tests/chain/test_snapshot_restore.py
           python3 tests/chain/test_snapshot_floor.py --selftest
           python3 tests/chain/test_snapshot_startup_guard.py --selftest
+          python3 tests/chain/test_timeout_vote_journal.py
+          python3 tests/chain/test_timeout_vote_journal.py --selftest
+          python3 tests/chain/test_timeout_vote_persistence_wiring.py
+          python3 tests/chain/test_timeout_vote_persistence_wiring.py --selftest
           python3 tests/consensus_sim/production_safety_offline.py
           python3 scripts/hardfork_readiness.py --selftest
           node --test tests/block_log/archive_merge.test.cjs

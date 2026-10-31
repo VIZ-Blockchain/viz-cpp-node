@@ -97,6 +97,7 @@ add_library(graphene_chain ${VIZ_LIBRARY_TYPE}
             include/graphene/chain/chain_evaluator.hpp
             include/graphene/chain/chain_object_types.hpp
             include/graphene/chain/chain_objects.hpp
+            include/graphene/chain/timeout_vote_journal.hpp
             include/graphene/chain/transaction_object.hpp
             include/graphene/chain/validator_objects.hpp
             include/graphene/chain/committee_objects.hpp
