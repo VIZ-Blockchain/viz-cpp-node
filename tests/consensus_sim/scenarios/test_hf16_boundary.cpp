@@ -573,15 +573,28 @@ void tc_window_scenario() {
     // The QC-less head still carries its parent's QC; what it lacks is a QC of its own.
     BOOST_REQUIRE_EQUAL(db.block_cert_round(*head_child), cert_round);
     BOOST_REQUIRE_EQUAL(db.verified_fork_cert_round(recovered), cert_round + 2);
-    // The equal-height replacement gate only fires above LIB. Print where LIB sits: with a
-    // one-validator schedule post-validation advances LIB by itself, and the number differs
-    // between the CI configs, so a bare magnitude check hides which premise actually broke.
+    // The equal-height replacement gate only fires above LIB. Where does LIB sit? On the
+    // testnet arms the schedule holds ONE validator, and check_block_post_validation_chain
+    // needs count >= num_scheduled * CHAIN_IRREVERSIBLE_THRESHOLD / 100, which rounds down to
+    // zero: every applied block confirms itself and LIB tracks head exactly. Mainnet had 21
+    // scheduled validators (quorum 15) and LIB lagged three blocks behind the stalled head —
+    // that lag is what opens the gate. Measured, not assumed: CI printed lib=#35 head=#35.
     const auto &dgp_now = db.get_dynamic_global_properties();
-    ilog("tc-window: head=#${h} certified_head=#${c} recovered=#${r} lib=#${l} scheduled=${s}",
+    const uint32_t lib = dgp_now.last_irreversible_block_num;
+    const bool gate_reachable = recovered.block_num() > lib;
+    ilog("tc-window: head=#${h} certified_head=#${c} recovered=#${r} lib=#${l} scheduled=${s} gate=${g}",
          ("h", db.head_block_num())("c", head_child->block_num())("r", recovered.block_num())
-         ("l", dgp_now.last_irreversible_block_num)
-         ("s", wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT));
-    BOOST_REQUIRE(recovered.block_num() > dgp_now.last_irreversible_block_num);
+         ("l", lib)("s", wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT)
+         ("g", gate_reachable));
+    if (!gate_reachable) {
+        // Single-validator shape: the gate is unreachable by construction, so the switch half
+        // cannot be proven here. The rebuild itself is already proven above (admission accepts
+        // the newest usable TC); the switch runs on the 21-validator stand, which the owner
+        // made the deployment gate (#3333=A). Fail loudly if a multi-validator schedule ever
+        // lands in this configuration instead of silently skipping the assertion.
+        BOOST_CHECK_EQUAL(wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 1u);
+        return;
+    }
 
     try { db.push_block(recovered, database::skip_nothing); }
     catch (const fc::exception &e) { BOOST_FAIL(e.to_detail_string()); }
