@@ -7327,28 +7327,60 @@ namespace graphene { namespace chain {
                 return;
             }
 
+            // A chain without a single block cannot have accepted a timeout vote: anything in the
+            // file belongs to an instance that used to live in this data dir (genesis rebuild,
+            // wiped blockchain/ but kept data dir). Replaying it would seed the pool of a fresh
+            // chain with votes its validators never cast here.
+            if (head_block_num() == 0) {
+                if (!journal->truncate(error))
+                    elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
+                else
+                    ilog("Timeout vote journal: chain is at genesis, discarding ${p}", ("p", path));
+                _timeout_vote_journal = std::move(journal);
+                return;
+            }
+
             // Same window push_timeout_vote() enforces, applied before the signature check so
             // ageing-out a stale file costs no ECDSA work.
             const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval();
             const uint32_t head_round = round_of(head_block_time());
             const uint32_t min_round = head_round > MAX_VOTE_ROUND_BEHIND ? head_round - MAX_VOTE_ROUND_BEHIND : 0;
 
+            timeout_vote_journal::replay_result result;
+            bool replay_failed = false;
             _timeout_vote_journal_replaying = true;
-            const auto result = journal->replay(
-                    [this](uint32_t round, uint32_t high_qc_round, const std::string &validator,
-                           const timeout_vote_journal::signature_type &raw_signature) {
-                        // Re-check every line exactly as a live vote: schedule membership, a
-                        // non-empty signing key, the signature and both window edges. Nothing
-                        // from the file is trusted by itself.
-                        signature_type signature;
-                        std::memcpy(signature.data, raw_signature.data(), raw_signature.size());
-                        return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);
-                    },
-                    min_round, error);
+            try {
+                result = journal->replay(
+                        [this](uint32_t round, uint32_t high_qc_round, const std::string &validator,
+                               const timeout_vote_journal::signature_type &raw_signature) {
+                            // Re-check every line exactly as a live vote: schedule membership, a
+                            // non-empty signing key, the signature and both window edges. Nothing
+                            // from the file is trusted by itself.
+                            signature_type signature;
+                            std::memcpy(signature.data, raw_signature.data(), raw_signature.size());
+                            return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);
+                        },
+                        min_round, error);
+            } catch (const fc::exception &e) {
+                error = e.to_string();
+                replay_failed = true;
+            } catch (const std::exception &e) {
+                error = e.what();
+                replay_failed = true;
+            } catch (...) {
+                error = "unknown exception";
+                replay_failed = true;
+            }
             _timeout_vote_journal_replaying = false;
 
             if (!error.empty())
                 wlog("Timeout vote journal: ${e}", ("e", error));
+            if (replay_failed) {
+                // The file may be half-rewritten. Do not share it with this run: a cache that
+                // cannot be read must never become a startup blocker (or a silent data sink).
+                elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));
+                return;
+            }
             if (result.lines > 0)
                 ilog("Timeout vote journal: restored ${a} of ${l} cached votes from ${p} (${d} stale or invalid)",
                      ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped));

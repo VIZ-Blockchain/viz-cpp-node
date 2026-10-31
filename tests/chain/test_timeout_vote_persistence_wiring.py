@@ -134,6 +134,38 @@ def wiring_problems(cpp, hpp):
     elif flush_at < cert_at:
         problems.append('the journal is flushed before the certificate is formed, not after it')
 
+    # A data dir can outlive its chain: wiping blockchain/ and reopening builds a fresh chain
+    # while the journal stays behind. A chain with no blocks has cast no timeout votes, so the
+    # file describes another instance and must not seed this one's pool.
+    guard_at = init_m.find('head_block_num() == 0')
+    replay_at = init_m.find('->replay(')
+    if guard_at < 0:
+        problems.append('open_timeout_vote_journal() replays without the genesis guard '
+                        '(a rebuilt chain would inherit another instance\'s votes)')
+    elif replay_at >= 0 and guard_at > replay_at:
+        problems.append('the genesis guard sits after the replay -- it cannot prevent it')
+
+    # A cache that cannot be read must never become a startup blocker: replay is contained,
+    # and a failed replay leaves the journal detached instead of appending to a half-written file.
+    flag_on = init_m.find('_timeout_vote_journal_replaying = true;')
+    flag_off = init_m.find('_timeout_vote_journal_replaying = false;')
+    if flag_on < 0 or flag_off < flag_on:
+        problems.append('replay is not wrapped between the replay flag being set and cleared')
+    else:
+        guarded = init_m[flag_on:flag_off]
+        if 'catch' not in guarded:
+            problems.append('an exception from replay escapes into database::open() (a cache could block startup)')
+        if 'throw;' in guarded:
+            problems.append('the replay catch rethrows instead of containing the failure')
+    failed_at = init_m.find('if (replay_failed)')
+    attach_at = init_m.rfind('_timeout_vote_journal = std::move(journal);')
+    if failed_at < 0:
+        problems.append('a failed replay still attaches the journal (append would hit a half-rewritten file)')
+    elif attach_at < failed_at:
+        problems.append('cannot judge the failed-replay branch: the journal is never attached at all')
+    elif 'return;' not in init_m[failed_at:attach_at]:
+        problems.append('the failed-replay branch attaches the journal instead of returning')
+
     # The file is a cache, not a second source of trust: replay runs through push_timeout_vote.
     if 'push_timeout_vote(' not in init_m:
         problems.append('replay does not go through push_timeout_vote (cached votes would skip verification)')
@@ -172,6 +204,12 @@ MUTATIONS = {
                            '\n            if (!error.empty())'),
     'replay-bypasses-checks': ('return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);',
                                'return true;'),
+    'no-genesis-guard': ('if (head_block_num() == 0) {\n                if (!journal->truncate(error))',
+                         'if (head_block_num() < 0) {\n                if (!journal->truncate(error))'),
+    'replay-exception-escapes': ('error = "unknown exception";', 'throw;'),
+    'failed-replay-attaches': ('elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));\n'
+                               '                return;',
+                               'elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));'),
 }
 
 
