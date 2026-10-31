@@ -503,6 +503,19 @@ void tc_window_scenario() {
     db.set_hardfork(CHAIN_HARDFORK_16, true);
     peer.db().set_hardfork(CHAIN_HARDFORK_16, true);
 
+    // The child of the HF16 activation block is exempt from needing a parent QC, and a TC cannot
+    // rescue it either (there is no QC below it to certify against) — so the stall has to be built
+    // further along the chain. Two 1 s blocks leave the anchor behind; then certify the head on
+    // both nodes without producing on top of it, so the QC-less child below is a real stall.
+    produce(node, gp, when);
+    produce(node, gp, when);
+    vote_for_head(node, gp);
+    for (const auto &b : node.canonical_blocks_from(peer.head_block_num() + 1)) peer.receive_block(b);
+    BOOST_REQUIRE(peer.head_block_id() == node.head_block_id());
+    vote_for_head(peer, gp);
+    BOOST_REQUIRE(db.get_block_qc(db.head_block_num()).valid());
+    BOOST_REQUIRE(peer.db().get_block_qc(peer.head_block_num()).valid());
+
     const uint32_t cert_round = db.round_of(db.head_block_time());
     // A QC-less child of the certified head: produced, never voted for.
     when += fc::seconds(db.block_interval());
