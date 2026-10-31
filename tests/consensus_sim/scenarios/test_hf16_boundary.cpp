@@ -563,8 +563,26 @@ void tc_window_scenario() {
             BOOST_CHECK_EQUAL(e.get<block_timeout_certificate>().round, cert_round + 2);
         }
     BOOST_CHECK(carried);
+
+    // The fork choice at equal height keys on fork admission: a sibling only replaces the
+    // head when it proves a later certificate round. Admission swallows its failure and
+    // reports round 0, which is indistinguishable from "no certificate", so check both
+    // halves here — otherwise a rejected TC looks like a fork-choice bug.
+    const auto head_child = db.fetch_block_by_number(db.head_block_num());
+    BOOST_REQUIRE(head_child);
+    BOOST_REQUIRE_EQUAL(db.block_cert_round(*head_child), 0u);
+    BOOST_REQUIRE_EQUAL(db.verified_fork_cert_round(recovered), cert_round + 2);
+    BOOST_REQUIRE(recovered.block_num() > db.get_dynamic_global_properties().last_irreversible_block_num);
+
     try { db.push_block(recovered, database::skip_nothing); }
     catch (const fc::exception &e) { BOOST_FAIL(e.to_detail_string()); }
+    BOOST_CHECK_MESSAGE(db.get_fork_db().head() && db.get_fork_db().head()->id == recovered.id(),
+        "after push: db_head=#" << db.head_block_num()
+        << " fork_head=#" << (db.get_fork_db().head() ? db.get_fork_db().head()->num : 0)
+        << " recovered=#" << recovered.block_num()
+        << " lib=" << db.get_dynamic_global_properties().last_irreversible_block_num
+        << " cert_round(recovered)=" << db.verified_fork_cert_round(recovered)
+        << " cert_round(head_child)=" << db.block_cert_round(*head_child));
     // The stalled node drops its QC-less head and follows the rebuilt block.
     BOOST_CHECK(db.head_block_id() == recovered.id());
     BOOST_CHECK_EQUAL(db.head_block_num(), recovered.block_num());
