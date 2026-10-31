@@ -1,6 +1,6 @@
 # Fair-DPOS Consensus
 
-> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+> **HF16 / 4.2.0 is active since 2026-10-31 00:00 UTC.** The rules in force are the 1-second slot, QC/TC and the 2-chain LIB — see [HF16](./hf16.md). The 3-second/14-confirmation descriptions below are the pre-HF16 rules; they survive in code as fallback paths, not as the HF16 quorum.
 
 
 VIZ Ledger uses **Fair Delegated Proof of Stake (Fair-DPOS)**, an extension of the classic DPoS algorithm that adds participation enforcement and miss penalties to prevent validators from collecting rewards without actually producing blocks.
@@ -12,7 +12,7 @@ VIZ Ledger uses **Fair Delegated Proof of Stake (Fair-DPOS)**, an extension of t
 In standard DPoS:
 - Token holders vote for validator accounts (weighted by their SHARES).
 - The top-voted validators are scheduled to produce blocks in a round-robin schedule.
-- Every 3 seconds before HF16 (1 second after activation) one slot fires; the scheduled validator either produces a block or misses the slot.
+- Every 1 second (3 s per slot before HF16) one slot fires; the scheduled validator either produces a block or misses the slot.
 
 VIZ runs with **21 active validators** per schedule round.
 
@@ -39,7 +39,7 @@ Every `CHAIN_WITNESS_SCHEDULE_BLOCK_NUM` blocks (21) the chain recomputes the ac
 2. Add the **time-share validators** — a rotating slot for lower-ranked validators to participate occasionally, preventing complete concentration.
 3. Shuffle the resulting 21 slots using the head block ID as entropy seed (deterministic shuffle = same result on all nodes).
 
-The resulting ordered list becomes the **current schedule**. Each position corresponds to one slot (3 s before HF16, 1 s after).
+The resulting ordered list becomes the **current schedule**. Each position corresponds to one slot (3 s before HF16, 1 s since activation).
 
 ### Slot assignment
 
@@ -103,7 +103,7 @@ The classic LIB path requires 14 validators to **produce** blocks above the targ
 3. Receiving peers verify the signature against the on-chain `validator.signing_key`, then mark that validator as confirmed for the block.
 4. `check_block_post_validation_chain()` walks from LIB+1 forward — if ≥14 of 21 scheduled validators have confirmed a block, LIB advances to that block and the process repeats.
 
-The classic DPOS path (~63 s) remains active as a **fallback** if confirmation messages are lost.
+The classic DPOS path (14 blocks at the slot interval: ~63 s before HF16, ~14 s now) remains active as a **fallback** if confirmation messages are lost.
 
 **Constraints:**
 - Only validators in the **current shuffled schedule** count toward the 2/3 threshold.

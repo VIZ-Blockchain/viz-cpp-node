@@ -594,7 +594,7 @@ Risk-free LP → lower barrier for retail LPs
 
 ### 8.2 迁移架构
 
-VIZ DLT 是一种分布式账本技术，约 3 秒出块（HF16 后约 1 秒）、DPoS 共识、命名账户（Graphene 风格），且无通用智能合约。预测市
+VIZ DLT 是一种分布式账本技术，约 1 秒出块（HF16 前为 3 秒）、DPoS 共识、命名账户（Graphene 风格），且无通用智能合约。预测市
 场操作实现为**一等公民、经共识验证的操作**——非智能合约，非 `custom_json` 负载。
 
 | 层 | 示例 | 经共识验证？ |

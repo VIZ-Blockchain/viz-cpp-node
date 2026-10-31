@@ -1,6 +1,6 @@
 # Hardforks
 
-> **HF16 / 4.2.0:** the 1-second slot, QC/TC and 2-chain rules are described in [HF16](./hf16.md). Legacy 3-second/14-confirmation descriptions below apply before activation, not as the HF16 QC quorum.
+> **HF16 / 4.2.0 is active since 2026-10-31 00:00 UTC.** The rules in force are the 1-second slot, QC/TC and the 2-chain LIB — see [HF16](./hf16.md). The 3-second/14-confirmation descriptions below are the pre-HF16 rules; they survive in code as fallback paths, not as the HF16 quorum.
 
 
 A hardfork is a network upgrade that changes consensus rules. All nodes must upgrade before the scheduled activation timestamp; nodes running old software will diverge from the network after activation.
