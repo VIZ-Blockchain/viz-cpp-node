@@ -138,6 +138,15 @@ namespace graphene {
 
                 block_validation_condition::block_validation_condition_enum block_validation_loop();
 
+                /// Print the node's QC state while the head stays stale. A stall that only
+                /// says "Waiting for QC of head" per slot cannot be told apart from one
+                /// where the QC is held but no longer verifies, or is for another block.
+                void report_if_head_stale();
+
+                // Rate limit of the stalled-head report (see report_if_head_stale).
+                fc::time_point _last_stall_report;
+                uint32_t _last_stall_report_head = 0;
+
                 block_validation_condition::block_validation_condition_enum maybe_validate_block(fc::mutable_variant_object &capture);
 
                 boost::program_options::variables_map _options;
@@ -996,10 +1005,43 @@ namespace graphene {
                 production_timer_.async_wait( [this](const system::error_code &) { block_validation_loop(); } );
             }
 
+            void validator_plugin::impl::report_if_head_stale() {
+                auto &db = database();
+                fc::optional<std::string> report;
+                uint32_t head_num = 0;
+                uint32_t head_age = 0;
+                try {
+                    db.with_weak_read_lock([&]() {
+                        head_num = db.head_block_num();
+                        // Three rounds behind is already a stall: a block is due every round
+                        // and the head's QC should have formed inside the next one. Reporting
+                        // from there (and at most every 10 s per head) keeps a long stall to
+                        // six lines a minute instead of one per slot.
+                        const uint32_t now_s = fc::time_point_sec(fc::time_point::now()).sec_since_epoch();
+                        const uint32_t head_s = db.head_block_time().sec_since_epoch();
+                        // A head stamped in the future is clock skew, not a stall: the
+                        // unsigned difference would otherwise wrap into a huge "age".
+                        if (head_num == 0 || now_s <= head_s + 3 * db.block_interval()) return;
+                        head_age = now_s - head_s;
+                        if (head_num == _last_stall_report_head &&
+                            (fc::time_point::now() - _last_stall_report).count() < 10 * 1000000) return;
+                        _last_stall_report = fc::time_point::now();
+                        _last_stall_report_head = head_num;
+                        report = db.qc_state_report();
+                    });
+                } catch (const fc::exception &e) {
+                    wlog("Stalled-head report failed: ${e}", ("e", e.to_string()));
+                    return;
+                }
+                if (report)
+                    wlog("Chain stalled ${s}s at #${h}: ${r}", ("s", head_age)("h", head_num)("r", *report));
+            }
+
             block_validation_condition::block_validation_condition_enum validator_plugin::impl::block_validation_loop() {
                 block_validation_condition::block_validation_condition_enum result;
                 fc::mutable_variant_object capture;
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: block_validation_loop ENTER");
+                report_if_head_stale();
                 try {
                     result = maybe_validate_block(capture);
                 }
