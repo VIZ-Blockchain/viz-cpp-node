@@ -10,9 +10,11 @@ asserts the rule is actually WIRED INTO both places in plugin.cpp where it matte
      re-measured -- the download takes minutes, and a head that grew past the snapshot
      would be rolled back by the state wipe;
   3. load_snapshot() itself refuses a file at or below our head/LIB BEFORE it wipes any
-     object -- that is the only guard the direct paths (--snapshot, --snapshot-auto-latest,
-     hot-reload callback) pass through, and it checks the file's own header, not what a
-     peer advertised.
+     object, and it checks the file's own header, not what a peer advertised. On the
+     --replay-from-snapshot path the floor is already 0 here (open_from_snapshot wipes
+     before this call), so the handler there must REPORT the floor instead of promising
+     a state it never had -- else the operator reads "state kept" and looks for a chain
+     the node no longer holds.
 
 Run: python3 tests/chain/test_snapshot_floor.py [--selftest]
 """
@@ -104,6 +106,21 @@ def wiring_problems(text):
     if text.count("catch (const snapshot_rewind_refused&") < 2:
         problems.append("fewer than two callers handle snapshot_rewind_refused: a refusal would "
                         "take the corruption path and wipe a healthy state")
+    # A handler must not PROMISE a state it has not measured. Measured 01.11.2026: the startup
+    # callback (--replay-from-snapshot) is reached only after db.open_from_snapshot(), which
+    # wipes shared memory before any snapshot header is read, so the floor there is 0 and
+    # "Keeping existing state" describes a chain the node no longer has.
+    keep_at = text.find("Keeping existing state, snapshot import skipped")
+    if keep_at < 0:
+        problems.append("refusal handler no longer reports what happened to the state")
+    else:
+        handler_at = text.rfind("catch (const snapshot_rewind_refused&", 0, keep_at)
+        next_catch = text.find("} catch (", keep_at)
+        region = text[handler_at:next_catch if next_catch > handler_at else keep_at + 1500]
+        if "read_own_snapshot_floor" not in region:
+            problems.append("refusal handler promises to keep the state without measuring it: on "
+                            "--replay-from-snapshot the database is already reset (floor 0), so "
+                            "'Keeping existing state' is false")
     guard_at = text.find(import_call)
     load_at = text.find("void snapshot_plugin::plugin_impl::load_snapshot")
     wipe_at = text.find("Clearing existing objects before snapshot import")
@@ -211,6 +228,15 @@ def selftest():
         failures.append("selftest: could not drop the below-LIB fact from the log")
     elif not any("silently" in p for p in wiring_problems(silent)):
         failures.append("selftest: silent old-snapshot serving was not reported")
+
+    # (i) the handler's floor measurement replaced by a constant: the "state kept" promise
+    #     becomes unconditional again, which is exactly the lie this check exists to stop
+    measured_line = "const uint32_t kept_floor = detail::read_own_snapshot_floor(my->db);"
+    unmeasured = text.replace(measured_line, "const uint32_t kept_floor = 1; /* mutation */", 1)
+    if unmeasured == text:
+        failures.append("selftest: could not remove the handler's floor measurement")
+    elif not any("without measuring it" in p for p in wiring_problems(unmeasured)):
+        failures.append("selftest: unmeasured 'state kept' promise was not reported")
 
     return failures
 

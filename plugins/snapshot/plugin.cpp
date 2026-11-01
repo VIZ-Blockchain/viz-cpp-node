@@ -74,9 +74,18 @@ using graphene::protocol::signed_block;
  *
  * A distinct type on purpose: the import callers treat "load_snapshot threw" as
  * "the state is corrupt, wipe it and restart". That is wrong for a refusal — the
- * state was never touched, the file is just older than what we have. The startup
- * callback keeps the existing state instead of wiping it, so a stale file reached
- * through --snapshot / --snapshot-auto-latest no longer costs a resync.
+ * refusal writes nothing, the file is just older than what we have.
+ *
+ * What "the caller keeps the state" actually means depends on the path, and only
+ * two of them still hold a state at this point (measured 01.11.2026):
+ *   - hot reload (stalled-sync): the DB was not rebuilt, floor > 0, state is kept;
+ *   - --snapshot (non-recovery): the import is SKIPPED earlier when shared_memory
+ *     already has state, so the callback is only reached on an empty node;
+ *   - --replay-from-snapshot: chain::plugin::do_snapshot_load() calls
+ *     db.open_from_snapshot() BEFORE this callback, and that function wipes shared
+ *     memory unconditionally — the floor is 0 by the time we look, so the guard
+ *     cannot fire and "keeping existing state" would be a lie.
+ * Hence the handler measures the floor instead of promising a state.
  */
 FC_DECLARE_EXCEPTION(snapshot_rewind_refused, 3030000,
                      "Refusing to import a snapshot that would rewind final state")
@@ -5180,10 +5189,22 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             try {
                 my->load_snapshot(snap_path);
             } catch (const snapshot_rewind_refused& e) {
-                // The file is older than our state; nothing was written. Keep the state.
-                wlog("Snapshot ${p} refused (older than our head/LIB) — continuing with existing state: ${e}",
-                     ("p", snap_path.string())("e", e.what()));
-                std::cerr << "   Keeping existing state, snapshot import skipped\n";
+                // The refusal itself wrote nothing — but whether there is still a state to
+                // keep is a MEASUREMENT, not an assumption: on --replay-from-snapshot the
+                // caller already reset the database (open_from_snapshot wipes before this
+                // callback), so the floor is 0 and promising the operator "state kept"
+                // would send them looking for a chain the node no longer has.
+                const uint32_t kept_floor = detail::read_own_snapshot_floor(my->db);
+                if (kept_floor > 0) {
+                    wlog("Snapshot ${p} refused (older than our head/LIB ${f}) — continuing with existing state: ${e}",
+                         ("p", snap_path.string())("f", kept_floor)("e", e.what()));
+                    std::cerr << "   Keeping existing state, snapshot import skipped\n";
+                } else {
+                    wlog("Snapshot ${p} refused (older than our head/LIB), but our state floor is 0 — "
+                         "the database was already reset for this import, so there was nothing left to keep: ${e}",
+                         ("p", snap_path.string())("e", e.what()));
+                    std::cerr << "   Snapshot import skipped; state floor is 0 (database already reset for this import)\n";
+                }
                 return;
             } catch (...) {
                 elog("Snapshot load failed — wiping corrupted shared memory before restart");
