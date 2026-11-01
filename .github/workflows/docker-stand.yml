@@ -1,0 +1,143 @@
+# Stand artifact from ANY ref, on demand.
+#
+# Why this exists: the acceptance of a consensus change is run on the 21-validator
+# HF16 bench (`tools/qc-bench/bench.sh`), and the bench needs a `-testnet21` image —
+# a build of Dockerfile-testnet with `TESTNET_VALIDATORS=21`. Today the only place
+# that build happens is `docker-pr-build.yml`, and only for a PR: `docker-main.yml`
+# publishes `vizd:testnet` with the DEFAULT validator count (the classic
+# one-validator testnet), so master itself never produces a stand image.
+#
+# Measured 2026-11-01: re-running the HF9 acceptance "on the image from master"
+# turned out to be impossible with the published artifacts — `vizd:testnet` at
+# master 995bfeac carries CHAIN_MAX_VALIDATORS=1, so the single-node reproduction
+# spins in "MINORITY FORK DETECTED: last 1 blocks all from our validators" instead
+# of building a chain. The accepted code was in master and in CI, but there was no
+# artifact of master to take the verdict on.
+#
+# With this workflow the verdict can always be repeated against the merged commit:
+#   gh workflow run docker-stand.yml -f ref=master
+#   docker pull vizblockchain/vizd:stand-<first 12 of the commit>
+#
+# The tag carries the COMMIT, never "latest": a stand image is evidence about one
+# tree, and a moving tag would silently point the next acceptance at another one.
+name: Build stand image (21-validator testnet) from a ref
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (branch, tag or full SHA)'
+        required: true
+        default: 'master'
+      validators:
+        description: 'CHAIN_TESTNET_VALIDATORS (genesis validator count)'
+        required: true
+        default: '21'
+      label:
+        description: 'Optional tag suffix for a named stand (e.g. hf16)'
+        required: false
+        default: ''
+
+concurrency:
+  group: docker-stand-${{ github.event.inputs.ref }}-${{ github.event.inputs.validators }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and push stand image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          submodules: recursive
+
+      # Resolve the commit once: the tag must name the tree the image was built from,
+      # and `github.sha` here is the commit of the WORKFLOW FILE, not of `ref`.
+      - name: Resolve built commit
+        id: src
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+        id: setup-buildx
+
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Warm the compile from the ccache the PR stand builds and master's own build
+      # already exported (cache mounts, not just layers — see docker-pr-build.yml).
+      - name: Restore BuildKit cache mounts from Actions Cache
+        uses: actions/cache@v5
+        id: cache-mounts
+        with:
+          path: cache-mount
+          key: viz-cache-mount-${{ runner.os }}-stand-${{ github.event.inputs.validators }}-${{ steps.src.outputs.sha }}
+          restore-keys: |
+            viz-cache-mount-${{ runner.os }}-stand-${{ github.event.inputs.validators }}-
+            viz-cache-mount-${{ runner.os }}-main-
+
+      - name: Inject cache mounts into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.setup-buildx.outputs.name }}
+          cache-map: |
+            {
+              "cache-mount/var-cache-apt": "/var/cache/apt",
+              "cache-mount/var-lib-apt-lists": "/var/lib/apt/lists",
+              "cache-mount/ccache": {
+                "target": "/root/.ccache",
+                "id": "viz-ccache"
+              }
+            }
+          skip-extraction: ${{ steps.cache-mounts.outputs.cache-hit }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          LABEL: ${{ github.event.inputs.label }}
+          SHORT: ${{ steps.src.outputs.short }}
+          NVAL: ${{ github.event.inputs.validators }}
+        run: |
+          set -euo pipefail
+          tags="vizblockchain/vizd:stand-${SHORT}"
+          if [ -n "$LABEL" ]; then
+            safe=$(printf '%s' "$LABEL" | tr -cs 'A-Za-z0-9_.-' '-')
+            tags="${tags}"$'\n'"vizblockchain/vizd:stand-${safe}-${NVAL}"
+          fi
+          {
+            echo "list<<EOF"
+            printf '%s\n' "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./share/vizd/docker/Dockerfile-testnet
+          build-args: TESTNET_VALIDATORS=${{ github.event.inputs.validators }}
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          # A separate scope owns this build's layers; the pr-testnet21 scope is read
+          # as a fallback so a stand rebuilt after a merged consensus PR reuses the
+          # objects that PR already compiled.
+          cache-from: |
+            type=gha,scope=stand-testnet21
+            type=gha,scope=pr-testnet21
+            type=gha,scope=main
+          cache-to: type=gha,scope=stand-testnet21,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Stand image"
+            echo ""
+            echo "commit \`${{ steps.src.outputs.sha }}\` (ref \`${{ github.event.inputs.ref }}\`), TESTNET_VALIDATORS=${{ github.event.inputs.validators }}"
+            echo ""
+            printf 'tags:\n\n```\n%s\n```\n' "${{ steps.tags.outputs.list }}"
+          } >> "$GITHUB_STEP_SUMMARY"
