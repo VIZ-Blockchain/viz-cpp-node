@@ -354,6 +354,27 @@ namespace graphene {
                 std::thread stats_thread;
                 std::chrono::steady_clock::time_point last_stats_flush;
 
+                // HTTP requests being answered right now. Every one of them pins its
+                // connection — and therefore its socket — until the response is sent, so an
+                // unbounded queue is an unbounded descriptor demand. Live incident
+                // 2026-11-01: local pollers that spin while the head is frozen opened
+                // ~11k connections/s, ~1.5k of them ended up half-closed on our side, and
+                // the node hit EMFILE — it could no longer write its block-vote round file
+                // and stopped voting for blocks. The cap turns that into shed requests
+                // (503) instead of a mute validator.
+                std::atomic<uint64_t> http_inflight{0};
+                uint64_t http_inflight_max = 1024;
+                std::atomic<uint64_t> http_inflight_shed{0};
+
+                // Releases one inflight slot when the last owner goes away. Shared between
+                // the pool task and the API callback: the slot is held until the response is
+                // actually sent, which is exactly as long as the socket stays open.
+                struct http_inflight_hold {
+                    std::atomic<uint64_t> &counter;
+                    explicit http_inflight_hold(std::atomic<uint64_t> &c) : counter(c) {}
+                    ~http_inflight_hold() { counter.fetch_sub(1, std::memory_order_relaxed); }
+                };
+
                 // Called by both HTTP and WS handlers before any work is done. Returns
                 // `allow`, `blacklisted` or `rate_limited`; counters are updated here.
                 admission admit(const std::string &raw_ip);
@@ -860,7 +881,22 @@ namespace graphene {
                     return;
                 }
 
-                boost::asio::post(thread_pool_ios, [con, this]() {
+                // Shed before the request takes a slot in the pool. Rejecting here is cheap
+                // (the response travels the same path as a normal one) and it is the only
+                // place where the node can still say "no" to a flood.
+                if (http_inflight_max != 0 && http_inflight.load(std::memory_order_relaxed) >= http_inflight_max) {
+                    http_inflight_shed.fetch_add(1, std::memory_order_relaxed);
+                    con->append_header("Access-Control-Allow-Origin", "*");
+                    con->append_header("Retry-After", "5");
+                    con->set_body("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32005,\"message\":\"Node is overloaded, retry later\"},\"id\":null}");
+                    con->set_status(websocketpp::http::status_code::service_unavailable);
+                    try { con->send_http_response(); } catch (...) {}
+                    return;
+                }
+                http_inflight.fetch_add(1, std::memory_order_relaxed);
+                auto hold = std::make_shared<http_inflight_hold>(http_inflight);
+
+                boost::asio::post(thread_pool_ios, [con, this, hold]() {
                     if ((chain_plugin && chain_plugin->is_recovering()) ||
                         (snap_plugin && snap_plugin->is_snapshot_reloading())) {
                         con->append_header("Access-Control-Allow-Origin", "*");
@@ -887,7 +923,7 @@ namespace graphene {
                     } catch (...) {
                         // Invalid JSON — skip cache, let json_rpc handle the error
                         try {
-                            api->call(body, [con](const std::string &data){
+                            api->call(body, [con, hold](const std::string &data){
                                 con->append_header("Access-Control-Allow-Origin", "*");
                                 con->set_body(data);
                                 con->set_status(websocketpp::http::status_code::ok);
@@ -926,7 +962,7 @@ namespace graphene {
                     }
 
                     try {
-                        api->call(body, [con, this, request_hash, cacheable](const std::string &data){
+                        api->call(body, [con, this, request_hash, cacheable, hold](const std::string &data){
                             // this lambda can be called from any thread in application
                             //   for example, when task was delegated ( see msg_pack(msg_pack&&) )
                             con->append_header("Access-Control-Allow-Origin", "*");
@@ -1103,6 +1139,8 @@ namespace graphene {
                         "Local http and websocket endpoint for webserver requests. Deprectaed in favor of webserver-http-endpoint and webserver-ws-endpoint")
                     ("webserver-thread-pool-size", boost::program_options::value<thread_pool_size_t>()->default_value(256),
                         "Number of threads used to handle queries. Default: 256.")
+                    ("webserver-max-inflight", boost::program_options::value<uint64_t>()->default_value(1024),
+                        "Maximum number of HTTP requests being answered at once. Each one holds its socket until the response is sent, so this cap is what stops a client flood from exhausting the node's file descriptors: requests above it are shed with 503. 0 disables the cap. Default: 1024.")
                     ("webserver-cache-enabled", boost::program_options::value<bool>()->default_value(true),
                         "Enable caching of JSON-RPC responses. Cache is cleared on each new block. Default: true.")
                     ("webserver-cache-size", boost::program_options::value<size_t>()->default_value(10000),
@@ -1136,6 +1174,9 @@ namespace graphene {
                 FC_ASSERT(thread_pool_size > 0, "webserver-thread-pool-size must be greater than 0");
                 ilog("configured with ${tps} thread pool size", ("tps", thread_pool_size));
                 my.reset(new webserver_plugin_impl(thread_pool_size));
+
+                my->http_inflight_max = options.at("webserver-max-inflight").as<uint64_t>();
+                ilog("webserver max inflight requests: ${n} (0 = unlimited)", ("n", my->http_inflight_max));
 
                 // Read cache configuration
                 my->cache_enabled = options.at("webserver-cache-enabled").as<bool>();

@@ -4,6 +4,22 @@ export HOME="/var/lib/vizd"
 
 VIZD="/usr/local/bin/vizd"
 
+# File descriptors. The node inherits the container's soft limit, which is 1024 on the
+# phusion base image while the hard limit is 524288. One pending HTTP connection pins one
+# descriptor, so a client flood turns that soft limit into EMFILE: vizd cannot even open
+# its block-vote round file and stops voting (live incident 2026-11-01: ~1.5k half-closed
+# connections from local pollers that spin while the chain head is frozen, then
+# "Cannot write /var/lib/vizd/block-vote-round.txt; not voting" every 250 ms).
+# Raise the soft limit to the hard limit; the vote file is not the place to discover a
+# connection flood. Overridable, never lowered.
+if [[ -z "$VIZD_NOFILE" ]]; then
+    VIZD_NOFILE=$(ulimit -Hn 2>/dev/null)
+fi
+if [[ -n "$VIZD_NOFILE" && "$VIZD_NOFILE" != "unlimited" ]] && (( VIZD_NOFILE > $(ulimit -n) )); then
+    ulimit -n "$VIZD_NOFILE" 2>/dev/null || true
+fi
+echo "vizd.sh: open files limit $(ulimit -n) (hard $(ulimit -Hn))" >&2
+
 chown -R vizd:vizd $HOME
 
 ARGS=""
