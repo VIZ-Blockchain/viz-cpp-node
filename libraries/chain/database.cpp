@@ -7520,7 +7520,21 @@ namespace graphene { namespace chain {
             fc::optional<protocol::block_qc_certificate> result;
             if (!block_needs_parent_qc(producer)) return result;
             const auto qc = get_block_qc(head_block_num());
-            if (!qc || qc->block_id != head_block_id()) return result;
+            // Every exit below is named. Without a name the node says only "waiting for a QC of
+            // head", while its timeout path calls the same height CERTIFIED (that check compares
+            // the block id alone, this one re-verifies the signatures): on 01.11.2026 mainnet
+            // stood for hours with a 13/13 QC of the head in memory, and the log could not say
+            // which of the four exits was taken.
+            if (!qc) {
+                wlog("Parent QC of head #${n} refused for production: no QC for it in memory",
+                     ("n", head_block_num()));
+                return result;
+            }
+            if (qc->block_id != head_block_id()) {
+                wlog("Parent QC of head #${n} refused for production: QC is for ${a}, head is ${b}",
+                     ("n", head_block_num())("a", qc->block_id)("b", head_block_id()));
+                return result;
+            }
 
             protocol::block_qc_certificate cert;
             cert.block_num = qc->block_num;
@@ -7529,13 +7543,23 @@ namespace graphene { namespace chain {
             // Re-verify against current state: the schedule or a signing key may
             // have changed since the votes were tallied (round boundary), and the
             // block must carry only signatures the consensus check will accept.
+            std::string rejected;
             for (const auto &sv : qc->signatures) {
                 if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
                     cert.signatures.emplace(sv.first, sv.second);
+                else {
+                    if (!rejected.empty()) rejected += ",";
+                    rejected += sv.first;
+                }
             }
             const auto &wso = get_validator_schedule_object();
-            if (cert.signatures.size() < block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT))
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            if (cert.signatures.size() < quorum) {
+                wlog("Parent QC of #${n} ${id} refused for production: ${k}/${q} signatures re-verified, ${all} in QC, round ${r}, rejected: [${f}]",
+                     ("n", qc->block_num)("id", qc->block_id)("k", cert.signatures.size())("q", quorum)
+                     ("all", qc->signatures.size())("r", qc->round)("f", rejected));
                 return result;
+            }
             result = std::move(cert);
             return result;
         }
