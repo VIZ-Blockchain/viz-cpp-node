@@ -1032,6 +1032,15 @@ namespace graphene {
                 } catch (const fc::exception &e) {
                     wlog("Stalled-head report failed: ${e}", ("e", e.to_string()));
                     return;
+                } catch (const std::exception &e) {
+                    wlog("Stalled-head report failed: ${e}", ("e", std::string(e.what())));
+                    return;
+                } catch (...) {
+                    // The report is called from the production timer callback: an exception
+                    // escaping it would take the node down, and a diagnostic must never be
+                    // able to do that.
+                    wlog("Stalled-head report failed: unknown exception");
+                    return;
                 }
                 if (report)
                     wlog("Chain stalled ${s}s at #${h}: ${r}", ("s", head_age)("h", head_num)("r", *report));
