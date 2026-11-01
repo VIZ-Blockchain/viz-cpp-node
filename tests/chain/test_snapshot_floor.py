@@ -112,6 +112,24 @@ def wiring_problems(text):
             problems.append("floor guard is not inside load_snapshot()")
         if wipe_at < 0 or guard_at > wipe_at:
             problems.append("floor guard runs after the state wipe: the rewind already happened")
+    # The SERVER side must not judge age. Measured 01.11.2026 on master a433ec47: a healthy node
+    # refused to hand out its own newest snapshot ("newest snapshot at block 120 is below our own
+    # LIB 125; refusing to serve it"), because a snapshot is ALWAYS older than LIB by construction
+    # -- it is taken at head, and LIB only reaches that block history-count-blocks later. A fresh
+    # peer got NOT_AVAILABLE and synced from genesis, so snapshot bootstrap was dead. The check is
+    # kept below as a WIRING assertion with its own mutation, otherwise the next person re-adds it.
+    serve_at = text.find("if (serve_floor > 0 && cached_snap_block_num < serve_floor)")
+    if serve_at < 0:
+        problems.append("server no longer reports the snapshot-vs-LIB fact at all")
+    else:
+        serve_end = text.find("snapshot_info_reply_data reply;", serve_at)
+        region = text[serve_at:serve_end] if serve_end > serve_at else text[serve_at:serve_at + 1200]
+        if "snapshot_not_available" in region or "return;" in region:
+            problems.append("server refuses a snapshot that is merely older than our LIB: a fresh "
+                            "peer then falls back to genesis (regression of 01.11.2026)")
+        if "is below our own LIB" not in region:
+            problems.append("server serves an old snapshot silently: the fact is not in the log")
+
     recheck_at = text.find(recheck_call)
     if recheck_at >= 0:
         rename_at = text.find("boost::filesystem::rename(temp_path, final_path)")
@@ -176,6 +194,23 @@ def selftest():
         failures.append("selftest: could not remove the refusal handler")
     elif not any("handle snapshot_rewind_refused" in p for p in wiring_problems(no_handler)):
         failures.append("selftest: missing refusal handler was not reported")
+
+    # (g) the server-side refusal re-introduced: the wiring check must catch it, otherwise the
+    #     check is decoration and the 01.11.2026 bootstrap outage can come back unseen
+    anchor = "if (serve_floor > 0 && cached_snap_block_num < serve_floor) {"
+    refusing = text.replace(anchor, anchor + "\n            send_message_empty(sock, snapshot_not_available); return;", 1)
+    if refusing == text:
+        failures.append("selftest: could not re-introduce the server refusal")
+    elif not any("merely older than our LIB" in p for p in wiring_problems(refusing)):
+        failures.append("selftest: re-introduced server refusal was not reported")
+
+    # (h) the fact dropped from the log: serving an old file must not become silent
+    silent = text.replace('wlog(CLOG_YELLOW "Snapshot server: snapshot at block ${b} is below our own LIB ${l} "',
+                          'wlog(CLOG_YELLOW "Snapshot server: serving ${remote} "', 1)
+    if silent == text:
+        failures.append("selftest: could not drop the below-LIB fact from the log")
+    elif not any("silently" in p for p in wiring_problems(silent)):
+        failures.append("selftest: silent old-snapshot serving was not reported")
 
     return failures
 

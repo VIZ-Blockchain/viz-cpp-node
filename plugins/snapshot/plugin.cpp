@@ -4231,10 +4231,22 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
             return;
         }
 
-        // Do not hand out a state we ourselves consider non-final. A node that rewound to an
-        // old snapshot keeps serving that file from its own directory, and the peer that
-        // downloads it rewinds too — one bad node propagates (mainnet 31.10.2026: 84792000
-        // was re-served while LIB was already above it).
+        // AGE IS NOT A DEFECT: a snapshot is by construction older than our own LIB. We take it at
+        // head, and LIB only reaches that block `history-count-blocks` later, so in steady state
+        // every snapshot on disk is below LIB — measured 01.11.2026: stand 120 vs LIB 125, mainnet
+        // 84 823 200 vs LIB 84 826 982 (~3 780 blocks). The previous check refused to serve in
+        // exactly that state, so a fresh node asking a healthy peer got NOT_AVAILABLE and fell back
+        // to syncing from genesis (log: "newest snapshot at block ... is below our own LIB ...;
+        // refusing to serve it"), i.e. snapshot bootstrap was dead for all but the seconds between
+        // a snapshot being written and LIB catching up.
+        //
+        // The harm the check was written against — a peer that already has a higher state adopting
+        // an older snapshot and rewinding — is caught on the CLIENT side, where the floor is known:
+        // the pre-download check refuses a snapshot below our own floor, and load_snapshot() asserts
+        // the same with --allow-snapshot-rewind as the only way through. A fresh peer with no state
+        // to lose starts from an older block and simply syncs forward, which is still better than
+        // genesis. So the server keeps the FACT (it is worth seeing in the log when an old node
+        // serves an old file) and drops the REFUSAL.
         uint32_t serve_floor = 0;
         try {
             db.with_weak_read_lock([&]() {
@@ -4246,16 +4258,9 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
             wlog("Snapshot server: cannot read own LIB: ${e}", ("e", e.what()));
         }
         if (serve_floor > 0 && cached_snap_block_num < serve_floor) {
-            elog(CLOG_RED "Snapshot server: newest snapshot at block ${b} is below our own LIB ${l}; "
-                 "refusing to serve it to ${remote}" CLOG_RESET,
+            wlog(CLOG_YELLOW "Snapshot server: snapshot at block ${b} is below our own LIB ${l} "
+                 "(normal: LIB advances after the file was written); serving it to ${remote}",
                  ("b", cached_snap_block_num)("l", serve_floor)("remote", remote_str));
-            try {
-                send_message_empty(sock, snapshot_not_available);
-            } catch (const fc::exception &e) {
-                wlog("Snapshot server: error sending NOT_AVAILABLE to ${remote}: ${e}",
-                     ("remote", remote_str)("e", e.to_detail_string()));
-            }
-            return;
         }
 
         snapshot_info_reply_data reply;
