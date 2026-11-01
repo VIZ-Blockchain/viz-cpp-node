@@ -35,13 +35,17 @@ inline uint32_t emergency_quorum_for(uint32_t num_scheduled) {
 /// empty set.
 ///
 /// `n_on_entry == 0` means NOT MEASURED — a snapshot from a node without the field, or a
-/// chain that entered emergency before the field existed. It falls back to the legacy
-/// threshold taken from CHAIN_MAX_VALIDATORS (21 x 75% = 15 today). It must NOT fall back
-/// to `emergency_quorum_for(0)`, which is 1: an unmeasured value would become the cheapest
-/// possible threshold and emergency would be left at the first schedule update.
+/// chain that entered emergency before the field existed. It falls back to "the schedule was
+/// full", i.e. quorum for CHAIN_MAX_VALIDATORS. On mainnet that is exactly the legacy
+/// constant (21 slots: max(21*2/3+1, 21*75%) = max(15, 15) = 15), so this path reproduces
+/// today's behaviour; on the testnet build CHAIN_MAX_VALIDATORS is 1 and the raw legacy
+/// expression would yield 0 — a threshold of 0 ends emergency unconditionally, so the
+/// quorum form is the only sane fallback.
+/// It must NOT fall back to `emergency_quorum_for(0)` = 1 either way: with a real schedule
+/// that is the cheapest possible threshold and emergency would be left at the first update.
 inline uint32_t emergency_exit_threshold(uint32_t n_on_entry) {
     if (n_on_entry == 0)
-        return uint32_t(uint64_t(CHAIN_MAX_VALIDATORS) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT);
+        return emergency_quorum_for(CHAIN_MAX_VALIDATORS);
     return emergency_quorum_for(n_on_entry);
 }
 

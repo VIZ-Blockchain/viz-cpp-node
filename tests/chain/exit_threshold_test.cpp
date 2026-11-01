@@ -32,13 +32,19 @@ BOOST_AUTO_TEST_CASE(small_schedules_are_measured_from_integer_division_not_roun
     BOOST_CHECK_EQUAL(emergency_exit_threshold(3), 3u);
 }
 
-BOOST_AUTO_TEST_CASE(unmeasured_entry_size_falls_back_to_the_legacy_threshold) {
-    // 0 = not measured. Legacy threshold over CHAIN_MAX_VALIDATORS = 21 -> 15.
+BOOST_AUTO_TEST_CASE(unmeasured_entry_size_falls_back_to_a_full_max_schedule) {
+    // 0 = not measured -> assume the schedule was full. Stated as a RELATION, so the leg is
+    // config-independent: the testnet build has CHAIN_MAX_VALIDATORS = 1, the mainnet one 21.
+    BOOST_CHECK_EQUAL(emergency_exit_threshold(0), emergency_quorum_for(CHAIN_MAX_VALIDATORS));
+    // On mainnet that is exactly the legacy constant, so the fallback reproduces today's
+    // behaviour (21 slots: max(21*2/3+1, 21*75%) = max(15, 15) = 15).
+#ifndef BUILD_TESTNET
     BOOST_CHECK_EQUAL(emergency_exit_threshold(0), 15u);
-    // And explicitly NOT the cheapest possible threshold: an unmeasured value must not
-    // end emergency at the first schedule update.
-    BOOST_CHECK_NE(emergency_exit_threshold(0), emergency_quorum_for(0));
-    BOOST_CHECK_EQUAL(emergency_quorum_for(0), 1u);
+#endif
+    // An unmeasured value must not become the cheapest possible threshold: with a real
+    // schedule (>1 slot allowed) it must differ from the quorum of an empty schedule.
+    if (CHAIN_MAX_VALIDATORS > 1)
+        BOOST_CHECK_NE(emergency_exit_threshold(0), emergency_quorum_for(0));
 }
 
 BOOST_AUTO_TEST_CASE(exit_threshold_equals_the_quorum_the_network_requires_after_exit) {
