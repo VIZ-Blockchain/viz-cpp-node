@@ -119,6 +119,17 @@
 /// this many seconds since the last irreversible block.
 #define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    1200  // 20 minutes
 
+/// HF16 unstick: the longest the chain may stand still before a producer is allowed to
+/// ignore a missing QC. Measured on CHAIN time (the parent block's timestamp against the
+/// new block's), never on the local clock, so every node judges the same block the same
+/// way. 60 s is 60 slots of silence — the worst single gap measured over 24 h of mainnet
+/// was 5 s, so this cannot fire in normal operation.
+///
+/// This is NOT a softfork: a node on an older build rejects such a block. It ships as a
+/// flag-day upgrade, which the stalled chain makes safe — while nothing is produced there
+/// is nobody to fork from.
+#define CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC       60
+
 /// The witness account name that produces blocks during emergency mode
 #define CHAIN_EMERGENCY_VALIDATOR_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
 

@@ -18,6 +18,7 @@ using graphene::protocol::signed_transaction;
 using graphene::protocol::signed_block;
 using graphene::protocol::block_id_type;
 using graphene::protocol::signature_type;
+using graphene::protocol::block_qc_certificate;
 using fc::ecc::public_key_data;
 
 typedef public_key_data node_id_t;
@@ -43,6 +44,7 @@ enum dlt_message_type_enum {
     dlt_gap_fill_reply_type             = 5116,
     dlt_block_vote_message_type         = 5117,
     dlt_timeout_vote_message_type       = 5118,
+    dlt_block_qc_message_type           = 5119,
 };
 
 // ── Capability bits advertised in hello.capabilities ────────────────
@@ -51,6 +53,7 @@ enum dlt_message_type_enum {
 // would score as an unknown packet.
 static const uint32_t DLT_CAP_BLOCK_VOTE = 0x1;   // understands dlt_block_vote_message
 static const uint32_t DLT_CAP_TIMEOUT_VOTE = 0x2; // understands dlt_timeout_vote_message
+static const uint32_t DLT_CAP_BLOCK_QC    = 0x4; // understands dlt_block_qc_message
 
 // ── DLT node status ─────────────────────────────────────────────────
 enum dlt_node_status {
@@ -273,6 +276,18 @@ struct dlt_timeout_vote_message {
     signature_type  signature;
 };
 
+// HF16 block QC, propagated beyond the node that formed it. Votes went over the
+// wire one by one but the certificate they add up to did not, so a quorum could
+// certify a block that only a few nodes knew was certified -- and the producer
+// of the next slot could not extend it. Mainnet lost 5 h 20 min to exactly that
+// on 01.11.2026. The receiver re-verifies every signature: this message is a
+// carrier, never an authority.
+struct dlt_block_qc_message {
+    static const dlt_message_type_enum type;
+
+    block_qc_certificate cert;
+};
+
 } // namespace network
 } // namespace graphene
 
@@ -297,7 +312,8 @@ FC_REFLECT_ENUM(graphene::network::dlt_message_type_enum,
     (dlt_gap_fill_request_type)
     (dlt_gap_fill_reply_type)
     (dlt_block_vote_message_type)
-    (dlt_timeout_vote_message_type))
+    (dlt_timeout_vote_message_type)
+    (dlt_block_qc_message_type))
 
 FC_REFLECT_ENUM(graphene::network::dlt_node_status,
     (DLT_NODE_STATUS_SYNC)(DLT_NODE_STATUS_FORWARD))
@@ -371,3 +387,6 @@ FC_REFLECT((graphene::network::dlt_block_vote_message),
 
 FC_REFLECT((graphene::network::dlt_timeout_vote_message),
     (round)(high_qc_round)(validator)(signature))
+
+FC_REFLECT((graphene::network::dlt_block_qc_message),
+    (cert))

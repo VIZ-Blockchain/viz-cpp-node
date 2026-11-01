@@ -795,6 +795,17 @@ namespace graphene { namespace chain {
             /// (LIB, and a producer building past a QC-less child of it).
             void remember_block_qc(const protocol::block_qc_certificate &cert);
 
+            /// Accept a QC that came over P2P from another node instead of from our own
+            /// tally. Everything is re-checked locally: the certified block must be on our
+            /// chain, the round must be that block's slot, and every signature must verify
+            /// against the current schedule with at least a quorum of them left. Returns
+            /// true when the certificate was stored (or superseded one we already held).
+            ///
+            /// Why it exists: certificates are not gossiped with the votes, so a QC formed
+            /// by three nodes never reached the producer of the next slot and mainnet sat on
+            /// a certified head for 5 h 20 min (01.11.2026).
+            bool accept_block_qc_certificate(const protocol::block_qc_certificate &cert);
+
             /// HF16: check double-vote proofs a block carries and punish each validator
             /// like for a missed block (once per validator and round, newest first).
             void apply_equivocation_proofs(const signed_block &b, uint32_t skip);
@@ -820,6 +831,23 @@ namespace graphene { namespace chain {
 
             /// HF16: does a block by `producer` on top of head need the parent's QC?
             bool block_needs_parent_qc(const account_name_type &producer) const;
+
+            /// HF16 unstick: may a block with timestamp `when` be produced and accepted
+            /// WITHOUT a QC of its parent?
+            ///
+            /// True only when the chain itself has stood still for at least
+            /// CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC: `when` is that far ahead of head's own
+            /// timestamp. Both sides of the decision read the same chain data, so a
+            /// producer and every validator judge one block identically. This is the last
+            /// line of the emergency plan: when QCs and TCs both fail, the chain still has
+            /// to creep forward instead of standing for hours (mainnet 01.11.2026: 5 h 20 min
+            /// on a head that three nodes held a quorum QC for).
+            ///
+            /// Liveness bought with safety: such a block certifies nothing, so two producers
+            /// that each see a gap can build different chains. It fires only after a minute
+            /// of silence, and the pre-unstick build of the node has no such rule at all --
+            /// every validator must run the same build (flag day).
+            bool emergency_unstick_block(const fc::time_point_sec &when) const;
 
             /// HF16: the parent certificate `producer` would put into its next
             /// block, built from the node-local QC of head and re-verified against

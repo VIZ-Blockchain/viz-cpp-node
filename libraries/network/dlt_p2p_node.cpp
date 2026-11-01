@@ -1034,6 +1034,9 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_timeout_vote_message_type:
                 on_dlt_timeout_vote(peer, msg.as<dlt_timeout_vote_message>());
                 break;
+            case dlt_block_qc_message_type:
+                on_dlt_block_qc(peer, msg.as<dlt_block_qc_message>());
+                break;
             default:
                 auto ep_it_unk = _peer_states.find(peer);
                 auto ep_unk = (ep_it_unk != _peer_states.end()) ? std::string(ep_it_unk->second.endpoint) : std::to_string(peer);
@@ -1072,7 +1075,7 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
     hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
-    hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE;
+    hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC;
     return hello;
 }
 
@@ -2646,6 +2649,44 @@ void dlt_p2p_node::process_timeout_vote(const dlt_timeout_vote_message& msg, pee
     }
     _timeout_votes_seen.insert(key, now);
     gossip_to_capable(message(msg), DLT_CAP_TIMEOUT_VOTE, from);
+}
+
+void dlt_p2p_node::broadcast_block_qc(const graphene::protocol::block_qc_certificate& cert) {
+    if (cert.block_num == 0 || cert.signatures.empty()) return;
+    dlt_block_qc_message msg;
+    msg.cert = cert;
+    // Straight to the capable peers: a QC we keep re-sending must reach a node that
+    // restarted and forgot it, and that node's relay dedup is not our business here.
+    gossip_to_capable(message(msg), DLT_CAP_BLOCK_QC, INVALID_PEER_ID);
+}
+
+void dlt_p2p_node::on_dlt_block_qc(peer_id peer, const dlt_block_qc_message& msg) {
+    process_block_qc(msg, peer);
+}
+
+void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& msg, peer_id from) {
+    const auto now = fc::time_point::now();
+    // Cheap shape checks before the (much dearer) signature verification in the chain.
+    const auto& cert = msg.cert;
+    if (cert.block_num == 0 || cert.signatures.empty() ||
+        graphene::protocol::block_header::num_from_id(cert.block_id) != cert.block_num) {
+        if (from != INVALID_PEER_ID) record_packet_result(from, false);
+        return;
+    }
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (_block_qcs_seen.contains(key, now)) return;
+
+    // Only a certificate every signature of which verifies locally is kept or relayed:
+    // a peer cannot use us to amplify a made-up QC.
+    if (!_delegate || !_delegate->accept_block_qc(msg)) {
+        if (from != INVALID_PEER_ID) {
+            dlog(DLT_LOG_DGRAY "QC for #${n} round ${r} from peer ${p} not accepted" DLT_LOG_RESET,
+                 ("n", cert.block_num)("r", cert.round)("p", from));
+        }
+        return;
+    }
+    _block_qcs_seen.insert(key, now);
+    gossip_to_capable(message(msg), DLT_CAP_BLOCK_QC, from);
 }
 
 void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {

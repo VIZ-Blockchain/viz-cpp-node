@@ -1943,6 +1943,22 @@ namespace graphene {
                     const uint32_t now_round = db.round_of(now);
                     const auto head_qc = db.get_block_qc(head_num);
                     const bool certified = head_qc && head_qc->block_id == db.head_block_id();
+                    // Certificate gossip. Votes always travelled; the QC they add up to never
+                    // did, so a head certified by a quorum stayed a private fact of the few
+                    // nodes that collected the votes and the next producer had nothing to
+                    // extend it with (mainnet sat 5 h 20 min on #84865875, 01.11.2026).
+                    // While the chain is not moving, re-send the QC we hold for the head: that
+                    // is what hands it to a node that restarted and forgot, and to whoever
+                    // produces next. Silent while the chain advances, so normal operation and
+                    // its bandwidth are untouched.
+                    if (certified && now_round >= head_round + 2) {
+                        graphene::protocol::block_qc_certificate qc;
+                        qc.block_num = head_num;
+                        qc.block_id = head_qc->block_id;
+                        qc.round = head_qc->round;
+                        for (const auto &sv : head_qc->signatures) qc.signatures.emplace(sv.first, sv.second);
+                        p2p().post_broadcast_block_qc(qc);
+                    }
                     // Time out the last fully passed round t = now-1 once no block of a
                     // later round than head has come: head certified -> the slot after it
                     // stayed empty; head QC-less -> head is being given up on too.
@@ -1973,7 +1989,17 @@ namespace graphene {
                     }
                     if (now_round >= head_round + 1 + wait_rounds) {
                         const uint32_t t = now_round - 1;
-                        const uint32_t high_qc_round = certified ? head_qc->round : carried_qc_round;
+                        // Emergency vote honesty (owner 01.11.2026). A QC in our memory is not
+                        // provable to anyone else, and a timeout vote naming a round above the
+                        // parent QC poisons every TC built with it (validate_block_qc wants
+                        // every vote <= parent QC round). On 01.11.2026 three nodes voting the
+                        // head's own round left 12 honest votes against a quorum of 13, and
+                        // the head could not be skipped. After CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC
+                        // of a still chain, claim only the QC head itself proves -- the one it
+                        // carries -- so the three become honest and the TC reaches a quorum.
+                        const bool stalled =
+                                (now - db.head_block_time()).to_seconds() >= CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC;
+                        const uint32_t high_qc_round = (certified && !stalled) ? head_qc->round : carried_qc_round;
                         const auto &wso = db.get_validator_schedule_object();
                         const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                         for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
@@ -2621,6 +2647,18 @@ namespace graphene {
                     if (late_qc)
                         ilog("Late QC: head #${h} still uncertified at the end of slot ${s}; ${w} carries QC of #${g} instead",
                              ("h", db.head_block_num())("s", slot)("w", scheduled_validator)("g", late_qc->block_num));
+                }
+                // HF16 unstick (emergency, owner 01.11.2026): no QC and no usable TC after a
+                // minute of silence -- produce the block without a parent certificate rather
+                // than wait for one the network evidently cannot deliver. The rule reads chain
+                // time only (database::emergency_unstick_block), so the validators of this block
+                // reach the same verdict.
+                if (waiting_for_qc && !skip_tc && !late_qc &&
+                    db.with_weak_read_lock([&]() { return db.emergency_unstick_block(scheduled_time); })) {
+                    wlog("Unstick: head #${h} uncertified for ${g}s, producing slot ${s} as ${w} without a parent QC",
+                         ("h", db.head_block_num())("s", slot)("w", scheduled_validator)
+                         ("g", (scheduled_time - db.head_block_time()).to_seconds()));
+                    waiting_for_qc = false;
                 }
                 if (waiting_for_qc && !skip_tc && !late_qc) {
                     ilog("Waiting for QC of head #${h} before producing slot ${s} as ${w}",
