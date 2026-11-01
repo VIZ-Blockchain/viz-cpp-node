@@ -37,6 +37,8 @@
 
 #include <fc/uint128_t.hpp>
 
+#include <algorithm>
+
 namespace graphene { namespace chain {
 
 // Virtual-schedule lap length, mirrored from database.cpp. The reset in
@@ -933,6 +935,19 @@ inline u256 to256(const fc::uint128_t &t) {
                         const auto &current = *itr;
                         ++itr;
                         if(0==current.last_confirmed_block_num){
+                            // A validator named by the CURRENT SCHEDULE must survive this purge: the
+                            // migration does not rebuild the schedule, so removing it would leave a slot
+                            // naming a validator object that no longer exists. The miss loop on the APPLY
+                            // path resolves that name via get_validator(), which throws "unknown key" and
+                            // rejects the block passing the seam on every node -- the chain freezes there
+                            // for good. Measured 02.11.2026: forcing HF16 on a fresh genesis removed every
+                            // initiator here (they had confirmed no block yet) and froze the stand at #21.
+                            const validator_schedule_object &schedule = get_validator_schedule_object();
+                            if(std::find(schedule.current_shuffled_validators.begin(),
+                                         schedule.current_shuffled_validators.end(),
+                                         current.owner) != schedule.current_shuffled_validators.end()){
+                                continue;
+                            }
                             //MUST be corrected: the validator_vote_object must also be deleted
                             //remove invalid validator account from penalty index
                             const auto &d8idx = get_index<validator_penalty_expire_index>().indices().get<by_account>();

@@ -54,6 +54,8 @@ jobs:
           python3 tests/p2p/test_vote_ingress.py
           python3 tests/validator/test_signing_cache.py
           python3 tests/chain/test_snapshot_restore.py
+          python3 tests/chain/test_hf9_schedule_guard.py
+          python3 tests/chain/test_hf9_schedule_guard.py --selftest
           python3 tests/chain/test_snapshot_floor.py --selftest
           python3 tests/chain/test_snapshot_startup_guard.py --selftest
           python3 tests/chain/test_timeout_vote_journal.py
