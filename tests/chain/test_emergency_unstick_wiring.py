@@ -34,9 +34,14 @@ CONFIG_HPP = ROOT / 'libraries' / 'protocol' / 'include' / 'graphene' / 'protoco
 CONFIG_TESTNET_HPP = ROOT / 'libraries' / 'protocol' / 'include' / 'graphene' / 'protocol' / 'config_testnet.hpp'
 DB_CPP = ROOT / 'libraries' / 'chain' / 'database.cpp'
 VAL_CPP = ROOT / 'plugins' / 'validator' / 'validator.cpp'
+# Layer 3 compares the new block's timestamp with the head's, so while the chain is healthy
+# a producer can only reach the 60 s gap by stamping a block ~60 s into the future. That is
+# what stops it -- not the unstick rule itself -- so the premise is guarded here: widen it
+# and a lone validator forks the live chain with an unstick block.
+CHAIN_PLUGIN_CPP = ROOT / 'plugins' / 'chain' / 'plugin.cpp'
 
 FILES = {'config_hpp': CONFIG_HPP, 'config_testnet_hpp': CONFIG_TESTNET_HPP,
-         'db_cpp': DB_CPP, 'val_cpp': VAL_CPP}
+         'db_cpp': DB_CPP, 'val_cpp': VAL_CPP, 'chain_plugin_cpp': CHAIN_PLUGIN_CPP}
 
 
 def _masked(source):
@@ -184,6 +189,25 @@ def wiring_problems(**files):
             problems.append('the TC cut is not the smallest round a quorum fits under')
         if not re.search(r'_timeout_certs\[\s*round\s*\]\s*=', pbody):
             problems.append('an already formed TC is never replaced, so a poisoned certificate never heals')
+
+    # 7. The premise that keeps layer 3 harmless on a LIVE chain: ingress refuses a block
+    #    stamped more than `allow_future_time` (5 s) ahead of the local clock. Layer 3 allows
+    #    an uncertified block only when the gap to head is >= 60 s, a gap reachable on a live
+    #    chain solely by stamping the block that far into the future -- so the 5 s ingress
+    #    bound is what stands between one validator and a fork of a healthy chain.
+    plugin_cpp = _masked(files['chain_plugin_cpp'])
+    m = re.search(r'allow_future_time\s*=\s*(\d+)', plugin_cpp)
+    if not m:
+        problems.append('plugins/chain no longer bounds how far a block may be stamped ahead of the local '
+                        'clock: on a live chain a single validator could jump the 60 s unstick gap and fork')
+    elif int(m.group(1)) >= 60:
+        problems.append('allow_future_time is %s s: at or above the 60 s unstick gap, one validator can forge '
+                        'a stall on a live chain and fork it' % m.group(1))
+    check = method(plugin_cpp, 'void plugin::plugin_impl::check_time_in_block(')
+    if check is None or not re.search(r'block\.timestamp\.sec_since_epoch\(\)\s*<=\s*max_accept_time',
+                                      _masked(check or '')):
+        problems.append('check_time_in_block() no longer rejects a block stamped ahead: the future-time bound '
+                        'layer 3 relies on is gone')
     return problems
 
 
@@ -230,6 +254,12 @@ MUTATIONS = {
     'tc-cut-ignores-round': (
         DB_CPP, 'const uint32_t cut = by_round[quorum - 1].first;',
         'const uint32_t cut = by_round.back().first;'),
+    'ingress-future-bound-widened': (
+        CHAIN_PLUGIN_CPP, 'allow_future_time = 5;', 'allow_future_time = 600;'),
+    'ingress-future-bound-removed': (
+        CHAIN_PLUGIN_CPP,
+        'FC_ASSERT(block.timestamp.sec_since_epoch() <= max_accept_time);',
+        '(void)max_accept_time;'),
 }
 
 
