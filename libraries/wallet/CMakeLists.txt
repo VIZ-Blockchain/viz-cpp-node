@@ -1,12 +1,5 @@
 set(CURRENT_TARGET wallet)
 
-# Wallet API docs are generated at runtime from FC reflection via the standin.
-# A previous Perl+Doxygen pipeline produced richer docs but was disabled in CI
-# (the generator was never installed) and has been removed.
-add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/api_documentation.cpp
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/api_documentation_standin.cpp ${CMAKE_CURRENT_BINARY_DIR}/api_documentation.cpp
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/api_documentation_standin.cpp)
-
 list(APPEND ${CURRENT_TARGET}_HEADERS
         include/graphene/wallet/api_documentation.hpp
         include/graphene/wallet/reflect_util.hpp

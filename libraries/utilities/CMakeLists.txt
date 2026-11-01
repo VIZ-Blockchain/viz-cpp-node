@@ -20,8 +20,6 @@ set(sources
         capped_file_appender.cpp
         file_appender_options.cpp
         key_conversion.cpp
-        string_escape.cpp
-        tempdir.cpp
         words.cpp
         ${HEADERS})
 
