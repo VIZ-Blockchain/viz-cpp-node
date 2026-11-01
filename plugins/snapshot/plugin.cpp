@@ -1748,12 +1748,12 @@ void snapshot_plugin::plugin_impl::update_snapshot_cache(const fc::path& snap_pa
         // Stream-compute checksum in 1 MB chunks
         fc::sha256::encoder enc;
         uint64_t file_size = 0;
-        char buf[1048576];
+        std::vector<char> buf(1048576);  // heap: macOS secondary threads get a 512 KB stack
         while (in.good()) {
-            in.read(buf, sizeof(buf));
+            in.read(buf.data(), buf.size());
             auto n = in.gcount();
             if (n > 0) {
-                enc.write(buf, static_cast<uint32_t>(n));
+                enc.write(buf.data(), static_cast<uint32_t>(n));
                 file_size += n;
             }
         }
@@ -4665,12 +4665,12 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                 FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
 
                 fc::sha256::encoder enc;
-                char buf[1048576];
+                std::vector<char> buf(1048576);  // heap: macOS secondary threads get a 512 KB stack
                 while (verify_in.good()) {
-                    verify_in.read(buf, sizeof(buf));
+                    verify_in.read(buf.data(), buf.size());
                     auto n = verify_in.gcount();
                     if (n > 0) {
-                        enc.write(buf, static_cast<uint32_t>(n));
+                        enc.write(buf.data(), static_cast<uint32_t>(n));
                     }
                 }
                 verify_in.close();
