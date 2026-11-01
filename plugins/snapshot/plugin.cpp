@@ -5262,8 +5262,32 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                                     my->load_snapshot(fc::path(snapshot_path));
                                     my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
                                     my->db.initialize_hardforks();
+                                } catch (const fc::exception& e) {
+                                    // The CAUSE must be named: measured 01.11.2026 — a snapshot from
+                                    // another chain failed here and the operator saw only "import
+                                    // failed", while `--snapshot` on the same file printed
+                                    // "header.chain_id == db.get_chain_id(): Chain ID mismatch …".
+                                    // Falling back to genesis with the reason hidden made a plain
+                                    // incompatibility look like a corrupt state wipe.
+                                    elog("P2P snapshot import failed: ${e} — wiping shared memory before restart",
+                                         ("e", e.to_detail_string()));
+                                    try {
+                                        chain_plug.wipe_state();
+                                    } catch (const std::exception& wipe_err) {
+                                        elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                                    }
+                                    throw;
+                                } catch (const std::exception& e) {
+                                    elog("P2P snapshot import failed: ${e} — wiping shared memory before restart",
+                                         ("e", e.what()));
+                                    try {
+                                        chain_plug.wipe_state();
+                                    } catch (const std::exception& wipe_err) {
+                                        elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                                    }
+                                    throw;
                                 } catch (...) {
-                                    elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
+                                    elog("P2P snapshot import failed: unknown exception — wiping shared memory before restart");
                                     try {
                                         chain_plug.wipe_state();
                                     } catch (const std::exception& wipe_err) {
@@ -5294,12 +5318,18 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                                   << " attempts. Falling back to P2P genesis sync.\n";
                         wlog("P2P snapshot sync exhausted after ${n} attempts. "
                              "Node will sync from genesis via P2P.", ("n", max_attempts));
-                    } catch (...) {
+                    } catch (const fc::exception& e) {
                         // Never let an exception escape the thread function — that
                         // would call std::terminate. After wipe_state() the node
                         // continues with empty state and falls back to P2P genesis
                         // sync, so logging here preserves the previous behavior.
-                        elog("P2P snapshot download thread failed");
+                        // The cause is printed too: "thread failed" alone sent the
+                        // operator to genesis sync without saying why (01.11.2026).
+                        elog("P2P snapshot download thread failed: ${e}", ("e", e.to_detail_string()));
+                    } catch (const std::exception& e) {
+                        elog("P2P snapshot download thread failed: ${e}", ("e", e.what()));
+                    } catch (...) {
+                        elog("P2P snapshot download thread failed: unknown exception");
                     }
                 });
                 download_thread.join();
