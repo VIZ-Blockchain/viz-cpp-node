@@ -48,7 +48,6 @@ add_library(graphene_chain ${VIZ_LIBRARY_TYPE}
 
             chain_evaluator.cpp
 
-            chain_objects.cpp
             shared_authority.cpp
             #        transaction_object.cpp
             block_log.cpp

@@ -151,7 +151,6 @@ jobs:
       - name: Configure and build
         run: |
           set -euo pipefail
-          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
           mkdir -p build && cd build
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_SHARED_LIBRARIES=FALSE \
@@ -189,7 +188,6 @@ jobs:
       - name: Configure and build
         run: |
           set -euo pipefail
-          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
           mkdir -p build && cd build
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_SHARED_LIBRARIES=FALSE \
@@ -243,7 +241,6 @@ jobs:
       - name: Configure and build PM test targets
         run: |
           set -euo pipefail
-          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
           mkdir -p build && cd build
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_SHARED_LIBRARIES=FALSE \

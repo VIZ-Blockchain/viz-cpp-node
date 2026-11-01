@@ -6,7 +6,6 @@
 #include <graphene/utilities/key_conversion.hpp>
 
 #include <fc/macros.hpp>
-#include <fc/real128.hpp>
 #include <fc/crypto/base58.hpp>
 #include <fc/api.hpp>
 
