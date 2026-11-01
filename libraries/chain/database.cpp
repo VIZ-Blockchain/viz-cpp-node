@@ -3921,8 +3921,18 @@ namespace graphene { namespace chain {
 
 
                 // EXIT CONDITION: enough real validators have re-enabled.
-                // When >= 75% of schedule slots are real validators (not committee),
-                // the network has recovered and can sustain normal consensus.
+                //
+                // What this number actually is: a constant derived from CHAIN_MAX_VALIDATORS
+                // (21 * 75% -> 15), NOT a share of the validators that currently hold a key.
+                // Two consequences, both read off the code rather than intended by it:
+                //   * the hybrid override above pads the schedule to CHAIN_MAX_VALIDATORS slots,
+                //     so at this point the schedule always numbers 21 and 15 of them is 71%, not
+                //     ">= 75%" (21 * 7500 / 10000 truncates 15.75 down to 15);
+                //   * if fewer than 15 validators hold a signing key, the exit never fires, even
+                //     though normal consensus afterwards would only need emergency_quorum_for(n)
+                //     of them (10 for 14 validators).
+                // Changing the number changes the moment the chain leaves emergency and therefore
+                // needs a hardfork gate; this comment only states what the code does today.
                 uint32_t exit_threshold = (CHAIN_MAX_VALIDATORS * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
                 if (real_validator_slots >= exit_threshold) {
                     modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
