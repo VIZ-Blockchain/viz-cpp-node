@@ -11,6 +11,7 @@
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/db_with.hpp>
+#include <graphene/chain/emergency_exit.hpp>
 #include <graphene/chain/evaluator_registry.hpp>
 #include <graphene/chain/index.hpp>
 #include <graphene/chain/chain_evaluator.hpp>
@@ -7228,9 +7229,10 @@ namespace graphene { namespace chain {
         //remove old block post validation objects
         //remove old blocks from post validation list if it is full (CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
         uint32_t database::block_qc_quorum(uint32_t num_scheduled) {
-            const uint32_t two_thirds_plus = num_scheduled * 2 / 3 + 1;
-            const uint32_t threshold = uint32_t(uint64_t(num_scheduled) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT);
-            return std::max(two_thirds_plus, threshold);
+            // The expression lives in emergency_exit.hpp so that the exit-from-emergency
+            // threshold can be stated as the very same function (and unit-tested without a
+            // database). Moving it does not change a single result.
+            return emergency_quorum_for(num_scheduled);
         }
 
         bool database::verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,
