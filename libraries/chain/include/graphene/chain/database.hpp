@@ -18,6 +18,7 @@
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <set>
 #include <tuple>
 #include <thread>
 
@@ -742,6 +743,15 @@ namespace graphene { namespace chain {
             /// The certificate formed for a height, if any (node-local view).
             fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
 
+            /// Everything a stalled chain needs to explain itself in one place: the QC we
+            /// hold for the head (if any), whether it still re-verifies against the current
+            /// schedule, the highest QC round we know, and who timed out on the head's round
+            /// claiming which high QC. Printed by the validator plugin when the head goes
+            /// stale: on 01.11.2026 mainnet stood for hours and the log said only
+            /// "Waiting for QC of head", leaving no way to tell a missing QC from a QC for
+            /// another block or one whose signatures no longer verify.
+            std::string qc_state_report() const;
+
             /// Highest height H such that H and H+1 (both <= max_num) are certified
             /// on our main branch (2-chain finality); 0 if none. Feeds LIB under HF16.
             uint32_t highest_qc_on_main_branch(uint32_t max_num) const;
@@ -920,6 +930,10 @@ namespace graphene { namespace chain {
             bool _timeout_vote_journal_replaying = false;
             mutable std::mutex _block_votes_mutex;
             std::atomic<uint32_t> _head_reject_logged{0};
+            // Diagnostics: (validator, height) / (validator, claimed QC round) already named
+            // in the log, so a fork or a QC we do not hold is reported once, not per vote.
+            std::set<std::pair<account_name_type, uint32_t>> _foreign_head_votes_logged;
+            std::set<std::pair<account_name_type, uint32_t>> _timeout_qc_claims;
             fc::time_point_sec _hardfork_times[CHAIN_NUM_HARDFORKS + 1];
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];
 

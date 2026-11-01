@@ -7299,6 +7299,22 @@ namespace graphene { namespace chain {
             tv.signature = signature;
             votes.emplace(validator, tv);
 
+            // A timeout vote is the only evidence that a peer holds a QC this node cannot
+            // see (the vote names a round, not a block). While the head is stale, name a
+            // claim above our highest QC round once per validator and claimed round: on
+            // 01.11.2026 nine validators timed out on the head's QC round and four on the
+            // round after it, and no node printed that split anywhere.
+            if (high_qc_round > 0 && now_round > head_round + 3) {
+                uint32_t ours = 0;
+                for (const auto &q : _block_qcs) ours = std::max(ours, q.second.round);
+                if (high_qc_round > ours) {
+                    if (_timeout_qc_claims.size() > 1024) _timeout_qc_claims.clear();
+                    if (_timeout_qc_claims.emplace(validator, high_qc_round).second)
+                        wlog("Timeout: ${w} gives up on round ${r} claiming QC round ${q}; we hold no QC above round ${o}",
+                             ("w", validator)("r", round)("q", high_qc_round)("o", ours));
+                }
+            }
+
             // Cache the accepted vote so a restart does not reset the round to zero. During a
             // replay the vote is already on disk -- appending it again would grow the file on
             // every start. Only a vote that passed every check above reaches this line.
@@ -7520,7 +7536,21 @@ namespace graphene { namespace chain {
             fc::optional<protocol::block_qc_certificate> result;
             if (!block_needs_parent_qc(producer)) return result;
             const auto qc = get_block_qc(head_block_num());
-            if (!qc || qc->block_id != head_block_id()) return result;
+            // Every exit below is named. Without a name the node says only "waiting for a QC of
+            // head", while its timeout path calls the same height CERTIFIED (that check compares
+            // the block id alone, this one re-verifies the signatures): on 01.11.2026 mainnet
+            // stood for hours with a 13/13 QC of the head in memory, and the log could not say
+            // which of the four exits was taken.
+            if (!qc) {
+                wlog("Parent QC of head #${n} refused for production: no QC for it in memory",
+                     ("n", head_block_num()));
+                return result;
+            }
+            if (qc->block_id != head_block_id()) {
+                wlog("Parent QC of head #${n} refused for production: QC is for ${a}, head is ${b}",
+                     ("n", head_block_num())("a", qc->block_id)("b", head_block_id()));
+                return result;
+            }
 
             protocol::block_qc_certificate cert;
             cert.block_num = qc->block_num;
@@ -7529,13 +7559,23 @@ namespace graphene { namespace chain {
             // Re-verify against current state: the schedule or a signing key may
             // have changed since the votes were tallied (round boundary), and the
             // block must carry only signatures the consensus check will accept.
+            std::string rejected;
             for (const auto &sv : qc->signatures) {
                 if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
                     cert.signatures.emplace(sv.first, sv.second);
+                else {
+                    if (!rejected.empty()) rejected += ",";
+                    rejected += sv.first;
+                }
             }
             const auto &wso = get_validator_schedule_object();
-            if (cert.signatures.size() < block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT))
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            if (cert.signatures.size() < quorum) {
+                wlog("Parent QC of #${n} ${id} refused for production: ${k}/${q} signatures re-verified, ${all} in QC, round ${r}, rejected: [${f}]",
+                     ("n", qc->block_num)("id", qc->block_id)("k", cert.signatures.size())("q", quorum)
+                     ("all", qc->signatures.size())("r", qc->round)("f", rejected));
                 return result;
+            }
             result = std::move(cert);
             return result;
         }
@@ -7771,6 +7811,20 @@ namespace graphene { namespace chain {
             for (auto it = _block_qcs.begin(); it != _block_qcs.end() && it->first + MAX_VOTE_AHEAD_BLOCKS <= lib; )
                 it = _block_qcs.erase(it);
 
+            // A vote for a block that is not our head but sits at the head's own height:
+            // normal right after a TC (the height is rebuilt in a later round), but a vote
+            // for a different id in the SAME round is a fork. Name each (validator, height)
+            // once so a split network shows in the log, not only in a tally nobody prints.
+            if (block_num == dpo.head_block_number && block_id != dpo.head_block_id) {
+                for (auto it = _foreign_head_votes_logged.begin(); it != _foreign_head_votes_logged.end(); ) {
+                    if (it->second + MAX_VOTE_AHEAD_BLOCKS < block_num) it = _foreign_head_votes_logged.erase(it);
+                    else ++it;
+                }
+                if (_foreign_head_votes_logged.emplace(validator, block_num).second)
+                    wlog("Vote from ${w} for #${n} ${id} round ${r}: not our head ${h}",
+                         ("w", validator)("n", block_num)("id", block_id)("r", round)("h", dpo.head_block_id));
+            }
+
             // One vote per (validator, round). A second, different id in the same
             // round is equivocation: never counted, logged as evidence (both
             // signatures verify against the same signing key).
@@ -7878,6 +7932,93 @@ namespace graphene { namespace chain {
             auto it = _block_qcs.find(block_num);
             if (it == _block_qcs.end()) return fc::optional<block_qc>();
             return it->second;
+        }
+
+        std::string database::qc_state_report() const {
+            const auto &dpo = get_dynamic_global_properties();
+            const uint32_t head_num = dpo.head_block_number;
+            const uint32_t head_round = round_of(dpo.time);
+            const uint32_t now_round = round_of(fc::time_point_sec(fc::time_point::now()));
+
+            std::string out = "QC STATE head #" + std::to_string(head_num) + " " + std::string(dpo.head_block_id) +
+                              " round " + std::to_string(head_round) +
+                              ", now round " + std::to_string(now_round) +
+                              ", LIB #" + std::to_string(dpo.last_irreversible_block_num);
+
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            const uint32_t quorum = block_qc_quorum(uint32_t(get_validator_schedule_object().num_scheduled_validators)
+                                                    / CHAIN_BLOCK_VALIDATOR_REPEAT);
+
+            auto it = _block_qcs.find(head_num);
+            if (it == _block_qcs.end()) {
+                out += "\n  QC of head: none in memory";
+            } else {
+                const auto &qc = it->second;
+                // The tally accepted these signatures once. A schedule or key change since
+                // then is exactly what turns a head the timeout path calls "certified" into
+                // one production cannot build on, so re-verify here and name the rejections.
+                size_t good = 0;
+                std::string rejected;
+                for (const auto &sv : qc.signatures) {
+                    if (verify_block_vote(qc.block_num, qc.block_id, qc.round, sv.first, sv.second)) ++good;
+                    else { if (!rejected.empty()) rejected += ","; rejected += std::string(sv.first); }
+                }
+                out += "\n  QC of head: round " + std::to_string(qc.round) + ", " +
+                       std::to_string(qc.signatures.size()) + " signatures, block " + std::string(qc.block_id);
+                if (qc.block_id == dpo.head_block_id) out += " (matches head)";
+                else out += " (IS ANOTHER BLOCK; head is " + std::string(dpo.head_block_id) + ")";
+                out += "; re-verified now " + std::to_string(good) + "/" + std::to_string(quorum);
+                if (!rejected.empty()) out += ", rejected: [" + rejected + "]";
+            }
+
+            if (!_block_qcs.empty()) {
+                const auto &top = _block_qcs.rbegin()->second;
+                out += "\n  highest QC in memory: #" + std::to_string(top.block_num) +
+                       " round " + std::to_string(top.round);
+                std::string near;
+                for (auto q = _block_qcs.rbegin(); q != _block_qcs.rend() && q->first + 8 >= head_num; ++q) {
+                    if (!near.empty()) near += ", ";
+                    near += "#" + std::to_string(q->first) + " r" + std::to_string(q->second.round);
+                }
+                out += "\n  QCs near head: " + near;
+            }
+
+            // Who gave up on the head's round and what high QC they claimed. The timeout vote
+            // carries no block id, so this is the only place a node can see that peers hold a
+            // QC it does not: the split that blocked every TC on 01.11.2026 (13 voters, 9 on
+            // the head's QC round, 4 on the next one) is one line here.
+            auto tv = _timeout_votes.find(head_round);
+            if (tv == _timeout_votes.end()) {
+                out += "\n  timeouts on head round " + std::to_string(head_round) + ": none";
+            } else {
+                std::map<uint32_t, std::string> claims;
+                for (const auto &v : tv->second) {
+                    std::string &names = claims[v.second.high_qc_round];
+                    if (!names.empty()) names += ",";
+                    names += std::string(v.first);
+                }
+                std::string line;
+                for (const auto &c : claims) {
+                    if (!line.empty()) line += "; ";
+                    line += std::to_string(c.first) + " <- " + c.second;
+                }
+                out += "\n  timeouts on head round " + std::to_string(head_round) + " (we hold " +
+                       std::to_string(tv->second.size()) + "): " + line;
+            }
+
+            // Votes we hold at the head's height. More than one block id there is a fork
+            // (or a rebuild in a later round) and says which side of it the votes went to.
+            std::string tallies;
+            for (const auto &t : _block_vote_tallies) {
+                const uint32_t n = std::get<0>(t.first);
+                if (n + 1 < head_num) continue;
+                if (!tallies.empty()) tallies += ", ";
+                tallies += "#" + std::to_string(n) + " " + std::string(std::get<2>(t.first)) +
+                           " r" + std::to_string(std::get<1>(t.first)) + ": " +
+                           std::to_string(t.second.votes.size()) + " votes";
+            }
+            if (!tallies.empty()) out += "\n  tallies at head: " + tallies;
+            return out;
         }
 
         void database::create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type& validator_account){
