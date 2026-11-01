@@ -8070,12 +8070,15 @@ namespace graphene { namespace chain {
                 const auto &top = _block_qcs.rbegin()->second;
                 out += "\n  highest QC in memory: #" + std::to_string(top.block_num) +
                        " round " + std::to_string(top.round);
-                std::string near;
+                // Not "near": windef.h defines near and far as empty macros, so the MinGW
+                // build of this line collapsed to "std::string ;" (Windows Release red on
+                // master since #233). Keep the identifier Windows-agnostic.
+                std::string near_qcs;
                 for (auto q = _block_qcs.rbegin(); q != _block_qcs.rend() && q->first + 8 >= head_num; ++q) {
-                    if (!near.empty()) near += ", ";
-                    near += "#" + std::to_string(q->first) + " r" + std::to_string(q->second.round);
+                    if (!near_qcs.empty()) near_qcs += ", ";
+                    near_qcs += "#" + std::to_string(q->first) + " r" + std::to_string(q->second.round);
                 }
-                out += "\n  QCs near head: " + near;
+                out += "\n  QCs near head: " + near_qcs;
             }
 
             // Who gave up on the head's round and what high QC they claimed. The timeout vote
