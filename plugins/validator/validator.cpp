@@ -1943,6 +1943,22 @@ namespace graphene {
                     const uint32_t now_round = db.round_of(now);
                     const auto head_qc = db.get_block_qc(head_num);
                     const bool certified = head_qc && head_qc->block_id == db.head_block_id();
+                    // Certificate gossip. Votes always travelled; the QC they add up to never
+                    // did, so a head certified by a quorum stayed a private fact of the few
+                    // nodes that collected the votes and the next producer had nothing to
+                    // extend it with (mainnet sat 5 h 20 min on #84865875, 01.11.2026).
+                    // While the chain is not moving, re-send the QC we hold for the head: that
+                    // is what hands it to a node that restarted and forgot, and to whoever
+                    // produces next. Silent while the chain advances, so normal operation and
+                    // its bandwidth are untouched.
+                    if (certified && now_round >= head_round + 2) {
+                        graphene::protocol::block_qc_certificate qc;
+                        qc.block_num = head_num;
+                        qc.block_id = head_qc->block_id;
+                        qc.round = head_qc->round;
+                        for (const auto &sv : head_qc->signatures) qc.signatures.emplace(sv.first, sv.second);
+                        p2p().post_broadcast_block_qc(qc);
+                    }
                     // Time out the last fully passed round t = now-1 once no block of a
                     // later round than head has come: head certified -> the slot after it
                     // stayed empty; head QC-less -> head is being given up on too.

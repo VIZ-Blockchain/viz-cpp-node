@@ -130,6 +130,9 @@ public:
     // Same contract for a timeout vote (scheduled validator, signature over
     // block_timeout_digest). True = valid and new, worth relaying.
     virtual bool           accept_timeout_vote(const dlt_timeout_vote_message& vote) { return false; }
+    // Re-verify a gossiped block QC against our own schedule and keep it if it is
+    // better than the one we hold. True = valid, worth relaying.
+    virtual bool           accept_block_qc(const dlt_block_qc_message& msg) { return false; }
 
     // ── Fork resolution ──────────────────────────────────────────
     virtual int            compare_fork_branches(const block_id_type& a, const block_id_type& b) const = 0;
@@ -205,6 +208,9 @@ public:
         uint32_t round);
     void broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                 const std::string& validator, const signature_type& signature);
+    // Re-broadcast a QC we hold. Sent to every capable peer, not deduplicated: this
+    // is how a certificate formed before a restart finds the nodes that lost it.
+    void broadcast_block_qc(const graphene::protocol::block_qc_certificate& cert);
     void broadcast_transaction(const signed_transaction& trx);
     void broadcast_chain_status();
 
@@ -318,6 +324,8 @@ private:
     void process_block_vote(const dlt_block_vote_message& msg, peer_id from);
     void on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_message& msg);
     void process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from);
+    void on_dlt_block_qc(peer_id peer, const dlt_block_qc_message& msg);
+    void process_block_qc(const dlt_block_qc_message& msg, peer_id from);
     // Send to active fork peers advertising `cap`, except `from`, once per node id.
     void gossip_to_capable(const message& out, uint32_t cap, peer_id from);
     void request_gap_fill();
@@ -519,6 +527,7 @@ private:
     // Accepted vote hashes only, with hard capacity and bounded expiry work.
     dlt_vote_cache _block_votes_seen;
     dlt_vote_cache _timeout_votes_seen;
+    dlt_vote_cache _block_qcs_seen;
     // Local accepted retries must not be evicted by remote relay traffic.
     dlt_vote_cache _local_block_votes_seen;
     std::multimap<fc::time_point_sec, graphene::protocol::transaction_id_type> _mempool_by_expiry;

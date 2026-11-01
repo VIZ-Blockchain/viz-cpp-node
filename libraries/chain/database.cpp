@@ -7482,6 +7482,45 @@ namespace graphene { namespace chain {
             _block_qcs.emplace(cert.block_num, std::move(qc));
         }
 
+        bool database::accept_block_qc_certificate(const protocol::block_qc_certificate &cert) {
+            // No HF16, no parent QCs at all: a peer must not be able to plant one.
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            if (cert.block_num == 0 ||
+                protocol::block_header::num_from_id(cert.block_id) != cert.block_num) return false;
+
+            // Only a block on OUR chain: a certificate for a block we do not have proves
+            // nothing to us and would be stale the moment fork choice moved. This also
+            // stops a peer from feeding us a QC for a competing fork's height.
+            const auto block = fetch_block_by_number(cert.block_num);
+            if (!block || block->id() != cert.block_id) return false;
+            // A QC's round is the slot of the block it certifies (see validate_block_qc);
+            // anything else could never be carried in a block header anyway.
+            if (cert.round != round_of(block->timestamp)) return false;
+
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t scheduled = uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT;
+            if (cert.signatures.size() > scheduled) return false;
+
+            // Re-verify every signature against OUR schedule: the sender's word is worth
+            // nothing, only the votes are. Invalid votes are dropped, not the certificate,
+            // so one stale signature does not cost us the whole QC.
+            protocol::block_qc_certificate verified;
+            verified.block_num = cert.block_num;
+            verified.block_id = cert.block_id;
+            verified.round = cert.round;
+            for (const auto &sv : cert.signatures) {
+                if (verify_block_vote(cert.block_num, cert.block_id, cert.round, sv.first, sv.second))
+                    verified.signatures.emplace(sv.first, sv.second);
+            }
+            if (verified.signatures.size() < block_qc_quorum(scheduled)) return false;
+
+            remember_block_qc(verified);
+            ilog("Accepted QC for #${n} round ${r} from a peer: ${k}/${q} votes verified locally",
+                 ("n", verified.block_num)("r", verified.round)
+                 ("k", verified.signatures.size())("q", block_qc_quorum(scheduled)));
+            return true;
+        }
+
         fc::optional<protocol::block_timeout_certificate> database::get_timeout_cert(uint32_t round) const {
             std::lock_guard<std::mutex> guard(_block_votes_mutex);
             auto it = _timeout_certs.find(round);

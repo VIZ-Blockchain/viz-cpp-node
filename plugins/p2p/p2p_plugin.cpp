@@ -379,6 +379,17 @@ public:
         }
     }
 
+    bool accept_block_qc(const graphene::network::dlt_block_qc_message& msg) override {
+        try {
+            return chain.db().with_weak_read_lock([&]() {
+                return chain.db().accept_block_qc_certificate(msg.cert);
+            });
+        } catch (const fc::exception& e) {
+            dlog("QC for #${n} rejected: ${e}", ("n", msg.cert.block_num)("e", e.what()));
+            return false;
+        }
+    }
+
     bool accept_timeout_vote(const graphene::network::dlt_timeout_vote_message& vote) override {
         if (vote.validator.empty() || vote.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) return false;
         try {
@@ -795,6 +806,14 @@ void p2p_plugin::post_broadcast_timeout_vote(uint32_t round, uint32_t high_qc_ro
     // production timer must not wait on peer I/O.
     my->p2p_thread.async([this, round, high_qc_round, validator, signature]() {
         my->node->broadcast_timeout_vote(round, high_qc_round, validator, signature);
+    });
+}
+
+void p2p_plugin::post_broadcast_block_qc(const graphene::protocol::block_qc_certificate& cert) {
+    // Fire-and-forget, like the vote broadcasts: the production timer must not
+    // wait on peer I/O.
+    my->p2p_thread.async([this, cert]() {
+        my->node->broadcast_block_qc(cert);
     });
 }
 

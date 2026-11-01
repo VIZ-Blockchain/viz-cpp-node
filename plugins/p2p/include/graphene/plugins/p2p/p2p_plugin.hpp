@@ -60,6 +60,11 @@ namespace graphene {
                     const std::string &validator,
                     const graphene::protocol::signature_type &signature);
 
+                // HF16 block QC (fire-and-forget on the P2P thread). Votes always
+                // travelled; the certificate they form did not, so a head certified
+                // by a quorum stayed unknown to the producer of the next slot.
+                void post_broadcast_block_qc(const graphene::protocol::block_qc_certificate &cert);
+
                 void broadcast_transaction(const graphene::protocol::signed_transaction &tx);
 
                 /**

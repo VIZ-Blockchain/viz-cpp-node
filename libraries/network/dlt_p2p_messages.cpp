@@ -23,6 +23,7 @@ const dlt_message_type_enum dlt_gap_fill_request::type           = dlt_gap_fill_
 const dlt_message_type_enum dlt_gap_fill_reply::type             = dlt_gap_fill_reply_type;
 const dlt_message_type_enum dlt_block_vote_message::type         = dlt_block_vote_message_type;
 const dlt_message_type_enum dlt_timeout_vote_message::type       = dlt_timeout_vote_message_type;
+const dlt_message_type_enum dlt_block_qc_message::type           = dlt_block_qc_message_type;
 
 } // namespace network
 } // namespace graphene
