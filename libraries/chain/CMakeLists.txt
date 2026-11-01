@@ -33,9 +33,6 @@ set_source_files_properties("${hardfork_hpp_out}" PROPERTIES GENERATED TRUE)
 # Include the binary include dir
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
 
-# Variable used below in add_library
-set(hardfork_hpp_file "${hardfork_hpp_out}")
-
 ## SORT .cpp by most likely to change / break compile
 
 add_library(graphene_chain ${VIZ_LIBRARY_TYPE}
@@ -104,10 +101,12 @@ add_library(graphene_chain ${VIZ_LIBRARY_TYPE}
             include/graphene/chain/paid_subscription_objects.hpp
             include/graphene/chain/pm_objects.hpp
 
-            ${hardfork_hpp_file}
             )
 
-add_dependencies(graphene_chain graphene_protocol graphene_utilities build_hardfork_hpp)
+# Only the generated header is a real build-order dependency. Library-to-library order comes
+# from target_link_libraries; an explicit add_dependencies here would defeat
+# CMAKE_OPTIMIZE_DEPENDENCIES and make every chain TU wait for protocol to finish archiving.
+add_dependencies(graphene_chain build_hardfork_hpp)
 target_link_libraries(graphene_chain graphene_protocol graphene_utilities fc chainbase appbase ${PATCH_MERGE_LIB})
 target_include_directories(graphene_chain PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../")
 
