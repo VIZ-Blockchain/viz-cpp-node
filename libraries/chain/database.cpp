@@ -2910,11 +2910,25 @@ namespace graphene { namespace chain {
                 if (block_needs_parent_qc(validator_owner)) {
                     fc::optional<protocol::block_qc_certificate> cert = qc_override;
                     if (!cert) cert = parent_qc_for_next_block(validator_owner);
-                    FC_ASSERT(cert.valid(), "No QC for head #${n} yet: cannot hand over the turn",
-                              ("n", head_block_num()));
-                    FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
-                    pending_block.extensions.insert(block_header_extensions(*cert));
-                    if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
+                    // HF16 unstick (emergency): after a minute of chain-time silence a block
+                    // may go out without a parent QC -- otherwise a head nobody can certify
+                    // stops the chain for good. A QC we do hold is still attached: it costs
+                    // nothing and keeps the block certified.
+                    const bool attach_cert = cert.valid();
+                    if (!attach_cert) {
+                        FC_ASSERT(emergency_unstick_block(when),
+                                  "No QC for head #${n} yet: cannot hand over the turn",
+                                  ("n", head_block_num()));
+                        FC_ASSERT(!tc, "An unstick block carries no TC");
+                        wlog("Unstick block #${n}: no QC for head #${h}, the chain has stood still for ${g}s",
+                             ("n", head_block_num() + 1)("h", head_block_num())
+                             ("g", (when - head_block_time()).to_seconds()));
+                    }
+                    if (attach_cert) {
+                        FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
+                        pending_block.extensions.insert(block_header_extensions(*cert));
+                        if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
+                    }
 
                     // Double-vote proofs: newest round per validator that the chain has
                     // not punished yet; a few per block keeps headers small.
@@ -7324,15 +7338,41 @@ namespace graphene { namespace chain {
                 _timeout_vote_journal->append(round, high_qc_round, validator, raw_signature);
             }
 
-            if (votes.size() >= quorum && _timeout_certs.find(round) == _timeout_certs.end()) {
-                protocol::block_timeout_certificate tc;
-                tc.round = round;
-                tc.votes.insert(votes.begin(), votes.end());
-                ilog("TC formed for round ${r}: ${k}/${q} timeout votes", ("r", round)("k", votes.size())("q", quorum));
-                _timeout_certs.emplace(round, std::move(tc));
-                // A node that crashes right after producing the block carrying this certificate
-                // must find the votes behind it on the next start.
-                if (_timeout_vote_journal) _timeout_vote_journal->flush();
+            // TC assembly (emergency, 01.11.2026). A TC is usable only if EVERY vote in it
+            // names a QC round at most the round of the parent QC the producer attaches
+            // (validate_block_qc); one vote above that poisons the whole certificate. The
+            // old code froze the TC at the first quorum, so 12 honest votes plus 3 from
+            // nodes that held a QC of the head made that head unskippable forever -- and
+            // mainnet stood on it for 5 h 20 min. Assemble from the quorum-compatible
+            // subset instead: order the votes by the round they claim and cut where a
+            // quorum fits below the cut. A later vote that lowers the cut replaces the
+            // certificate, so a poisoned TC heals as soon as honest votes arrive.
+            if (votes.size() >= quorum) {
+                std::vector<std::pair<uint32_t, account_name_type>> by_round;
+                by_round.reserve(votes.size());
+                for (const auto &v : votes) by_round.emplace_back(v.second.high_qc_round, v.first);
+                std::sort(by_round.begin(), by_round.end());
+                const uint32_t cut = by_round[quorum - 1].first;   // smallest round a quorum fits under
+                auto held = _timeout_certs.find(round);
+                // Lower claimed round = usable against a lower parent QC = strictly more
+                // useful, so replace the certificate whenever the cut improves.
+                bool better = held == _timeout_certs.end();
+                if (!better) {
+                    for (const auto &tv : held->second.votes)
+                        if (tv.second.high_qc_round > cut) { better = true; break; }
+                }
+                if (better) {
+                    protocol::block_timeout_certificate tc;
+                    tc.round = round;
+                    for (const auto &v : by_round)
+                        if (v.first <= cut) tc.votes.emplace(v.second, votes.at(v.second));
+                    ilog("TC formed for round ${r}: ${k}/${q} timeout votes, highest claimed QC round ${m}",
+                         ("r", round)("k", tc.votes.size())("q", quorum)("m", cut));
+                    _timeout_certs[round] = std::move(tc);
+                    // A node that crashes right after producing the block carrying this
+                    // certificate must find the votes behind it on the next start.
+                    if (_timeout_vote_journal) _timeout_vote_journal->flush();
+                }
             }
             return true;
         }
@@ -7571,6 +7611,16 @@ namespace graphene { namespace chain {
             return true;
         }
 
+        bool database::emergency_unstick_block(const fc::time_point_sec &when) const {
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dgp = get_dynamic_global_properties();
+            if (dgp.emergency_consensus_active) return false;   // the committee path owns that mode
+            if (dgp.head_block_number < 1) return false;
+            const fc::time_point_sec head_time = head_block_time();
+            if (when <= head_time) return false;
+            return (when - head_time).to_seconds() >= CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC;
+        }
+
         fc::optional<protocol::block_qc_certificate> database::parent_qc_for_next_block(const account_name_type &producer) const {
             fc::optional<protocol::block_qc_certificate> result;
             if (!block_needs_parent_qc(producer)) return result;
@@ -7719,7 +7769,13 @@ namespace graphene { namespace chain {
                 FC_ASSERT(tc == nullptr, "TC in block #${n} before HF16", ("n", next_block.block_num()));
                 return;
             }
-            if (block_needs_parent_qc(next_block.validator)) {
+            // HF16 unstick (emergency, no hardfork): after CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC
+            // of chain time with no block, a block may be born without the parent's QC. The
+            // rule reads only chain data (the parent's timestamp), so every node reaches the
+            // same verdict, and the block header time bound keeps a producer from claiming a
+            // gap that has not happened.
+            const bool unstick = emergency_unstick_block(next_block.timestamp);
+            if (block_needs_parent_qc(next_block.validator) && !unstick) {
                 FC_ASSERT(cert != nullptr,
                           "Block #${n} by ${w} carries no QC of its parent (produced by ${p})",
                           ("n", next_block.block_num())("w", next_block.validator)
