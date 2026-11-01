@@ -11,6 +11,7 @@
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/db_with.hpp>
+#include <graphene/chain/emergency_exit.hpp>
 #include <graphene/chain/evaluator_registry.hpp>
 #include <graphene/chain/index.hpp>
 #include <graphene/chain/chain_evaluator.hpp>
@@ -3920,8 +3921,18 @@ namespace graphene { namespace chain {
 
 
                 // EXIT CONDITION: enough real validators have re-enabled.
-                // When >= 75% of schedule slots are real validators (not committee),
-                // the network has recovered and can sustain normal consensus.
+                //
+                // What this number actually is: a constant derived from CHAIN_MAX_VALIDATORS
+                // (21 * 75% -> 15), NOT a share of the validators that currently hold a key.
+                // Two consequences, both read off the code rather than intended by it:
+                //   * the hybrid override above pads the schedule to CHAIN_MAX_VALIDATORS slots,
+                //     so at this point the schedule always numbers 21 and 15 of them is 71%, not
+                //     ">= 75%" (21 * 7500 / 10000 truncates 15.75 down to 15);
+                //   * if fewer than 15 validators hold a signing key, the exit never fires, even
+                //     though normal consensus afterwards would only need emergency_quorum_for(n)
+                //     of them (10 for 14 validators).
+                // Changing the number changes the moment the chain leaves emergency and therefore
+                // needs a hardfork gate; this comment only states what the code does today.
                 uint32_t exit_threshold = (CHAIN_MAX_VALIDATORS * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
                 if (real_validator_slots >= exit_threshold) {
                     modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
@@ -7228,9 +7239,10 @@ namespace graphene { namespace chain {
         //remove old block post validation objects
         //remove old blocks from post validation list if it is full (CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
         uint32_t database::block_qc_quorum(uint32_t num_scheduled) {
-            const uint32_t two_thirds_plus = num_scheduled * 2 / 3 + 1;
-            const uint32_t threshold = uint32_t(uint64_t(num_scheduled) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT);
-            return std::max(two_thirds_plus, threshold);
+            // The expression lives in emergency_exit.hpp so that the exit-from-emergency
+            // threshold can be stated as the very same function (and unit-tested without a
+            // database). Moving it does not change a single result.
+            return emergency_quorum_for(num_scheduled);
         }
 
         bool database::verify_block_vote(uint32_t block_num, const block_id_type &block_id, uint32_t round,

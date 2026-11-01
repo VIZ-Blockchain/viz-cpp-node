@@ -211,8 +211,20 @@ jobs:
                 -DCHAINBASE_CHECK_LOCKING=FALSE \
                 -DBUILD_TESTNET=TRUE \
                 -DBUILD_CONSENSUS_TESTS=ON "${multi[@]}" ..
-          make -j"$(nproc)" consensus_sim_tests
+          # chain_exit_threshold is header-only and needs no chain link, but it MUST be
+          # built here: the exit threshold is the one place where a CHAIN_* literal changes
+          # meaning between the production and the testnet config, and this job is the only
+          # one that configures with -DBUILD_TESTNET. Building only consensus_sim_tests
+          # would leave that build unverified (the ctest sweep in the other job uses the
+          # production config).
+          make -j"$(nproc)" consensus_sim_tests chain_exit_threshold_tests
           ccache -s
+
+      - name: Run the exit-threshold test (testnet config)
+        run: |
+          set -euo pipefail
+          cd build
+          ctest -R '^chain_exit_threshold$' --output-on-failure
 
       - name: Run the simulator
         run: |
