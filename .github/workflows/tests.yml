@@ -57,6 +57,8 @@ jobs:
           python3 tests/chain/test_hf9_schedule_guard.py
           python3 tests/chain/test_hf9_schedule_guard.py --selftest
           python3 tests/chain/test_snapshot_floor.py --selftest
+          python3 tests/chain/test_snapshot_import_cause.py
+          python3 tests/chain/test_snapshot_import_cause.py --selftest
           python3 tests/chain/test_snapshot_startup_guard.py --selftest
           python3 tests/chain/test_timeout_vote_journal.py
           python3 tests/chain/test_timeout_vote_journal.py --selftest
