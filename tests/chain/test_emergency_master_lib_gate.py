@@ -57,6 +57,10 @@ MUTATIONS = {
          'v.peers_above_our_lib = (uint32_t)_peer_states.size();')]),
     'cache-counts-disconnected-peers': ('node_cpp', [
         ('if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;', '')]),
+    'cache-counts-any-peer': ('node_cpp', [
+        ('        bool witness = _trusted_peers.count(state.endpoint) > 0;\n'
+         '        for (const auto& sep : _seed_nodes) if (sep == state.endpoint) { witness = true; break; }\n'
+         '        if (!witness) continue;\n', '')]),
     'cache-counts-silent-peers': ('node_cpp', [
         ('if (state.peer_lib_num == 0) continue;  // peer advertised nothing yet', '')]),
     'cache-not-refreshed-on-hello': ('node_cpp', [
@@ -101,7 +105,13 @@ MUTATIONS = {
     'escalation-answer-not-returned': ('validator_cpp', [
         ('                    return recovery_started;', '                    return true;')]),
     'escalation-never-resets': ('validator_cpp', [
+        ('                                _master_gate_escalated = false;\n', ''),
         ('                                _master_gate_escalated = false;\n', '')]),
+    'refused-recovery-never-retried': ('validator_cpp', [
+        ('                                     ("s", EMERGENCY_PEER_LIB_ESCALATION_SEC)("h", stuck_head));\n'
+         '                                _master_gate_since = fc::time_point::now();\n'
+         '                                _master_gate_escalated = false;\n',
+         '                                     ("s", EMERGENCY_PEER_LIB_ESCALATION_SEC)("h", stuck_head));\n')]),
 }
 
 
@@ -227,6 +237,11 @@ def wiring_problems(**files):
         for field in ('_peers_above_our_lib', '_best_peer_lib', '_cached_our_lib'):
             if field + '.store(' not in r:
                 problems.append('refresh_peer_lib_cache() never stores %s' % field)
+        if '_seed_nodes' not in r or '_trusted_peers' not in r:
+            problems.append('refresh_peer_lib_cache() counts any ACTIVE peer: the LIB claim is an '
+                            'unsigned number in hello/fork_status, so two inbound connections could '
+                            'halt the emergency master; only configured seeds and operator-trusted '
+                            'endpoints may witness')
 
     # Refreshed wherever a claim can change, and nowhere else in a way that skips it.
     for signature, label in (
@@ -323,6 +338,11 @@ def wiring_problems(**files):
         if '_master_gate_escalated = false;' not in gb:
             problems.append('a new stuck head does not reset _master_gate_escalated: one fork would '
                             'spend the snapshot escalation for the lifetime of the process')
+        refused_at = gate_block.find('no forced recovery could be started')
+        if refused_at < 0 or '_master_gate_escalated = false;' not in gb[refused_at:]:
+            problems.append('a refused forced recovery (download failed, another snapshot operation '
+                            'running) is never retried while the head stays put: the escalation is '
+                            'spent on the first refusal')
 
     return problems
 
