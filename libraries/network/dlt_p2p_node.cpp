@@ -1077,10 +1077,11 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
 dlt_hello_message dlt_p2p_node::build_hello_message() const {
     dlt_hello_message hello;
     hello.protocol_version = 1;  // keep at 1 for backward compat — node_id is read optionally by unpack_hello_compat
-    hello.head_block_id = _delegate->get_head_block_id();
-    hello.head_block_num = _delegate->get_head_block_num();
-    hello.lib_block_id = _delegate->get_lib_block_id();
-    hello.lib_block_num = _delegate->get_lib_block_num();
+    const auto position = _delegate->get_chain_position();
+    hello.head_block_id = position.head_id;
+    hello.head_block_num = position.head_num;
+    hello.lib_block_id = position.lib_id;
+    hello.lib_block_num = position.lib_num;
     hello.dlt_earliest_block = _delegate->get_dlt_earliest_block();
     hello.dlt_latest_block = _delegate->get_dlt_latest_block();
     hello.emergency_active = _delegate->is_emergency_consensus_active();

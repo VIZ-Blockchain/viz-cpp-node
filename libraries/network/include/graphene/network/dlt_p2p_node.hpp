@@ -97,11 +97,18 @@ struct dlt_peer_report {
  *  Implemented by p2p_plugin_impl to provide chain state queries
  *  and block/transaction handling. Similar to the old node_delegate.
  */
+struct dlt_chain_position {
+    block_id_type head_id, lib_id;
+    uint32_t head_num = 0, lib_num = 0;
+};
+
 class dlt_p2p_delegate {
 public:
     virtual ~dlt_p2p_delegate() = default;
 
     // ── Chain state queries ──────────────────────────────────────
+    // These four values must describe the same chain state.
+    virtual dlt_chain_position get_chain_position() const = 0;
     virtual block_id_type  get_head_block_id() const = 0;
     virtual uint32_t       get_head_block_num() const = 0;
     virtual block_id_type  get_lib_block_id() const = 0;
