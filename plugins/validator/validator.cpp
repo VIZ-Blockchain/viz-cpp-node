@@ -2294,6 +2294,10 @@ namespace graphene {
                         // peers reporting a higher LIB are an operational warning. Their numeric
                         // claims are unsigned and do not prove finality or a competing fork.
                         const auto peer_libs = p2p().get_peer_lib_view();
+                        // A concurrent cache publication made all bounded read attempts
+                        // unstable. Defer this slot instead of acting on a mixed snapshot.
+                        if (!peer_libs.consistent)
+                            return block_validation_condition::not_time_yet;
                         if (peer_libs.peers_above_our_lib >= EMERGENCY_PEER_LIB_QUORUM &&
                             peer_libs.best_peer_lib > peer_libs.our_lib) {
                             const uint32_t stuck_head = db.head_block_num();

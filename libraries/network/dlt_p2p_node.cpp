@@ -3040,9 +3040,12 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
         if (state.peer_lib_num > best) best = state.peer_lib_num;
         if (state.peer_lib_num > our_lib) above++;
     }
-    _cached_our_lib.store(our_lib, std::memory_order_release);
-    _best_peer_lib.store(best, std::memory_order_release);
-    _peers_above_our_lib.store(above, std::memory_order_release);
+    // Single writer on the P2P thread; odd means publication is in progress.
+    _peer_lib_version.fetch_add(1, std::memory_order_seq_cst);
+    _cached_our_lib.store(our_lib, std::memory_order_seq_cst);
+    _best_peer_lib.store(best, std::memory_order_seq_cst);
+    _peers_above_our_lib.store(above, std::memory_order_seq_cst);
+    _peer_lib_version.fetch_add(1, std::memory_order_seq_cst);
 }
 
 // ── Node status transitions ──────────────────────────────────────────

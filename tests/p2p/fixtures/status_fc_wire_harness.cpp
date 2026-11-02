@@ -57,6 +57,7 @@ struct dlt_p2p_node {
  std::atomic<bool> _block_processing_paused{false}; fc::time_point _last_chain_status_broadcast;
  std::set<std::string> _trusted_peers; std::vector<std::string> _seed_nodes;
  std::atomic<uint32_t> _cached_our_lib{0}, _best_peer_lib{0}, _peers_above_our_lib{0};
+ std::atomic<uint64_t> _peer_lib_version{0};
  status build_hello_message(){++build_calls;status s;s.head_block_num=150;s.lib_block_num=test_lib;return s;}
  void record_packet_result(peer_id,bool){++packets;}
  void on_dlt_fork_status(peer_id,const dlt_fork_status_message&); void refresh_peer_lib_cache();

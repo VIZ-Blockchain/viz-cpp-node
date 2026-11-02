@@ -53,6 +53,7 @@ jobs:
           python3 tests/p2p/test_slot_interval.py
           python3 tests/p2p/test_vote_ingress.py
           python3 tests/p2p/test_hello_atomic_state.py
+          python3 tests/p2p/test_peer_lib_cache_snapshot.py
           python3 tests/p2p/test_periodic_status_broadcast.py
           python3 tests/p2p/test_periodic_status_broadcast.py --receiver-source tests/p2p/fixtures/status_receiver_52fab7b8.cpp
           python3 tests/p2p/test_periodic_status_slow_peer.py

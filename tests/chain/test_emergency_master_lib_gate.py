@@ -54,11 +54,14 @@ FILES = {
 }
 
 MUTATIONS = {
+    'gate-ignores-unstable-cache': ('validator_cpp', [
+        ('                        if (!peer_libs.consistent)\n'
+         '                            return block_validation_condition::not_time_yet;\n', '')]),
     'gate-overstates-finality': ('validator_cpp', [
         ('peer LIB claims are not verified finality proofs',
          'network finality is proven')]),
     'getter-walks-the-peer-map': ('node_hpp', [
-        ('v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);',
+        ('v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_seq_cst);',
          'v.peers_above_our_lib = (uint32_t)_peer_states.size();')]),
     'cache-counts-disconnected-peers': ('node_cpp', [
         ('if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;', '')]),
@@ -296,6 +299,12 @@ def wiring_problems(**files):
     elif gate_at >= 0 and not (master_at < gate_at < skipped_at):
         problems.append('the peer-LIB gate is not inside the emergency master branch of the DLT '
                         'fork check: a slave already has the isolation scan, the master does not')
+
+    if gate_at >= 0:
+        gate_condition_at = val_masked.find('peer_libs.peers_above_our_lib', gate_at)
+        precondition = val_masked[gate_at:gate_condition_at] if gate_condition_at >= 0 else ''
+        if not re.search(r'if\s*\(\s*!peer_libs\.consistent\s*\)\s*return\s+block_validation_condition::not_time_yet\s*;', precondition):
+            problems.append('an unstable peer-LIB snapshot must defer production before testing the claims')
 
     helper = method(val, 'bool request_forced_snapshot_recovery()')
     if helper is None:

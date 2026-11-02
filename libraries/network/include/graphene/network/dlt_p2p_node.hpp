@@ -261,12 +261,20 @@ public:
         uint32_t peers_above_our_lib = 0;  ///< active seed/trusted peers whose LIB is strictly above ours
         uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active seed/trusted peer
         uint32_t our_lib = 0;              ///< our LIB at the last refresh
+        bool consistent = true;           ///< false only if a concurrent update prevented a stable read
     };
     peer_lib_view get_peer_lib_view() const noexcept {
+        for (unsigned attempt = 0; attempt < 4; ++attempt) {
+            const auto version = _peer_lib_version.load(std::memory_order_seq_cst);
+            if (version & 1) continue;
+            peer_lib_view v;
+            v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_seq_cst);
+            v.best_peer_lib = _best_peer_lib.load(std::memory_order_seq_cst);
+            v.our_lib = _cached_our_lib.load(std::memory_order_seq_cst);
+            if (_peer_lib_version.load(std::memory_order_seq_cst) == version) return v;
+        }
         peer_lib_view v;
-        v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);
-        v.best_peer_lib = _best_peer_lib.load(std::memory_order_acquire);
-        v.our_lib = _cached_our_lib.load(std::memory_order_acquire);
+        v.consistent = false;
         return v;
     }
 
@@ -706,6 +714,7 @@ private:
     std::atomic<uint32_t>           _peers_above_our_lib{0};
     std::atomic<uint32_t>           _best_peer_lib{0};
     std::atomic<uint32_t>           _cached_our_lib{0};
+    std::atomic<uint64_t>           _peer_lib_version{0};
     void                            refresh_peer_lib_cache();
 
     // ── Incoming IP blocklist ─────────────────────────────────────
