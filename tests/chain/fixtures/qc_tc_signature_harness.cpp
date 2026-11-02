@@ -159,6 +159,9 @@ int main(){
  auto bad_qc=qc;bad_qc.signatures.begin()->second=vote;
  auto corrupt_qc=child;corrupt_qc.extensions.clear();corrupt_qc.extensions.insert(block_header_extensions(bad_qc));corrupt_qc.extensions.insert(block_header_extensions(tc));
  REQUIRE(!check(corrupt_qc));
+ // Reindex / checkpoint paths deliberately skip signature checks. They cannot
+ // be used to authenticate certificates from an untrusted source.
+ q.validate_block_qc(corrupt_qc,database::skip_validator_signature);
  auto no_qc=child;no_qc.extensions.clear();no_qc.extensions.insert(block_header_extensions(tc));REQUIRE(!check(no_qc));
  auto late_tc=tc;late_tc.round=204;
  auto invalid_window=child;invalid_window.extensions.clear();invalid_window.extensions.insert(block_header_extensions(qc));invalid_window.extensions.insert(block_header_extensions(late_tc));
@@ -169,6 +172,10 @@ int main(){
  auto bad_tc=tc;bad_tc.votes.begin()->second.signature=vote;
  auto corrupt=child;corrupt.extensions.clear();corrupt.extensions.insert(block_header_extensions(qc));corrupt.extensions.insert(block_header_extensions(bad_tc));
  REQUIRE(!check(corrupt));
+ q.validate_block_qc(corrupt,database::skip_validator_signature);
+ bool rejected_shape_with_skip=false;
+ try {q.validate_block_qc(fewer,database::skip_validator_signature);} catch(const fc::exception&) {rejected_shape_with_skip=true;}
+ REQUIRE(rejected_shape_with_skip);
  q.hf18=true; REQUIRE(!check(child));
  auto modern=child;modern.extensions.clear();modern.extensions.insert(block_header_extensions(qc));modern.extensions.insert(block_header_extensions(tc2));
  REQUIRE(check(modern));
