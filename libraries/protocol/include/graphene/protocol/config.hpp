@@ -8,7 +8,7 @@
 // not the revision; 4.3.0 here must stay byte-equal to CHAIN_HARDFORK_17_VERSION in
 // hardfork.d/17.hf, which database_hardfork.cpp asserts. See hardfork.d/17.hf for the rule and
 // the activation-time warning. (4.2.0 was HF16: BFT finality, 1 s slots, DAO cap, fee freeze.)
-#define CHAIN_VERSION                         (version(4, 3, 0))
+#define CHAIN_VERSION                         (version(4, 3, 1))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"

@@ -357,7 +357,7 @@ MUTATIONS = {
          '#define CHAIN_SCHEMA_VERSION                  uint32_t(15)'),
     ],
     'chain-version-does-not-advertise-hf17': [
-        ('define CHAIN_VERSION                         (version(4, 3, 0))',
+        ('define CHAIN_VERSION                         (version(4, 3, 1))',
          'define CHAIN_VERSION                         (version(4, 2, 0))'),
     ],
     'num-hardforks-not-bumped': [
