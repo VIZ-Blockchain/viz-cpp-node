@@ -117,6 +117,15 @@ namespace graphene { namespace plugins { namespace snapshot {
         /// True while a restore requested through restore_snapshot_now() is running.
         bool is_restoring() const;
 
+        /// Ask the plugin to replace the state from a snapshot as soon as possible: download the
+        /// newest snapshot a trusted peer offers (a local one is always behind our head, so it
+        /// cannot repair a fork), wipe, import, replay dlt_block_log and resume P2P. Starts the
+        /// recovery thread even when --enable-stalled-sync-detection is off and skips the
+        /// P2P-first stage. Asynchronous: returns true once the request is armed, false when no
+        /// recovery can start (no trusted peers, one already running). Used by the DLT
+        /// minority-fork escalation.
+        bool request_forced_recovery();
+
         /// Returns the list of trusted-snapshot-peer endpoints (IP:port strings)
         /// Used by the P2P plugin to apply reduced soft-ban duration for trusted peers
         const std::vector<std::string>& get_trusted_snapshot_peers() const;

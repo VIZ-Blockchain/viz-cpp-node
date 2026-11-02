@@ -1289,6 +1289,10 @@ public:
     uint32_t _last_stalled_check_head = 0;  // track head for emergency follower detection
     std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
     std::atomic<bool> _restore_in_progress{false}; // operator-requested restore (admin API)
+    // Set by request_forced_recovery() (validator's DLT minority-fork escalation), consumed by
+    // the stalled-sync check thread the moment it looks at the timer: the request must not wait
+    // for the timeout, because a state re-deriving the same fork never "arrives".
+    std::atomic<bool> forced_recovery_requested{false};
     fc::time_point sync_ended_at;  // when is_syncing last transitioned to false
     std::atomic<bool> cancel_snapshot_requested{false};  // cancellation flag for in-progress snapshot
 
@@ -3178,14 +3182,25 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             auto elapsed = now - last_block_received_time;
             auto timeout = fc::minutes(stalled_sync_timeout_minutes);
 
-            if (elapsed > timeout) {
+            // Forced recovery (validator's DLT minority-fork escalation): run the download
+            // path now and let it override the "healthy node" skips below — emergency gating,
+            // "head is advancing", "we are master". Those all assume that waiting produces
+            // blocks; a state re-deriving the same fork has nothing to wait for. Measured
+            // 31.10.2026: an hour of resync ticks at 250 ms with the head never moving.
+            const bool forced = forced_recovery_requested.exchange(false, std::memory_order_acq_rel);
+            if (forced) {
+                wlog("Forced snapshot recovery requested — skipping the waiting stages and "
+                     "downloading a fresh snapshot from trusted peers");
+            }
+
+            if (elapsed > timeout || forced) {
                 bool emergency = false;
                 try {
                     db.with_weak_read_lock([&]() {
                         emergency = db.get_dynamic_global_properties().emergency_consensus_active;
                     });
                 } catch (...) {}
-                if (emergency) {
+                if (emergency && !forced) {
                     uint32_t current_head = 0;
                     try {
                         db.with_weak_read_lock([&]() {
@@ -3283,7 +3298,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     }
                 }
 
-                if (!_p2p_recovery_attempted) {
+                if (!_p2p_recovery_attempted && !forced) {
                     std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
                               << " minutes (head: " << head_block << "). Trying P2P recovery first...\n";
                     wlog("Stalled sync detected: no blocks for ${e} min, head=${h}. "
@@ -5225,18 +5240,13 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                 ("n", my->db.head_block_num())("t", elapsed));
         };
 
-        // "Is there a state we could be replaced with, and is it ahead?" A recovery decision
-        // (validator's DLT minority-fork escalation) must not guess: attempt_auto_recovery()
-        // on a directory with no snapshot ends in shutdown, so the caller asks this first.
-        // block_num is parsed from the standard file name; 0 means "not a usable snapshot",
-        // the same convention list_snapshots() uses.
-        chain_plug.snapshot_available_block_callback = [this]() -> uint32_t {
-            try {
-                const auto snaps = list_snapshots();
-                return snaps.empty() ? 0u : snaps.front().block_num;
-            } catch (...) {
-                return 0u;
-            }
+        // The validator's DLT minority-fork escalation asks the recovery decision here instead
+        // of calling attempt_auto_recovery() itself: a node's own periodic snapshots are always
+        // behind its head, so a local snapshot can never replace a stuck state — the state has
+        // to come from a trusted peer. This callback starts that download path and reports
+        // whether it could be started at all; the reason for a refusal is logged here.
+        chain_plug.snapshot_force_recovery_callback = [this]() {
+            return request_forced_recovery();
         };
     }
 
@@ -5829,6 +5839,34 @@ bool snapshot_plugin::restore_snapshot_now(const std::string& path, std::string&
 
 bool snapshot_plugin::is_restoring() const {
     return my && my->_restore_in_progress.load(std::memory_order_acquire);
+}
+
+bool snapshot_plugin::request_forced_recovery() {
+    if (!my) {
+        elog("Forced snapshot recovery refused: snapshot plugin not initialized");
+        return false;
+    }
+    if (my->trusted_snapshot_peers.empty()) {
+        // Without peers there is nothing to download, and our own snapshots are behind our
+        // head by construction — importing one only replays dlt_block_log back into the same
+        // state. Say so instead of returning a false "recovery started".
+        elog("Forced snapshot recovery refused: no trusted snapshot peers configured");
+        return false;
+    }
+    if (my->_restore_in_progress.load(std::memory_order_acquire) ||
+        my->_snapshot_reloading.load(std::memory_order_acquire) ||
+        my->snapshot_in_progress.load(std::memory_order_acquire)) {
+        wlog("Forced snapshot recovery deferred: another snapshot operation is in progress");
+        return false;
+    }
+    my->forced_recovery_requested.store(true, std::memory_order_release);
+    // Start the check thread even when --enable-stalled-sync-detection is off: on the nodes
+    // that need this (emergency consensus, stalled-sync detection disabled) it does not exist
+    // otherwise. Idempotent — returns immediately when the check is already running.
+    my->start_stalled_sync_detection();
+    ilog(CLOG_YELLOW "Forced snapshot recovery requested: downloading a fresh snapshot from "
+         "trusted peers instead of waiting for the stalled-sync timeout" CLOG_RESET);
+    return true;
 }
 
 const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() const {
