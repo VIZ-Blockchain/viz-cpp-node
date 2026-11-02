@@ -378,6 +378,20 @@ namespace graphene {
                 fc::time_point _fork_loop_since;
                 bool _fork_escalated = false;
 
+                // Emergency-master peer-LIB gate (see maybe_validate_block). The master is
+                // exempt from the isolation scan by design, so this is the only place that
+                // can notice the network moved to another chain while we kept producing.
+                // Two peers must make the claim before it counts: one peer's LIB can be a
+                // stale snapshot from before its own reorg, two agreeing ones cannot be
+                // produced by a single node with a key.
+                static constexpr uint32_t EMERGENCY_PEER_LIB_QUORUM = 2;
+                // A head that keeps coming back after a rewind needs the state REPLACED, not
+                // rewound (same reasoning as FORK_ESCALATION_SEC below).
+                static constexpr int64_t EMERGENCY_PEER_LIB_ESCALATION_SEC = 60;
+                uint32_t _master_gate_head = 0;          // head the quorum was first seen on
+                fc::time_point _master_gate_since;       // when that head became stuck
+                bool _master_gate_escalated = false;     // one forced snapshot per stuck head
+
                 // Operator override (testnet / single-operator fork): when set via
                 // 'disable-minority-fork-detection', both the standard and the DLT
                 // minority-fork checks are skipped entirely.  On a fork where the
@@ -2212,8 +2226,70 @@ namespace graphene {
                             }
                         }
                     } else {
+                        // ── Emergency master: producing is not a licence to ignore the peers ──
+                        // 02.11.2026, api.viz.world: after a 6-minute stall this node produced
+                        // committee blocks on its own tip while the network resumed on another
+                        // branch, and the public API served the minority fork for ~18 minutes.
+                        // The exemption above is exactly why nothing caught it: "all blocks are
+                        // ours" is expected FROM the master, and the master's head keeps moving,
+                        // so the stalled-sync escalation cannot fire either. Peers are the only
+                        // witnesses left, and their LIB is the one part of the claim that cannot
+                        // be invented without two thirds of the validators: several peers
+                        // finalising PAST OUR LIB means the network is building elsewhere.
+                        const auto peer_libs = p2p().get_peer_lib_view();
+                        if (peer_libs.peers_above_our_lib >= EMERGENCY_PEER_LIB_QUORUM &&
+                            peer_libs.best_peer_lib > peer_libs.our_lib) {
+                            const uint32_t stuck_head = db.head_block_num();
+                            elog("EMERGENCY MASTER: ${n} peer(s) report LIB #${pl} above ours #${ol} — "
+                                 "refusing to extend our tip (head=#${h}) with a committee block: the "
+                                 "network is finalising a chain we are not on",
+                                 ("n", peer_libs.peers_above_our_lib)("pl", peer_libs.best_peer_lib)
+                                 ("ol", peer_libs.our_lib)("h", stuck_head));
+
+                            // Rewind first (the fork point is usually still below our LIB); if the
+                            // same head keeps coming back, the state itself is the problem and only
+                            // a replacement fixes it — same escalation as the slave path above.
+                            if (stuck_head != _master_gate_head) {
+                                _master_gate_head = stuck_head;
+                                _master_gate_since = fc::time_point::now();
+                                _master_gate_escalated = false;
+                            } else if (!_master_gate_escalated &&
+                                       (fc::time_point::now() - _master_gate_since).to_seconds() >=
+                                           EMERGENCY_PEER_LIB_ESCALATION_SEC) {
+                                _master_gate_escalated = true;
+                                bool recovery_started = false;
+                                try {
+                                    if (chain().snapshot_force_recovery_callback)
+                                        recovery_started = chain().snapshot_force_recovery_callback();
+                                } catch (const fc::exception& e) {
+                                    elog("Forced snapshot recovery could not be requested: ${e}",
+                                         ("e", e.to_detail_string()));
+                                } catch (...) {
+                                    elog("Forced snapshot recovery could not be requested: unknown exception");
+                                }
+                                if (recovery_started) {
+                                    elog("EMERGENCY MASTER: still behind peer LIB after ${s}s at head #${h}; "
+                                         "replacing the state with a fresh snapshot from trusted peers",
+                                         ("s", EMERGENCY_PEER_LIB_ESCALATION_SEC)("h", stuck_head));
+                                    _minority_fork_recovering = true;
+                                    _minority_fork_recovery_start = fc::time_point::now();
+                                    return block_validation_condition::minority_fork;
+                                }
+                                wlog("EMERGENCY MASTER: still behind peer LIB after ${s}s at head #${h}, "
+                                     "but no forced recovery could be started (see the snapshot plugin) — "
+                                     "staying on P2P resync",
+                                     ("s", EMERGENCY_PEER_LIB_ESCALATION_SEC)("h", stuck_head));
+                            }
+
+                            p2p().resync_from_lib(true /*force_emergency*/);
+                            _minority_fork_recovering = true;
+                            _minority_fork_recovery_start = fc::time_point::now();
+                            return block_validation_condition::minority_fork;
+                        }
+
                         if (db._debug_block_production) {
-                            ilog("DEBUG_CRASH: DLT minority fork check SKIPPED - we are emergency master");
+                            ilog("DEBUG_CRASH: DLT minority fork check SKIPPED - we are emergency master "
+                                 "(no peer reports a LIB above ours)");
                         }
                     }
                 }

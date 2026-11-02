@@ -881,6 +881,15 @@ graphene::network::dlt_peer_report p2p_plugin::get_peer_report_sync() const {
     }).wait();
 }
 
+graphene::network::dlt_p2p_node::peer_lib_view p2p_plugin::get_peer_lib_view() const {
+    // No thread hop: the node keeps these in atomics precisely so a producer can
+    // read them inside a slot. An empty/absent node reads as "nobody is ahead",
+    // which can only leave an emergency master producing exactly as it did before
+    // this gate existed.
+    return my && my->node ? my->node->get_peer_lib_view()
+                          : graphene::network::dlt_p2p_node::peer_lib_view();
+}
+
 void p2p_plugin::reconnect_seeds() {
     my->p2p_thread.async([this]() {
         my->node->reconnect_seeds();

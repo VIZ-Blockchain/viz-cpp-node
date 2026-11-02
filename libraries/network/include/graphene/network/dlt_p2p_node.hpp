@@ -230,6 +230,34 @@ public:
     dlt_fork_status get_fork_status() const { return _fork_status; }
     bool is_on_majority_fork() const;
 
+    // ── Peer last-irreversible-block corroboration (read from ANY thread) ──
+    // How many connected peers report a LIB above ours, and the best such claim.
+    // A peer's LIB says two thirds of ITS validators finalised that height, and it
+    // is the one part of a peer's claim that a lone node cannot manufacture by
+    // simply producing blocks. Several peers agreeing on a LIB above ours therefore
+    // means the network is finalising a chain we are not on.
+    //
+    // The emergency master consults this before signing a committee block. It is
+    // exempt from the "last N blocks are all ours" isolation scan by design (every
+    // block IS ours), and its own head keeps moving, so neither the isolation scan
+    // nor the stalled-sync escalation can see that the network went elsewhere --
+    // measured 02.11.2026: api.viz.world served a minority committee fork for 18 min.
+    //
+    // Pure atomics: safe on the witness production thread, no p2p-thread hop. The
+    // values are refreshed on the p2p thread whenever a peer's claim changes.
+    struct peer_lib_view {
+        uint32_t peers_above_our_lib = 0;  ///< active peers whose LIB is strictly above ours
+        uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active peer
+        uint32_t our_lib = 0;              ///< our LIB at the last refresh
+    };
+    peer_lib_view get_peer_lib_view() const noexcept {
+        peer_lib_view v;
+        v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);
+        v.best_peer_lib = _best_peer_lib.load(std::memory_order_acquire);
+        v.our_lib = _cached_our_lib.load(std::memory_order_acquire);
+        return v;
+    }
+
     // ── Operator control (admin API) ─────────────────────────────
     // All three must be called on the P2P thread: they touch the peer maps.
     //
@@ -646,6 +674,17 @@ private:
     // Atomic: written by snapshot/P2P thread and watchdog (th_0),
     // read by witness production loop (th_0).
     std::atomic<bool>               _catchup_after_pause{false};
+
+    // ── Peer LIB corroboration (see get_peer_lib_view above) ─────
+    // Written ONLY on the P2P thread (hello, fork_status, disconnect refresh);
+    // read from the witness production thread through get_peer_lib_view().
+    // Stale-but-higher is safe in one direction only: a peer that drops has its
+    // value dropped with it in refresh_peer_lib_cache(), so a vanished peer cannot
+    // keep blocking production forever.
+    std::atomic<uint32_t>           _peers_above_our_lib{0};
+    std::atomic<uint32_t>           _best_peer_lib{0};
+    std::atomic<uint32_t>           _cached_our_lib{0};
+    void                            refresh_peer_lib_cache();
 
     // ── Incoming IP blocklist ─────────────────────────────────────
     // IPs that sent oversized/malformed messages are blocked temporarily

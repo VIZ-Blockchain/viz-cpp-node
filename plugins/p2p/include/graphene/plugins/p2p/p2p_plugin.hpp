@@ -120,6 +120,16 @@ namespace graphene {
                 uint32_t clear_banned_peers_sync();
                 graphene::network::dlt_peer_report get_peer_report_sync() const;
 
+                /**
+                 * How many connected peers report a last-irreversible block above ours.
+                 *
+                 * Direct (not posted to the P2P thread) and lock-free: the values live in
+                 * atomics the P2P thread keeps up to date, so the witness production loop
+                 * can consult them inside a slot without waiting on the network thread.
+                 * See dlt_p2p_node::get_peer_lib_view for why LIB and not head.
+                 */
+                graphene::network::dlt_p2p_node::peer_lib_view get_peer_lib_view() const;
+
                 bool is_isolated_peers() const;
 
                 /**
