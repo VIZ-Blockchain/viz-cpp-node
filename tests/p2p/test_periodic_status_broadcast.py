@@ -5,23 +5,30 @@ This tests sender and receiver methods, timer and snapshot-pause with fake peers
 not sockets, rollout to old nodes, or peer authentication. Requires C++17.
 """
 from pathlib import Path
+import argparse
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 source = (ROOT / 'libraries/network/dlt_p2p_node.cpp').read_text()
-def method(signature):
-    start = source.index(signature)
-    pos = source.index('{', start) + 1
+parser = argparse.ArgumentParser()
+parser.add_argument('--receiver-source', type=Path,
+                    help='C++ source of another version to use as the receiver')
+args = parser.parse_args()
+receiver_source = args.receiver_source.read_text() if args.receiver_source else source
+
+def method(text, signature):
+    start = text.index(signature)
+    pos = text.index('{', start) + 1
     depth = 1
     while depth:
-        depth += (source[pos] == '{') - (source[pos] == '}')
+        depth += (text[pos] == '{') - (text[pos] == '}')
         pos += 1
-    return source[start:pos]
+    return text[start:pos]
 
-broadcast = method('void dlt_p2p_node::broadcast_chain_status() {')
-periodic = method('void dlt_p2p_node::periodic_chain_status() {')
-receive = method('void dlt_p2p_node::on_dlt_fork_status(peer_id peer, const dlt_fork_status_message& msg) {')
+broadcast = method(source, 'void dlt_p2p_node::broadcast_chain_status() {')
+periodic = method(source, 'void dlt_p2p_node::periodic_chain_status() {')
+receive = method(receiver_source, 'void dlt_p2p_node::on_dlt_fork_status(peer_id peer, const dlt_fork_status_message& msg) {')
 
 prefix = r'''
 #include <map>
