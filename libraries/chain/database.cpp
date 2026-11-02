@@ -7995,6 +7995,12 @@ namespace graphene { namespace chain {
                     FC_ASSERT(protocol::block_header::num_from_id(qc.block_id) == qc.block_num &&
                               qc.block_num < b.block_num() && qc.round < round_of(b.timestamp),
                               "Invalid fork QC height/round");
+                    // The full validator allows only the parent or the late-QC
+                    // grandparent. Parent identity is already available here.
+                    const uint32_t distance = b.block_num() - qc.block_num;
+                    FC_ASSERT(distance == 1 || distance == 2, "Fork QC is too far behind");
+                    FC_ASSERT(distance != 1 || qc.block_id == b.previous,
+                              "Fork parent QC certifies a different block");
                     for (const auto &v : qc.signatures)
                         FC_ASSERT(verify_block_vote(qc.block_num, qc.block_id, qc.round, v.first, v.second),
                                   "Invalid fork QC vote");
@@ -8024,6 +8030,8 @@ namespace graphene { namespace chain {
                 }
             }
             FC_ASSERT(!tcs || qcs, "Fork TC without QC");
+            FC_ASSERT(!tcs || b.block_num() - admitted_qc->block_num == 1,
+                      "Fork late-QC fallback cannot carry a TC");
             // These relationships depend only on the certificates in this
             // signed header, not on the state of the competing branch. Reject
             // an incompatible TC before it can prioritize a fork and trigger

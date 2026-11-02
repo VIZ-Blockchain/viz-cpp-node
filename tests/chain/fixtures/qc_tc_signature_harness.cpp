@@ -180,6 +180,35 @@ int main(){
  auto producer_key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key0")));
  auto admitted=[&](const signed_block& b){try{return q.verified_fork_cert_round(b);}catch(const fc::exception&){return uint32_t(0);}};
  q.hf18=false;child.sign(producer_key); REQUIRE(admitted(child)==202);
+ // Quorum signatures are valid, but the QC certifies a different block at
+ // the parent's height; full validation rejects it, as must fork admission.
+ auto alien_id=qc_id; alien_id._hash[1] ^= 1;
+ auto alien_qc=qc;alien_qc.block_id=alien_id;
+ for(int i=0;i<4;++i){const account_name_type name(std::string("val")+std::to_string(i));
+  auto key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key")+std::to_string(i)));
+  alien_qc.signatures[name]=key.sign_compact(protocol::block_vote_digest(q.chain,123,alien_id,200));}
+ auto alien_child=child;alien_child.extensions.clear();alien_child.extensions.insert(block_header_extensions(alien_qc));
+ alien_child.extensions.insert(block_header_extensions(tc));alien_child.sign(producer_key);
+ REQUIRE(admitted(alien_child)==0); REQUIRE(!check(alien_child));
+ auto older_qc=[&](uint32_t height){
+  auto c=qc;c.block_num=height;c.block_id._hash[0]=fc::endian_reverse_u32(height);c.round=199;
+  for(int i=0;i<4;++i){const account_name_type name(std::string("val")+std::to_string(i));
+   auto key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key")+std::to_string(i)));
+   c.signatures[name]=key.sign_compact(protocol::block_vote_digest(q.chain,height,c.block_id,c.round));}
+  return c;
+ };
+ auto distant=child;distant.extensions.clear();distant.extensions.insert(block_header_extensions(older_qc(121)));distant.sign(producer_key);
+ REQUIRE(admitted(distant)==0);REQUIRE(!check(distant));
+ auto late_tc_valid=tc;
+ for(int i=0;i<3;++i){const account_name_type name(std::string("val")+std::to_string(i));
+  auto key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key")+std::to_string(i)));
+  late_tc_valid.votes[name].high_qc_round=199;
+  late_tc_valid.votes[name].signature=key.sign_compact(protocol::block_timeout_digest(q.chain,202,199));}
+ auto late_with_tc=child;late_with_tc.extensions.clear();late_with_tc.extensions.insert(block_header_extensions(older_qc(122)));
+ late_with_tc.extensions.insert(block_header_extensions(late_tc_valid));late_with_tc.sign(producer_key);
+ REQUIRE(admitted(late_with_tc)==0);REQUIRE(!check(late_with_tc));
+ auto late_without_tc=child;late_without_tc.extensions.clear();late_without_tc.extensions.insert(block_header_extensions(older_qc(122)));
+ late_without_tc.sign(producer_key);REQUIRE(admitted(late_without_tc)==199);
  auto bad_producer=child;bad_producer.sign(mallory_key);REQUIRE(admitted(bad_producer)==0);
  auto no_quorum=fewer;no_quorum.sign(producer_key); REQUIRE(admitted(no_quorum)==0);
  auto bad_votes=corrupt;bad_votes.sign(producer_key); REQUIRE(admitted(bad_votes)==0);
