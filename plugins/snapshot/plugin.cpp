@@ -307,6 +307,34 @@ void verify_all_index_cursors(graphene::chain::database& db, const char* when) {
             verify_index_cursor<withdraw_vesting_route_index>(db, "withdraw_vesting_route", when);
 }
 
+/// Path of the on-disk marker that says "the state was cleared and the import did not finish".
+inline fc::path partial_state_marker() {
+    return appbase::app().data_dir() / "state-partial.marker";
+}
+
+/// Record that the state on disk is known to be partial. The chainbase file keeps whatever the
+/// failed import wrote, so a plain restart would open half a state and look healthy — the only
+/// thing that distinguishes it from a complete one is this marker, written before the caller
+/// stops the process.
+inline void mark_partial_state() {
+    try {
+        std::ofstream out(partial_state_marker().string(), std::ios::trunc);
+        out << "snapshot import failed after the state was cleared at "
+            << fc::time_point_sec(fc::time_point::now()).to_iso_string() << "\n";
+        std::cerr << "   Wrote partial-state marker: " << partial_state_marker().string() << "\n";
+    } catch (...) {
+        // Best effort: refusing to stop is worse than a missing marker.
+    }
+}
+
+/// A successful import makes the state complete again, so the marker must go.
+inline void clear_partial_state_marker() {
+    try {
+        if (fc::exists(partial_state_marker()))
+            fc::remove(partial_state_marker());
+    } catch (...) {}
+}
+
 // ============================================================================
 // Specialized import functions for objects with shared_string/buffer members
 // ============================================================================
@@ -1398,6 +1426,10 @@ public:
     uint32_t _last_stalled_check_head = 0;  // track head for emergency follower detection
     std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
     std::atomic<bool> _restore_in_progress{false}; // operator-requested restore (admin API)
+    // Set by request_forced_recovery() (validator's DLT minority-fork escalation), consumed by
+    // the stalled-sync check thread the moment it looks at the timer: the request must not wait
+    // for the timeout, because a state re-deriving the same fork never "arrives".
+    std::atomic<bool> forced_recovery_requested{false};
     fc::time_point sync_ended_at;  // when is_syncing last transitioned to false
     std::atomic<bool> cancel_snapshot_requested{false};  // cancellation flag for in-progress snapshot
 
@@ -2877,10 +2909,13 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         detail::verify_all_index_cursors(db, "after snapshot import");
 
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
+        detail::clear_partial_state_marker();
         } catch (const snapshot_import_left_partial_state& e) {
             throw;   // already named: nothing new to add, and the flag is what matters
         } catch (const fc::exception& e) {
             elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));
+            if (state_cleared)
+                detail::mark_partial_state();
             if (state_cleared)
                 FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
                     "Snapshot import failed after the database was cleared: ${e}. The state is "
@@ -2889,12 +2924,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         } catch (const std::exception& e) {
             elog(CLOG_RED "Snapshot import failed with std::exception: ${e}" CLOG_RESET, ("e", e.what()));
             if (state_cleared)
+                detail::mark_partial_state();
+            if (state_cleared)
                 FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
                     "Snapshot import failed after the database was cleared: ${e}. The state is "
                     "partial — block processing must not resume on it.", ("e", e.what()));
             throw;
         } catch (...) {
             elog(CLOG_RED "Snapshot import failed with unknown exception" CLOG_RESET);
+            if (state_cleared)
+                detail::mark_partial_state();
             if (state_cleared)
                 FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
                     "Snapshot import failed after the database was cleared (unknown exception). "
@@ -3310,14 +3349,25 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             auto elapsed = now - last_block_received_time;
             auto timeout = fc::minutes(stalled_sync_timeout_minutes);
 
-            if (elapsed > timeout) {
+            // Forced recovery (validator's DLT minority-fork escalation): run the download
+            // path now and let it override the "healthy node" skips below — emergency gating,
+            // "head is advancing", "we are master". Those all assume that waiting produces
+            // blocks; a state re-deriving the same fork has nothing to wait for. Measured
+            // 31.10.2026: an hour of resync ticks at 250 ms with the head never moving.
+            const bool forced = forced_recovery_requested.exchange(false, std::memory_order_acq_rel);
+            if (forced) {
+                wlog("Forced snapshot recovery requested — skipping the waiting stages and "
+                     "downloading a fresh snapshot from trusted peers");
+            }
+
+            if (elapsed > timeout || forced) {
                 bool emergency = false;
                 try {
                     db.with_weak_read_lock([&]() {
                         emergency = db.get_dynamic_global_properties().emergency_consensus_active;
                     });
                 } catch (...) {}
-                if (emergency) {
+                if (emergency && !forced) {
                     uint32_t current_head = 0;
                     try {
                         db.with_weak_read_lock([&]() {
@@ -3415,7 +3465,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     }
                 }
 
-                if (!_p2p_recovery_attempted) {
+                if (!_p2p_recovery_attempted && !forced) {
                     std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
                               << " minutes (head: " << head_block << "). Trying P2P recovery first...\n";
                     wlog("Stalled sync detected: no blocks for ${e} min, head=${h}. "
@@ -5373,6 +5423,15 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             ilog("Snapshot loaded successfully at block ${n}, elapsed time ${t} sec",
                 ("n", my->db.head_block_num())("t", elapsed));
         };
+
+        // The validator's DLT minority-fork escalation asks the recovery decision here instead
+        // of calling attempt_auto_recovery() itself: a node's own periodic snapshots are always
+        // behind its head, so a local snapshot can never replace a stuck state — the state has
+        // to come from a trusted peer. This callback starts that download path and reports
+        // whether it could be started at all; the reason for a refusal is logged here.
+        chain_plug.snapshot_force_recovery_callback = [this]() {
+            return request_forced_recovery();
+        };
     }
 
     // Register snapshot creation callback on the chain plugin.
@@ -5521,6 +5580,39 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
 void snapshot_plugin::plugin_startup() {
     ilog("snapshot plugin: starting");
+
+    // A previous run cleared the database and did not finish importing (the marker is written
+    // by load_snapshot right before it throws snapshot_import_left_partial_state). The chainbase
+    // file keeps whatever that failure wrote, so a plain restart opens half a state that cannot
+    // tell it is half. Refuse to start unless this run will actually replace the state — an
+    // explicit snapshot import, or the empty-state download path.
+    if (fc::exists(detail::partial_state_marker())) {
+        bool state_will_be_replaced = !my->snapshot_path.empty();
+        if (!state_will_be_replaced && my->sync_snapshot_from_trusted_peer) {
+            bool head_readable = false;
+            uint32_t head = 0;
+            try {
+                my->db.with_weak_read_lock([&]() {
+                    head = my->db.head_block_num();
+                });
+                head_readable = true;
+            } catch (...) {}
+            // Only an EMPTY state takes the download path; on a populated partial state it never runs.
+            state_will_be_replaced = head_readable && head == 0;
+        }
+        if (!state_will_be_replaced) {
+            elog(CLOG_RED "FATAL: the previous run failed while importing a snapshot — the state on disk "
+                 "is PARTIAL (marker: ${m}). Refusing to start on it. Restart with a snapshot import: "
+                 "--replay-from-snapshot --snapshot-auto-latest (or move the state directory aside), "
+                 "then remove the marker." CLOG_RESET, ("m", detail::partial_state_marker().string()));
+            std::cerr << "   FATAL: partial state from a failed snapshot import; refusing to start. "
+                      << "Marker: " << detail::partial_state_marker().string() << "\n";
+            appbase::app().quit();
+            return;
+        }
+        wlog("Partial-state marker found; this run imports a snapshot, which replaces the state: ${p}",
+             ("p", my->snapshot_path.empty() ? std::string("(download from trusted peers)") : my->snapshot_path));
+    }
 
     // Notify chain plugin that we're ready. If the chain plugin deferred snapshot
     // loading (because snapshot_load_callback wasn't registered yet during its startup),
@@ -5973,6 +6065,34 @@ bool snapshot_plugin::restore_snapshot_now(const std::string& path, std::string&
 
 bool snapshot_plugin::is_restoring() const {
     return my && my->_restore_in_progress.load(std::memory_order_acquire);
+}
+
+bool snapshot_plugin::request_forced_recovery() {
+    if (!my) {
+        elog("Forced snapshot recovery refused: snapshot plugin not initialized");
+        return false;
+    }
+    if (my->trusted_snapshot_peers.empty()) {
+        // Without peers there is nothing to download, and our own snapshots are behind our
+        // head by construction — importing one only replays dlt_block_log back into the same
+        // state. Say so instead of returning a false "recovery started".
+        elog("Forced snapshot recovery refused: no trusted snapshot peers configured");
+        return false;
+    }
+    if (my->_restore_in_progress.load(std::memory_order_acquire) ||
+        my->_snapshot_reloading.load(std::memory_order_acquire) ||
+        my->snapshot_in_progress.load(std::memory_order_acquire)) {
+        wlog("Forced snapshot recovery deferred: another snapshot operation is in progress");
+        return false;
+    }
+    my->forced_recovery_requested.store(true, std::memory_order_release);
+    // Start the check thread even when --enable-stalled-sync-detection is off: on the nodes
+    // that need this (emergency consensus, stalled-sync detection disabled) it does not exist
+    // otherwise. Idempotent — returns immediately when the check is already running.
+    my->start_stalled_sync_detection();
+    ilog(CLOG_YELLOW "Forced snapshot recovery requested: downloading a fresh snapshot from "
+         "trusted peers instead of waiting for the stalled-sync timeout" CLOG_RESET);
+    return true;
 }
 
 const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() const {

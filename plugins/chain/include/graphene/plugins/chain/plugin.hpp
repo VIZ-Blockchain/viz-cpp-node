@@ -132,6 +132,16 @@ namespace graphene {
                 // during startup() when state is empty (head_block_num == 0), BEFORE on_sync().
                 std::function<void()> snapshot_p2p_sync_callback;
 
+                // Callback set by the snapshot plugin at startup: ask it to run the snapshot
+                // recovery path NOW — download the newest snapshot a trusted peer offers, wipe,
+                // import, replay dlt_block_log, resume P2P — instead of waiting for the
+                // stalled-sync timeout, and regardless of enable-stalled-sync-detection.
+                // Returns false when no recovery can be started (no trusted peers, one already
+                // running, or no snapshot ahead of our floor); the reason is logged by the
+                // snapshot plugin. Used by the DLT minority-fork escalation, which cannot
+                // repair a state that keeps re-deriving the same fork by rewinding it.
+                std::function<bool()> snapshot_force_recovery_callback;
+
                 /// Attempt immediate auto-recovery from shared memory corruption.
                 /// Closes database, finds latest snapshot, wipes shared memory,
                 /// imports snapshot, replays dlt_block_log, and resumes.
