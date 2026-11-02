@@ -401,9 +401,8 @@ namespace graphene {
                 // Emergency-master peer-LIB gate (see maybe_validate_block). The master is
                 // exempt from the isolation scan by design, so this is the only place that
                 // can notice the network moved to another chain while we kept producing.
-                // Two peers must make the claim before it counts: one peer's LIB can be a
-                // stale snapshot from before its own reorg, two agreeing ones cannot be
-                // produced by a single node with a key.
+                // Require reports from two configured trusted endpoints; these claims are
+                // unsigned and do not prove independent operators or remote finality.
                 static constexpr uint32_t EMERGENCY_PEER_LIB_QUORUM = 2;
                 // A head that keeps coming back after a rewind needs the state REPLACED, not
                 // rewound (same reasoning as FORK_ESCALATION_SEC below).
@@ -483,6 +482,11 @@ namespace graphene {
                 // any of them, dumps full plugin state for diagnosis.
                 void on_block_applied(const graphene::chain::signed_block &block);
             };
+
+            // C++14 requires definitions when a constexpr member is odr-used,
+            // including when logging forwards it by reference in an unoptimised build.
+            constexpr uint32_t validator_plugin::impl::EMERGENCY_PEER_LIB_QUORUM;
+            constexpr int64_t validator_plugin::impl::EMERGENCY_PEER_LIB_ESCALATION_SEC;
 
             void validator_plugin::set_program_options(
                     boost::program_options::options_description &command_line_options,
