@@ -19,13 +19,21 @@
 // emergency_exit_threshold_effective() in graphene/chain/emergency_exit.hpp — option B is that
 // function's floor returning 0, option C keeps the legacy constant and does not call it.
 //
-// Activation: CHAIN_HARDFORK_17_TIME is a PLACEHOLDER. Nobody has announced this date; it must be
-// set together with the release announcement, and it must stay in the future at that moment (the
-// same warning as 14.hf/15.hf/16.hf: with a past date the fork activates in whatever block the
-// 17th validator upgrades in, and there is no announceable moment). Building this branch already
-// advertises version 4.3.0 — database.cpp _generate_block injects hardfork_version_vote while
-// current_hardfork_version < CHAIN_HARDFORK_VERSION — so a binary built from it must not be
-// deployed before the date is chosen.
+// Activation: CHAIN_HARDFORK_17_TIME is deliberately in the PAST (2026-11-02 00:00:00 UTC).
+// Owner decision of 2026-11-02, question #3396 answer A: «дату делай уже состоявшуюся, он
+// применится как только делегаты обновят ноды». This is an emergency-recovery rule, not a
+// scheduled protocol upgrade with an announceable moment to preserve — the owner explicitly does
+// not want weeks of waiting between the decision and the rule being live. With a past timestamp
+// the fork applies in the first block at or after the 17/21 version-vote quorum is reached, i.e.
+// as soon as enough delegates run this binary; nothing activates retroactively. Contrast with
+// the warning kept in 14.hf/15.hf/16.hf: there the future date IS the announcement, here the
+// announcement is the decision itself.
+//
+// This binary advertises version 4.3.0 (database.cpp _generate_block injects hardfork_version_vote
+// while current_hardfork_version < CHAIN_HARDFORK_VERSION), so every node running it votes for
+// HF17 by simply producing blocks. Upgrading changes CHAIN_SCHEMA_VERSION (15 → 16) — shared
+// memory is not compatible, so a node needs a replay or a snapshot import (the snapshot plugin
+// reads a missing emergency_schedule_size_on_entry as 0 = not measured).
 //
 // No state migration is needed at activation: emergency_schedule_size_on_entry defaults to 0,
 // which the threshold reads as "not measured" and answers with the full-schedule quorum — i.e.
@@ -33,6 +41,6 @@
 // the old rule; every later entry records its own size.
 #ifndef CHAIN_HARDFORK_17
 #define CHAIN_HARDFORK_17 17
-#define CHAIN_HARDFORK_17_TIME 1798761600      // PLACEHOLDER 2027-01-01 00:00:00 UTC — NOT announced
+#define CHAIN_HARDFORK_17_TIME 1793577600      // 2026-11-02 00:00:00 UTC — already past BY DECISION (q#3396=A)
 #define CHAIN_HARDFORK_17_VERSION hardfork_version( version(4, 3, 0) )
 #endif
