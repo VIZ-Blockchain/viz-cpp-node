@@ -145,6 +145,16 @@ int main(){
  auto check=[&](const signed_block& b){try{q.validate_block_qc(b,0);return true;}catch(const fc::exception&){return false;}};
  child.extensions.insert(block_header_extensions(qc));child.extensions.insert(block_header_extensions(tc));
  REQUIRE(check(child));
+ // Header validation also depends on the state supplied for the carrying block.
+ // Unlike network QC admission it rejects even one invalid signature outright.
+ q.vals.at(rotated).signing_key=public_key_type(replacement.get_public_key());
+ REQUIRE(!check(child));
+ q.vals.at(rotated).signing_key=old_signing_key; REQUIRE(check(child));
+ auto rotated_tc=tc;
+ rotated_tc.votes.at(rotated).signature=replacement.sign_compact(protocol::block_timeout_digest(q.chain,202,200));
+ auto wrong_timeout_key=child;wrong_timeout_key.extensions.clear();
+ wrong_timeout_key.extensions.insert(block_header_extensions(qc));wrong_timeout_key.extensions.insert(block_header_extensions(rotated_tc));
+ REQUIRE(!check(wrong_timeout_key));
  auto bad_qc=qc;bad_qc.signatures.begin()->second=vote;
  auto corrupt_qc=child;corrupt_qc.extensions.clear();corrupt_qc.extensions.insert(block_header_extensions(bad_qc));corrupt_qc.extensions.insert(block_header_extensions(tc));
  REQUIRE(!check(corrupt_qc));
