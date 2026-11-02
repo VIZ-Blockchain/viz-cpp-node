@@ -307,6 +307,34 @@ void verify_all_index_cursors(graphene::chain::database& db, const char* when) {
             verify_index_cursor<withdraw_vesting_route_index>(db, "withdraw_vesting_route", when);
 }
 
+/// Path of the on-disk marker that says "the state was cleared and the import did not finish".
+inline fc::path partial_state_marker() {
+    return appbase::app().data_dir() / "state-partial.marker";
+}
+
+/// Record that the state on disk is known to be partial. The chainbase file keeps whatever the
+/// failed import wrote, so a plain restart would open half a state and look healthy — the only
+/// thing that distinguishes it from a complete one is this marker, written before the caller
+/// stops the process.
+inline void mark_partial_state() {
+    try {
+        std::ofstream out(partial_state_marker().string(), std::ios::trunc);
+        out << "snapshot import failed after the state was cleared at "
+            << fc::time_point_sec(fc::time_point::now()).to_iso_string() << "\n";
+        std::cerr << "   Wrote partial-state marker: " << partial_state_marker().string() << "\n";
+    } catch (...) {
+        // Best effort: refusing to stop is worse than a missing marker.
+    }
+}
+
+/// A successful import makes the state complete again, so the marker must go.
+inline void clear_partial_state_marker() {
+    try {
+        if (fc::exists(partial_state_marker()))
+            fc::remove(partial_state_marker());
+    } catch (...) {}
+}
+
 // ============================================================================
 // Specialized import functions for objects with shared_string/buffer members
 // ============================================================================
@@ -2881,10 +2909,13 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         detail::verify_all_index_cursors(db, "after snapshot import");
 
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
+        detail::clear_partial_state_marker();
         } catch (const snapshot_import_left_partial_state& e) {
             throw;   // already named: nothing new to add, and the flag is what matters
         } catch (const fc::exception& e) {
             elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));
+            if (state_cleared)
+                detail::mark_partial_state();
             if (state_cleared)
                 FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
                     "Snapshot import failed after the database was cleared: ${e}. The state is "
@@ -2893,12 +2924,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         } catch (const std::exception& e) {
             elog(CLOG_RED "Snapshot import failed with std::exception: ${e}" CLOG_RESET, ("e", e.what()));
             if (state_cleared)
+                detail::mark_partial_state();
+            if (state_cleared)
                 FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
                     "Snapshot import failed after the database was cleared: ${e}. The state is "
                     "partial — block processing must not resume on it.", ("e", e.what()));
             throw;
         } catch (...) {
             elog(CLOG_RED "Snapshot import failed with unknown exception" CLOG_RESET);
+            if (state_cleared)
+                detail::mark_partial_state();
             if (state_cleared)
                 FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
                     "Snapshot import failed after the database was cleared (unknown exception). "
@@ -5545,6 +5580,39 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
 void snapshot_plugin::plugin_startup() {
     ilog("snapshot plugin: starting");
+
+    // A previous run cleared the database and did not finish importing (the marker is written
+    // by load_snapshot right before it throws snapshot_import_left_partial_state). The chainbase
+    // file keeps whatever that failure wrote, so a plain restart opens half a state that cannot
+    // tell it is half. Refuse to start unless this run will actually replace the state — an
+    // explicit snapshot import, or the empty-state download path.
+    if (fc::exists(detail::partial_state_marker())) {
+        bool state_will_be_replaced = !my->snapshot_path.empty();
+        if (!state_will_be_replaced && my->sync_snapshot_from_trusted_peer) {
+            bool head_readable = false;
+            uint32_t head = 0;
+            try {
+                my->db.with_weak_read_lock([&]() {
+                    head = my->db.head_block_num();
+                });
+                head_readable = true;
+            } catch (...) {}
+            // Only an EMPTY state takes the download path; on a populated partial state it never runs.
+            state_will_be_replaced = head_readable && head == 0;
+        }
+        if (!state_will_be_replaced) {
+            elog(CLOG_RED "FATAL: the previous run failed while importing a snapshot — the state on disk "
+                 "is PARTIAL (marker: ${m}). Refusing to start on it. Restart with a snapshot import: "
+                 "--replay-from-snapshot --snapshot-auto-latest (or move the state directory aside), "
+                 "then remove the marker." CLOG_RESET, ("m", detail::partial_state_marker().string()));
+            std::cerr << "   FATAL: partial state from a failed snapshot import; refusing to start. "
+                      << "Marker: " << detail::partial_state_marker().string() << "\n";
+            appbase::app().quit();
+            return;
+        }
+        wlog("Partial-state marker found; this run imports a snapshot, which replaces the state: ${p}",
+             ("p", my->snapshot_path.empty() ? std::string("(download from trusted peers)") : my->snapshot_path));
+    }
 
     // Notify chain plugin that we're ready. If the chain plugin deferred snapshot
     // loading (because snapshot_load_callback wasn't registered yet during its startup),
