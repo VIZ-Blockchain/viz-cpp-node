@@ -102,6 +102,33 @@ int main(){
  REQUIRE(!q.accept_block_qc_certificate(mixed));
  auto wrong=qc; wrong.block_id=other; REQUIRE(!q.accept_block_qc_certificate(wrong));
  wrong=qc; wrong.round=201; REQUIRE(!q.accept_block_qc_certificate(wrong));
+ // QC admission uses CURRENT validators and signing keys, not the historical set.
+ // Keep exactly three valid signatures so changing one loses quorum.
+ auto historic=qc;historic.signatures.erase(account_name_type("val3"));
+ REQUIRE(q.accept_block_qc_certificate(historic));
+ const account_name_type rotated("val0");
+ auto old_signing_key=q.vals.at(rotated).signing_key;
+ auto replacement=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("replacement-val0")));
+ q.vals.at(rotated).signing_key=public_key_type(replacement.get_public_key());
+ REQUIRE(!q.accept_block_qc_certificate(historic));
+ q.vals.at(rotated).signing_key=old_signing_key;REQUIRE(q.accept_block_qc_certificate(historic));
+ // A schedule replacement has the same consequence even if the old key remains known.
+ auto old_schedule=q.schedule.current_shuffled_validators;
+ q.schedule.current_shuffled_validators[0]=mallory;q.vals[mallory]={public_key_type(mallory_key.get_public_key())};
+ REQUIRE(!q.accept_block_qc_certificate(historic));
+ q.schedule.current_shuffled_validators=old_schedule;REQUIRE(q.accept_block_qc_certificate(historic));
+ // Merely checking against today's keys cannot prove which keys were authorised historically.
+ const auto previous_validators=q.vals;
+ auto signed_after_rotation=historic;
+ for(int i=0;i<3;++i){
+  const account_name_type name(std::string("val")+std::to_string(i));
+  auto next_key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("rotated")+std::to_string(i)));
+  q.vals[name]={public_key_type(next_key.get_public_key())};
+  signed_after_rotation.signatures[name]=next_key.sign_compact(protocol::block_vote_digest(q.chain,123,qc_id,200));
+ }
+ REQUIRE(q.accept_block_qc_certificate(signed_after_rotation));
+ q.vals=previous_validators;REQUIRE(!q.accept_block_qc_certificate(signed_after_rotation));
+
  q.hf16=false; REQUIRE(!q.accept_block_qc_certificate(qc)); q.hf16=true;
  q.block.reset(); REQUIRE(!q.accept_block_qc_certificate(qc));
  // Validate complete QC/TC carried by a real signed_block header; state is mocked.
