@@ -364,6 +364,20 @@ namespace graphene {
                 bool _minority_fork_recovering = false;
                 fc::time_point _minority_fork_recovery_start;
 
+                // DLT minority-fork ESCALATION state — what resync_from_lib() alone could
+                // not do. Measured 31.10.2026: the detector fired on every 250 ms production
+                // tick for an hour, each time "resetting to LIB", while the head never moved.
+                // A rewind stays inside the same state, so a state that keeps re-deriving the
+                // same fork is rewound into itself forever; the way out is to REPLACE the
+                // state with a FRESH snapshot from a trusted peer (our own snapshots are
+                // always behind our head, so they replay back into the same state). Bounded:
+                // the head must stay put for FORK_ESCALATION_SEC, the download is subject to
+                // the usual "must be above max(head, LIB)" floor guard, and each stuck head
+                // escalates at most once.
+                uint32_t _fork_loop_head = 0;
+                fc::time_point _fork_loop_since;
+                bool _fork_escalated = false;
+
                 // Operator override (testnet / single-operator fork): when set via
                 // 'disable-minority-fork-detection', both the standard and the DLT
                 // minority-fork checks are skipped entirely.  On a fork where the
@@ -2145,6 +2159,52 @@ namespace graphene {
                                      "validators (1+ full rounds). Node is isolated from master. "
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
+
+                                // Escalation: a rewind stays inside our state, so a state that keeps
+                                // re-deriving the same fork is rewound into itself forever — measured
+                                // 31.10.2026, once per 250 ms tick for an hour with the head never
+                                // moving. After FORK_ESCALATION_SEC of that, replace the state with a
+                                // FRESH snapshot downloaded from trusted peers (our own snapshots are
+                                // behind our head and would replay back into the same state), then
+                                // wipe + import + dlt replay with P2P paused and resumed. The snapshot
+                                // plugin owns that sequence and answers whether it could start; it is
+                                // not attempt_auto_recovery(), which imports a local file. Once per
+                                // stuck head.
+                                const int64_t FORK_ESCALATION_SEC = 60;
+                                const uint32_t stuck_head = db.head_block_num();
+                                if (stuck_head != _fork_loop_head) {
+                                    _fork_loop_head = stuck_head;
+                                    _fork_loop_since = fc::time_point::now();
+                                    _fork_escalated = false;
+                                } else if (!_fork_escalated &&
+                                           (fc::time_point::now() - _fork_loop_since).to_seconds() >= FORK_ESCALATION_SEC) {
+                                    _fork_escalated = true;
+                                    bool recovery_started = false;
+                                    try {
+                                        if (chain().snapshot_force_recovery_callback)
+                                            recovery_started = chain().snapshot_force_recovery_callback();
+                                    } catch (const fc::exception& e) {
+                                        elog("Forced snapshot recovery could not be requested: ${e}",
+                                             ("e", e.to_detail_string()));
+                                    } catch (...) {
+                                        elog("Forced snapshot recovery could not be requested: unknown exception");
+                                    }
+                                    if (recovery_started) {
+                                        elog("DLT MINORITY FORK UNRESOLVED for ${s}s (head stuck at #${h}): P2P resync "
+                                             "keeps returning to the same head. Escalating to a forced re-import of a "
+                                             "fresh snapshot from trusted peers — the state is replaced, not rewound.",
+                                             ("s", FORK_ESCALATION_SEC)("h", stuck_head));
+                                        _minority_fork_recovering = true;
+                                        _minority_fork_recovery_start = fc::time_point::now();
+                                        return block_validation_condition::minority_fork;
+                                    }
+                                    wlog("DLT MINORITY FORK UNRESOLVED for ${s}s (head stuck at #${h}), but no forced "
+                                         "recovery could be started (see the snapshot plugin's log: no trusted peers, "
+                                         "no snapshot ahead, or a snapshot operation already running) — staying on P2P "
+                                         "resync.",
+                                         ("s", FORK_ESCALATION_SEC)("h", stuck_head));
+                                }
+
                                 p2p().resync_from_lib(true /*force_emergency*/);
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();
