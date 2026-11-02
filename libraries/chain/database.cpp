@@ -7576,8 +7576,11 @@ namespace graphene { namespace chain {
                         ilog("TC formed for round ${r}: ${k}/${q} timeout votes, highest claimed QC round ${m} on block ${b}",
                              ("r", round)("k", tc.votes.size())("q", quorum)("m", cut)("b", cut_block));
                         _timeout_certs_v2[round] = std::move(tc);
-                        if (_timeout_vote_journal) _timeout_vote_journal->flush();
                     }
+                    // On-demand assembly can reach quorum even when the single cached cut
+                    // cannot, or when later votes make another parent usable. Persist those
+                    // votes as well so a restart can reconstruct that certificate.
+                    if (_timeout_vote_journal) _timeout_vote_journal->flush();
                 }
             }
             return true;
