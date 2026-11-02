@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual status-broadcast method with fake peers; run in Docker.
 
-This tests selection, values, timer and snapshot-pause behavior with fake peers,
+This tests sender and receiver methods, timer and snapshot-pause with fake peers,
 not sockets, rollout to old nodes, or peer authentication. Requires C++17.
 """
 from pathlib import Path
@@ -21,6 +21,7 @@ def method(signature):
 
 broadcast = method('void dlt_p2p_node::broadcast_chain_status() {')
 periodic = method('void dlt_p2p_node::periodic_chain_status() {')
+receive = method('void dlt_p2p_node::on_dlt_fork_status(peer_id peer, const dlt_fork_status_message& msg) {')
 
 prefix = r'''
 #include <map>
@@ -28,6 +29,7 @@ prefix = r'''
 #include <cassert>
 #include <iostream>
 #include <cstdint>
+#define ilog(...) ((void)0)
 namespace fc {
 int64_t wall_us=1000000;
 struct duration { int64_t value; int64_t count() const { return value; } };
@@ -41,20 +43,33 @@ struct time_point {
 }
 using peer_id=int;
 const int DLT_PEER_LIFECYCLE_ACTIVE=1;
+const int DLT_NODE_STATUS_FORWARD=1, DLT_NODE_STATUS_SYNC=2;
 struct status { int fork_status=0,head_block_id=0,head_block_num=0,lib_block_id=0,lib_block_num=0,dlt_earliest_block=0,dlt_latest_block=0,node_status=0; };
 using dlt_fork_status_message=status;
 struct message { status s; explicit message(status v):s(v){} };
-struct state { int lifecycle_state; bool exchange_enabled; };
+struct state {
+    int lifecycle_state; bool exchange_enabled;
+    uint8_t peer_node_status=0;
+    int peer_fork_status=0,peer_head_id=0,peer_head_num=0,peer_lib_id=0,peer_lib_num=0;
+    int peer_dlt_earliest=0,peer_dlt_latest=0;
+    bool fork_alignment=false;
+};
+struct delegate { bool is_block_known(int) const { return false; } };
 struct dlt_p2p_node {
-    void* _delegate=nullptr; int _fork_status=7;
+    delegate* _delegate=nullptr; int _fork_status=7;
     bool _block_processing_paused=false;
     fc::time_point _last_chain_status_broadcast;
     static constexpr uint32_t CHAIN_STATUS_BROADCAST_INTERVAL_SEC=30;
     std::map<int,state> _peer_states;
     std::vector<int> delivered; std::vector<status> frames;
-    status build_hello_message() { status s; s.head_block_num=101; s.lib_block_num=99; return s; }
+    int head=101, lib=99, _highest_seen_block_num=0, cache_refreshes=0;
+    dlt_p2p_node* receiver=nullptr;
+    status build_hello_message() { status s; s.head_block_num=head; s.lib_block_num=lib; return s; }
     void send_message(int id,message m) {
-        if(_peer_states.count(id)) { delivered.push_back(id); frames.push_back(m.s); }
+        if(_peer_states.count(id)) {
+            delivered.push_back(id); frames.push_back(m.s);
+            if(receiver && id==1) receiver->on_dlt_fork_status(42,m.s);
+        }
     }
     void send_to_all_our_fork_peers(message m) {
         for(const auto& peer:_peer_states)
@@ -63,13 +78,17 @@ struct dlt_p2p_node {
     }
     void broadcast_chain_status();
     void periodic_chain_status();
+    void on_dlt_fork_status(peer_id, const dlt_fork_status_message&);
+    void refresh_peer_lib_cache() { ++cache_refreshes; }
+    void record_packet_result(peer_id, bool) {}
 };
 '''
 suffix = r'''
 int main() {
     dlt_p2p_node node;
     node._peer_states={{1,{1,true}},{2,{1,false}},{3,{0,true}}};
-    node._delegate=&node;
+    delegate chain;
+    node._delegate=&chain;
     node.periodic_chain_status();
     assert((node.delivered==std::vector<int>{1,2})); // active aligned and unaligned
     assert(node.frames.size()==2);
@@ -97,13 +116,30 @@ int main() {
     node._delegate=nullptr;
     node.broadcast_chain_status();
     assert(node.delivered.empty()); // no delegate
-    std::cout << "PASS: active aligned and unaligned peers get current LIB; inactive and null delegate do not\n";
+    // Connect two fake nodes through the real sender and receiver methods.
+    // The receiving side starts with an old LIB and no fork alignment.
+    dlt_p2p_node sender, receiver;
+    sender._delegate=&chain;
+    sender._peer_states={{1,{1,false}}};
+    receiver._peer_states={{42,{1,false}}};
+    receiver._peer_states[42].peer_lib_num=50;
+    sender.receiver=&receiver;
+    fc::wall_us=100000000;
+    sender.periodic_chain_status();
+    assert(receiver._peer_states[42].peer_lib_num==99);
+    assert(receiver.cache_refreshes==1);
+    sender.head=131; sender.lib=129;
+    fc::wall_us=130000000;
+    sender.periodic_chain_status();
+    assert(receiver._peer_states[42].peer_lib_num==129);
+    assert(receiver.cache_refreshes==2);
+    std::cout << "PASS: periodic status updates receiver LIB even without fork alignment\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='viz-status-broadcast-') as directory:
     tmp = Path(directory)
     cpp = tmp / 'test.cpp'
-    cpp.write_text(prefix + broadcast + '\n' + periodic + suffix)
+    cpp.write_text(prefix + broadcast + '\n' + periodic + '\n' + receive + suffix)
     executable = tmp / 'test'
     subprocess.run(['g++', '-std=c++17', '-O0', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(executable)], check=True)
     subprocess.run([str(executable)], check=True)
