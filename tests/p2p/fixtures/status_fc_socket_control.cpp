@@ -1,4 +1,4 @@
-// Real FC scheduler; stubbed message, peers and sockets. Filled by the Python driver.
+// Real FC scheduler and TCP sockets; stubbed peers and message serialization.
 
 #include <fc/thread/thread.hpp>
 #include <fc/time.hpp>
@@ -16,6 +16,9 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <cstdlib>
+#undef assert
+#define assert(condition) do { if (!(condition)) { std::cerr << "Assertion failed: " #condition " at " << __FILE__ << ":" << __LINE__ << "\n"; std::abort(); } } while (false)
 #undef ilog
 #define ilog(...) ((void)0)
 using peer_id=int;

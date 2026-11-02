@@ -10,6 +10,9 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <cstdlib>
+#undef assert
+#define assert(condition) do { if (!(condition)) { std::cerr << "Assertion failed: " #condition " at " << __FILE__ << ":" << __LINE__ << "\n"; std::abort(); } } while (false)
 #undef ilog
 #define ilog(...) ((void)0)
 using peer_id=int;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise status send and shutdown with real FC fibers; run builds in Docker.
 
-Uses fake peers and fake sockets. Requires a previously built libfc.a and Boost.
+Uses fake peers and fake sockets. Requires Release libfc.a and Boost; FC promise layout differs in debug builds.
 VIZ_FC_ROOT can point to a separately built checkout for local Docker tests.
 """
 import os
@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='viz-status-fc-') as directory:
     cpp = tmp / 'test.cpp'
     cpp.write_text(code)
     executable = tmp / 'test'
-    cmd = [os.environ.get('CXX', 'g++'), '-std=c++17', '-O0', '-Wall', '-Wextra', '-Werror',
+    cmd = [os.environ.get('CXX', 'g++'), '-DNDEBUG', '-std=c++17', '-O0', '-Wall', '-Wextra', '-Werror',
            '-I' + str(FC_ROOT / 'thirdparty/fc/include'), str(cpp), '-o', str(executable),
            str(FC_ROOT / 'build/thirdparty/fc/libfc.a')]
     cmd += ['-l' + name for name in ('boost_context', 'boost_coroutine', 'boost_thread',
