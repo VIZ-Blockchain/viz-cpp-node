@@ -145,6 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           cd build
+          python3 ../tests/p2p/test_periodic_status_fc.py
           ctest -E '^consensus_sim$' --output-on-failure
           # consensus_sim is one Boost.Test binary that ran ~15 min on a single core.
           # Run its cases as separate processes across all cores instead; same cases,
