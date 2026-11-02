@@ -758,22 +758,53 @@ BOOST_AUTO_TEST_CASE(hf18_rollback_discards_v2_timeout_votes) {
     fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
     BOOST_REQUIRE(bring_to_hf14(node, gp, when));
     auto &db = node.db();
+#ifndef CHAIN_TESTNET_VALIDATORS
+    // A one-validator chain makes its head irreversible too quickly for this rollback.
+    return;
+#else
+    const auto pub = gp.genesis_witness_key.get_public_key();
+    authority auth; auth.weight_threshold = 1; auth.key_auths[pub] = 1;
+    account_create_operation create;
+    create.creator = gp.initiator_name; create.new_account_name = "validator-two";
+    create.fee = db.get_validator_schedule_object().median_props.account_creation_fee;
+    create.delegation = asset(0, SHARES_SYMBOL);
+    create.master = auth; create.active = auth; create.regular = auth; create.memo_key = pub;
+    transfer_operation fund; fund.from = gp.initiator_name; fund.to = "validator-two";
+    fund.amount = asset(100000000, TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({create, fund}, gp.initiator_key, node));
+    produce(node, gp, when);
+    validator_update_operation reg;
+    reg.owner = "validator-two"; reg.url = "viz"; reg.block_signing_key = pub;
+    account_validator_vote_operation vote;
+    vote.account = gp.initiator_name; vote.validator = "validator-two"; vote.approve = true;
+    auto tx = sign_ops({reg, vote}, gp.initiator_key, node);
+    tx.sign(gp.genesis_witness_key, node.chain_id());
+    node.push_pending_transaction(tx);
+    for (int i = 0; i < 100; ++i) {
+        produce(node, gp, when);
+        if (db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT >= 2) break;
+    }
+    BOOST_REQUIRE_GE(db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 2);
     db.set_hardfork(CHAIN_HARDFORK_17, true);
     db.set_hardfork(CHAIN_HARDFORK_18, false);
     BOOST_REQUIRE(!db.has_hardfork(CHAIN_HARDFORK_18));
+    const uint32_t parent_num = db.head_block_num();
     produce(node, gp, when);
     BOOST_REQUIRE(db.has_hardfork(CHAIN_HARDFORK_18));
+    BOOST_REQUIRE_LT(db.get_dynamic_global_properties().last_irreversible_block_num, db.head_block_num());
     const auto voter = db.get_validator_schedule_object().current_shuffled_validators[0];
     const uint32_t round = db.round_of(db.head_block_time()) + 2;
     const auto v2sig = key_for(gp, voter).sign_compact(
             block_timeout_digest_v2(db.get_chain_id(), round, 0, block_id_type()));
     BOOST_REQUIRE(db.push_timeout_vote_v2(round, 0, block_id_type(), voter, v2sig));
     db.pop_block();
+    BOOST_REQUIRE_EQUAL(db.head_block_num(), parent_num);
     BOOST_REQUIRE(!db.has_hardfork(CHAIN_HARDFORK_18));
     BOOST_CHECK(!db.get_timeout_cert_v2(round).valid());
     const auto v1sig = key_for(gp, voter).sign_compact(block_timeout_digest(db.get_chain_id(), round, 0));
     BOOST_CHECK_MESSAGE(db.push_timeout_vote(round, 0, voter, v1sig),
                         "a v2 vote survived rollback and blocked the pre-HF18 voter");
+#endif
 }
 
 // #236: an unstick block carries no QC, so the Jolteon vote rule and the certificate fork
