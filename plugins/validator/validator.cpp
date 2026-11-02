@@ -364,6 +364,18 @@ namespace graphene {
                 bool _minority_fork_recovering = false;
                 fc::time_point _minority_fork_recovery_start;
 
+                // DLT minority-fork ESCALATION state — what resync_from_lib() alone could
+                // not do. Measured 31.10.2026: the detector fired on every 250 ms production
+                // tick for an hour, each time "resetting to LIB", while the head never moved.
+                // A rewind stays inside the same state, so a state that keeps re-deriving the
+                // same fork is rewound into itself forever; the way out is to REPLACE the
+                // state with a snapshot. Bounded: the head must stay put for
+                // FORK_ESCALATION_SEC, the local snapshot must be ahead of it, and each
+                // stuck head escalates at most once.
+                uint32_t _fork_loop_head = 0;
+                fc::time_point _fork_loop_since;
+                bool _fork_escalated = false;
+
                 // Operator override (testnet / single-operator fork): when set via
                 // 'disable-minority-fork-detection', both the standard and the DLT
                 // minority-fork checks are skipped entirely.  On a fork where the
@@ -2145,6 +2157,47 @@ namespace graphene {
                                      "validators (1+ full rounds). Node is isolated from master. "
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
+
+                                // Escalation: a rewind stays inside our state, so a state that keeps
+                                // re-deriving the same fork is rewound into itself forever — measured
+                                // 31.10.2026, once per 250 ms tick for an hour with the head never
+                                // moving. After FORK_ESCALATION_SEC of that, replace the state with a
+                                // local snapshot instead (wipe + import + dlt replay, P2P paused and
+                                // resumed inside attempt_auto_recovery()). Guarded: only when the
+                                // snapshot is AHEAD of the stuck head (an older one replays back into
+                                // the same state) and only once per stuck head.
+                                const int64_t FORK_ESCALATION_SEC = 60;
+                                const uint32_t stuck_head = db.head_block_num();
+                                if (stuck_head != _fork_loop_head) {
+                                    _fork_loop_head = stuck_head;
+                                    _fork_loop_since = fc::time_point::now();
+                                    _fork_escalated = false;
+                                } else if (!_fork_escalated &&
+                                           (fc::time_point::now() - _fork_loop_since).to_seconds() >= FORK_ESCALATION_SEC) {
+                                    _fork_escalated = true;
+                                    uint32_t snap_head = 0;
+                                    try {
+                                        if (chain().snapshot_available_block_callback)
+                                            snap_head = chain().snapshot_available_block_callback();
+                                    } catch (...) {
+                                        snap_head = 0;
+                                    }
+                                    if (snap_head > stuck_head) {
+                                        elog("DLT MINORITY FORK UNRESOLVED for ${s}s (head stuck at #${h}): P2P resync "
+                                             "keeps returning to the same head. Escalating to a forced re-import of "
+                                             "snapshot block ${sh} — the state is replaced, not rewound.",
+                                             ("s", FORK_ESCALATION_SEC)("h", stuck_head)("sh", snap_head));
+                                        chain().attempt_auto_recovery();
+                                        _minority_fork_recovering = true;
+                                        _minority_fork_recovery_start = fc::time_point::now();
+                                        return block_validation_condition::minority_fork;
+                                    }
+                                    wlog("DLT MINORITY FORK UNRESOLVED for ${s}s (head stuck at #${h}), but the newest "
+                                         "local snapshot is #${sh} and is not ahead of it — staying on P2P resync; a "
+                                         "fresh snapshot is what can replace this state.",
+                                         ("s", FORK_ESCALATION_SEC)("h", stuck_head)("sh", snap_head));
+                                }
+
                                 p2p().resync_from_lib(true /*force_emergency*/);
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();

@@ -132,6 +132,13 @@ namespace graphene {
                 // during startup() when state is empty (head_block_num == 0), BEFORE on_sync().
                 std::function<void()> snapshot_p2p_sync_callback;
 
+                // Callback set by the snapshot plugin at startup: the head block of the newest
+                // snapshot available locally, 0 when the directory holds none. It answers ONE
+                // question a recovery decision must not guess at — "is there a state to replace
+                // ours with, and is it ahead?" — without making the validator depend on the
+                // snapshot plugin. Used by the DLT minority-fork escalation.
+                std::function<uint32_t()> snapshot_available_block_callback;
+
                 /// Attempt immediate auto-recovery from shared memory corruption.
                 /// Closes database, finds latest snapshot, wipes shared memory,
                 /// imports snapshot, replays dlt_block_log, and resumes.

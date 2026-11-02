@@ -5224,6 +5224,20 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             ilog("Snapshot loaded successfully at block ${n}, elapsed time ${t} sec",
                 ("n", my->db.head_block_num())("t", elapsed));
         };
+
+        // "Is there a state we could be replaced with, and is it ahead?" A recovery decision
+        // (validator's DLT minority-fork escalation) must not guess: attempt_auto_recovery()
+        // on a directory with no snapshot ends in shutdown, so the caller asks this first.
+        // block_num is parsed from the standard file name; 0 means "not a usable snapshot",
+        // the same convention list_snapshots() uses.
+        chain_plug.snapshot_available_block_callback = [this]() -> uint32_t {
+            try {
+                const auto snaps = list_snapshots();
+                return snaps.empty() ? 0u : snaps.front().block_num;
+            } catch (...) {
+                return 0u;
+            }
+        };
     }
 
     // Register snapshot creation callback on the chain plugin.
