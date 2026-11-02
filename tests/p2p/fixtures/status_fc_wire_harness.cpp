@@ -52,20 +52,23 @@ struct dlt_p2p_node {
  std::set<peer_id> _status_sends_inflight,_peer_sending,_disconnect_in_progress;
  fc::future<void> _accept_fiber,_periodic_fiber;
  std::map<int,state> _peer_states; std::map<int,std::shared_ptr<fc::tcp_socket>> _connections; fake_server _tcp_server;
- int disconnects=0, packets=0; uint32_t _highest_seen_block_num=0, test_lib=99;
+ int disconnects=0, packets=0, build_calls=0; uint32_t _highest_seen_block_num=0, test_lib=99;
+ static constexpr uint32_t CHAIN_STATUS_BROADCAST_INTERVAL_SEC=30;
+ std::atomic<bool> _block_processing_paused{false}; fc::time_point _last_chain_status_broadcast;
  std::set<std::string> _trusted_peers; std::vector<std::string> _seed_nodes;
  std::atomic<uint32_t> _cached_our_lib{0}, _best_peer_lib{0}, _peers_above_our_lib{0};
- status build_hello_message(){status s;s.head_block_num=150;s.lib_block_num=test_lib;return s;}
+ status build_hello_message(){++build_calls;status s;s.head_block_num=150;s.lib_block_num=test_lib;return s;}
  void record_packet_result(peer_id,bool){++packets;}
  void on_dlt_fork_status(peer_id,const dlt_fork_status_message&); void refresh_peer_lib_cache();
  void handle_disconnect(peer_id, const char*) { ++disconnects; }
  void send_message(peer_id,const message&); void drain_send_queue(peer_id,std::vector<char>);
- void broadcast_chain_status(); void close();
+ void broadcast_chain_status(); void periodic_chain_status(); void close();
 };
 // @HELPERS@
 // @SEND_METHOD@
 // @DRAIN_METHOD@
 // @BROADCAST_METHOD@
+// @PERIODIC_METHOD@
 // @CLOSE_METHOD@
 // @RECEIVE_METHOD@
 // @CACHE_METHOD@
@@ -107,13 +110,19 @@ int main(){
    std::this_thread::sleep_for(std::chrono::milliseconds(10));
  assert(worker.async([&]{return node._peer_sending.count(1)!=0;},"stalled").wait());
  auto begin=std::chrono::steady_clock::now();
- worker.async([&]{node.broadcast_chain_status();},"start").wait();
+ worker.async([&]{node._block_processing_paused=true;node.periodic_chain_status();},"paused initial").wait();
+ assert(worker.async([&]{return node.build_calls==0 && node._last_chain_status_broadcast==fc::time_point();},"no read while paused").wait());
+ worker.async([&]{node._block_processing_paused=false;node.periodic_chain_status();},"start").wait();
  auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-begin).count();
  assert(elapsed<500);
  for(int i=0;i<100 && got<1;++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
  assert(got>=1);
  assert(worker.async([&]{return node._peer_states.at(1).send_queue.size()==1;},"queued").wait());
- worker.async([&]{node.test_lib=129;node.broadcast_chain_status();},"repeat").wait();
+ worker.async([&]{node.test_lib=129;node.periodic_chain_status();},"too early").wait();
+ assert(worker.async([&]{return node.build_calls==1;},"rate limited").wait());
+ worker.async([&]{node._last_chain_status_broadcast=fc::time_point::now()-fc::seconds(31);node._block_processing_paused=true;node.periodic_chain_status();},"paused due").wait();
+ assert(worker.async([&]{return node.build_calls==1;},"paused overdue").wait());
+ worker.async([&]{node._block_processing_paused=false;node.periodic_chain_status();},"repeat").wait();
  for(int i=0;i<100 && got<2;++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
  assert(got==2);
  for(int i=0;i<100 && worker.async([&]{return node._status_sends_inflight.count(1)!=0;},"wait repeat").wait();++i)
@@ -134,5 +143,5 @@ int main(){
  assert(elapsed<2000); assert(node._status_send_fibers.empty() && node._status_sends_inflight.empty());
  try { slow_write.wait(); } catch(const fc::exception&) {}
  std::cerr << "before join\n"; server.join(); std::cerr << "after join\n"; ::close(slow); ::close(fast); ::close(listener); std::cerr << "before quit\n"; worker.quit(); std::cerr << "after quit\n";
- std::cout << "PASS: real DLT status traverses TCP and updates receiver peer and trusted LIB cache; stalled peer stays bounded\n";
+ std::cout << "PASS: periodic status respects timing and pause; real TCP status updates peer and trusted LIB cache\n";
 }
