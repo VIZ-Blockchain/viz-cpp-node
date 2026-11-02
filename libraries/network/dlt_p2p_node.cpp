@@ -4483,6 +4483,9 @@ void dlt_p2p_node::periodic_task() {
     // A hello reports a snapshot, not a subscription. Refresh the advertised
     // LIB even in a quiet but healthy network. This helps a peer only when this
     // node has upgraded; old nodes do not send periodic statuses themselves.
+    // DRAFT, DO NOT MERGE: send_message can wait on a slow socket in this
+    // fiber, delaying every later watchdog. Dispatch must be bounded and
+    // independent of the periodic fiber, with shutdown/lifetime tests.
     try { periodic_chain_status(); }
         catch (const fc::exception& e) { wlog("periodic_chain_status: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_chain_status: ${e}", ("e", std::string(e.what()))); }
