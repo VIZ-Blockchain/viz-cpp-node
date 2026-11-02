@@ -245,11 +245,9 @@ public:
     bool is_on_majority_fork() const;
 
     // ── Peer last-irreversible-block corroboration (read from ANY thread) ──
-    // How many connected peers report a LIB above ours, and the best such claim.
-    // A peer's LIB says two thirds of ITS validators finalised that height, and it
-    // is the one part of a peer's claim that a lone node cannot manufacture by
-    // simply producing blocks. Several peers agreeing on a LIB above ours therefore
-    // means the network is finalising a chain we are not on.
+    // How many active configured seed/trusted endpoints report a LIB above ours,
+    // and the highest such reported number. These numeric claims are unsigned;
+    // the cache does not verify a certificate, peer identity, or branch ancestry.
     //
     // The emergency master consults this before signing a committee block. It is
     // exempt from the "last N blocks are all ours" isolation scan by design (every

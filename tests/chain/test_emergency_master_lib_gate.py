@@ -54,6 +54,9 @@ FILES = {
 }
 
 MUTATIONS = {
+    'gate-overstates-finality': ('validator_cpp', [
+        ('peer LIB claims are not verified finality proofs',
+         'network finality is proven')]),
     'getter-walks-the-peer-map': ('node_hpp', [
         ('v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);',
          'v.peers_above_our_lib = (uint32_t)_peer_states.size();')]),
@@ -316,6 +319,8 @@ def wiring_problems(**files):
         problems.append('the peer-LIB gate is not inside an if-statement: nothing conditions '
                         'production on the peers\' claims')
     if gate_block is not None:
+        if 'peer LIB claims are not verified finality proofs' not in gate_block:
+            problems.append('the gate log must distinguish peer claims from verified finality')
         gb = _masked(gate_block)
         if 'EMERGENCY_PEER_LIB_QUORUM' not in gb:
             problems.append('the gate does not require a quorum of peers: a single stale peer '
