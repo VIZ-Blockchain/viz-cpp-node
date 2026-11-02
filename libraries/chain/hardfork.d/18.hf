@@ -35,6 +35,10 @@
 // It must be announced before the moment it names, and the value changes together with the
 // announcement text, never after one is published. Change it only while no announcement
 // carrying this date exists.
+//
+// Decision: owner question #3413, answer A (2026-11-02): «мерж сейчас, активация 16.11.2026
+// 00:00 UTC — как в 18.hf». The date below is therefore the announced one, and the merge of
+// the PR carrying this file is the announcement; it is no longer a draft value.
 #ifndef CHAIN_HARDFORK_18
 #define CHAIN_HARDFORK_18 18
 #define CHAIN_HARDFORK_18_TIME 1794787200      // 2026-11-16 00:00:00 UTC — announce before it names
