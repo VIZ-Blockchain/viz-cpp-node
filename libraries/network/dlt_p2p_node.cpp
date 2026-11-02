@@ -2933,6 +2933,12 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
         const auto& state = entry.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
         if (state.peer_lib_num == 0) continue;  // peer advertised nothing yet
+        // The claim is an unsigned number in hello/fork_status. Two of them halt the
+        // emergency master, so only connections we opened to a configured seed or an
+        // operator-trusted endpoint count; an inbound peer (random port) never matches.
+        bool witness = _trusted_peers.count(state.endpoint) > 0;
+        for (const auto& sep : _seed_nodes) if (sep == state.endpoint) { witness = true; break; }
+        if (!witness) continue;
         if (state.peer_lib_num > best) best = state.peer_lib_num;
         if (state.peer_lib_num > our_lib) above++;
     }
