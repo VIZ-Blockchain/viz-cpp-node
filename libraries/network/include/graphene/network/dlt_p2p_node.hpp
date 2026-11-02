@@ -556,6 +556,10 @@ private:
     fc::thread*                     _thread = nullptr;
     bool                            _running = false;
     std::map<peer_id, fc::future<void>> _read_fibers;
+    // At most one asynchronous status sender per peer. Keep its future until
+    // it has finished or close() has closed sockets and waited for it.
+    std::map<peer_id, fc::future<void>> _status_send_fibers;
+    std::set<peer_id>               _status_sends_inflight;
     std::vector<fc::future<void>> _dead_fibers;
     fc::future<void>                _accept_fiber;
     fc::future<void>                _periodic_fiber;

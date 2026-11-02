@@ -274,6 +274,13 @@ void dlt_p2p_node::close() {
         try { if (conn) conn->close(); } catch (...) {}
     }
     _connections.clear();
+    // The status senders may be blocked in writesome. Close their sockets first,
+    // then wait before destroying the state they reference.
+    for (auto& item : _status_send_fibers) {
+        try { if (item.second.valid()) item.second.cancel_and_wait(__FUNCTION__); } catch (...) {}
+    }
+    _status_send_fibers.clear();
+    _status_sends_inflight.clear();
     _peer_states.clear();
     _peer_sending.clear();
     ilog("DLT P2P node closed");
@@ -2748,7 +2755,7 @@ void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
 }
 
 void dlt_p2p_node::broadcast_chain_status() {
-    if (!_delegate) return;
+    if (!_delegate || !_thread || !_running) return;
     auto hello = build_hello_message();
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
@@ -2767,7 +2774,30 @@ void dlt_p2p_node::broadcast_chain_status() {
     for (const auto& item : _peer_states)
         if (item.second.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)
             targets.push_back(item.first);
-    for (auto id : targets) send_message(id, message(msg));
+    // A slow socket must not hold the periodic watchdog fiber or prevent other
+    // peers from receiving status. The in-flight set bounds this to one task
+    // per peer; completed futures are pruned before the next broadcast.
+    for (auto it = _status_send_fibers.begin(); it != _status_send_fibers.end(); ) {
+        if (!_status_sends_inflight.count(it->first)) it = _status_send_fibers.erase(it);
+        else ++it;
+    }
+    const message frame(msg);
+    for (auto id : targets) {
+        if (!_status_sends_inflight.insert(id).second) continue;
+        try {
+            _status_send_fibers[id] = _thread->async([this, id, frame]() {
+                struct done {
+                    std::set<peer_id>& pending;
+                    peer_id id;
+                    ~done() { pending.erase(id); }
+                } guard{_status_sends_inflight, id};
+                if (_running) send_message(id, frame);
+            }, "dlt chain status send");
+        } catch (...) {
+            _status_sends_inflight.erase(id);
+            throw;
+        }
+    }
 }
 
 void dlt_p2p_node::periodic_chain_status() {
@@ -4483,9 +4513,6 @@ void dlt_p2p_node::periodic_task() {
     // A hello reports a snapshot, not a subscription. Refresh the advertised
     // LIB even in a quiet but healthy network. This helps a peer only when this
     // node has upgraded; old nodes do not send periodic statuses themselves.
-    // DRAFT, DO NOT MERGE: send_message can wait on a slow socket in this
-    // fiber, delaying every later watchdog. Dispatch must be bounded and
-    // independent of the periodic fiber, with shutdown/lifetime tests.
     try { periodic_chain_status(); }
         catch (const fc::exception& e) { wlog("periodic_chain_status: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_chain_status: ${e}", ("e", std::string(e.what()))); }
