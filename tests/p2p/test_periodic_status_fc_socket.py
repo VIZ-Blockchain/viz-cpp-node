@@ -13,7 +13,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 FC_ROOT = Path(os.environ.get('VIZ_FC_ROOT', str(ROOT)))
 source = (ROOT / 'libraries/network/dlt_p2p_node.cpp').read_text()
-template = (ROOT / 'tests/p2p/fixtures/status_fc_socket_harness.cpp').read_text()
+fixture = 'status_fc_socket_control.cpp' if os.environ.get('VIZ_FC_SOCKET_CONTROL') == '1' else 'status_fc_socket_harness.cpp'
+template = (ROOT / 'tests/p2p/fixtures' / fixture).read_text()
 
 def method(signature):
     start = source.index(signature)
