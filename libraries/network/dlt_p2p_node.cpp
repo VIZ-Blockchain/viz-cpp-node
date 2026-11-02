@@ -2748,6 +2748,7 @@ void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
 }
 
 void dlt_p2p_node::broadcast_chain_status() {
+    if (!_delegate) return;
     auto hello = build_hello_message();
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
@@ -2758,7 +2759,15 @@ void dlt_p2p_node::broadcast_chain_status() {
     msg.dlt_earliest_block = hello.dlt_earliest_block;
     msg.dlt_latest_block = hello.dlt_latest_block;
     msg.node_status = hello.node_status;
-    send_to_all_our_fork_peers(message(msg));
+    // Unlike blocks and transactions, status must also reach an ACTIVE peer
+    // whose fork is not currently aligned: that is exactly the peer which
+    // needs to learn that our LIB has advanced. Collect first because a failed
+    // send can disconnect and erase a peer.
+    std::vector<peer_id> targets;
+    for (const auto& item : _peer_states)
+        if (item.second.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)
+            targets.push_back(item.first);
+    for (auto id : targets) send_message(id, message(msg));
 }
 
 // ── State queries ────────────────────────────────────────────────────
@@ -4457,6 +4466,19 @@ void dlt_p2p_node::periodic_task() {
     }
 
     // Normal path: all periodic operations run.
+    // A hello reports a snapshot, not a subscription. Refresh the advertised
+    // LIB even in a quiet but healthy network. This helps a peer only when this
+    // node has upgraded; old nodes do not send periodic statuses themselves.
+    try {
+        const auto now = fc::time_point::now();
+        if (_last_chain_status_broadcast == fc::time_point() ||
+            (now - _last_chain_status_broadcast).count() >=
+                int64_t(CHAIN_STATUS_BROADCAST_INTERVAL_SEC) * 1000000LL) {
+            _last_chain_status_broadcast = now;
+            broadcast_chain_status();
+        }
+    } catch (const fc::exception& e) { wlog("broadcast_chain_status: ${e}", ("e", e.to_detail_string())); }
+      catch (const std::exception& e) { wlog("broadcast_chain_status: ${e}", ("e", std::string(e.what()))); }
     try { sync_stagnation_check(); }
         catch (const fc::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", std::string(e.what()))); }
