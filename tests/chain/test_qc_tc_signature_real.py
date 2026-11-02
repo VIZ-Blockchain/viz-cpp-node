@@ -26,7 +26,7 @@ def method(signature):
 
 names = ('bool database::verify_block_vote(', 'const validator_object *database::scheduled_timeout_voter(',
          'bool database::verify_timeout_vote(', 'bool database::verify_timeout_vote_v2(',
-         'bool database::accept_block_qc_certificate(')
+         'bool database::accept_block_qc_certificate(', 'void database::validate_block_qc(')
 code = template.replace('// @METHODS@', '\n'.join(method(name) for name in names))
 block_source = (ROOT / 'libraries/protocol/block.cpp').read_text()
 start = block_source.index('uint32_t block_header::num_from_id('); end = block_source.index('}', start) + 1
