@@ -369,9 +369,11 @@ namespace graphene {
                 // tick for an hour, each time "resetting to LIB", while the head never moved.
                 // A rewind stays inside the same state, so a state that keeps re-deriving the
                 // same fork is rewound into itself forever; the way out is to REPLACE the
-                // state with a snapshot. Bounded: the head must stay put for
-                // FORK_ESCALATION_SEC, the local snapshot must be ahead of it, and each
-                // stuck head escalates at most once.
+                // state with a FRESH snapshot from a trusted peer (our own snapshots are
+                // always behind our head, so they replay back into the same state). Bounded:
+                // the head must stay put for FORK_ESCALATION_SEC, the download is subject to
+                // the usual "must be above max(head, LIB)" floor guard, and each stuck head
+                // escalates at most once.
                 uint32_t _fork_loop_head = 0;
                 fc::time_point _fork_loop_since;
                 bool _fork_escalated = false;
