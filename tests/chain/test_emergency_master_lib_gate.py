@@ -10,11 +10,13 @@ served that minority fork. Nothing in the node could see it:
   * the stalled-sync escalation keys on a head that does NOT move, and a producing master
     moves its head every slot.
 
-Peers are the only witnesses left, and the one part of a peer's claim that cannot be
-invented without two thirds of the validators is its last-irreversible block. The gate is
-therefore built from three pieces that must stay wired exactly like this:
+Peers report their last-irreversible heights, but these are unsigned numeric claims.
+The gate uses multiple configured trusted endpoints as an operational signal; it does
+not verify a QC/TC proof or authenticate a remote finalized chain. Its wiring has three
+pieces that must agree:
 
-  1. the P2P node keeps a lock-free cache of how many ACTIVE peers report a LIB above ours.
+  1. the P2P node keeps a lock-free cache of how many ACTIVE configured trusted peers
+     report a LIB above ours.
      A peer that disconnects or is removed must stop counting in the same breath — a stale
      claim from a departed peer would block the master forever. The cache is refreshed on
      hello, on every fork_status and after every applied block (our LIB moves too).
@@ -22,7 +24,7 @@ therefore built from three pieces that must stay wired exactly like this:
      thread inside a slot would put the block behind the network thread it is meant to
      outrun, and waiting on it from that thread is a self-deadlock.
   3. the master branch consults it BEFORE signing a committee block, requires a quorum of
-     peers (one stale snapshot is not evidence) AND a peer LIB strictly above ours, and
+     trusted peers AND a reported peer LIB strictly above ours, and
      answers with minority_fork so the node stops extending its own tip. A head that keeps
      coming back after the rewind escalates to a fresh snapshot, guarded like every other
      escalation: a missing callback must not throw inside block processing.
@@ -228,8 +230,8 @@ def wiring_problems(**files):
             problems.append('refresh_peer_lib_cache() counts peers that are not ACTIVE: a peer '
                             'that dropped keeps blocking the master with a claim it can no longer back')
         if 'peer_lib_num' not in r:
-            problems.append('refresh_peer_lib_cache() does not use the peers\' LIB claims: a head '
-                            'can be one node\'s invention, a LIB cannot')
+            problems.append('refresh_peer_lib_cache() does not use the peers\' LIB claims; '
+                            'these remain unsigned reports, not cryptographic proof')
         if not re.search(r'peer_lib_num\s*==\s*0', r):
             problems.append('refresh_peer_lib_cache() treats a peer that has not advertised a LIB '
                             'yet as a witness: a zero claim must not enter the count or the best-'
@@ -412,10 +414,10 @@ def main():
         for p in problems:
             print('FINDING: %s' % p)
         return 1
-    print('PASS: the peer-LIB cache counts only active peers and is refreshed on every claim '
+    print('PASS: the peer-LIB cache counts only active trusted peers and is refreshed on every claim '
           'change; the production thread reads it without a P2P-thread hop; the emergency master '
-          'refuses to extend a tip whose LIB the network has finalised past, and escalates to a '
-          'fresh snapshot when a rewind keeps returning to the same head')
+          'halts on enough higher LIB claims and escalates when rewinds return to the same head. '
+          'LIB claims are not cryptographic proof')
     return 0
 
 
