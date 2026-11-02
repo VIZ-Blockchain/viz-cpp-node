@@ -130,6 +130,8 @@ public:
     // Same contract for a timeout vote (scheduled validator, signature over
     // block_timeout_digest). True = valid and new, worth relaying.
     virtual bool           accept_timeout_vote(const dlt_timeout_vote_message& vote) { return false; }
+    // Same contract for an HF18 vote, which also names the block whose QC it saw.
+    virtual bool           accept_timeout_vote_v2(const dlt_timeout_vote_v2_message& vote) { return false; }
     // Re-verify a gossiped block QC against our own schedule and keep it if it is
     // better than the one we hold. True = valid, worth relaying.
     virtual bool           accept_block_qc(const dlt_block_qc_message& msg) { return false; }
@@ -208,6 +210,11 @@ public:
         uint32_t round);
     void broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                 const std::string& validator, const signature_type& signature);
+    // HF18: the same vote with the block whose QC it names. Goes only to peers that
+    // advertise DLT_CAP_TIMEOUT_VOTE_V2 (a 4.3.x node cannot parse the struct).
+    void broadcast_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                                   const block_id_type& high_qc_block_id,
+                                   const std::string& validator, const signature_type& signature);
     // Re-broadcast a QC we hold. Sent to every capable peer, not deduplicated: this
     // is how a certificate formed before a restart finds the nodes that lost it.
     void broadcast_block_qc(const graphene::protocol::block_qc_certificate& cert);
@@ -352,6 +359,8 @@ private:
     void process_block_vote(const dlt_block_vote_message& msg, peer_id from);
     void on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_message& msg);
     void process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from);
+    void on_dlt_timeout_vote_v2(peer_id peer, const dlt_timeout_vote_v2_message& msg);
+    void process_timeout_vote_v2(const dlt_timeout_vote_v2_message& msg, peer_id from);
     void on_dlt_block_qc(peer_id peer, const dlt_block_qc_message& msg);
     void process_block_qc(const dlt_block_qc_message& msg, peer_id from);
     // Send to active fork peers advertising `cap`, except `from`, once per node id.

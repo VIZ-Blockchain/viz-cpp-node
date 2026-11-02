@@ -60,6 +60,13 @@ namespace graphene {
                     const std::string &validator,
                     const graphene::protocol::signature_type &signature);
 
+                // HF18 timeout vote: also names the block whose QC it saw. Sent to peers
+                // that advertise the v2 capability; the chain decides whether it counts.
+                void post_broadcast_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                    const graphene::protocol::block_id_type &high_qc_block_id,
+                    const std::string &validator,
+                    const graphene::protocol::signature_type &signature);
+
                 // HF16 block QC (fire-and-forget on the P2P thread). Votes always
                 // travelled; the certificate they form did not, so a head certified
                 // by a quorum stayed unknown to the producer of the next slot.

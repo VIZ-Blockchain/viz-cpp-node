@@ -107,7 +107,7 @@ inline u256 to256(const fc::uint128_t &t) {
             // HF15 (PM audit fixes) is registered in BOTH configs — production included, because the
             // shelter testnet runs the production config and a testnet-only fork could never
             // activate there. The gate is the activation time (15.hf) plus the validator quorum,
-            // not the build flavour; CHAIN_NUM_HARDFORKS (17) is the same everywhere so the arrays
+            // not the build flavour; CHAIN_NUM_HARDFORKS (18) is the same everywhere so the arrays
             // are sized [CHAIN_NUM_HARDFORKS + 1] and these indices are in bounds.
             _hardfork_times[CHAIN_HARDFORK_15] = fc::time_point_sec(CHAIN_HARDFORK_15_TIME);
             _hardfork_versions[CHAIN_HARDFORK_15] = CHAIN_HARDFORK_15_VERSION;
@@ -123,6 +123,13 @@ inline u256 to256(const fc::uint128_t &t) {
             // legacy full-schedule quorum.
             _hardfork_times[CHAIN_HARDFORK_17] = fc::time_point_sec(CHAIN_HARDFORK_17_TIME);
             _hardfork_versions[CHAIN_HARDFORK_17] = CHAIN_HARDFORK_17_VERSION;
+
+            // HF18 (timeout votes name the certified block) — same rule: unconditional in both
+            // configs, gated by the time in 18.hf plus validator quorum. No migration and no
+            // schema bump: the vote pool and its journal are node-local state, and the only new
+            // wire object is a block-header extension that does not exist before this fork.
+            _hardfork_times[CHAIN_HARDFORK_18] = fc::time_point_sec(CHAIN_HARDFORK_18_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_18] = CHAIN_HARDFORK_18_VERSION;
 
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
@@ -1067,6 +1074,20 @@ inline u256 to256(const fc::uint128_t &t) {
                     // (id 0) so pm_lazy_deposit and the allocation/leverage paths can rely
                     // on get<pm_lazy_pool_object>. All balances start at zero (empty pool).
                     create<pm_lazy_pool_object>([](pm_lazy_pool_object&) {});
+                    break;
+                case CHAIN_HARDFORK_18:
+                    // HF18: no chain migration — the vote pool lives in node memory and its
+                    // journal is a cache; the chain carries the change only through the new
+                    // header extension. But the pool crosses the fork in ONE move: a pre-HF18
+                    // vote is signed over the v1 digest and can never join a v2 certificate,
+                    // so keeping it would only mix two kinds of claims under one key.
+                    {
+                        std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                        _timeout_votes.clear();
+                        _timeout_certs.clear();
+                        _timeout_certs_v2.clear();
+                        _timeout_qc_claims.clear();
+                    }
                     break;
                 case CHAIN_HARDFORK_16:
                     // #6737: this block is the last 3 s slot (dgpo.time is already this block's

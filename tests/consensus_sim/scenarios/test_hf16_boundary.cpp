@@ -622,6 +622,191 @@ BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
 }
 
 
+// HF18 (#9968): a timeout vote names the BLOCK whose QC it claims, not only the round. Two nodes
+// that timed out on different blocks at one round can no longer build a certificate together, and
+// a certificate only matches the parent QC of the block its votes name.
+BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
+    try {
+        auto gp = make_genesis_params(0xBF718u, 1);
+        fc::time_point_sec start(fc::time_point::now());
+        if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+        start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+        virtual_clock clk(start);
+        simulated_node node("hf18-votes", gp, clk);
+        fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+        BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+        auto &db = node.db();
+
+        // A second real validator so the CHAIN_TESTNET_VALIDATORS=2 arm has a quorum above one;
+        // the one-slot arm ignores the registration, and the split half below is skipped there.
+        const auto pub = gp.genesis_witness_key.get_public_key();
+        authority auth; auth.weight_threshold = 1; auth.key_auths[pub] = 1;
+        account_create_operation create;
+        create.creator = gp.initiator_name; create.new_account_name = "validator-two";
+        create.fee = node.db().get_validator_schedule_object().median_props.account_creation_fee;
+        create.delegation = asset(0, SHARES_SYMBOL);
+        create.master = auth; create.active = auth; create.regular = auth; create.memo_key = pub;
+        transfer_operation fund; fund.from = gp.initiator_name; fund.to = "validator-two";
+        fund.amount = asset(100000000, TOKEN_SYMBOL);
+        node.push_pending_transaction(sign_ops({create, fund}, gp.initiator_key, node));
+        produce(node, gp, when);
+        validator_update_operation register_validator;
+        register_validator.owner = "validator-two"; register_validator.url = "viz";
+        register_validator.block_signing_key = pub;
+        account_validator_vote_operation vote;
+        vote.account = gp.initiator_name; vote.validator = "validator-two"; vote.approve = true;
+        auto tx = sign_ops({register_validator, vote}, gp.initiator_key, node);
+        tx.sign(gp.genesis_witness_key, node.chain_id());
+        node.push_pending_transaction(tx);
+        for (int i = 0; i < 100; ++i) {
+            produce(node, gp, when);
+            if (node.db().get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT >= 2) break;
+        }
+        db.set_hardfork(CHAIN_HARDFORK_16, true);
+
+        const auto &wso = db.get_validator_schedule_object();
+        const uint32_t count = wso.num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT;
+        const uint32_t quorum = database::block_qc_quorum(count);
+        const account_name_type voter_a = wso.current_shuffled_validators[0];
+        const account_name_type voter_b = count >= 2
+                ? wso.current_shuffled_validators[CHAIN_BLOCK_VALIDATOR_REPEAT] : account_name_type();
+
+        // The parent QC a TC must be compatible with: its round and the block it certifies.
+        const uint32_t parent_round = db.round_of(db.head_block_time());
+        const auto block_a = db.head_block_id();
+        const auto block_b = db.fetch_block_by_number(db.head_block_num() - 1)->id();
+        BOOST_REQUIRE(block_a != block_b);
+        const uint32_t vote_round = parent_round + 2;
+
+        const auto sig_v2 = [&](const account_name_type &v, uint32_t r, uint32_t hq, const block_id_type &id) {
+            return key_for(gp, v).sign_compact(block_timeout_digest_v2(db.get_chain_id(), r, hq, id));
+        };
+
+        // Before HF18 the wire form carries no block id: a v2 vote is refused, a v1 one is the
+        // only kind that counts.
+        BOOST_CHECK(!db.push_timeout_vote_v2(vote_round, parent_round, block_a, voter_a,
+                                             sig_v2(voter_a, vote_round, parent_round, block_a)));
+        BOOST_CHECK(db.push_timeout_vote(vote_round, parent_round, voter_a,
+                key_for(gp, voter_a).sign_compact(
+                        block_timeout_digest(db.get_chain_id(), vote_round, parent_round))));
+
+        // The fork moves the pool to the new kind in one step: the v1 vote and any v1 certificate
+        // built from it are gone, not carried across.
+        db.set_hardfork(CHAIN_HARDFORK_18, true);
+        BOOST_CHECK(!db.get_timeout_cert(vote_round).valid());
+        BOOST_CHECK(!db.get_timeout_cert_v2(vote_round).valid());
+
+        // ... and after it the v1 entry point refuses, the v2 one accepts.
+        BOOST_CHECK(!db.push_timeout_vote(vote_round, parent_round, voter_a,
+                key_for(gp, voter_a).sign_compact(
+                        block_timeout_digest(db.get_chain_id(), vote_round, parent_round))));
+        BOOST_REQUIRE(db.push_timeout_vote_v2(vote_round, parent_round, block_a, voter_a,
+                                              sig_v2(voter_a, vote_round, parent_round, block_a)));
+
+        if (count >= 2 && quorum >= 2) {
+            // The second validator timed out on a DIFFERENT block at the same round. A
+            // certificate is a statement about one block: two such votes must not make one.
+            BOOST_CHECK(db.push_timeout_vote_v2(vote_round, parent_round, block_b, voter_b,
+                                                sig_v2(voter_b, vote_round, parent_round, block_b)));
+            BOOST_CHECK_MESSAGE(!db.get_timeout_cert_v2(vote_round).valid(),
+                "votes naming different blocks at one round formed a certificate");
+            BOOST_CHECK(!db.get_timeout_cert_between_v2(parent_round, vote_round + 1, parent_round, block_a).valid());
+            BOOST_CHECK(!db.get_timeout_cert_between_v2(parent_round, vote_round + 1, parent_round, block_b).valid());
+        }
+
+        // Agreement at the next round does form one -- and it matches only the parent QC of the
+        // block its votes name.
+        const uint32_t agree_round = vote_round + 1;
+        BOOST_REQUIRE(db.push_timeout_vote_v2(agree_round, parent_round, block_a, voter_a,
+                                              sig_v2(voter_a, agree_round, parent_round, block_a)));
+        if (count >= 2)
+            BOOST_REQUIRE(db.push_timeout_vote_v2(agree_round, parent_round, block_a, voter_b,
+                                                  sig_v2(voter_b, agree_round, parent_round, block_a)));
+        BOOST_REQUIRE(db.get_timeout_cert_v2(agree_round).valid());
+        BOOST_CHECK_EQUAL(db.get_timeout_cert_v2(agree_round)->round, agree_round);
+        BOOST_CHECK_MESSAGE(db.get_timeout_cert_between_v2(parent_round, agree_round + 1, parent_round, block_a).valid(),
+                            "a TC whose votes name the parent block was not offered next to that parent QC");
+        BOOST_CHECK_MESSAGE(!db.get_timeout_cert_between_v2(parent_round, agree_round + 1, parent_round, block_b).valid(),
+                            "a TC was offered next to a parent QC of a DIFFERENT block");
+
+        if (count >= 2 && quorum == 2 && parent_round > 1) {
+            // The cached minimum cut cannot form: each lower-round group has one vote.
+            // Both votes are nonetheless compatible with a later parent QC, regardless of
+            // which blocks they named at that earlier round.
+            const uint32_t split_round = agree_round + 1;
+            BOOST_REQUIRE(db.push_timeout_vote_v2(split_round, parent_round - 1, block_a, voter_a,
+                    sig_v2(voter_a, split_round, parent_round - 1, block_a)));
+            BOOST_REQUIRE(db.push_timeout_vote_v2(split_round, parent_round - 1, block_b, voter_b,
+                    sig_v2(voter_b, split_round, parent_round - 1, block_b)));
+            BOOST_CHECK(!db.get_timeout_cert_v2(split_round).valid());
+            const auto tc = db.get_timeout_cert_between_v2(agree_round, split_round + 1, parent_round, block_a);
+            BOOST_REQUIRE(tc.valid());
+            BOOST_CHECK_EQUAL(tc->votes.size(), 2u);
+        }
+    } catch (const fc::exception &e) {
+        BOOST_ERROR("chain raised: " << e.to_detail_string());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(hf18_rollback_discards_v2_timeout_votes) {
+    auto gp = make_genesis_params(0xBF719u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("hf18-rollback", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    auto &db = node.db();
+#ifndef CHAIN_TESTNET_VALIDATORS
+    // A one-validator chain makes its head irreversible too quickly for this rollback.
+    return;
+#else
+    const auto pub = gp.genesis_witness_key.get_public_key();
+    authority auth; auth.weight_threshold = 1; auth.key_auths[pub] = 1;
+    account_create_operation create;
+    create.creator = gp.initiator_name; create.new_account_name = "validator-two";
+    create.fee = db.get_validator_schedule_object().median_props.account_creation_fee;
+    create.delegation = asset(0, SHARES_SYMBOL);
+    create.master = auth; create.active = auth; create.regular = auth; create.memo_key = pub;
+    transfer_operation fund; fund.from = gp.initiator_name; fund.to = "validator-two";
+    fund.amount = asset(100000000, TOKEN_SYMBOL);
+    node.push_pending_transaction(sign_ops({create, fund}, gp.initiator_key, node));
+    produce(node, gp, when);
+    validator_update_operation reg;
+    reg.owner = "validator-two"; reg.url = "viz"; reg.block_signing_key = pub;
+    account_validator_vote_operation vote;
+    vote.account = gp.initiator_name; vote.validator = "validator-two"; vote.approve = true;
+    auto tx = sign_ops({reg, vote}, gp.initiator_key, node);
+    tx.sign(gp.genesis_witness_key, node.chain_id());
+    node.push_pending_transaction(tx);
+    for (int i = 0; i < 100; ++i) {
+        produce(node, gp, when);
+        if (db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT >= 2) break;
+    }
+    BOOST_REQUIRE_GE(db.get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT, 2);
+    db.set_hardfork(CHAIN_HARDFORK_17, true);
+    db.set_hardfork(CHAIN_HARDFORK_18, false);
+    BOOST_REQUIRE(!db.has_hardfork(CHAIN_HARDFORK_18));
+    const uint32_t parent_num = db.head_block_num();
+    produce(node, gp, when);
+    BOOST_REQUIRE(db.has_hardfork(CHAIN_HARDFORK_18));
+    BOOST_REQUIRE_LT(db.get_dynamic_global_properties().last_irreversible_block_num, db.head_block_num());
+    const auto voter = db.get_validator_schedule_object().current_shuffled_validators[0];
+    const uint32_t round = db.round_of(db.head_block_time()) + 2;
+    const auto v2sig = key_for(gp, voter).sign_compact(
+            block_timeout_digest_v2(db.get_chain_id(), round, 0, block_id_type()));
+    BOOST_REQUIRE(db.push_timeout_vote_v2(round, 0, block_id_type(), voter, v2sig));
+    db.pop_block();
+    BOOST_REQUIRE_EQUAL(db.head_block_num(), parent_num);
+    BOOST_REQUIRE(!db.has_hardfork(CHAIN_HARDFORK_18));
+    BOOST_CHECK(!db.get_timeout_cert_v2(round).valid());
+    const auto v1sig = key_for(gp, voter).sign_compact(block_timeout_digest(db.get_chain_id(), round, 0));
+    BOOST_CHECK_MESSAGE(db.push_timeout_vote(round, 0, voter, v1sig),
+                        "a v2 vote survived rollback and blocked the pre-HF18 voter");
+#endif
+}
+
 // #236: an unstick block carries no QC, so the Jolteon vote rule and the certificate fork
 // choice both used to let it through. A certified head must not be abandoned for a longer
 // QC-less branch on HF12 stake weight, and a validator holding a QC for a sibling of a

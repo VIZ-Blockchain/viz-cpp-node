@@ -1934,6 +1934,9 @@ namespace graphene {
                                         for (const auto &e : blk->extensions) {
                                             if (e.which() == 3) { has_qc = true; qc_round = e.get<graphene::protocol::block_qc_certificate>().round; }
                                             else if (e.which() == 4) tc_round = e.get<graphene::protocol::block_timeout_certificate>().round;
+                                            // HF18 carries the same certificate in its own extension; the
+                                            // round is what covers the gap either way.
+                                            else if (e.which() == 6) tc_round = e.get<graphene::protocol::block_timeout_certificate_v2>().round;
                                         }
                                         // Late-QC fallback (grandparent QC, consecutive rounds) is
                                         // valid too, unless we hold a QC for a SIBLING of the parent
@@ -2025,10 +2028,14 @@ namespace graphene {
                     // so the TC skip of that head was refused forever (21-validator stand,
                     // netem 300 ms: head #183 with TC 691, all timeouts "high QC 691").
                     uint32_t carried_qc_round = 0;
+                    graphene::protocol::block_id_type carried_qc_block_id;
                     if (head_block)
                         for (const auto &e : head_block->extensions)
-                            if (e.which() == 3)
-                                carried_qc_round = e.get<graphene::protocol::block_qc_certificate>().round;
+                            if (e.which() == 3) {
+                                const auto &carried = e.get<graphene::protocol::block_qc_certificate>();
+                                carried_qc_round = carried.round;
+                                carried_qc_block_id = carried.block_id;
+                            }
                     // Pacemaker backoff (Q#3123=A). A QC-less head whose QC lags it by g
                     // rounds has been rebuilt after TCs in a row: wait w = 2^floor(log2 g)
                     // rounds (1, 2, 4, capped at 8) before giving up on it, so votes slower
@@ -2055,7 +2062,16 @@ namespace graphene {
                         // carries -- so the three become honest and the TC reaches a quorum.
                         const bool stalled =
                                 (now - db.head_block_time()).to_seconds() >= CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC;
-                        const uint32_t high_qc_round = (certified && !stalled) ? head_qc->round : carried_qc_round;
+                        const bool claim_head_qc = certified && !stalled;
+                        const uint32_t high_qc_round = claim_head_qc ? head_qc->round : carried_qc_round;
+                        // HF18: the claim names the BLOCK, not only the round. Both sources
+                        // below carry a block id already (the head QC certifies the head; a
+                        // carried QC names the block it certifies), so the pair is always
+                        // one that exists on chain. Round 0 means "no QC at all" and goes
+                        // with the zero id.
+                        const graphene::protocol::block_id_type high_qc_block_id =
+                                claim_head_qc ? head_qc->block_id : carried_qc_block_id;
+                        const bool hf18 = db.has_hardfork(CHAIN_HARDFORK_18);
                         const auto &wso = db.get_validator_schedule_object();
                         const auto &by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                         for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
@@ -2067,12 +2083,33 @@ namespace graphene {
                             if (key_itr == _private_keys.end()) continue;
                             if (high_qc_round >= t) continue;   // malformed head; push would refuse it
                             if (!may_timeout(v, t)) continue;
-                            const auto sig = key_itr->second.sign_compact(
-                                    graphene::protocol::block_timeout_digest(db.get_chain_id(), t, high_qc_round));
-                            ilog("Timeout: ${w} gives up on round ${r} (head #${h} round ${hr}, ${c}; high QC round ${q})",
-                                 ("w", v)("r", t)("h", head_num)("hr", head_round)
-                                 ("c", certified ? "certified" : "no QC")("q", high_qc_round));
-                            p2p().post_broadcast_timeout_vote(t, high_qc_round, v, sig);
+                            // A v2 vote is "round 0 with the zero id" (no QC) or "a round and
+                            // the block certified there", never half of each: every node
+                            // refuses the mixed form. Normalise instead of skipping, so a head
+                            // that names a round without a block still gets a vote out.
+                            uint32_t claim_round = high_qc_round;
+                            graphene::protocol::block_id_type claim_id = high_qc_block_id;
+                            if (claim_round == 0 || claim_id == graphene::protocol::block_id_type()) {
+                                claim_round = 0;
+                                claim_id = graphene::protocol::block_id_type();
+                            }
+                            if (hf18) {
+                                const auto sig = key_itr->second.sign_compact(
+                                        graphene::protocol::block_timeout_digest_v2(db.get_chain_id(), t,
+                                                claim_round, claim_id));
+                                ilog("Timeout: ${w} gives up on round ${r} (head #${h} round ${hr}, ${c}; high QC round ${q}${b})",
+                                     ("w", v)("r", t)("h", head_num)("hr", head_round)
+                                     ("c", certified ? "certified" : "no QC")("q", claim_round)
+                                     ("b", claim_round ? " on block " + std::string(claim_id) : std::string()));
+                                p2p().post_broadcast_timeout_vote_v2(t, claim_round, claim_id, v, sig);
+                            } else {
+                                const auto sig = key_itr->second.sign_compact(
+                                        graphene::protocol::block_timeout_digest(db.get_chain_id(), t, high_qc_round));
+                                ilog("Timeout: ${w} gives up on round ${r} (head #${h} round ${hr}, ${c}; high QC round ${q})",
+                                     ("w", v)("r", t)("h", head_num)("hr", head_round)
+                                     ("c", certified ? "certified" : "no QC")("q", high_qc_round));
+                                p2p().post_broadcast_timeout_vote(t, high_qc_round, v, sig);
+                            }
                         }
                     }
                 }
@@ -2691,6 +2728,8 @@ namespace graphene {
                 // timeouts have piled up (mainnet stall 31.10.2026: TC(245..372) formed,
                 // own_round-1 was 600, and the chain stood still).
                 fc::optional<graphene::protocol::block_timeout_certificate> skip_tc;
+                // HF18 form of the same certificate: its votes name the block they certified.
+                fc::optional<graphene::protocol::block_timeout_certificate_v2> skip_tc_v2;
                 bool waiting_for_qc = false;
                 bool rebuild_on_anchor = false;
                 // Late-QC head: the block to rebuild on is the one its QC certifies.
@@ -2698,12 +2737,18 @@ namespace graphene {
                 const uint32_t own_round = db.round_of(scheduled_time);
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
+                    const bool hf18 = db.has_hardfork(CHAIN_HARDFORK_18);
                     const auto parent_cert = db.parent_qc_for_next_block(scheduled_validator);
                     if (parent_cert.valid()) {
                         // Head certified. A gap after it needs a TC between its round and
-                        // ours, or our block gets no votes.
+                        // ours, or our block gets no votes. The certificate is checked
+                        // against exactly this parent QC, block id included from HF18.
                         if (parent_cert->round + 1 >= own_round) return;
-                        skip_tc = db.get_timeout_cert_between(parent_cert->round, own_round, parent_cert->round);
+                        if (hf18)
+                            skip_tc_v2 = db.get_timeout_cert_between_v2(parent_cert->round, own_round,
+                                                                        parent_cert->round, parent_cert->block_id);
+                        else
+                            skip_tc = db.get_timeout_cert_between(parent_cert->round, own_round, parent_cert->round);
                         return;
                     }
                     waiting_for_qc = true;
@@ -2735,8 +2780,14 @@ namespace graphene {
                         if (parent && dgp.round_anchor_time != fc::time_point_sec() &&
                             parent->timestamp <= dgp.round_anchor_time) {
                             // Any TC proves some round after the anchor timed out; the TC
-                            // itself is not carried (the rebuild block has no parent QC).
-                            skip_tc = db.get_timeout_cert_between(0, own_round, std::numeric_limits<uint32_t>::max());
+                            // itself is not carried (the rebuild block has no parent QC), so
+                            // the block id does not matter here — the max round makes every
+                            // vote "below the cut".
+                            if (hf18)
+                                skip_tc_v2 = db.get_timeout_cert_between_v2(0, own_round,
+                                        std::numeric_limits<uint32_t>::max(), graphene::protocol::block_id_type());
+                            else
+                                skip_tc = db.get_timeout_cert_between(0, own_round, std::numeric_limits<uint32_t>::max());
                             rebuild_on_anchor = true;
                         }
                         return;
@@ -2744,8 +2795,14 @@ namespace graphene {
                     // The parent must be certified, and nobody who timed out may
                     // have seen a QC above it (else our block would be invalid); the
                     // window search already keeps only such certificates.
-                    auto tc = db.get_timeout_cert_between(parent_qc->round, own_round, parent_qc->round);
-                    if (!tc) { skip_refused("no usable TC between head's QC round and our round"); return; }
+                    if (hf18) {
+                        skip_tc_v2 = db.get_timeout_cert_between_v2(parent_qc->round, own_round,
+                                                                    parent_qc->round, parent_qc->block_id);
+                        if (!skip_tc_v2) { skip_refused("no usable TC between head's QC round and our round"); return; }
+                    } else {
+                        skip_tc = db.get_timeout_cert_between(parent_qc->round, own_round, parent_qc->round);
+                        if (!skip_tc) { skip_refused("no usable TC between head's QC round and our round"); return; }
+                    }
                     // Late-QC head (it carries its grandparent's QC because its parent's
                     // never formed): nothing between the certified block and head can get
                     // a QC any more, so after the TC the proposal extends the certified
@@ -2761,12 +2818,12 @@ namespace graphene {
                         }
                         rebuild_on = parent_qc->block_id;
                     }
-                    skip_tc = tc;
                 });
-                if (waiting_for_qc && skip_tc) {
+                if (waiting_for_qc && (skip_tc || skip_tc_v2)) {
                     const auto skipped = db.head_block_id();
+                    const uint32_t skip_tc_round = skip_tc ? skip_tc->round : skip_tc_v2->round;
                     ilog("TC for round ${r}: dropping QC-less head #${h} ${id}, building slot ${s} as ${w} on its parent",
-                         ("r", skip_tc->round)("h", db.head_block_num())("id", skipped)("s", slot)("w", scheduled_validator));
+                         ("r", skip_tc_round)("h", db.head_block_num())("id", skipped)("s", slot)("w", scheduled_validator));
                     try {
                         db.with_strong_write_lock([&]() {
                             db.pop_block();
@@ -2779,9 +2836,13 @@ namespace graphene {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;
                     }
+                    // The skipped block may itself have activated HF18. A certificate
+                    // selected on its state cannot be carried on the pre-fork parent.
+                    if (skip_tc_v2 && db.with_weak_read_lock([&]() { return !db.has_hardfork(CHAIN_HARDFORK_18); }))
+                        return block_validation_condition::not_time_yet;
                     // Our block now sits on the anchor: it needs no parent QC and may
                     // carry no TC ("A TC goes only next to a parent QC").
-                    if (rebuild_on_anchor) skip_tc.reset();
+                    if (rebuild_on_anchor) { skip_tc.reset(); skip_tc_v2.reset(); }
                     waiting_for_qc = false;
                 }
                 // Late-QC fallback. `now` is whole seconds with a +250 ms look-ahead, so the
@@ -2789,7 +2850,7 @@ namespace graphene {
                 // ticks; the last one lands ~500 ms in. There, rather than lose the slot,
                 // carry the grandparent QC head already carries; finality slips one slot.
                 fc::optional<graphene::protocol::block_qc_certificate> late_qc;
-                if (waiting_for_qc && !skip_tc &&
+                if (waiting_for_qc && !skip_tc && !skip_tc_v2 &&
                     now_fine - fc::time_point(scheduled_time) >= fc::milliseconds(400)) {
                     late_qc = db.with_weak_read_lock([&]() {
                         return db.grandparent_qc_for_next_block(scheduled_validator, own_round);
@@ -2803,14 +2864,14 @@ namespace graphene {
                 // than wait for one the network evidently cannot deliver. The rule reads chain
                 // time only (database::emergency_unstick_block), so the validators of this block
                 // reach the same verdict.
-                if (waiting_for_qc && !skip_tc && !late_qc &&
+                if (waiting_for_qc && !skip_tc && !skip_tc_v2 && !late_qc &&
                     db.with_weak_read_lock([&]() { return db.emergency_unstick_block(scheduled_time); })) {
                     wlog("Unstick: head #${h} uncertified for ${g}s, producing slot ${s} as ${w} without a parent QC",
                          ("h", db.head_block_num())("s", slot)("w", scheduled_validator)
                          ("g", (scheduled_time - db.head_block_time()).to_seconds()));
                     waiting_for_qc = false;
                 }
-                if (waiting_for_qc && !skip_tc && !late_qc) {
+                if (waiting_for_qc && !skip_tc && !skip_tc_v2 && !late_qc) {
                     ilog("Waiting for QC of head #${h} before producing slot ${s} as ${w}",
                          ("h", db.head_block_num())("s", slot)("w", scheduled_validator));
                     return block_validation_condition::not_time_yet;
@@ -2833,7 +2894,8 @@ namespace graphene {
                                 private_key_itr->second,
                                 _production_skip_flags,
                                 skip_tc,
-                                late_qc
+                                late_qc,
+                                skip_tc_v2
                         );
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_validator)("tx", block.transactions.size());
                         p2p().broadcast_block(block);

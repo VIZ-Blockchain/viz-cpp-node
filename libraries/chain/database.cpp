@@ -2781,11 +2781,12 @@ namespace graphene { namespace chain {
                 const fc::ecc::private_key &block_signing_private_key,
                 uint32_t skip /* = 0 */,
                 const fc::optional<protocol::block_timeout_certificate> &tc,
-                const fc::optional<protocol::block_qc_certificate> &qc_override
+                const fc::optional<protocol::block_qc_certificate> &qc_override,
+                const fc::optional<protocol::block_timeout_certificate_v2> &tc_v2
         ) {
             signed_block result;
             try {
-                result = _generate_block(when, validator_owner, block_signing_private_key, skip, tc, qc_override);
+                result = _generate_block(when, validator_owner, block_signing_private_key, skip, tc, qc_override, tc_v2);
             }
             FC_CAPTURE_AND_RETHROW((validator_owner))
             return result;
@@ -2798,7 +2799,8 @@ namespace graphene { namespace chain {
                 const fc::ecc::private_key &block_signing_private_key,
                 uint32_t skip,
                 const fc::optional<protocol::block_timeout_certificate> &tc,
-                const fc::optional<protocol::block_qc_certificate> &qc_override
+                const fc::optional<protocol::block_qc_certificate> &qc_override,
+                const fc::optional<protocol::block_timeout_certificate_v2> &tc_v2
         ) {
             // Apply any deferred resize BEFORE the lockless reads below.
             // This is critical: get_slot_at_time(), get_validator(), find_account()
@@ -2932,15 +2934,16 @@ namespace graphene { namespace chain {
                         FC_ASSERT(emergency_unstick_block(when),
                                   "No QC for head #${n} yet: cannot hand over the turn",
                                   ("n", head_block_num()));
-                        FC_ASSERT(!tc, "An unstick block carries no TC");
+                        FC_ASSERT(!tc && !tc_v2, "An unstick block carries no TC");
                         wlog("Unstick block #${n}: no QC for head #${h}, the chain has stood still for ${g}s",
                              ("n", head_block_num() + 1)("h", head_block_num())
                              ("g", (when - head_block_time()).to_seconds()));
                     }
                     if (attach_cert) {
-                        FC_ASSERT(!(qc_override && tc), "The late-QC fallback carries no TC");
+                        FC_ASSERT(!(qc_override && (tc || tc_v2)), "The late-QC fallback carries no TC");
                         pending_block.extensions.insert(block_header_extensions(*cert));
                         if (tc) pending_block.extensions.insert(block_header_extensions(*tc));
+                        if (tc_v2) pending_block.extensions.insert(block_header_extensions(*tc_v2));
                     }
 
                     // Double-vote proofs: newest round per validator that the chain has
@@ -2979,7 +2982,7 @@ namespace graphene { namespace chain {
                         pending_block.extensions.insert(block_header_extensions(*kv.second));
                     }
                 }
-                FC_ASSERT(!tc || block_needs_parent_qc(validator_owner),
+                FC_ASSERT(!(tc || tc_v2) || block_needs_parent_qc(validator_owner),
                           "A TC goes only next to a parent QC");
 
                 const auto &hfp = get_hardfork_property_object();
@@ -3144,8 +3147,16 @@ namespace graphene { namespace chain {
                      ("fh", fork_head ? fork_head->num : 0)
                      ("prev", (fork_head && fork_head->prev.lock()) ? fork_head->prev.lock()->num : 0));
 
+                const bool was_hf18 = has_hardfork(CHAIN_HARDFORK_18);
                 _fork_db.pop_block();
                 undo();
+                if (was_hf18 && !has_hardfork(CHAIN_HARDFORK_18)) {
+                    std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                    _timeout_votes.clear();
+                    _timeout_certs.clear();
+                    _timeout_certs_v2.clear();
+                    _timeout_qc_claims.clear();
+                }
 
                 _popped_tx.insert(_popped_tx.begin(), head_block->transactions.begin(), head_block->transactions.end());
 
@@ -6359,6 +6370,7 @@ namespace graphene { namespace chain {
                     case 3: // block_qc_certificate — verified in validate_block_qc()
                     case 4: // block_timeout_certificate — verified in validate_block_qc()
                     case 5: // block_equivocation_proof — verified in apply_equivocation_proofs()
+                    case 6: // block_timeout_certificate_v2 — verified in validate_block_qc()
                         break;
                     default:
                         FC_ASSERT(false, "Unknown extension in block header");
@@ -7341,19 +7353,24 @@ namespace graphene { namespace chain {
             }
         }
 
-        bool database::verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
-                                           const account_name_type &validator, const signature_type &signature) const {
-            // A QC seen while timing out round r is from an earlier round.
-            if (high_qc_round >= round) return false;
+        const validator_object *database::scheduled_timeout_voter(const account_name_type &validator) const {
             const auto &wso = get_validator_schedule_object();
             bool scheduled = false;
             for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
                 if (wso.current_shuffled_validators[i] == validator) { scheduled = true; break; }
             }
-            if (!scheduled) return false;
-
+            if (!scheduled) return nullptr;
             const auto *v = find_validator(validator);
-            if (!v || v->signing_key == public_key_type()) return false;
+            if (!v || v->signing_key == public_key_type()) return nullptr;
+            return v;
+        }
+
+        bool database::verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
+                                           const account_name_type &validator, const signature_type &signature) const {
+            // A QC seen while timing out round r is from an earlier round.
+            if (high_qc_round >= round) return false;
+            const auto *v = scheduled_timeout_voter(validator);
+            if (!v) return false;
 
             const auto digest = protocol::block_timeout_digest(get_chain_id(), round, high_qc_round);
             try {
@@ -7363,8 +7380,48 @@ namespace graphene { namespace chain {
             }
         }
 
+        bool database::verify_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                                              const block_id_type &high_qc_block_id,
+                                              const account_name_type &validator, const signature_type &signature) const {
+            // A QC seen while timing out round r is from an earlier round.
+            if (high_qc_round >= round) return false;
+            // "I hold no QC" is round 0 AND the zero id, together or not at all. A vote that
+            // names a round must name the block certified at that round: without the id the
+            // claim is unverifiable and two blocks of one round look alike again, which is
+            // exactly what HF18 closes.
+            if ((high_qc_round == 0) != (high_qc_block_id == block_id_type())) return false;
+            const auto *v = scheduled_timeout_voter(validator);
+            if (!v) return false;
+
+            const auto digest = protocol::block_timeout_digest_v2(get_chain_id(), round, high_qc_round,
+                                                                  high_qc_block_id);
+            try {
+                return public_key_type(fc::ecc::public_key(signature, digest)) == v->signing_key;
+            } catch (const fc::exception &) {
+                return false;                                                 // unrecoverable signature
+            }
+        }
+
         bool database::push_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                          const account_name_type &validator, const signature_type &signature) {
+            // From HF18 on, every vote inside a certificate is signed over the v2 digest, so a
+            // v1 vote can never join one. Do not keep it: the pool is cleared at the fork and
+            // stays single-kind. Pre-fork this is the only kind that exists.
+            if (has_hardfork(CHAIN_HARDFORK_18)) return false;
+            return push_timeout_vote_impl(round, high_qc_round, block_id_type(), validator, signature, false);
+        }
+
+        bool database::push_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                                            const block_id_type &high_qc_block_id,
+                                            const account_name_type &validator, const signature_type &signature) {
+            if (!has_hardfork(CHAIN_HARDFORK_18)) return false;
+            return push_timeout_vote_impl(round, high_qc_round, high_qc_block_id, validator, signature, true);
+        }
+
+        bool database::push_timeout_vote_impl(uint32_t round, uint32_t high_qc_round,
+                                              const block_id_type &high_qc_block_id,
+                                              const account_name_type &validator, const signature_type &signature,
+                                              bool v2) {
             // Same window as block votes: bounded memory for valid-but-absurd rounds.
             static constexpr uint32_t MAX_VOTE_AHEAD_ROUNDS = 64;
             const uint32_t MAX_VOTE_ROUND_BEHIND = 3600 / block_interval(); // preserve the one-hour evidence window
@@ -7379,7 +7436,8 @@ namespace graphene { namespace chain {
                     round_of(fc::time_point_sec(fc::time_point::now())));
             if (round > now_round + MAX_VOTE_AHEAD_ROUNDS) return false;
 
-            if (!verify_timeout_vote(round, high_qc_round, validator, signature)) return false;
+            if (v2 ? !verify_timeout_vote_v2(round, high_qc_round, high_qc_block_id, validator, signature)
+                   : !verify_timeout_vote(round, high_qc_round, validator, signature)) return false;
 
             const auto &wso = get_validator_schedule_object();
             const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
@@ -7391,29 +7449,34 @@ namespace graphene { namespace chain {
                 it = _timeout_votes.erase(it);
             for (auto it = _timeout_certs.begin(); it != _timeout_certs.end() && it->first < floor_round; )
                 it = _timeout_certs.erase(it);
+            for (auto it = _timeout_certs_v2.begin(); it != _timeout_certs_v2.end() && it->first < floor_round; )
+                it = _timeout_certs_v2.erase(it);
 
             // One timeout vote per (validator, round); a repeat (even with another
             // high_qc_round) is ignored, the first one stands.
             auto &votes = _timeout_votes[round];
             if (votes.count(validator)) return false;
-            protocol::block_timeout_vote tv;
+            timeout_vote_entry tv;
             tv.high_qc_round = high_qc_round;
+            tv.high_qc_block_id = high_qc_block_id;
             tv.signature = signature;
             votes.emplace(validator, tv);
 
             // A timeout vote is the only evidence that a peer holds a QC this node cannot
-            // see (the vote names a round, not a block). While the head is stale, name a
-            // claim above our highest QC round once per validator and claimed round: on
-            // 01.11.2026 nine validators timed out on the head's QC round and four on the
-            // round after it, and no node printed that split anywhere.
+            // see (its own signature covers the claim, nobody else can prove it). While the
+            // head is stale, name a claim above our highest QC round once per validator and
+            // claimed round: on 01.11.2026 nine validators timed out on the head's QC round
+            // and four on the round after it, and no node printed that split anywhere.
             if (high_qc_round > 0 && now_round > head_round + 3) {
                 uint32_t ours = 0;
                 for (const auto &q : _block_qcs) ours = std::max(ours, q.second.round);
                 if (high_qc_round > ours) {
                     if (_timeout_qc_claims.size() > 1024) _timeout_qc_claims.clear();
                     if (_timeout_qc_claims.emplace(validator, high_qc_round).second)
-                        wlog("Timeout: ${w} gives up on round ${r} claiming QC round ${q}; we hold no QC above round ${o}",
-                             ("w", validator)("r", round)("q", high_qc_round)("o", ours));
+                        wlog("Timeout: ${w} gives up on round ${r} claiming QC round ${q}${b}; we hold no QC above round ${o}",
+                             ("w", validator)("r", round)("q", high_qc_round)
+                             ("b", v2 ? " on block " + std::string(high_qc_block_id) : std::string())
+                             ("o", ours));
                 }
             }
 
@@ -7423,42 +7486,100 @@ namespace graphene { namespace chain {
             if (_timeout_vote_journal && !_timeout_vote_journal_replaying) {
                 timeout_vote_journal::signature_type raw_signature;
                 std::memcpy(raw_signature.data(), signature.data, raw_signature.size());
-                _timeout_vote_journal->append(round, high_qc_round, validator, raw_signature);
+                _timeout_vote_journal->append(round, high_qc_round, validator, raw_signature,
+                                              v2 ? std::string(high_qc_block_id) : std::string());
             }
 
-            // TC assembly (emergency, 01.11.2026). A TC is usable only if EVERY vote in it
-            // names a QC round at most the round of the parent QC the producer attaches
-            // (validate_block_qc); one vote above that poisons the whole certificate. The
-            // old code froze the TC at the first quorum, so 12 honest votes plus 3 from
-            // nodes that held a QC of the head made that head unskippable forever -- and
-            // mainnet stood on it for 5 h 20 min. Assemble from the quorum-compatible
-            // subset instead: order the votes by the round they claim and cut where a
-            // quorum fits below the cut. A later vote that lowers the cut replaces the
-            // certificate, so a poisoned TC heals as soon as honest votes arrive.
+            // TC assembly (emergency, 01.11.2026). A TC is usable only if EVERY vote in it is
+            // compatible with the parent QC the producer attaches (validate_block_qc); one
+            // vote above that poisons the whole certificate. The old code froze the TC at the
+            // first quorum, so 12 honest votes plus 3 from nodes that held a QC of the head
+            // made that head unskippable forever -- and mainnet stood on it for 5 h 20 min.
+            // Assemble from the quorum-compatible subset instead: order the votes by the round
+            // they claim and cut where a quorum fits below the cut. A later vote that lowers
+            // the cut replaces the certificate, so a poisoned TC heals as soon as honest votes
+            // arrive.
             if (votes.size() >= quorum) {
-                std::vector<std::pair<uint32_t, account_name_type>> by_round;
-                by_round.reserve(votes.size());
-                for (const auto &v : votes) by_round.emplace_back(v.second.high_qc_round, v.first);
-                std::sort(by_round.begin(), by_round.end());
-                const uint32_t cut = by_round[quorum - 1].first;   // smallest round a quorum fits under
-                auto held = _timeout_certs.find(round);
-                // Lower claimed round = usable against a lower parent QC = strictly more
-                // useful, so replace the certificate whenever the cut improves.
-                bool better = held == _timeout_certs.end();
-                if (!better) {
-                    for (const auto &tv : held->second.votes)
-                        if (tv.second.high_qc_round > cut) { better = true; break; }
-                }
-                if (better) {
-                    protocol::block_timeout_certificate tc;
-                    tc.round = round;
-                    for (const auto &v : by_round)
-                        if (v.first <= cut) tc.votes.emplace(v.second, votes.at(v.second));
-                    ilog("TC formed for round ${r}: ${k}/${q} timeout votes, highest claimed QC round ${m}",
-                         ("r", round)("k", tc.votes.size())("q", quorum)("m", cut));
-                    _timeout_certs[round] = std::move(tc);
-                    // A node that crashes right after producing the block carrying this
-                    // certificate must find the votes behind it on the next start.
+                if (!v2) {
+                    std::vector<std::pair<uint32_t, account_name_type>> by_round;
+                    by_round.reserve(votes.size());
+                    for (const auto &v : votes) by_round.emplace_back(v.second.high_qc_round, v.first);
+                    std::sort(by_round.begin(), by_round.end());
+                    const uint32_t cut = by_round[quorum - 1].first;   // smallest round a quorum fits under
+                    auto held = _timeout_certs.find(round);
+                    // Lower claimed round = usable against a lower parent QC = strictly more
+                    // useful, so replace the certificate whenever the cut improves.
+                    bool better = held == _timeout_certs.end();
+                    if (!better) {
+                        for (const auto &tv : held->second.votes)
+                            if (tv.second.high_qc_round > cut) { better = true; break; }
+                    }
+                    if (better) {
+                        protocol::block_timeout_certificate tc;
+                        tc.round = round;
+                        for (const auto &v : by_round) {
+                            if (v.first > cut) continue;
+                            const auto &entry = votes.at(v.second);
+                            protocol::block_timeout_vote vote;
+                            vote.high_qc_round = entry.high_qc_round;
+                            vote.signature = entry.signature;
+                            tc.votes.emplace(v.second, vote);
+                        }
+                        ilog("TC formed for round ${r}: ${k}/${q} timeout votes, highest claimed QC round ${m}",
+                             ("r", round)("k", tc.votes.size())("q", quorum)("m", cut));
+                        _timeout_certs[round] = std::move(tc);
+                        // A node that crashes right after producing the block carrying this
+                        // certificate must find the votes behind it on the next start.
+                        if (_timeout_vote_journal) _timeout_vote_journal->flush();
+                    }
+                } else {
+                    // HF18. The cut works on (round, block): a vote below the cut is
+                    // compatible with any parent QC (a voter that is behind has seen nothing
+                    // at the parent's round), but a vote AT the cut round is compatible only
+                    // with the block it names. So at each candidate cut take the largest
+                    // single-block group; a quorum that is split across two block ids at the
+                    // same round is not a quorum for either block and must not be mixed.
+                    std::map<uint32_t, std::map<block_id_type, uint32_t>> at_round;
+                    for (const auto &v : votes) ++at_round[v.second.high_qc_round][v.second.high_qc_block_id];
+                    uint32_t below = 0, cut = 0;
+                    block_id_type cut_block;
+                    bool formed = false;
+                    for (const auto &r : at_round) {
+                        uint32_t best = 0;
+                        const block_id_type *best_id = nullptr;
+                        for (const auto &b : r.second)
+                            if (b.second > best) { best = b.second; best_id = &b.first; }
+                        if (below + best >= quorum) { cut = r.first; cut_block = *best_id; formed = true; break; }
+                        for (const auto &b : r.second) below += b.second;
+                    }
+                    auto held = _timeout_certs_v2.find(round);
+                    bool better = held == _timeout_certs_v2.end();
+                    if (!better) {
+                        uint32_t held_cut = 0;
+                        for (const auto &tv : held->second.votes)
+                            held_cut = std::max(held_cut, tv.second.high_qc_round);
+                        better = held_cut > cut;
+                    }
+                    if (formed && better) {
+                        protocol::block_timeout_certificate_v2 tc;
+                        tc.round = round;
+                        for (const auto &v : votes) {
+                            const bool compatible = v.second.high_qc_round < cut ||
+                                    (v.second.high_qc_round == cut && v.second.high_qc_block_id == cut_block);
+                            if (!compatible) continue;
+                            protocol::block_timeout_vote_v2 vote;
+                            vote.high_qc_round = v.second.high_qc_round;
+                            vote.high_qc_block_id = v.second.high_qc_block_id;
+                            vote.signature = v.second.signature;
+                            tc.votes.emplace(v.first, vote);
+                        }
+                        ilog("TC formed for round ${r}: ${k}/${q} timeout votes, highest claimed QC round ${m} on block ${b}",
+                             ("r", round)("k", tc.votes.size())("q", quorum)("m", cut)("b", cut_block));
+                        _timeout_certs_v2[round] = std::move(tc);
+                    }
+                    // On-demand assembly can reach quorum even when the single cached cut
+                    // cannot, or when later votes make another parent usable. Persist those
+                    // votes as well so a restart can reconstruct that certificate.
                     if (_timeout_vote_journal) _timeout_vote_journal->flush();
                 }
             }
@@ -7510,13 +7631,20 @@ namespace graphene { namespace chain {
             try {
                 result = journal->replay(
                         [this](uint32_t round, uint32_t high_qc_round, const std::string &validator,
-                               const timeout_vote_journal::signature_type &raw_signature) {
+                               const timeout_vote_journal::signature_type &raw_signature,
+                               const std::string &high_qc_block_id_hex) {
                             // Re-check every line exactly as a live vote: schedule membership, a
                             // non-empty signing key, the signature and both window edges. Nothing
                             // from the file is trusted by itself.
                             signature_type signature;
                             std::memcpy(signature.data, raw_signature.data(), raw_signature.size());
-                            return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);
+                            // A four-field line is a pre-HF18 vote and has no block id; a
+                            // five-field one names its block. Each path refuses the other fork
+                            // state, so the pool stays single-kind across a restart too.
+                            if (high_qc_block_id_hex.empty())
+                                return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);
+                            return push_timeout_vote_v2(round, high_qc_round, block_id_type(high_qc_block_id_hex),
+                                                        account_name_type(validator), signature);
                         },
                         min_round, error);
             } catch (const fc::exception &e) {
@@ -7676,6 +7804,44 @@ namespace graphene { namespace chain {
             return {};
         }
 
+        fc::optional<protocol::block_timeout_certificate_v2> database::get_timeout_cert_v2(uint32_t round) const {
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            auto it = _timeout_certs_v2.find(round);
+            if (it == _timeout_certs_v2.end()) return {};
+            return it->second;
+        }
+
+        fc::optional<protocol::block_timeout_certificate_v2> database::get_timeout_cert_between_v2(
+                uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
+                const block_id_type &max_high_qc_block_id) const {
+            if (lo_exclusive + 1 >= hi_exclusive) return {};
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            // Build for the requested parent, not the single cached winning block. Several
+            // parent IDs can each have a quorum and the first cached one may be a decoy.
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            auto it = _timeout_votes.lower_bound(hi_exclusive);
+            while (it != _timeout_votes.begin()) {
+                --it;
+                if (it->first <= lo_exclusive) break;
+                protocol::block_timeout_certificate_v2 tc;
+                tc.round = it->first;
+                for (const auto &tv : it->second) {
+                    const auto &entry = tv.second;
+                    if (entry.high_qc_round > max_high_qc_round ||
+                        (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id)) continue;
+                    if (!verify_timeout_vote_v2(it->first, entry.high_qc_round, entry.high_qc_block_id, tv.first, entry.signature)) continue;
+                    protocol::block_timeout_vote_v2 vote;
+                    vote.high_qc_round = entry.high_qc_round;
+                    vote.high_qc_block_id = entry.high_qc_block_id;
+                    vote.signature = entry.signature;
+                    tc.votes.emplace(tv.first, vote);
+                }
+                if (tc.votes.size() >= quorum) return tc;
+            }
+            return {};
+        }
+
         bool database::block_needs_parent_qc(const account_name_type &producer) const {
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             const auto &dgp = get_dynamic_global_properties();
@@ -7793,8 +7959,10 @@ namespace graphene { namespace chain {
             for (const auto &e : b.extensions) {
                 if (e.which() == 3)        // block_qc_certificate
                     r = std::max(r, e.get<protocol::block_qc_certificate>().round);
-                else if (e.which() == 4)   // block_timeout_certificate
+                else if (e.which() == 4)   // block_timeout_certificate (pre-HF18)
                     r = std::max(r, e.get<protocol::block_timeout_certificate>().round);
+                else if (e.which() == 6)   // block_timeout_certificate_v2
+                    r = std::max(r, e.get<protocol::block_timeout_certificate_v2>().round);
             }
             return r;
         }
@@ -7828,11 +7996,24 @@ namespace graphene { namespace chain {
                                   "Invalid fork QC vote");
                 } else if (e.which() == 4) {
                     FC_ASSERT(++tcs == 1, "Duplicate fork TC");
+                    FC_ASSERT(!has_hardfork(CHAIN_HARDFORK_18),
+                              "Fork carries the pre-HF18 timeout certificate after HF18");
                     const auto &tc = e.get<protocol::block_timeout_certificate>();
                     FC_ASSERT(tc.votes.size() >= quorum && tc.votes.size() <= scheduled &&
                               tc.round < round_of(b.timestamp), "Invalid fork TC quorum/round");
                     for (const auto &v : tc.votes)
                         FC_ASSERT(verify_timeout_vote(tc.round, v.second.high_qc_round, v.first, v.second.signature),
+                                  "Invalid fork timeout vote");
+                } else if (e.which() == 6) {
+                    FC_ASSERT(++tcs == 1, "Duplicate fork TC");
+                    FC_ASSERT(has_hardfork(CHAIN_HARDFORK_18),
+                              "Fork carries an HF18 timeout certificate before HF18");
+                    const auto &tc = e.get<protocol::block_timeout_certificate_v2>();
+                    FC_ASSERT(tc.votes.size() >= quorum && tc.votes.size() <= scheduled &&
+                              tc.round < round_of(b.timestamp), "Invalid fork TC quorum/round");
+                    for (const auto &v : tc.votes)
+                        FC_ASSERT(verify_timeout_vote_v2(tc.round, v.second.high_qc_round,
+                                                         v.second.high_qc_block_id, v.first, v.second.signature),
                                   "Invalid fork timeout vote");
                 }
             }
@@ -7843,20 +8024,37 @@ namespace graphene { namespace chain {
         void database::validate_block_qc(const signed_block &next_block, uint32_t skip) const {
             const protocol::block_qc_certificate *cert = nullptr;
             const protocol::block_timeout_certificate *tc = nullptr;
+            const protocol::block_timeout_certificate_v2 *tc_v2 = nullptr;
             for (const auto &e : next_block.extensions) {
                 if (e.which() == 3) {        // block_qc_certificate (index in block_header_extensions)
                     FC_ASSERT(cert == nullptr, "Block #${n} carries two parent QCs", ("n", next_block.block_num()));
                     cert = &e.get<protocol::block_qc_certificate>();
-                } else if (e.which() == 4) { // block_timeout_certificate
-                    FC_ASSERT(tc == nullptr, "Block #${n} carries two TCs", ("n", next_block.block_num()));
+                } else if (e.which() == 4) { // block_timeout_certificate (pre-HF18)
+                    FC_ASSERT(tc == nullptr && tc_v2 == nullptr,
+                              "Block #${n} carries two TCs", ("n", next_block.block_num()));
                     tc = &e.get<protocol::block_timeout_certificate>();
+                } else if (e.which() == 6) { // block_timeout_certificate_v2 (HF18)
+                    FC_ASSERT(tc == nullptr && tc_v2 == nullptr,
+                              "Block #${n} carries two TCs", ("n", next_block.block_num()));
+                    tc_v2 = &e.get<protocol::block_timeout_certificate_v2>();
                 }
             }
+            const bool hf18 = has_hardfork(CHAIN_HARDFORK_18);
             if (!has_hardfork(CHAIN_HARDFORK_16)) {
                 FC_ASSERT(cert == nullptr, "Parent QC in block #${n} before HF16", ("n", next_block.block_num()));
                 FC_ASSERT(tc == nullptr, "TC in block #${n} before HF16", ("n", next_block.block_num()));
+                FC_ASSERT(tc_v2 == nullptr, "TC in block #${n} before HF16", ("n", next_block.block_num()));
                 return;
             }
+            // The TC form follows the fork, in both directions: the v1 certificate does not
+            // bind the certified block (that is what HF18 adds), and the v2 form predates
+            // nothing, so a 4.3.x peer cannot parse it at all.
+            FC_ASSERT(tc == nullptr || !hf18,
+                      "Block #${n} carries the pre-HF18 timeout certificate after HF18",
+                      ("n", next_block.block_num()));
+            FC_ASSERT(tc_v2 == nullptr || hf18,
+                      "Block #${n} carries an HF18 timeout certificate before HF18",
+                      ("n", next_block.block_num()));
             // HF16 unstick (emergency, no hardfork): after CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC
             // of chain time with no block, a block may be born without the parent's QC. The
             // rule reads only chain data (the parent's timestamp), so every node reaches the
@@ -7870,8 +8068,8 @@ namespace graphene { namespace chain {
                           ("p", get_dynamic_global_properties().current_validator));
             }
             // A TC only makes sense next to the parent QC it is checked against.
-            FC_ASSERT(cert != nullptr || tc == nullptr, "Block #${n} carries a TC without a parent QC",
-                      ("n", next_block.block_num()));
+            FC_ASSERT(cert != nullptr || (tc == nullptr && tc_v2 == nullptr),
+                      "Block #${n} carries a TC without a parent QC", ("n", next_block.block_num()));
             if (cert == nullptr) return;
 
             const uint32_t parent_round = round_of(head_block_time());
@@ -7887,7 +8085,7 @@ namespace graphene { namespace chain {
                 // carry this very QC, so nothing certified is skipped. Safety rests on
                 // one QC per round and the commit rule needing consecutive rounds.
                 const uint32_t own_round = round_of(next_block.timestamp);
-                FC_ASSERT(tc == nullptr, "The late-QC fallback carries no TC");
+                FC_ASSERT(tc == nullptr && tc_v2 == nullptr, "The late-QC fallback carries no TC");
                 FC_ASSERT(parent_round + 1 == own_round && cert->round + 1 == parent_round &&
                           cert->block_num + 2 == next_block.block_num(),
                           "QC #${qn} round ${r} is neither the parent's nor a consecutive grandparent's",
@@ -7929,6 +8127,31 @@ namespace graphene { namespace chain {
                               ("v", tv.first)("h", tv.second.high_qc_round)("p", cert->round));
                 }
             }
+            // HF18: the same Jolteon window, plus the block binding. A vote that is BEHIND
+            // the parent's round is compatible with any parent (it has seen nothing at that
+            // round); a vote that names the parent's round must name the parent's block.
+            // Without this, two blocks certified in one round were indistinguishable and a
+            // quorum for one of them could be read as a quorum for the other (#9968).
+            if (tc_v2 != nullptr) {
+                const uint32_t own_round = round_of(next_block.timestamp);
+                FC_ASSERT(tc_v2->round > cert->round && tc_v2->round < own_round,
+                          "TC round ${t} not between parent round ${p} and block round ${o}",
+                          ("t", tc_v2->round)("p", cert->round)("o", own_round));
+                FC_ASSERT(tc_v2->votes.size() <= scheduled, "TC has more votes than scheduled validators");
+                FC_ASSERT(tc_v2->votes.size() >= block_qc_quorum(scheduled),
+                          "TC has ${k} votes, quorum is ${q}",
+                          ("k", tc_v2->votes.size())("q", block_qc_quorum(scheduled)));
+                for (const auto &tv : tc_v2->votes) {
+                    FC_ASSERT(tv.second.high_qc_round <= cert->round,
+                              "TC vote by ${v} saw QC round ${h}, above the parent QC round ${p}",
+                              ("v", tv.first)("h", tv.second.high_qc_round)("p", cert->round));
+                    FC_ASSERT(tv.second.high_qc_round != cert->round || tv.second.high_qc_block_id == cert->block_id,
+                              "TC vote by ${v} names block ${b} at the parent QC round ${p}, "
+                              "but the parent QC certifies ${c}",
+                              ("v", tv.first)("b", tv.second.high_qc_block_id)("p", cert->round)
+                              ("c", cert->block_id));
+                }
+            }
 
             if (skip & skip_validator_signature) return;
             for (const auto &sv : cert->signatures) {
@@ -7938,6 +8161,13 @@ namespace graphene { namespace chain {
             if (tc != nullptr) {
                 for (const auto &tv : tc->votes) {
                     FC_ASSERT(verify_timeout_vote(tc->round, tv.second.high_qc_round, tv.first, tv.second.signature),
+                              "TC carries an invalid timeout vote by ${v}", ("v", tv.first));
+                }
+            }
+            if (tc_v2 != nullptr) {
+                for (const auto &tv : tc_v2->votes) {
+                    FC_ASSERT(verify_timeout_vote_v2(tc_v2->round, tv.second.high_qc_round,
+                                                     tv.second.high_qc_block_id, tv.first, tv.second.signature),
                               "TC carries an invalid timeout vote by ${v}", ("v", tv.first));
                 }
             }
@@ -8181,24 +8411,28 @@ namespace graphene { namespace chain {
                 out += "\n  QCs near head: " + near_qcs;
             }
 
-            // Who gave up on the head's round and what high QC they claimed. The timeout vote
-            // carries no block id, so this is the only place a node can see that peers hold a
+            // Who gave up on the head's round and what high QC they claimed. A pre-HF18 vote
+            // names only the round, so this is the only place a node can see that peers hold a
             // QC it does not: the split that blocked every TC on 01.11.2026 (13 voters, 9 on
-            // the head's QC round, 4 on the next one) is one line here.
+            // the head's QC round, 4 on the next one) is one line here. From HF18 the vote also
+            // names the block, so two blocks of one round are reported apart, not merged.
             auto tv = _timeout_votes.find(head_round);
             if (tv == _timeout_votes.end()) {
                 out += "\n  timeouts on head round " + std::to_string(head_round) + ": none";
             } else {
-                std::map<uint32_t, std::string> claims;
+                std::map<std::string, std::string> claims;
                 for (const auto &v : tv->second) {
-                    std::string &names = claims[v.second.high_qc_round];
+                    std::string label = std::to_string(v.second.high_qc_round);
+                    if (v.second.high_qc_block_id != block_id_type())
+                        label += " on " + std::string(v.second.high_qc_block_id);
+                    std::string &names = claims[label];
                     if (!names.empty()) names += ",";
                     names += std::string(v.first);
                 }
                 std::string line;
                 for (const auto &c : claims) {
                     if (!line.empty()) line += "; ";
-                    line += std::to_string(c.first) + " <- " + c.second;
+                    line += c.first + " <- " + c.second;
                 }
                 out += "\n  timeouts on head round " + std::to_string(head_round) + " (we hold " +
                        std::to_string(tv->second.size()) + "): " + line;

@@ -335,7 +335,11 @@ namespace graphene { namespace chain {
                             fc::optional<protocol::block_timeout_certificate>(),
                     // HF16 late-QC fallback: certificate to carry instead of QC(head)
                     const fc::optional<protocol::block_qc_certificate> &qc_override =
-                            fc::optional<protocol::block_qc_certificate>()
+                            fc::optional<protocol::block_qc_certificate>(),
+                    // HF18: the TC to carry when building past a QC-less head. Exactly one
+                    // of `tc` (pre-HF18) and `tc_v2` (from HF18) is ever set.
+                    const fc::optional<protocol::block_timeout_certificate_v2> &tc_v2 =
+                            fc::optional<protocol::block_timeout_certificate_v2>()
             );
 
             signed_block _generate_block(
@@ -348,7 +352,11 @@ namespace graphene { namespace chain {
                             fc::optional<protocol::block_timeout_certificate>(),
                     // HF16 late-QC fallback: certificate to carry instead of QC(head)
                     const fc::optional<protocol::block_qc_certificate> &qc_override =
-                            fc::optional<protocol::block_qc_certificate>()
+                            fc::optional<protocol::block_qc_certificate>(),
+                    // HF18: the TC to carry when building past a QC-less head. Exactly one
+                    // of `tc` (pre-HF18) and `tc_v2` (from HF18) is ever set.
+                    const fc::optional<protocol::block_timeout_certificate_v2> &tc_v2 =
+                            fc::optional<protocol::block_timeout_certificate_v2>()
             );
 
             void pop_block();
@@ -785,10 +793,36 @@ namespace graphene { namespace chain {
             bool verify_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                      const account_name_type &validator, const signature_type &signature) const;
 
+            /// The scheduled validator allowed to cast a timeout vote (with a signing key),
+            /// or nullptr. Shared by the v1 and v2 vote checks so schedule membership is
+            /// decided in one place.
+            const validator_object *scheduled_timeout_voter(const account_name_type &validator) const;
+
             /// Verify and tally a timeout vote (validator gave up on `round`).
             /// Returns true when the vote is valid and new (worth relaying).
+            /// Refused from HF18 on: a v1 vote can never join a v2 certificate.
             bool push_timeout_vote(uint32_t round, uint32_t high_qc_round,
                                    const account_name_type &validator, const signature_type &signature);
+
+            /// HF18: consensus check of one timeout vote that names the block whose QC the
+            /// voter holds at high_qc_round. A zero block id is legal only with
+            /// high_qc_round == 0 ("I hold no QC").
+            bool verify_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                                        const block_id_type &high_qc_block_id,
+                                        const account_name_type &validator, const signature_type &signature) const;
+
+            /// HF18: verify and tally a timeout vote that names the certified block.
+            /// Refused before HF18.
+            bool push_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                                      const block_id_type &high_qc_block_id,
+                                      const account_name_type &validator, const signature_type &signature);
+
+            /// The common path behind both public push_* forms: window, verification,
+            /// one vote per (validator, round), journal and certificate assembly.
+            bool push_timeout_vote_impl(uint32_t round, uint32_t high_qc_round,
+                                        const block_id_type &high_qc_block_id,
+                                        const account_name_type &validator, const signature_type &signature,
+                                        bool v2);
 
             /// HF16 late-QC fallback. QC(head) has not formed in time, but head is of
             /// round own_round-1 and certifies its own parent of round own_round-2:
@@ -835,6 +869,15 @@ namespace graphene { namespace chain {
              */
             fc::optional<protocol::block_timeout_certificate> get_timeout_cert_between(
                     uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round) const;
+
+            /// HF18 view of the same question: the parent QC the certificate will be checked
+            /// against is (round, block id), so a vote that names the parent's round must name
+            /// the parent's block. A vote that names a lower round is compatible with any block
+            /// (a voter that is behind has seen nothing at the parent's round).
+            fc::optional<protocol::block_timeout_certificate_v2> get_timeout_cert_v2(uint32_t round) const;
+            fc::optional<protocol::block_timeout_certificate_v2> get_timeout_cert_between_v2(
+                    uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
+                    const block_id_type &max_high_qc_block_id) const;
 
             /// HF16: does a block by `producer` on top of head need the parent's QC?
             bool block_needs_parent_qc(const account_name_type &producer) const;
@@ -953,9 +996,18 @@ namespace graphene { namespace chain {
             // Double votes seen and not yet carried in a block (one per validator, round)
             std::map<std::pair<account_name_type, uint32_t>, protocol::block_equivocation_proof> _pending_equivocations;
             std::map<uint32_t, block_qc> _block_qcs;
+            /// One timeout vote as the pool holds it. high_qc_block_id is zero for a pre-HF18
+            /// vote and names the certified block from HF18 on. The pool never mixes the two
+            /// kinds: apply_hardfork(18) clears it, and a vote of the other kind is refused.
+            struct timeout_vote_entry {
+                uint32_t high_qc_round = 0;
+                block_id_type high_qc_block_id;
+                signature_type signature;
+            };
             // HF16 timeouts: round -> (validator -> vote); one vote per (validator, round)
-            std::map<uint32_t, std::map<account_name_type, protocol::block_timeout_vote>> _timeout_votes;
+            std::map<uint32_t, std::map<account_name_type, timeout_vote_entry>> _timeout_votes;
             std::map<uint32_t, protocol::block_timeout_certificate> _timeout_certs;
+            std::map<uint32_t, protocol::block_timeout_certificate_v2> _timeout_certs_v2;
 
             /// Disk cache of accepted timeout votes (survives restarts); null when it cannot be
             /// opened, in which case the node runs exactly as before. See timeout_vote_journal.

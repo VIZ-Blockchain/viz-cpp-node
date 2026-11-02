@@ -8,7 +8,9 @@ actually connects it, and connects it in the only order that is safe:
   * a vote is cached only AFTER push_timeout_vote accepted it, and never while replaying;
   * the cache is flushed when a certificate forms, so a crash right after producing does not
     lose the votes that made the block admissible;
-  * replay goes through push_timeout_vote -- the file is a cache, never a source of trust.
+  * replay goes through push_timeout_vote -- the file is a cache, never a source of trust;
+  * each vote kind is refused on the other side of HF18, so the pool never mixes a v1 vote
+    (no block named) with a v2 one (block named) in the same (validator, round) slot.
 
 Run: python3 tests/chain/test_timeout_vote_persistence_wiring.py [--selftest]
 """
@@ -89,18 +91,36 @@ def wiring_problems(cpp, hpp):
     problems = []
     open_body = method(cpp, 'void database::open(')
     snapshot_body = method(cpp, 'void database::open_from_snapshot(')
-    push_body = method(cpp, 'bool database::push_timeout_vote(')
+    # push_timeout_vote / _v2 are fork guards; the body that does the work is the impl.
+    push_body = method(cpp, 'bool database::push_timeout_vote_impl(')
+    v1_body = method(cpp, 'bool database::push_timeout_vote(')
+    v2_body = method(cpp, 'bool database::push_timeout_vote_v2(')
     init_body = method(cpp, 'void database::open_timeout_vote_journal(')
     masked_hpp = _masked(hpp)
 
-    if open_body is None or snapshot_body is None or push_body is None or init_body is None:
-        return ['one of database::open / open_from_snapshot / push_timeout_vote / '
+    if (open_body is None or snapshot_body is None or push_body is None or init_body is None
+            or v1_body is None or v2_body is None):
+        return ['one of database::open / open_from_snapshot / push_timeout_vote(_v2/_impl) / '
                 'open_timeout_vote_journal not found -- the wiring cannot be judged']
 
     # Regex checks run on comment-blanked copies: a comment that merely mentions a call must not
     # satisfy them (that exact mistake passed a check in PR #221).
     open_m, snapshot_m, push_m, init_m = (_masked(open_body), _masked(snapshot_body),
                                           _masked(push_body), _masked(init_body))
+    v1_m, v2_m = _masked(v1_body), _masked(v2_body)
+
+    # HF18 swaps the digest domain (the vote now names a block), so the two kinds can never be
+    # mixed. Each entry point must refuse the other fork's votes: a v1 vote after the fork would
+    # sit in the pool uncounted, and a v2 vote before it would be counted by nobody.
+    guarded = r'if\s*\(\s*{neg}has_hardfork\s*\(\s*CHAIN_HARDFORK_18\s*\)\s*\)\s*return\s+false\s*;'
+    if not re.search(guarded.format(neg=''), v1_m):
+        problems.append('push_timeout_vote() accepts v1 votes after HF18 (they can never join a certificate)')
+    if not re.search(guarded.format(neg='!'), v2_m):
+        problems.append('push_timeout_vote_v2() accepts block-naming votes before HF18 (no validator counts them)')
+    if 'push_timeout_vote_impl(' not in v1_m or 'push_timeout_vote_impl(' not in v2_m:
+        problems.append('a fork guard does not delegate to push_timeout_vote_impl -- the body is not shared')
+    if not re.search(r'v2\s*\?\s*std::string\(high_qc_block_id\)\s*:\s*std::string\(\)', push_m):
+        problems.append('the journal is not told which kind of vote it caches (block id written for v1, or lost for v2)')
 
     # The cache must survive a normal start ...
     if not re.search(call_pattern('open_timeout_vote_journal', 'data_dir', 'true'), open_m):
@@ -123,6 +143,13 @@ def wiring_problems(cpp, hpp):
     if append_at >= 0 and not re.search(
             r'if\s*\(\s*_timeout_vote_journal\s*&&\s*!_timeout_vote_journal_replaying\s*\)', push_m):
         problems.append('append is not guarded by _timeout_vote_journal_replaying (every start would duplicate the file)')
+
+    # Both assembly branches form a certificate, and both must flush: a v2 certificate lost to a
+    # crash is the same liveness hole as a v1 one.
+    if push_body.count('TC formed for round') < 2:   # a log string: blanked in push_m
+        problems.append('only one certificate branch is visible -- the v2 assembly cannot be judged')
+    elif push_m.count('_timeout_vote_journal->flush()') < 2:
+        problems.append('a certificate branch does not flush the journal (a crash right after producing loses its votes)')
 
     # A crash right after producing must not lose the votes behind the certificate.
     cert_at = push_body.find('TC formed for round')
@@ -167,8 +194,11 @@ def wiring_problems(cpp, hpp):
         problems.append('the failed-replay branch attaches the journal instead of returning')
 
     # The file is a cache, not a second source of trust: replay runs through push_timeout_vote.
-    if 'push_timeout_vote(' not in init_m:
-        problems.append('replay does not go through push_timeout_vote (cached votes would skip verification)')
+    if 'push_timeout_vote(' not in init_m or 'push_timeout_vote_v2(' not in init_m:
+        problems.append('replay does not go through both push_timeout_vote entry points '
+                        '(cached votes would skip verification, or one kind would be replayed unverified)')
+    if 'high_qc_block_id_hex.empty()' not in init_m:
+        problems.append('replay does not choose the vote kind from the line itself (four-field vs five-field)')
     replay_at = init_m.find('->replay(')
     if replay_at >= 0:
         after = init_m[replay_at:]
@@ -194,9 +224,9 @@ MUTATIONS = {
                              'open_timeout_vote_journal(data_dir, /*replay_votes=*/false);'),
     'snapshot-replays-stale-cache': ('open_timeout_vote_journal(data_dir, /*replay_votes=*/false);',
                                      'open_timeout_vote_journal(data_dir, /*replay_votes=*/true);'),
-    'append-before-accept': ('            protocol::block_timeout_vote tv;\n            tv.high_qc_round = high_qc_round;',
+    'append-before-accept': ('            auto &votes = _timeout_votes[round];\n            if (votes.count(validator)) return false;',
                              '            if (_timeout_vote_journal) _timeout_vote_journal->append(round, high_qc_round, validator, timeout_vote_journal::signature_type{});\n'
-                             '            protocol::block_timeout_vote tv;\n            tv.high_qc_round = high_qc_round;'),
+                             '            auto &votes = _timeout_votes[round];\n            if (votes.count(validator)) return false;'),
     'append-during-replay': ('if (_timeout_vote_journal && !_timeout_vote_journal_replaying)',
                              'if (_timeout_vote_journal)'),
     'no-flush-on-cert': ('if (_timeout_vote_journal) _timeout_vote_journal->flush();', '(void)nullptr;'),
@@ -204,6 +234,9 @@ MUTATIONS = {
                            '\n            if (!error.empty())'),
     'replay-bypasses-checks': ('return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);',
                                'return true;'),
+    'v1-accepted-after-fork': ('if (has_hardfork(CHAIN_HARDFORK_18)) return false;', 'if (false) return false;'),
+    'v2-accepted-before-fork': ('if (!has_hardfork(CHAIN_HARDFORK_18)) return false;', 'if (false) return false;'),
+    'v2-block-id-not-cached': ('v2 ? std::string(high_qc_block_id) : std::string()', 'std::string()'),
     'no-genesis-guard': ('if (head_block_num() == 0) {\n                if (!journal->truncate(error))',
                          'if (head_block_num() < 0) {\n                if (!journal->truncate(error))'),
     'replay-exception-escapes': ('error = "unknown exception";', 'throw;'),

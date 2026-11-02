@@ -27,13 +27,22 @@ namespace graphene {
          * tampered file is therefore just a file whose lines get rejected.
          *
          * Format: one vote per line, tab separated -- round, high_qc_round, validator, 65-byte
-         * signature as 130 hex digits. TSV rather than JSON so this class stays free of the fc
+         * signature as 130 hex digits, and (from HF18) the 20-byte block whose QC the vote
+         * names, as 40 hex digits. TSV rather than JSON so this class stays free of the fc
          * libraries and can be tested on its own.
+         *
+         * A four-field line is a pre-HF18 vote and carries no block id; it is still read (the
+         * caller verifies it with the v1 digest and can put it in a pre-HF18 account only).
+         * Five-field lines are written for HF18 votes; the caller decides which digest any
+         * given kind is checked against, this class only carries the bytes.
          */
         class timeout_vote_journal {
             public:
                 static constexpr size_t SIGNATURE_BYTES = 65;
                 static constexpr size_t HEX_SIGNATURE_BYTES = SIGNATURE_BYTES * 2;
+                /// block_id_type is fc::ripemd160: 20 bytes, 40 hex digits.
+                static constexpr size_t BLOCK_ID_BYTES = 20;
+                static constexpr size_t HEX_BLOCK_ID_BYTES = BLOCK_ID_BYTES * 2;
                 /** A compaction failure shows up as a file bigger than this, not as data. */
                 static constexpr size_t MAX_FILE_BYTES = 64u * 1024u * 1024u;
                 /** Votes are buffered in memory and written in blocks; consensus must not wait on I/O. */
@@ -42,10 +51,15 @@ namespace graphene {
                 static constexpr size_t MAX_LINE_BYTES = 512;
 
                 using signature_type = std::array<unsigned char, SIGNATURE_BYTES>;
-                /** Returns true when the vote was accepted (it is then kept on disk). */
+                /**
+                 * Returns true when the vote was accepted (it is then kept on disk).
+                 * `high_qc_block_id` is 40 hex digits for an HF18 vote and empty for a
+                 * pre-HF18 one (a four-field line).
+                 */
                 using replay_fn = std::function<bool(uint32_t round, uint32_t high_qc_round,
                                                      const std::string &validator,
-                                                     const signature_type &signature)>;
+                                                     const signature_type &signature,
+                                                     const std::string &high_qc_block_id)>;
 
                 struct replay_result {
                     size_t lines = 0;       ///< lines that parsed as votes
@@ -146,7 +160,8 @@ namespace graphene {
                         uint32_t round = 0, high_qc_round = 0;
                         std::string validator;
                         signature_type signature{};
-                        if (!parse_line(raw, round, high_qc_round, validator, signature)) {
+                        std::string high_qc_block_id;
+                        if (!parse_line(raw, round, high_qc_round, validator, signature, high_qc_block_id)) {
                             ++result.dropped;
                             continue;
                         }
@@ -156,7 +171,7 @@ namespace graphene {
                         }
                         bool accepted = false;
                         try {
-                            accepted = fn(round, high_qc_round, validator, signature);
+                            accepted = fn(round, high_qc_round, validator, signature, high_qc_block_id);
                         } catch (...) {
                             // A single unreadable vote must never keep the node from starting.
                             accepted = false;
@@ -174,10 +189,15 @@ namespace graphene {
                     return result;
                 }
 
+                /**
+                 * `high_qc_block_id` is 40 hex digits for an HF18 vote; empty writes the
+                 * pre-HF18 four-field line.
+                 */
                 void append(uint32_t round, uint32_t high_qc_round, const std::string &validator,
-                            const signature_type &signature) {
+                            const signature_type &signature, const std::string &high_qc_block_id = std::string()) {
                     if (_file == nullptr || _failed) return;
                     if (!valid_validator(validator)) return;
+                    if (!high_qc_block_id.empty() && !valid_hex(high_qc_block_id, HEX_BLOCK_ID_BYTES)) return;
 
                     _pending += std::to_string(round);
                     _pending += '\t';
@@ -186,6 +206,10 @@ namespace graphene {
                     _pending += validator;
                     _pending += '\t';
                     append_hex(_pending, signature);
+                    if (!high_qc_block_id.empty()) {
+                        _pending += '\t';
+                        _pending += high_qc_block_id;
+                    }
                     _pending += '\n';
 
                     if (_pending.size() >= FLUSH_THRESHOLD) flush();
@@ -247,32 +271,47 @@ namespace graphene {
                     return -1;
                 }
 
+                static bool valid_hex(const std::string &text, size_t expected) {
+                    if (text.size() != expected) return false;
+                    for (const char c : text)
+                        if (hex_value(c) < 0) return false;
+                    return true;
+                }
+
                 static bool parse_line(const std::string &raw, uint32_t &round, uint32_t &high_qc_round,
-                                       std::string &validator, signature_type &signature) {
+                                       std::string &validator, signature_type &signature,
+                                       std::string &high_qc_block_id) {
+                    std::string fields[5];
+                    size_t count = 0;
                     size_t field_begin = 0;
-                    std::string fields[4];
-                    for (size_t i = 0; i < 4; ++i) {
+                    while (true) {
+                        if (count == 5) return false;              // a sixth field: garbage
                         const size_t tab = raw.find('\t', field_begin);
-                        if (i < 3) {
-                            if (tab == std::string::npos) return false;
-                            fields[i] = raw.substr(field_begin, tab - field_begin);
-                            field_begin = tab + 1;
-                        } else {
-                            if (tab != std::string::npos) return false;
-                            fields[i] = raw.substr(field_begin);
+                        if (tab == std::string::npos) {
+                            fields[count++] = raw.substr(field_begin);
+                            break;
                         }
+                        fields[count++] = raw.substr(field_begin, tab - field_begin);
+                        field_begin = tab + 1;
                     }
-                    if (fields[3].size() != HEX_SIGNATURE_BYTES) return false;
+                    // Four fields = pre-HF18 line, five = HF18 line with the block id.
+                    if (count != 4 && count != 5) return false;
+                    if (!valid_hex(fields[3], HEX_SIGNATURE_BYTES)) return false;
                     for (size_t i = 0; i < SIGNATURE_BYTES; ++i) {
                         const int hi = hex_value(fields[3][i * 2]);
                         const int lo = hex_value(fields[3][i * 2 + 1]);
-                        if (hi < 0 || lo < 0) return false;
                         signature[i] = static_cast<unsigned char>(hi * 16 + lo);
                     }
                     if (!parse_uint(fields[0], round)) return false;
                     if (!parse_uint(fields[1], high_qc_round)) return false;
                     validator = fields[2];
-                    return valid_validator(validator);
+                    if (!valid_validator(validator)) return false;
+                    high_qc_block_id.clear();
+                    if (count == 5) {
+                        if (!valid_hex(fields[4], HEX_BLOCK_ID_BYTES)) return false;
+                        high_qc_block_id = fields[4];
+                    }
+                    return true;
                 }
 
                 static void append_hex(std::string &out, const signature_type &signature) {

@@ -54,6 +54,9 @@ namespace graphene {
 
         /// One validator's timeout vote inside a TC: the round of the highest QC
         /// it had seen and its signature over block_timeout_digest(round, high_qc_round).
+        /// HF16 wire format: kept byte-for-byte, because blocks carrying it exist on
+        /// chain and 4.3.x peers must keep parsing them. From HF18 the vote pool and new
+        /// blocks use block_timeout_vote_v2 instead.
         struct block_timeout_vote {
             uint32_t high_qc_round = 0;
             signature_type signature;
@@ -65,6 +68,29 @@ namespace graphene {
         struct block_timeout_certificate {
             uint32_t round = 0;
             flat_map<account_name_type, block_timeout_vote> votes;
+        };
+
+        /// HF18 timeout vote: as block_timeout_vote, but the claim names the BLOCK whose
+        /// QC the voter holds at high_qc_round (a round is a slot, not a block: two
+        /// different blocks of one round share the round). Signed over
+        /// block_timeout_digest_v2(round, high_qc_round, high_qc_block_id).
+        ///
+        /// A zero high_qc_block_id is only legal together with high_qc_round == 0, i.e.
+        /// "I hold no QC at all"; such a vote is compatible with any parent QC (the voter
+        /// has seen nothing that could conflict). A vote that names a round must name the
+        /// block certified at that round.
+        struct block_timeout_vote_v2 {
+            uint32_t high_qc_round = 0;
+            block_id_type high_qc_block_id;
+            signature_type signature;
+        };
+
+        /// HF18 timeout certificate. Its votes carry the block ids, so the certificate
+        /// itself needs no extra field: validity is read against the parent QC the block
+        /// carries (validate_block_qc).
+        struct block_timeout_certificate_v2 {
+            uint32_t round = 0;
+            flat_map<account_name_type, block_timeout_vote_v2> votes;
         };
 
         /// One signed block vote, as gossiped (see block_vote_digest).
@@ -90,7 +116,8 @@ namespace graphene {
                 hardfork_version_vote, // Voting for the next hardfork to trigger
                 block_qc_certificate,  // HF16: QC of the parent block (append only: index is wire format)
                 block_timeout_certificate, // HF16: TC of the skipped round
-                block_equivocation_proof   // HF16: double vote by a validator
+                block_equivocation_proof,  // HF16: double vote by a validator
+                block_timeout_certificate_v2 // HF18: TC whose votes name the certified block
         > block_header_extensions;
 
         typedef static_variant<
@@ -107,6 +134,8 @@ namespace graphene {
 FC_REFLECT((graphene::protocol::block_qc_certificate), (block_num)(block_id)(round)(signatures))
 FC_REFLECT((graphene::protocol::block_timeout_vote), (high_qc_round)(signature))
 FC_REFLECT((graphene::protocol::block_timeout_certificate), (round)(votes))
+FC_REFLECT((graphene::protocol::block_timeout_vote_v2), (high_qc_round)(high_qc_block_id)(signature))
+FC_REFLECT((graphene::protocol::block_timeout_certificate_v2), (round)(votes))
 FC_REFLECT((graphene::protocol::block_vote_evidence), (block_num)(block_id)(signature))
 FC_REFLECT((graphene::protocol::block_equivocation_proof), (validator)(round)(first)(second))
 FC_REFLECT_TYPENAME((graphene::protocol::block_header_extensions))

@@ -159,7 +159,8 @@ def wiring_problems(**files):
         if not re.search(r'FC_ASSERT\(\s*emergency_unstick_block\(\s*when\s*\)', gbody):
             problems.append('_generate_block() still refuses to hand the turn over without a parent QC: the '
                             'producer would never build the block the new rule accepts')
-        if not re.search(r'FC_ASSERT\(\s*!tc\s*,\s*', gbody):
+        # Both certificate kinds: a v2 TC next to an unstick block would be just as illegal.
+        if not re.search(r'FC_ASSERT\(\s*!tc\s*&&\s*!tc_v2\s*,\s*', gbody):
             problems.append('_generate_block() lets an unstick block carry a TC (a TC needs a parent QC)')
 
     # 4. The validator actually produces such a block instead of waiting forever.
@@ -168,27 +169,39 @@ def wiring_problems(**files):
                         'waits for a QC that the network cannot deliver')
 
     # 5. Layer 1: a stalled node votes what head proves, not what only it remembers.
-    if not re.search(r'certified\s*&&\s*!\s*stalled\s*\)\s*\?\s*head_qc->round\s*:\s*carried_qc_round', val_cpp):
+    if not re.search(r'claim_head_qc\s*=\s*certified\s*&&\s*!\s*stalled\s*;', val_cpp) or \
+            not re.search(r'claim_head_qc\s*\?\s*head_qc->round\s*:\s*carried_qc_round', val_cpp):
         problems.append('the timeout vote still claims the node-local QC round while stalled: its vote poisons '
                         'every TC built with it (the 12/3 split of 01.11.2026)')
+    # ... and it names the block belonging to whichever round it claims (HF18).
+    if not re.search(r'claim_head_qc\s*\?\s*head_qc->block_id\s*:\s*carried_qc_block_id', val_cpp):
+        problems.append('the vote round and the vote block can come from different certificates')
     stalled = re.search(r'const\s+bool\s+stalled\s*=\s*\(?\s*now\s*-\s*db\.head_block_time\(\)\s*\)?\.to_seconds\(\)\s*>=\s*'
                         r'CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC', val_cpp)
     if not stalled:
         problems.append('the stalled flag is not measured against CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC of head time')
 
-    # 6. Layer 2: the TC is cut by round, never frozen at the first quorum.
-    push_vote = method(db_cpp, 'bool database::push_timeout_vote(')
+    # 6. Layer 2: the TC is cut by round, never frozen at the first quorum. Both certificate
+    #    kinds assemble the same way: a later vote claiming a lower round can lower the cut.
+    push_vote = method(db_cpp, 'bool database::push_timeout_vote_impl(')
     if push_vote is None:
-        problems.append('database::push_timeout_vote() is missing')
+        problems.append('database::push_timeout_vote_impl() is missing')
     else:
         pbody = _masked(push_vote)
         if 'votes.insert(votes.begin(), votes.end())' in pbody:
             problems.append('the TC is still built from ALL votes at the first quorum: one vote above the parent '
                             'QC poisons the certificate for the whole round')
         if not re.search(r'by_round\[quorum\s*-\s*1\]\.first', pbody):
-            problems.append('the TC cut is not the smallest round a quorum fits under')
+            problems.append('the pre-HF18 TC cut is not the smallest round a quorum fits under')
+        if not re.search(r'below\s*\+\s*best\s*>=\s*quorum', pbody):
+            problems.append('the HF18 TC cut does not require a quorum of votes naming ONE block at the cut round')
+        if not re.search(r'at_round\[\s*v\.second\.high_qc_round\s*\]\[\s*v\.second\.high_qc_block_id\s*\]',
+                         pbody):
+            problems.append('the HF18 cut is not grouped by the block each vote names')
         if not re.search(r'_timeout_certs\[\s*round\s*\]\s*=', pbody):
             problems.append('an already formed TC is never replaced, so a poisoned certificate never heals')
+        if not re.search(r'_timeout_certs_v2\[\s*round\s*\]\s*=', pbody):
+            problems.append('an already formed HF18 TC is never replaced, so a poisoned certificate never heals')
 
     # 7. The premise that keeps layer 3 harmless on a LIVE chain: ingress refuses a block
     #    stamped more than `allow_future_time` (5 s) ahead of the local clock. Layer 3 allows
@@ -239,13 +252,13 @@ MUTATIONS = {
         DB_CPP, 'FC_ASSERT(emergency_unstick_block(when),',
         'FC_ASSERT(false,'),
     'generator-allows-tc-on-unstick': (
-        DB_CPP, 'FC_ASSERT(!tc, "An unstick block carries no TC");', ''),
+        DB_CPP, 'FC_ASSERT(!tc && !tc_v2, "An unstick block carries no TC");', ''),
     'validator-never-produces-unstick': (
         VAL_CPP, 'db.with_weak_read_lock([&]() { return db.emergency_unstick_block(scheduled_time); })',
         'false'),
     'vote-still-claims-local-qc': (
-        VAL_CPP, 'const uint32_t high_qc_round = (certified && !stalled) ? head_qc->round : carried_qc_round;',
-        'const uint32_t high_qc_round = certified ? head_qc->round : carried_qc_round;'),
+        VAL_CPP, 'const bool claim_head_qc = certified && !stalled;',
+        'const bool claim_head_qc = certified;'),
     'vote-stall-not-measured': (
         VAL_CPP, '(now - db.head_block_time()).to_seconds() >= CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC',
         '(now - db.head_block_time()).to_seconds() >= 0'),
@@ -254,6 +267,10 @@ MUTATIONS = {
     'tc-cut-ignores-round': (
         DB_CPP, 'const uint32_t cut = by_round[quorum - 1].first;',
         'const uint32_t cut = by_round.back().first;'),
+    'tc-v2-frozen-at-first-block': (
+        DB_CPP, '_timeout_certs_v2[round] = std::move(tc);', '_timeout_certs_v2.emplace(round, std::move(tc));'),
+    'tc-v2-cut-ignores-block-group': (
+        DB_CPP, 'if (below + best >= quorum) {', 'if (below >= quorum) {'),
     'ingress-future-bound-widened': (
         CHAIN_PLUGIN_CPP, 'allow_future_time = 5;', 'allow_future_time = 600;'),
     'ingress-future-bound-removed': (
