@@ -3020,9 +3020,8 @@ bool dlt_p2p_node::is_on_majority_fork() const {
 // Only peers that can actually take part in consensus count: a CONNECTING or
 // DISCONNECTED entry still carries the last claim it made, and letting a departed
 // peer's LIB hold the emergency master back would turn a dropped connection into a
-// self-inflicted stall. LIB (not head) is the measure on purpose: a head can be a
-// single node's invention, a LIB cannot be re-derived without two thirds of the
-// validators, and that is exactly the "somebody else's chain is real" signal.
+// self-inflicted stall. The reported LIB is only an unsigned operational claim:
+// this cache does not verify a QC, the remote chain, or peer identity.
 void dlt_p2p_node::refresh_peer_lib_cache() {
     const uint32_t our_lib = _delegate ? _delegate->get_lib_block_num() : 0;
     uint32_t above = 0;
