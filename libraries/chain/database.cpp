@@ -7982,10 +7982,14 @@ namespace graphene { namespace chain {
             FC_ASSERT(producer_scheduled, "Fork producer is not in the current schedule");
             const uint32_t quorum = block_qc_quorum(scheduled);
             unsigned qcs = 0, tcs = 0;
+            const protocol::block_qc_certificate* admitted_qc = nullptr;
+            const protocol::block_timeout_certificate* admitted_tc = nullptr;
+            const protocol::block_timeout_certificate_v2* admitted_tc_v2 = nullptr;
             for (const auto &e : b.extensions) {
                 if (e.which() == 3) {
                     FC_ASSERT(++qcs == 1, "Duplicate fork QC");
                     const auto &qc = e.get<protocol::block_qc_certificate>();
+                    admitted_qc = &qc;
                     FC_ASSERT(qc.signatures.size() >= quorum && qc.signatures.size() <= scheduled,
                               "Fork QC does not have a scheduled quorum");
                     FC_ASSERT(protocol::block_header::num_from_id(qc.block_id) == qc.block_num &&
@@ -7999,6 +8003,7 @@ namespace graphene { namespace chain {
                     FC_ASSERT(!has_hardfork(CHAIN_HARDFORK_18),
                               "Fork carries the pre-HF18 timeout certificate after HF18");
                     const auto &tc = e.get<protocol::block_timeout_certificate>();
+                    admitted_tc = &tc;
                     FC_ASSERT(tc.votes.size() >= quorum && tc.votes.size() <= scheduled &&
                               tc.round < round_of(b.timestamp), "Invalid fork TC quorum/round");
                     for (const auto &v : tc.votes)
@@ -8009,6 +8014,7 @@ namespace graphene { namespace chain {
                     FC_ASSERT(has_hardfork(CHAIN_HARDFORK_18),
                               "Fork carries an HF18 timeout certificate before HF18");
                     const auto &tc = e.get<protocol::block_timeout_certificate_v2>();
+                    admitted_tc_v2 = &tc;
                     FC_ASSERT(tc.votes.size() >= quorum && tc.votes.size() <= scheduled &&
                               tc.round < round_of(b.timestamp), "Invalid fork TC quorum/round");
                     for (const auto &v : tc.votes)
@@ -8018,6 +8024,26 @@ namespace graphene { namespace chain {
                 }
             }
             FC_ASSERT(!tcs || qcs, "Fork TC without QC");
+            // These relationships depend only on the certificates in this
+            // signed header, not on the state of the competing branch. Reject
+            // an incompatible TC before it can prioritize a fork and trigger
+            // rollback; full branch-dependent checks still run on apply.
+            if (admitted_tc) {
+                FC_ASSERT(admitted_tc->round > admitted_qc->round, "Fork TC is not after its QC");
+                for (const auto &v : admitted_tc->votes)
+                    FC_ASSERT(v.second.high_qc_round <= admitted_qc->round,
+                              "Fork TC vote names a newer QC than the attached QC");
+            }
+            if (admitted_tc_v2) {
+                FC_ASSERT(admitted_tc_v2->round > admitted_qc->round, "Fork TC is not after its QC");
+                for (const auto &v : admitted_tc_v2->votes) {
+                    FC_ASSERT(v.second.high_qc_round <= admitted_qc->round,
+                              "Fork TC vote names a newer QC than the attached QC");
+                    FC_ASSERT(v.second.high_qc_round != admitted_qc->round ||
+                              v.second.high_qc_block_id == admitted_qc->block_id,
+                              "Fork TC vote names a different block at the attached QC round");
+                }
+            }
             return round;
         }
 

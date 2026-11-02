@@ -33,6 +33,8 @@ struct database {
  fc::time_point_sec head_block_time() const {return fc::time_point_sec(200);}
  fc::optional<signed_block> fetch_block_by_id(const block_id_type&) const {return {};}
  void validate_block_qc(const signed_block&,uint32_t) const;
+ static uint32_t block_cert_round(const signed_block&);
+ uint32_t verified_fork_cert_round(const signed_block&) const;
  std::optional<fake_block> fetch_block_by_number(uint32_t n) const {return block && protocol::block_header::num_from_id(block->id())==n ? block : std::nullopt;}
  uint32_t round_of(fc::time_point_sec t) const {return t.sec_since_epoch();}
  static uint32_t block_qc_quorum(uint32_t n) {return graphene::chain::emergency_quorum_for(n);}
@@ -45,6 +47,7 @@ struct database {
 };
 namespace graphene { namespace protocol {
 // @BLOCK_NUM_METHOD@
+// @BLOCK_SIGNATURE_METHODS@
 } }
 // @METHODS@
 int main(){
@@ -129,6 +132,33 @@ int main(){
  first->second.signature=first_key.sign_compact(protocol::block_timeout_digest_v2(q.chain,202,200,other));
  auto incompatible=child;incompatible.extensions.clear();incompatible.extensions.insert(block_header_extensions(qc));incompatible.extensions.insert(block_header_extensions(wrong_block));
  REQUIRE(!check(incompatible));
- q.hf18=false; REQUIRE(!check(modern));
+ // Admission tests use a genuine producer signature and real fork certificate verifier.
+ auto producer_key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key0")));
+ auto admitted=[&](const signed_block& b){try{return q.verified_fork_cert_round(b);}catch(const fc::exception&){return uint32_t(0);}};
+ q.hf18=false;child.sign(producer_key); REQUIRE(admitted(child)==202);
+ auto bad_producer=child;bad_producer.sign(mallory_key);REQUIRE(admitted(bad_producer)==0);
+ auto no_quorum=fewer;no_quorum.sign(producer_key); REQUIRE(admitted(no_quorum)==0);
+ auto bad_votes=corrupt;bad_votes.sign(producer_key); REQUIRE(admitted(bad_votes)==0);
+ // Validly signed votes can still describe a QC newer than the one attached.
+ auto newer_tc=tc;auto old_first=newer_tc.votes.begin();old_first->second.high_qc_round=201;
+ old_first->second.signature=producer_key.sign_compact(protocol::block_timeout_digest(q.chain,202,201));
+ auto newer_child=child;newer_child.extensions.clear();newer_child.extensions.insert(block_header_extensions(qc));newer_child.extensions.insert(block_header_extensions(newer_tc));newer_child.sign(producer_key);
+ REQUIRE(admitted(newer_child)==0); REQUIRE(!check(newer_child));
+ auto older_tc=tc;auto older_first=older_tc.votes.begin();older_first->second.high_qc_round=199;
+ older_first->second.signature=producer_key.sign_compact(protocol::block_timeout_digest(q.chain,202,199));
+ auto older_child=child;older_child.extensions.clear();older_child.extensions.insert(block_header_extensions(qc));older_child.extensions.insert(block_header_extensions(older_tc));older_child.sign(producer_key);
+ REQUIRE(admitted(older_child)==202);REQUIRE(check(older_child));
+ q.hf18=true;modern.sign(producer_key);REQUIRE(admitted(modern)==202);
+ // A valid signature alone must not prioritize a TC bound to another QC block.
+ incompatible.sign(producer_key);REQUIRE(admitted(incompatible)==0);REQUIRE(!check(incompatible));
+ auto newer_tc2=tc2;auto new_first=newer_tc2.votes.begin();new_first->second.high_qc_round=201;
+ new_first->second.signature=producer_key.sign_compact(protocol::block_timeout_digest_v2(q.chain,202,201,qc_id));
+ auto newer_modern=child;newer_modern.extensions.clear();newer_modern.extensions.insert(block_header_extensions(qc));newer_modern.extensions.insert(block_header_extensions(newer_tc2));newer_modern.sign(producer_key);
+ REQUIRE(admitted(newer_modern)==0); REQUIRE(!check(newer_modern));
+ auto older_tc2=tc2;auto older_v2=older_tc2.votes.begin();older_v2->second.high_qc_round=199;older_v2->second.high_qc_block_id=other;
+ older_v2->second.signature=producer_key.sign_compact(protocol::block_timeout_digest_v2(q.chain,202,199,other));
+ auto older_modern=child;older_modern.extensions.clear();older_modern.extensions.insert(block_header_extensions(qc));older_modern.extensions.insert(block_header_extensions(older_tc2));older_modern.sign(producer_key);
+ REQUIRE(admitted(older_modern)==202); REQUIRE(check(older_modern));
+ q.hf18=false; REQUIRE(!check(modern)); REQUIRE(admitted(modern)==0);
  std::cout << "PASS: real QC admission and block QC/TC validation with real signatures\n";
 }
