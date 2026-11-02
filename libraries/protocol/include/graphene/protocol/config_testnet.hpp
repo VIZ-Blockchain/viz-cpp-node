@@ -2,14 +2,14 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-// HF16 (no-contest fee freeze) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
+// HF17 (how emergency consensus ends) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
 // is version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
 // current_hardfork_version < CHAIN_HARDFORK_VERSION. So a new fork has to move THAT field, not the
-// revision; 4.2.0 here must stay byte-equal to CHAIN_HARDFORK_16_VERSION in hardfork.d/16.hf,
+// revision; 4.3.0 here must stay byte-equal to CHAIN_HARDFORK_17_VERSION in hardfork.d/17.hf,
 // which database_hardfork.cpp asserts. config.hpp carries the same value for the production
-// config — the two builds differ in chain identity and fork TIMES (16.hf), not in which forks
-// are registered.
-#define CHAIN_VERSION                         (version(4, 2, 0))
+// config — the two builds differ in chain identity and fork TIMES, not in which forks are
+// registered. (4.2.0 was HF16.)
+#define CHAIN_VERSION                         (version(4, 3, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZTEST"

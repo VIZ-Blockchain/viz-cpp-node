@@ -14,6 +14,8 @@
 #include <graphene/chain/emergency_exit.hpp>
 
 using graphene::chain::emergency_exit_threshold;
+using graphene::chain::emergency_exit_threshold_effective;
+using graphene::chain::emergency_exit_floor;
 using graphene::chain::emergency_quorum_for;
 
 BOOST_AUTO_TEST_CASE(threshold_follows_the_schedule_size_on_entry) {
@@ -60,6 +62,43 @@ BOOST_AUTO_TEST_CASE(threshold_never_decreases_as_more_validators_return) {
     for (uint32_t n = 2; n <= 64; ++n) {
         const uint32_t cur = emergency_exit_threshold(n);
         BOOST_CHECK_GE(cur, prev);
+        prev = cur;
+    }
+}
+
+BOOST_AUTO_TEST_CASE(effective_threshold_is_the_quorum_raised_to_the_floor) {
+    // HF17 (owner question #3396 option A): the number the exit check compares against is the
+    // quorum of the entry size, but never below half the maximum schedule.
+    BOOST_CHECK_EQUAL(emergency_exit_floor(), CHAIN_MAX_VALIDATORS / 2);
+    for (uint32_t n = 1; n <= 64; ++n) {
+        const uint32_t expected = std::max(emergency_quorum_for(n), uint32_t(CHAIN_MAX_VALIDATORS / 2));
+        BOOST_CHECK_EQUAL(emergency_exit_threshold_effective(n), expected);
+    }
+    // Not measured (0) is the legacy full-schedule quorum, and the floor cannot change it.
+    BOOST_CHECK_EQUAL(emergency_exit_threshold_effective(0), emergency_quorum_for(CHAIN_MAX_VALIDATORS));
+#ifndef BUILD_TESTNET
+    // Mainnet literals: 21 slots on entry -> max(15, 10) = 15 (today's constant, unchanged);
+    // 14 -> max(10, 10) = 10 (the case the old constant made unreachable); 9 -> max(7, 10) = 10.
+    BOOST_CHECK_EQUAL(emergency_exit_threshold_effective(21), 15u);
+    BOOST_CHECK_EQUAL(emergency_exit_threshold_effective(14), 10u);
+    BOOST_CHECK_EQUAL(emergency_exit_threshold_effective(9), 10u);
+    // The floor's price, stated: a schedule that was tiny on entry now needs more validators
+    // than it had, so an episode with an unchanged holder set never ends. That is the owner's
+    // option A trade-off; option B is emergency_exit_floor() returning 0.
+    BOOST_CHECK_GT(emergency_exit_threshold_effective(1), emergency_exit_threshold(1));
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(effective_threshold_never_falls_below_the_floor_and_never_decreases) {
+    // Only REAL entry sizes are checked: the schedule never has more than CHAIN_MAX_VALIDATORS
+    // slots, and the unmeasured 0 is a separate case (it answers with the quorum of the maximum,
+    // which on mainnet is 15 — above the floor, so it cannot start this monotonic run).
+    uint32_t prev = emergency_exit_threshold_effective(1);
+    for (uint32_t n = 1; n <= CHAIN_MAX_VALIDATORS; ++n) {
+        const uint32_t cur = emergency_exit_threshold_effective(n);
+        BOOST_CHECK_GE(cur, emergency_exit_floor());
+        BOOST_CHECK_GE(cur, prev);
+        BOOST_CHECK_LE(cur, CHAIN_MAX_VALIDATORS);
         prev = cur;
     }
 }

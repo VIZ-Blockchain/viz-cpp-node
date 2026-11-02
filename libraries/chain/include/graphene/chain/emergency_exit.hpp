@@ -49,4 +49,27 @@ inline uint32_t emergency_exit_threshold(uint32_t n_on_entry) {
     return emergency_quorum_for(n_on_entry);
 }
 
+/// Lower bound under the exit threshold (HF17, owner question #3396 option A): the chain must
+/// not leave emergency with fewer real validators than half the maximum schedule, however small
+/// the size measured on entry was. On mainnet that is 10 of 21; on the testnet build
+/// CHAIN_MAX_VALIDATORS is 1 and the floor is 0 (no bound beyond the quorum itself).
+///
+/// This floor is the ONE line that separates option A from option B ("no floor"). Option B is
+/// this function returning 0; option C keeps the legacy constant and does not call the
+/// threshold path at all. Change it here, not at the call site.
+inline uint32_t emergency_exit_floor() {
+    return CHAIN_MAX_VALIDATORS / 2;
+}
+
+/// The threshold the exit check actually compares against (HF17 onward): the quorum of the
+/// schedule size measured on entry, raised to the floor above.
+///
+/// Note what this deliberately gives up: with a schedule that was already tiny on entry, the
+/// floor can exceed the number of validators that will ever hold a key in this episode, and the
+/// exit then never fires. That is the price of not leaving a chain of a handful of validators;
+/// option B (floor = 0) is the way back if the owner prefers reachability over the floor.
+inline uint32_t emergency_exit_threshold_effective(uint32_t n_on_entry) {
+    return std::max(emergency_exit_threshold(n_on_entry), uint32_t(emergency_exit_floor()));
+}
+
 }}

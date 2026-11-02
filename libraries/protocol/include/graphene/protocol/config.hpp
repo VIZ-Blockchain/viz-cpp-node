@@ -2,13 +2,13 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-// HF16 (BFT finality, 1 s slots, DAO cap and fee freeze) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
+// HF17 (how emergency consensus ends) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
 // is version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
 // current_hardfork_version < CHAIN_HARDFORK_VERSION. A new fork therefore has to move THAT field,
-// not the revision; 4.2.0 here must stay byte-equal to CHAIN_HARDFORK_16_VERSION in
-// hardfork.d/16.hf, which database_hardfork.cpp asserts. See
-// docs/prediction-markets/pm-no-contest-fee-freeze.md.
-#define CHAIN_VERSION                         (version(4, 2, 0))
+// not the revision; 4.3.0 here must stay byte-equal to CHAIN_HARDFORK_17_VERSION in
+// hardfork.d/17.hf, which database_hardfork.cpp asserts. See hardfork.d/17.hf for the rule and
+// the activation-time warning. (4.2.0 was HF16: BFT finality, 1 s slots, DAO cap, fee freeze.)
+#define CHAIN_VERSION                         (version(4, 3, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"

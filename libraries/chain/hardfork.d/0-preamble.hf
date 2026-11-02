@@ -52,11 +52,12 @@ FC_REFLECT((graphene::chain::hardfork_property_object),
 CHAINBASE_SET_INDEX_TYPE( graphene::chain::hardfork_property_object, graphene::chain::hardfork_property_index)
 
 #define CHAIN_STARTUP_HARDFORKS 0
-// HF15 (the PM audit fixes) and HF16 (BFT finality, 1 s slots, DAO cap and fee freeze) are registered in BOTH configs —
+// HF15 (the PM audit fixes), HF16 (BFT finality, 1 s slots, DAO cap and fee freeze) and HF17 (how
+// emergency consensus ends) are registered in BOTH configs —
 // production included, because the shelter testnet runs the production config (config_testnet.hpp
 // would change CHAIN_ID/CHAIN_NAME and drop the validator quorum to 1) and could not activate a
 // testnet-only fork. What gates them is the activation time in 15.hf/16.hf plus the 17/21
 // validator quorum, not the build flavour.
 // Keep this in sync with the highest .hf file and with CHAIN_VERSION: database_hardfork.cpp
 // asserts CHAIN_HARDFORK_VERSION == _hardfork_versions[CHAIN_NUM_HARDFORKS].
-#define CHAIN_NUM_HARDFORKS 16
+#define CHAIN_NUM_HARDFORKS 17
