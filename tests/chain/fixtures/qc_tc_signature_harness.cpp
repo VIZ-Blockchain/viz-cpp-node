@@ -253,6 +253,18 @@ int main(){
  older_v2->second.signature=producer_key.sign_compact(protocol::block_timeout_digest_v2(q.chain,202,199,other));
  auto older_modern=child;older_modern.extensions.clear();older_modern.extensions.insert(block_header_extensions(qc));older_modern.extensions.insert(block_header_extensions(older_tc2));older_modern.sign(producer_key);
  REQUIRE(admitted(older_modern)==202); REQUIRE(check(older_modern));
+ // Older high-QC rounds may name another block. Change only that signed ID:
+ // structural validation must pass, while signature verification must reject.
+ auto changed_id_tc2=older_tc2;changed_id_tc2.votes.begin()->second.high_qc_block_id=qc_id;
+ auto changed_id_child=child;changed_id_child.extensions.clear();
+ changed_id_child.extensions.insert(block_header_extensions(qc));changed_id_child.extensions.insert(block_header_extensions(changed_id_tc2));
+ changed_id_child.sign(producer_key);REQUIRE(changed_id_child.validate_signee(producer_key.get_public_key()));
+ q.validate_block_qc(changed_id_child,database::skip_validator_signature);
+ bool rejected_id_signature=false;
+ try {q.validate_block_qc(changed_id_child,0);} catch(const fc::exception& e) {
+  rejected_id_signature=e.to_detail_string().find("TC carries an invalid timeout vote")!=std::string::npos;
+ }
+ REQUIRE(rejected_id_signature);REQUIRE(admitted(changed_id_child)==0);
  q.hf18=false; REQUIRE(!check(modern)); REQUIRE(admitted(modern)==0);
  // Two actual signed headers and independently validated QCs on a simulated branch.
  database f; f.chain=q.chain; f.schedule=q.schedule; f.vals=q.vals;
