@@ -95,9 +95,11 @@ MUTATIONS = {
         ('const auto peer_libs = p2p().get_peer_lib_view();',
          'const graphene::network::dlt_p2p_node::peer_lib_view peer_libs;')]),
     'escalation-callback-unguarded': ('validator_cpp', [
-        ('                                    if (chain().snapshot_force_recovery_callback)\n'
-         '                                        recovery_started = chain().snapshot_force_recovery_callback();',
-         '                                    recovery_started = chain().snapshot_force_recovery_callback();')]),
+        ('                        if (chain().snapshot_force_recovery_callback)\n'
+         '                            recovery_started = chain().snapshot_force_recovery_callback();',
+         '                        recovery_started = chain().snapshot_force_recovery_callback();')]),
+    'escalation-answer-not-returned': ('validator_cpp', [
+        ('                    return recovery_started;', '                    return true;')]),
     'escalation-never-resets': ('validator_cpp', [
         ('                                _master_gate_escalated = false;\n', '')]),
 }
@@ -275,6 +277,22 @@ def wiring_problems(**files):
         problems.append('the peer-LIB gate is not inside the emergency master branch of the DLT '
                         'fork check: a slave already has the isolation scan, the master does not')
 
+    helper = method(val, 'bool request_forced_snapshot_recovery()')
+    if helper is None:
+        problems.append('the validator has no request_forced_snapshot_recovery(): both escalation '
+                        'paths would each have to guard the callback on their own')
+    else:
+        h = _masked(helper)
+        if not re.search(r'recovery_started\s*=\s*chain\(\)\.snapshot_force_recovery_callback\(\)', h):
+            problems.append('request_forced_snapshot_recovery() never calls the callback: the '
+                            'escalation is renamed, not made')
+        if not re.search(r'if\s*\(\s*chain\(\)\.snapshot_force_recovery_callback\s*\)', h):
+            problems.append('request_forced_snapshot_recovery() calls the callback unguarded: an '
+                            'empty std::function throws bad_function_call inside block processing')
+        if 'return recovery_started;' not in h:
+            problems.append('request_forced_snapshot_recovery() does not report whether a recovery '
+                            'actually started: the caller cannot tell "asked" from "armed"')
+
     cond_at = val.find('peer_libs.peers_above_our_lib')
     gate_block = enclosing_if(val, cond_at) if cond_at >= 0 else None
     if cond_at >= 0 and gate_block is None:
@@ -299,12 +317,9 @@ def wiring_problems(**files):
                                 'through to resync_from_lib: the snapshot plugin is replacing the '
                                 'state, and a rewind racing it can throw the replacement away '
                                 '(the slave path above returns first)')
-        if 'snapshot_force_recovery_callback' not in gb:
+        if 'request_forced_snapshot_recovery()' not in gb:
             problems.append('the gate never escalates to a fresh snapshot: a head that comes back '
                             'after the rewind keeps the node on the dead fork forever')
-        elif not re.search(r'if\s*\(\s*chain\(\)\.snapshot_force_recovery_callback\s*\)', gb):
-            problems.append('the escalation calls snapshot_force_recovery_callback() unguarded: an '
-                            'empty std::function throws bad_function_call inside block processing')
         if '_master_gate_escalated = false;' not in gb:
             problems.append('a new stuck head does not reset _master_gate_escalated: one fork would '
                             'spend the snapshot escalation for the lifetime of the process')

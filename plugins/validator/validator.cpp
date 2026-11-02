@@ -378,6 +378,26 @@ namespace graphene {
                 fc::time_point _fork_loop_since;
                 bool _fork_escalated = false;
 
+                // Ask the snapshot plugin to REPLACE the state with a fresh one from trusted
+                // peers. One question, two askers: the slave path below (head stuck after a
+                // rewind) and the emergency master (still behind peer LIB after a rewind).
+                // Guarded here rather than at each call site: an unregistered std::function
+                // throws bad_function_call, and that exception would escape into block
+                // processing. Returns whether a recovery could actually be started.
+                bool request_forced_snapshot_recovery() {
+                    bool recovery_started = false;
+                    try {
+                        if (chain().snapshot_force_recovery_callback)
+                            recovery_started = chain().snapshot_force_recovery_callback();
+                    } catch (const fc::exception& e) {
+                        elog("Forced snapshot recovery could not be requested: ${e}",
+                             ("e", e.to_detail_string()));
+                    } catch (...) {
+                        elog("Forced snapshot recovery could not be requested: unknown exception");
+                    }
+                    return recovery_started;
+                }
+
                 // Emergency-master peer-LIB gate (see maybe_validate_block). The master is
                 // exempt from the isolation scan by design, so this is the only place that
                 // can notice the network moved to another chain while we kept producing.
@@ -2193,16 +2213,7 @@ namespace graphene {
                                 } else if (!_fork_escalated &&
                                            (fc::time_point::now() - _fork_loop_since).to_seconds() >= FORK_ESCALATION_SEC) {
                                     _fork_escalated = true;
-                                    bool recovery_started = false;
-                                    try {
-                                        if (chain().snapshot_force_recovery_callback)
-                                            recovery_started = chain().snapshot_force_recovery_callback();
-                                    } catch (const fc::exception& e) {
-                                        elog("Forced snapshot recovery could not be requested: ${e}",
-                                             ("e", e.to_detail_string()));
-                                    } catch (...) {
-                                        elog("Forced snapshot recovery could not be requested: unknown exception");
-                                    }
+                                    const bool recovery_started = request_forced_snapshot_recovery();
                                     if (recovery_started) {
                                         elog("DLT MINORITY FORK UNRESOLVED for ${s}s (head stuck at #${h}): P2P resync "
                                              "keeps returning to the same head. Escalating to a forced re-import of a "
@@ -2257,16 +2268,7 @@ namespace graphene {
                                        (fc::time_point::now() - _master_gate_since).to_seconds() >=
                                            EMERGENCY_PEER_LIB_ESCALATION_SEC) {
                                 _master_gate_escalated = true;
-                                bool recovery_started = false;
-                                try {
-                                    if (chain().snapshot_force_recovery_callback)
-                                        recovery_started = chain().snapshot_force_recovery_callback();
-                                } catch (const fc::exception& e) {
-                                    elog("Forced snapshot recovery could not be requested: ${e}",
-                                         ("e", e.to_detail_string()));
-                                } catch (...) {
-                                    elog("Forced snapshot recovery could not be requested: unknown exception");
-                                }
+                                const bool recovery_started = request_forced_snapshot_recovery();
                                 if (recovery_started) {
                                     elog("EMERGENCY MASTER: still behind peer LIB after ${s}s at head #${h}; "
                                          "replacing the state with a fresh snapshot from trusted peers",
