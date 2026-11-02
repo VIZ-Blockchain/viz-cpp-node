@@ -2770,6 +2770,20 @@ void dlt_p2p_node::broadcast_chain_status() {
     for (auto id : targets) send_message(id, message(msg));
 }
 
+void dlt_p2p_node::periodic_chain_status() {
+    // Do not touch the database while a snapshot holds its read lock.
+    if (_block_processing_paused || !_delegate) return;
+    const auto now = fc::time_point::now();
+    if (_last_chain_status_broadcast != fc::time_point() &&
+        now >= _last_chain_status_broadcast &&
+        (now - _last_chain_status_broadcast).count() <
+            int64_t(CHAIN_STATUS_BROADCAST_INTERVAL_SEC) * 1000000LL) return;
+    // Also recover after the wall clock moves backwards; otherwise a clock
+    // correction could suppress status broadcasts until it catches up.
+    _last_chain_status_broadcast = now;
+    broadcast_chain_status();
+}
+
 // ── State queries ────────────────────────────────────────────────────
 
 uint32_t dlt_p2p_node::get_connection_count() const {
@@ -4469,16 +4483,9 @@ void dlt_p2p_node::periodic_task() {
     // A hello reports a snapshot, not a subscription. Refresh the advertised
     // LIB even in a quiet but healthy network. This helps a peer only when this
     // node has upgraded; old nodes do not send periodic statuses themselves.
-    try {
-        const auto now = fc::time_point::now();
-        if (_last_chain_status_broadcast == fc::time_point() ||
-            (now - _last_chain_status_broadcast).count() >=
-                int64_t(CHAIN_STATUS_BROADCAST_INTERVAL_SEC) * 1000000LL) {
-            _last_chain_status_broadcast = now;
-            broadcast_chain_status();
-        }
-    } catch (const fc::exception& e) { wlog("broadcast_chain_status: ${e}", ("e", e.to_detail_string())); }
-      catch (const std::exception& e) { wlog("broadcast_chain_status: ${e}", ("e", std::string(e.what()))); }
+    try { periodic_chain_status(); }
+        catch (const fc::exception& e) { wlog("periodic_chain_status: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("periodic_chain_status: ${e}", ("e", std::string(e.what()))); }
     try { sync_stagnation_check(); }
         catch (const fc::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", std::string(e.what()))); }

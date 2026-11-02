@@ -420,6 +420,7 @@ private:
 
     // ── Periodic tasks ───────────────────────────────────────────
     void periodic_task();
+    void periodic_chain_status();
     void block_validation_timeout();
 
     // ── Wedged-behind-network watchdog ───────────────────────────
