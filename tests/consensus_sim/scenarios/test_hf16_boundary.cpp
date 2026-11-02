@@ -748,6 +748,34 @@ BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(hf18_rollback_discards_v2_timeout_votes) {
+    auto gp = make_genesis_params(0xBF719u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("hf18-rollback", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(node, gp, when));
+    auto &db = node.db();
+    db.set_hardfork(CHAIN_HARDFORK_17, true);
+    db.set_hardfork(CHAIN_HARDFORK_18, false);
+    BOOST_REQUIRE(!db.has_hardfork(CHAIN_HARDFORK_18));
+    produce(node, gp, when);
+    BOOST_REQUIRE(db.has_hardfork(CHAIN_HARDFORK_18));
+    const auto voter = db.get_validator_schedule_object().current_shuffled_validators[0];
+    const uint32_t round = db.round_of(db.head_block_time()) + 2;
+    const auto v2sig = key_for(gp, voter).sign_compact(
+            block_timeout_digest_v2(db.get_chain_id(), round, 0, block_id_type()));
+    BOOST_REQUIRE(db.push_timeout_vote_v2(round, 0, block_id_type(), voter, v2sig));
+    db.pop_block();
+    BOOST_REQUIRE(!db.has_hardfork(CHAIN_HARDFORK_18));
+    BOOST_CHECK(!db.get_timeout_cert_v2(round).valid());
+    const auto v1sig = key_for(gp, voter).sign_compact(block_timeout_digest(db.get_chain_id(), round, 0));
+    BOOST_CHECK_MESSAGE(db.push_timeout_vote(round, 0, voter, v1sig),
+                        "a v2 vote survived rollback and blocked the pre-HF18 voter");
+}
+
 // #236: an unstick block carries no QC, so the Jolteon vote rule and the certificate fork
 // choice both used to let it through. A certified head must not be abandoned for a longer
 // QC-less branch on HF12 stake weight, and a validator holding a QC for a sibling of a
