@@ -1,6 +1,9 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <atomic>
+#include <mutex>
+#include <thread>
 struct dlt_hello_message {
  uint32_t protocol_version=0,head_block_id=0,head_block_num=0,lib_block_id=0,lib_block_num=0;
  uint32_t dlt_earliest_block=0,dlt_latest_block=0,emergency_active=0,has_emergency_key=0;
@@ -12,10 +15,11 @@ struct dlt_chain_position { uint32_t head_id=0,lib_id=0,head_num=0,lib_num=0; };
 }}
 struct properties {uint32_t head_block_id=100,head_block_number=100,last_irreversible_block_id=99,last_irreversible_block_num=99;};
 struct fake_db {
- mutable properties p; mutable bool locked=false; mutable int reads=0; bool open=true,advance=false;
+ mutable properties p; mutable bool locked=false; mutable int reads=0; mutable std::mutex mutex; bool open=true,advance=false;
  bool is_state_open() const {return open;}
  const properties& get_dynamic_global_properties() const {assert(locked);return p;}
  template<class F> auto with_weak_read_lock(F f) const -> decltype(f()) {
+  std::lock_guard<std::mutex> guard(mutex);
   assert(!locked);locked=true;++reads; auto out=f();locked=false;
   if(advance){++p.head_block_id;++p.head_block_number;++p.last_irreversible_block_id;++p.last_irreversible_block_num;}
   return out;
@@ -26,7 +30,7 @@ struct dlt_delegate {
  fake_chain& chain;
  graphene::network::dlt_chain_position get_chain_position() const;
  uint32_t get_dlt_earliest_block() const {return 1;}
- uint32_t get_dlt_latest_block() const {return chain.db().p.head_block_number;}
+ uint32_t get_dlt_latest_block() const {return 0;}
  bool is_emergency_consensus_active() const {return false;}
  bool has_emergency_private_key() const {return false;}
 };
@@ -45,5 +49,22 @@ int main() {
  assert(snapshot.head_block_id==100 && snapshot.head_block_num==100);
  assert(snapshot.lib_block_id==99 && snapshot.lib_block_num==99 && snapshot.lib_block_num<=snapshot.head_block_num);
  assert(chain.d.p.head_block_number==101 && chain.d.p.last_irreversible_block_num==100);
- std::cout << "PASS: delegate snapshots head and LIB under one read lock; hello preserves that state\n";
+ chain.d.advance=false;
+ std::atomic<bool> go{false};
+ std::thread writer([&]{
+  while(!go.load(std::memory_order_acquire)) std::this_thread::yield();
+  for(int i=0;i<10000;++i){
+   std::lock_guard<std::mutex> guard(chain.d.mutex);
+   ++chain.d.p.head_block_id; std::this_thread::yield(); ++chain.d.p.head_block_number;
+   ++chain.d.p.last_irreversible_block_id; std::this_thread::yield(); ++chain.d.p.last_irreversible_block_num;
+  }
+ });
+ go.store(true,std::memory_order_release);
+ for(int i=0;i<10000;++i){
+  auto s=n.build_hello_message();
+  assert(s.head_block_id==s.head_block_num && s.lib_block_id==s.lib_block_num && s.head_block_num==s.lib_block_num+1);
+ }
+ writer.join();
+ assert(chain.d.p.head_block_number==10101 && chain.d.p.last_irreversible_block_num==10100);
+ std::cout << "PASS: 10000 hello snapshots stay consistent during 10000 concurrent state updates\n";
 }

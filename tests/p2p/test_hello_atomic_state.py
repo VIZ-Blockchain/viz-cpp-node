@@ -25,5 +25,5 @@ code = template.replace('// @BUILD_HELLO@', source[start:pos]).replace('// @DELE
 with tempfile.TemporaryDirectory(prefix='viz-hello-interleave-') as directory:
     path = Path(directory)
     (path / 'test.cpp').write_text(code)
-    subprocess.run(['g++', '-std=c++14', '-Wall', '-Wextra', '-Werror', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True, timeout=45)
+    subprocess.run(['g++', '-std=c++14', '-Wall', '-Wextra', '-Werror', '-pthread', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True, timeout=45)
     subprocess.run([str(path / 'test')], check=True, timeout=10)
