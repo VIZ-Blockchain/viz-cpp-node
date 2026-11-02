@@ -42,4 +42,26 @@ namespace graphene { namespace protocol {
         return enc.result();
     }
 
+    /// Domain tag of an HF18 timeout vote. A separate domain, not a longer message under
+    /// the old one, so a v1 signature can never be read as a v2 signature (or the other
+    /// way round) and the two kinds cannot be confused when both exist in the vote pool
+    /// across the fork boundary.
+    static const char *const CHAIN_BLOCK_TIMEOUT_V2_DOMAIN = "viz-block-timeout-v2";
+
+    /// Digest a validator signs from HF18 on when it gives up on `round` without a QC.
+    /// Unlike v1, the claim names the BLOCK whose QC it holds (high_qc_block_id): the
+    /// round alone cannot tell two blocks of the same round apart, so a TC built from
+    /// round-only votes proved agreement on a number, not on a certified block
+    /// (issue #9968).
+    inline digest_type block_timeout_digest_v2(const chain_id_type &chain_id, uint32_t round,
+                                               uint32_t high_qc_round, const block_id_type &high_qc_block_id) {
+        digest_type::encoder enc;
+        fc::raw::pack(enc, std::string(CHAIN_BLOCK_TIMEOUT_V2_DOMAIN));
+        fc::raw::pack(enc, chain_id);
+        fc::raw::pack(enc, round);
+        fc::raw::pack(enc, high_qc_round);
+        fc::raw::pack(enc, high_qc_block_id);
+        return enc.result();
+    }
+
 } } // graphene::protocol

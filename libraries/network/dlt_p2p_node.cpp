@@ -653,7 +653,8 @@ inline bool is_droppable_when_full(uint32_t msg_type) {
     return msg_type == dlt_fork_status_message_type
         || msg_type == dlt_transaction_message_type
         || msg_type == dlt_block_vote_message_type    // superseded by the QC / next round
-        || msg_type == dlt_timeout_vote_message_type; // superseded by the TC / next round
+        || msg_type == dlt_timeout_vote_message_type  // superseded by the TC / next round
+        || msg_type == dlt_timeout_vote_v2_message_type;
 }
 } // anonymous namespace
 
@@ -1036,6 +1037,9 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_timeout_vote_message_type:
                 on_dlt_timeout_vote(peer, msg.as<dlt_timeout_vote_message>());
                 break;
+            case dlt_timeout_vote_v2_message_type:
+                on_dlt_timeout_vote_v2(peer, msg.as<dlt_timeout_vote_v2_message>());
+                break;
             case dlt_block_qc_message_type:
                 on_dlt_block_qc(peer, msg.as<dlt_block_qc_message>());
                 break;
@@ -1077,7 +1081,8 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
     hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
-    hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC;
+    hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC
+                       | DLT_CAP_TIMEOUT_VOTE_V2;
     return hello;
 }
 
@@ -2632,6 +2637,46 @@ void dlt_p2p_node::broadcast_timeout_vote(uint32_t round, uint32_t high_qc_round
 
 void dlt_p2p_node::on_dlt_timeout_vote(peer_id peer, const dlt_timeout_vote_message& msg) {
     process_timeout_vote(msg, peer);
+}
+
+void dlt_p2p_node::broadcast_timeout_vote_v2(uint32_t round, uint32_t high_qc_round,
+                                             const block_id_type& high_qc_block_id,
+                                             const std::string& validator, const signature_type& signature) {
+    dlt_timeout_vote_v2_message msg;
+    msg.round = round;
+    msg.high_qc_round = high_qc_round;
+    msg.high_qc_block_id = high_qc_block_id;
+    msg.validator = validator;
+    msg.signature = signature;
+    process_timeout_vote_v2(msg, INVALID_PEER_ID);
+}
+
+void dlt_p2p_node::on_dlt_timeout_vote_v2(peer_id peer, const dlt_timeout_vote_v2_message& msg) {
+    process_timeout_vote_v2(msg, peer);
+}
+
+void dlt_p2p_node::process_timeout_vote_v2(const dlt_timeout_vote_v2_message& msg, peer_id from) {
+    const auto now = fc::time_point::now();
+    if (msg.validator.empty() || msg.validator.size() > CHAIN_MAX_ACCOUNT_NAME_LENGTH) {
+        if (from != INVALID_PEER_ID) record_packet_result(from, false);
+        return;
+    }
+    // The v2 struct is a superset of v1, so the dedup key differs from the v1 key of the
+    // same (round, validator) -- deliberate: those are different claims under different
+    // digests, and the chain decides which one it can use.
+    const auto key = fc::sha256::hash(fc::raw::pack(msg));
+    if (_timeout_votes_seen.contains(key, now)) return;
+
+    if (!_delegate || !_delegate->accept_timeout_vote_v2(msg)) {
+        if (from != INVALID_PEER_ID) {
+            dlog(DLT_LOG_DGRAY "Timeout vote v2 r${r} by ${v} from peer ${p} not accepted" DLT_LOG_RESET,
+                 ("r", msg.round)("v", msg.validator)("p", from));
+        }
+        return;
+    }
+    _timeout_votes_seen.insert(key, now);
+    // Only peers that advertise the capability: an older node cannot parse this struct.
+    gossip_to_capable(message(msg), DLT_CAP_TIMEOUT_VOTE_V2, from);
 }
 
 void dlt_p2p_node::process_timeout_vote(const dlt_timeout_vote_message& msg, peer_id from) {

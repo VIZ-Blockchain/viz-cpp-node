@@ -1,0 +1,42 @@
+// HF18 / VIZ 4.4.0: a timeout vote names the BLOCK whose QC it saw, not only the round.
+//
+// Before this fork the digest a validator signs when it gives up on round r carried
+// (round, high_qc_round). A round is a slot, not a block: two different blocks of the same
+// round produce the same high_qc_round, so a timeout certificate assembled from those votes
+// did not prove that its voters had certified ONE block — only that they agreed on a number.
+// The TC validity rule in validate_block_qc() could check no more than "every vote's round is
+// at or below the parent QC's round".
+//
+// HF18 appends high_qc_block_id (20 bytes) to the vote and moves the signature to a new
+// domain, viz-block-timeout-v2. A vote now says "the highest QC I hold is the QC of THIS
+// block at THIS round", and the TC is only valid next to the parent QC of exactly that block:
+//
+//   * block_timeout_digest_v2(chain_id, round, high_qc_round, high_qc_block_id) is signed;
+//   * block_timeout_vote carries high_qc_block_id (FC_REFLECT, appended);
+//   * push_timeout_vote assembles a TC from the LARGEST set of votes that name the same
+//     (round, block id) pair, never from a mix — a voter that is behind simply cannot join;
+//   * validate_block_qc requires every TC vote to name exactly (cert->round, cert->block_id),
+//     where cert is the parent QC the block carries. A quorum of a TC therefore proves a
+//     quorum saw the same certified parent, which is what Jolteon's skip rule claims.
+//   * the local vote journal gains a fifth field (the block id) and still reads pre-fork
+//     four-field lines: they are verified with the v1 digest and can never join a post-fork TC.
+//
+// Wire compatibility: the digest and the P2P message both change, so nodes on 4.3.x cannot
+// verify votes from 4.4.x nodes and vice versa. Activation needs the production 17/21
+// version-vote quorum, exactly like HF16; before that the old digest is used, so an upgraded
+// node on a pre-HF18 chain behaves like a 4.3.x node.
+//
+// No state migration and no schema change: timeout votes live in node-local memory and the
+// journal (a cache), never in chainbase. CHAIN_SCHEMA_VERSION stays 16, so an upgrade does
+// not need a replay or a snapshot import.
+//
+// Activation: CHAIN_HARDFORK_18_TIME is a FUTURE date on purpose — unlike HF17 (a recovery
+// rule whose announcement was the decision itself), this fork changes what validators sign.
+// It must be announced before the moment it names, and the value changes together with the
+// announcement text, never after one is published. Change it only while no announcement
+// carrying this date exists.
+#ifndef CHAIN_HARDFORK_18
+#define CHAIN_HARDFORK_18 18
+#define CHAIN_HARDFORK_18_TIME 1794787200      // 2026-11-16 00:00:00 UTC — announce before it names
+#define CHAIN_HARDFORK_18_VERSION hardfork_version( version(4, 4, 0) )
+#endif

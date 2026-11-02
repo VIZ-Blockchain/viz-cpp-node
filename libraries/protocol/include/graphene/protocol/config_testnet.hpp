@@ -9,7 +9,7 @@
 // which database_hardfork.cpp asserts. config.hpp carries the same value for the production
 // config — the two builds differ in chain identity and fork TIMES, not in which forks are
 // registered. (4.2.0 was HF16.)
-#define CHAIN_VERSION                         (version(4, 3, 1))
+#define CHAIN_VERSION                         (version(4, 4, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZTEST"

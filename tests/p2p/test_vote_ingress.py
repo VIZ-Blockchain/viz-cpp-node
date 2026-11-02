@@ -54,7 +54,7 @@ using peer_id = int;
 using block_id_type = uint64_t;
 using signature_type = uint64_t;
 constexpr int INVALID_PEER_ID = -1;
-constexpr int DLT_CAP_BLOCK_VOTE = 1, DLT_CAP_TIMEOUT_VOTE = 2;
+constexpr int DLT_CAP_BLOCK_VOTE = 1, DLT_CAP_TIMEOUT_VOTE = 2, DLT_CAP_TIMEOUT_VOTE_V2 = 4;
 namespace graphene { namespace protocol {
 struct block_header { static uint32_t num_from_id(block_id_type id) { return uint32_t(id); } };
 } }
@@ -71,6 +71,15 @@ struct dlt_timeout_vote_message {
     signature_type signature = 1;
     uint64_t key() const { return signature; }
 };
+// HF18: the same vote with the block its QC claim names. A superset of v1, so a v2 vote
+// and its v1 twin hash differently on purpose: they are claims under different digests.
+struct dlt_timeout_vote_v2_message {
+    uint32_t round = 1, high_qc_round = 0;
+    block_id_type high_qc_block_id = 0;
+    std::string validator = "alice";
+    signature_type signature = 1;
+    uint64_t key() const { return signature; }
+};
 template<class T> int message(const T&) { return 0; }
 struct controlled_delegate {
     bool accepts = true, throws = false;
@@ -78,6 +87,7 @@ struct controlled_delegate {
     bool accept() { ++calls; if (throws) throw std::runtime_error("controlled failure"); return accepts; }
     bool accept_block_vote(const dlt_block_vote_message&) { return accept(); }
     bool accept_timeout_vote(const dlt_timeout_vote_message&) { return accept(); }
+    bool accept_timeout_vote_v2(const dlt_timeout_vote_v2_message&) { return accept(); }
 };
 struct peer_state { uint32_t spam_strikes = 0; fc::time_point last_good_packet_time; };
 struct dlt_p2p_node {
@@ -98,24 +108,32 @@ THRESHOLD
     bool record_packet_result(peer_id, bool);
     void process_block_vote(const dlt_block_vote_message&, peer_id);
     void process_timeout_vote(const dlt_timeout_vote_message&, peer_id);
+    void process_timeout_vote_v2(const dlt_timeout_vote_v2_message&, peer_id);
     void on_dlt_block_vote(peer_id, const dlt_block_vote_message&);
     void on_dlt_timeout_vote(peer_id, const dlt_timeout_vote_message&);
+    void on_dlt_timeout_vote_v2(peer_id, const dlt_timeout_vote_v2_message&);
     void broadcast_block_post_validation(const block_id_type&, const std::string&, const signature_type&, uint32_t);
     void broadcast_timeout_vote(uint32_t, uint32_t, const std::string&, const signature_type&);
+    void broadcast_timeout_vote_v2(uint32_t, uint32_t, const block_id_type&, const std::string&, const signature_type&);
 };
 METHODS
+METHODS_V2
 void require(bool ok, const char* msg) { if (!ok) throw std::runtime_error(msg); }
 int main(int argc, char** argv) {
  try {
     require(argc >= 3, "scenario and vote type required");
-    std::string scenario = argv[1]; bool block = std::string(argv[2]) == "block";
+    std::string scenario = argv[1];
+    const std::string kind = std::string(argv[2]);
+    bool block = kind == "block", v2 = kind == "timeout_v2";
     size_t n = argc > 3 ? std::stoull(argv[3]) : 20000;
     bool probe = scenario == "probe";
     controlled_delegate d; dlt_p2p_node node(&d);
-    dlt_block_vote_message b; dlt_timeout_vote_message t;
+    dlt_block_vote_message b; dlt_timeout_vote_message t; dlt_timeout_vote_v2_message t2;
     auto send = [&](uint64_t key, peer_id peer = 7) {
-        b.signature = t.signature = key;
-        if (block) node.on_dlt_block_vote(peer, b); else node.on_dlt_timeout_vote(peer, t);
+        b.signature = t.signature = t2.signature = key;
+        if (block) node.on_dlt_block_vote(peer, b);
+        else if (v2) node.on_dlt_timeout_vote_v2(peer, t2);
+        else node.on_dlt_timeout_vote(peer, t);
     };
     auto size = [&]() { return block ? node._block_votes_seen.size() : node._timeout_votes_seen.size(); };
     auto started = std::chrono::steady_clock::now();
@@ -141,15 +159,15 @@ int main(int argc, char** argv) {
         require(size() <= 8192, "expiry overflow");
         send(8000); require(d.calls == 8194, "expired tail falsely deduplicated");
     } else if (scenario == "accounting") {
-        b.validator = t.validator = "";
+        b.validator = t.validator = t2.validator = "";
         for (unsigned i = 0; i < node.SPAM_STRIKE_THRESHOLD; ++i) send(i+1);
         require(node.bans == 1 && node._peer_states[7].spam_strikes == node.SPAM_STRIKE_THRESHOLD,
                 "malformed traffic does not use existing strike policy");
         require(d.calls == 0 && size() == 0, "malformed traffic reached delegate/cache");
-        b.validator = t.validator = std::string(33, 'x'); send(99);
+        b.validator = t.validator = t2.validator = std::string(33, 'x'); send(99);
         require(d.calls == 0, "oversized name reached delegate");
         send(100, INVALID_PEER_ID); require(node._peer_states.size() == 1, "local malformed vote scored peer");
-        b.validator = t.validator = "alice";
+        b.validator = t.validator = t2.validator = "alice";
         if (block) {
             b.block_num = 0; send(101); b.block_num = 2; send(102);
             require(d.calls == 0, "impossible block vote reached delegate"); b.block_num = 1;
@@ -191,6 +209,10 @@ int main(int argc, char** argv) {
             node.broadcast_block_post_validation(1, "alice", 1, 1);
             require(d.calls == 1 && node.gossips == 2, "local retry no longer gossips");
             fc::clock_now += 21; send(1); require(d.calls == 2, "local resend pins expiry");
+        } else if (v2) {
+            node.broadcast_timeout_vote_v2(1, 0, 0, "alice", 1);
+            node.broadcast_timeout_vote_v2(1, 0, 0, "alice", 1);
+            require(d.calls == 1 && node.gossips == 1, "timeout v2 duplicate semantics changed");
         } else {
             node.broadcast_timeout_vote(1, 0, "alice", 1);
             node.broadcast_timeout_vote(1, 0, "alice", 1);
@@ -203,7 +225,7 @@ int main(int argc, char** argv) {
         d.throws = false; send(1); require(node.gossips == 1, "failed vote cannot be retried");
     } else throw std::runtime_error("unknown scenario");
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
-    std::cout << scenario << ' ' << (block ? "block" : "timeout") << " n=" << n
+    std::cout << scenario << ' ' << (block ? "block" : (v2 ? "timeout_v2" : "timeout")) << " n=" << n
               << " retained=" << size() << " age_checks=" << fc::age_checks
               << " delegate_calls=" << d.calls << " elapsed_us=" << us << '\n';
     return 0;
@@ -225,11 +247,23 @@ def main():
     signatures = ['void dlt_p2p_node::' + name + '(' for name in (
         'process_block_vote', 'process_timeout_vote', 'on_dlt_block_vote',
         'on_dlt_timeout_vote', 'broadcast_block_post_validation', 'broadcast_timeout_vote')]
+    # The 4.2.0 baseline predates HF18: nothing to extract, and its scenarios cover only the
+    # two vote kinds it has.
+    v2_signatures = [] if args.baseline else ['void dlt_p2p_node::' + name + '(' for name in (
+        'process_timeout_vote_v2', 'on_dlt_timeout_vote_v2', 'broadcast_timeout_vote_v2')]
+    baseline_stubs = [
+        'void dlt_p2p_node::process_timeout_vote_v2(const dlt_timeout_vote_v2_message&, peer_id) {}',
+        'void dlt_p2p_node::on_dlt_timeout_vote_v2(peer_id, const dlt_timeout_vote_v2_message&) {}',
+        'void dlt_p2p_node::broadcast_timeout_vote_v2(uint32_t, uint32_t, const block_id_type&, const std::string&, const signature_type&) {}',
+    ]
     signatures.append('bool dlt_p2p_node::record_packet_result(')
     members = '\n'.join(re.findall(r'^\s*[^\n]*\s_block_votes_seen;|^\s*[^\n]*\s_timeout_votes_seen;|^\s*[^\n]*\s_local_block_votes_seen;', hpp, re.M))
     threshold = re.search(r'    static constexpr uint32_t\s+SPAM_STRIKE_THRESHOLD = \d+;', hpp).group()
     include = '' if args.baseline else '#include <graphene/network/dlt_vote_cache.hpp>\nusing graphene::network::dlt_vote_cache;'
-    code = FIXTURE.replace('CACHE_INCLUDE', include).replace('MEMBERS', members).replace('\nTHRESHOLD\n', '\n' + threshold + '\n').replace('METHODS', '\n'.join(method(cpp, sig) for sig in signatures))
+    v2_methods = '\n'.join(baseline_stubs if args.baseline else (method(cpp, sig) for sig in v2_signatures))
+    code = FIXTURE.replace('CACHE_INCLUDE', include).replace('MEMBERS', members).replace('\nTHRESHOLD\n', '\n' + threshold + '\n')
+    # METHODS_V2 first: 'METHODS' is its prefix and would otherwise eat it.
+    code = code.replace('METHODS_V2', v2_methods).replace('METHODS', '\n'.join(method(cpp, sig) for sig in signatures))
     with tempfile.TemporaryDirectory(prefix='viz-vote-', dir=os.environ.get('TMPDIR')) as tmp:
         tmp = Path(tmp)
         for stub in ('fc/time.hpp', 'fc/crypto/sha256.hpp'):
@@ -244,9 +278,9 @@ def main():
             'rejected', 'cap', 'expiry', 'cleanup', 'accounting', 'retry', 'failure_retry',
             'local_eviction_retry', 'local_interleaving_retry', 'local_expiry')]
         executed = 0
-        for vote in ('block', 'timeout'):
+        for vote in (('block', 'timeout') if args.baseline else ('block', 'timeout', 'timeout_v2')):
             for scenario, n in cases:
-                if scenario.startswith('local_') and vote == 'timeout':
+                if scenario.startswith('local_') and vote != 'block':   # block-only broadcast paths
                     continue
                 executed += 1
                 result = subprocess.run([str(binary), scenario, vote, n], capture_output=True, text=True)

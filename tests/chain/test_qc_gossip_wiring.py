@@ -99,9 +99,9 @@ def method(source, signature):
     return None
 
 
-def _enum_has(text, name):
+def _enum_has(text, name, value=5119):
     m = re.search(r'enum\s+dlt_message_type_enum\s*\{(.*?)\}', text, re.S)
-    return bool(m and re.search(r'\b%s\s*=\s*5119\b' % re.escape(name), m.group(1)))
+    return bool(m and re.search(r'\b%s\s*=\s*%d\b' % (re.escape(name), value), m.group(1)))
 
 
 def wiring_problems(**files):
@@ -188,6 +188,31 @@ def wiring_problems(**files):
             problems.append('accept_block_qc_certificate() does not store the RE-VERIFIED certificate '
                             '(remember_block_qc(cert) would keep the sender\'s unverified signatures)')
 
+    # 8. HF18 carries the timeout vote in its own message. Same six places, same failure mode:
+    #    miss one and the vote is silently dropped, which is a liveness bug, not a cosmetic one.
+    if not _enum_has(files['msg_hpp'], 'dlt_timeout_vote_v2_message_type', 5120):
+        problems.append('dlt_timeout_vote_v2_message_type is missing from dlt_message_type_enum (or is not 5120)')
+    elif not reflect or 'dlt_timeout_vote_v2_message_type' not in reflect.group(1):
+        problems.append('dlt_timeout_vote_v2_message_type is absent from the FC_REFLECT_ENUM: it would never dispatch')
+    if not re.search(r'dlt_message_type_enum\s+dlt_timeout_vote_v2_message::type\s*=\s*'
+                     r'dlt_timeout_vote_v2_message_type\s*;', msg_cpp):
+        problems.append('dlt_timeout_vote_v2_message::type is not defined in dlt_p2p_messages.cpp')
+    elif 'DLT_CAP_TIMEOUT_VOTE_V2' not in hello.group(1):
+        problems.append('hello.capabilities does not advertise DLT_CAP_TIMEOUT_VOTE_V2: an old peer is sent a '
+                        'struct it cannot parse')
+    if not re.search(r'case\s+dlt_timeout_vote_v2_message_type\s*:\s*on_dlt_timeout_vote_v2\s*\(', node_cpp):
+        problems.append('on_message has no dispatch for dlt_timeout_vote_v2_message_type -- HF18 votes are dropped '
+                        'as unknown packets and the peer is scored down')
+    accept_v2 = method(p2p_cpp, 'bool accept_timeout_vote_v2(')
+    if accept_v2 is None or 'push_timeout_vote_v2(' not in _masked(accept_v2):
+        problems.append('accept_timeout_vote_v2() does not reach database::push_timeout_vote_v2(): the vote would '
+                        'be relayed while the chain never counts it')
+    relay_v2 = method(node_cpp, 'void dlt_p2p_node::process_timeout_vote_v2(')
+    if relay_v2 is None:
+        problems.append('dlt_p2p_node::process_timeout_vote_v2() is missing -- an HF18 vote would stop at us')
+    elif not re.search(r'gossip_to_capable\([^;]*DLT_CAP_TIMEOUT_VOTE_V2', _masked(relay_v2)):
+        problems.append('process_timeout_vote_v2() does not restrict relaying to DLT_CAP_TIMEOUT_VOTE_V2 peers')
+
     # 7. The node that holds a QC re-sends it while the chain is stalled.
     if 'post_broadcast_block_qc' not in val_cpp:
         problems.append('the validator plugin never broadcasts a block QC: a head certified by a quorum stays a '
@@ -203,12 +228,13 @@ MUTATIONS = {
     'enum-entry-removed': (
         MSG_HPP, '    dlt_block_qc_message_type           = 5119,\n', ''),
     'reflect-enum-entry-removed': (
-        MSG_HPP, '    (dlt_timeout_vote_message_type)\n    (dlt_block_qc_message_type))',
-        '    (dlt_timeout_vote_message_type))'),
+        MSG_HPP, '    (dlt_block_qc_message_type)\n    (dlt_timeout_vote_v2_message_type))',
+        '    (dlt_timeout_vote_v2_message_type))'),
     'static-type-removed': (
         MSG_CPP, 'const dlt_message_type_enum dlt_block_qc_message::type           = dlt_block_qc_message_type;\n', ''),
     'capability-not-advertised': (
-        NODE_CPP, 'hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC;',
+        NODE_CPP, 'hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC\n'
+                  '                       | DLT_CAP_TIMEOUT_VOTE_V2;',
         'hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE;'),
     'dispatch-removed': (
         NODE_CPP, '            case dlt_block_qc_message_type:\n                on_dlt_block_qc(peer, msg.as<dlt_block_qc_message>());\n                break;\n', ''),
@@ -230,6 +256,17 @@ MUTATIONS = {
         VAL_CPP, 'p2p().post_broadcast_block_qc(qc);', '(void)qc;'),
     'validator-broadcasts-unconditionally': (
         VAL_CPP, 'if (certified && now_round >= head_round + 2) {', 'if (now_round >= head_round + 2) {'),
+    'v2-reflect-entry-removed': (
+        MSG_HPP, '    (dlt_block_qc_message_type)\n    (dlt_timeout_vote_v2_message_type))',
+        '    (dlt_block_qc_message_type))'),   # removes only the v2 entry
+    'v2-capability-not-advertised': (
+        NODE_CPP, 'hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC\n'
+                  '                       | DLT_CAP_TIMEOUT_VOTE_V2;',
+        'hello.capabilities = DLT_CAP_BLOCK_VOTE | DLT_CAP_TIMEOUT_VOTE | DLT_CAP_BLOCK_QC;'),
+    'v2-dispatch-removed': (
+        NODE_CPP, '            case dlt_timeout_vote_v2_message_type:\n'
+                  '                on_dlt_timeout_vote_v2(peer, msg.as<dlt_timeout_vote_v2_message>());\n'
+                  '                break;\n', ''),
 }
 
 

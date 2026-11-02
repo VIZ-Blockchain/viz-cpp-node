@@ -275,9 +275,10 @@ def wiring_problems(**files):
         m = re.search(r'#define\s+CHAIN_VERSION\s+\(?\s*version\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)', _masked(files[key]))
         if not m:
             problems.append('CHAIN_VERSION is unreadable in %s' % label)
-        elif (int(m.group(1)), int(m.group(2))) != (4, 3):
-            problems.append('CHAIN_VERSION in %s is %s.%s.%s, not 4.3.0: the middle component IS the hardfork '
-                            'number, so the binary would not advertise (and auto-vote for) HF17'
+        elif (int(m.group(1)), int(m.group(2))) < (4, 3):
+            # 4.3.0 was the HF17 release; a later series (4.4.0 = HF18) still advertises HF17.
+            problems.append('CHAIN_VERSION in %s is %s.%s.%s, below 4.3.0: the middle component carries the '
+                            'hardfork series, so the binary would not advertise (and auto-vote for) HF17'
                             % (label, m.group(1), m.group(2), m.group(3)))
 
     dh = _masked(files['db_hardfork_cpp'])
@@ -357,11 +358,11 @@ MUTATIONS = {
          '#define CHAIN_SCHEMA_VERSION                  uint32_t(15)'),
     ],
     'chain-version-does-not-advertise-hf17': [
-        ('define CHAIN_VERSION                         (version(4, 3, 1))',
+        ('define CHAIN_VERSION                         (version(4, 4, 0))',
          'define CHAIN_VERSION                         (version(4, 2, 0))'),
     ],
     'num-hardforks-not-bumped': [
-        ('#define CHAIN_NUM_HARDFORKS 17', '#define CHAIN_NUM_HARDFORKS 16'),
+        ('#define CHAIN_NUM_HARDFORKS 18', '#define CHAIN_NUM_HARDFORKS 16'),
     ],
     'hardfork-time-not-registered': [
         ('_hardfork_times[CHAIN_HARDFORK_17] = fc::time_point_sec(CHAIN_HARDFORK_17_TIME);', ''),

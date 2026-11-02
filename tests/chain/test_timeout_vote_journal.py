@@ -5,7 +5,8 @@ The journal is what makes accumulated timeout votes survive a restart. It is del
 free of fc/chainbase, so this test compiles the production header as-is -- no fixture copy,
 no stubbed production code -- and drives it through the cases the node will hit:
 
-  * round trip: what was appended comes back byte for byte;
+  * round trip: what was appended comes back byte for byte, and an HF18 vote keeps its
+    block id (a five-field line) while an older vote stays four fields;
   * compaction: a replayed file keeps only the votes the node accepted;
   * garbage (bad hex, missing fields, control characters, truncated lines) is dropped, never fatal;
   * votes older than the round window never reach the signature check;
@@ -92,7 +93,9 @@ int main(int argc, char **argv) {
         assert(j.open(error));
         std::vector<std::string> seen;
         std::vector<sig_t> sigs;
-        const auto r = j.replay([&](uint32_t round, uint32_t hqc, const std::string &v, const sig_t &s) {
+        const auto r = j.replay([&](uint32_t round, uint32_t hqc, const std::string &v, const sig_t &s,
+                                    const std::string &bid) {
+            assert(bid.empty());                      // four-field lines carry no block id
             seen.push_back(v + ":" + std::to_string(round) + ":" + std::to_string(hqc));
             sigs.push_back(s);
             return true;
@@ -108,6 +111,38 @@ int main(int argc, char **argv) {
         assert(count_lines(path) == 3);
     }
 
+    // 1b. HF18 vote: the block id is a fifth field, comes back intact, and a malformed one
+    //     is never written. A four-field line still reads as "no block named".
+    {
+        const std::string path = dir + "/blockid.log";
+        const std::string id40 = std::string(40, 'a');
+        {
+            timeout_vote_journal j(path);
+            assert(j.open(error));
+            j.append(110, 109, "viz1", make_sig(11), id40);
+            j.append(111, 110, "viz2", make_sig(12));            // pre-HF18 form
+            j.append(112, 111, "viz3", make_sig(13), std::string(39, 'b'));  // short: dropped
+            j.append(113, 112, "viz4", make_sig(14), std::string(40, 'z'));  // non-hex: dropped
+        }
+        assert(count_lines(path) == 2);
+        timeout_vote_journal j(path);
+        assert(j.open(error));
+        std::vector<std::string> ids;
+        std::vector<std::string> names;
+        const auto r = j.replay([&](uint32_t, uint32_t, const std::string &v, const sig_t &,
+                                    const std::string &bid) {
+            names.push_back(v);
+            ids.push_back(bid);
+            return true;
+        }, 0, error);
+        assert(r.lines == 2 && r.accepted == 2 && r.dropped == 0);
+        assert(ids.size() == 2);
+        assert(names[0] == "viz1" && ids[0] == id40);
+        assert(names[1] == "viz2" && ids[1].empty());
+        // Compaction must not turn a five-field line into a four-field one.
+        assert(count_lines(path) == 2);
+    }
+
     // 2. Compaction: the node rejects one vote (duplicate) and one is stale -- only accepted stay.
     {
         const std::string path = dir + "/compact.log";
@@ -117,7 +152,8 @@ int main(int argc, char **argv) {
         timeout_vote_journal j(path);
         assert(j.open(error));
         int calls = 0;
-        const auto r = j.replay([&](uint32_t round, uint32_t, const std::string &v, const sig_t &) {
+        const auto r = j.replay([&](uint32_t round, uint32_t, const std::string &v, const sig_t &,
+                                   const std::string &) {
             ++calls;
             return !(round == 200 && v == "viz1" && calls > 1);  // first wins, repeat rejected
         }, 0, error);
@@ -130,7 +166,8 @@ int main(int argc, char **argv) {
         // Reopening a compacted file replays cleanly -- no growth on every start.
         timeout_vote_journal again(path);
         assert(again.open(error));
-        const auto r2 = again.replay([](uint32_t, uint32_t, const std::string &, const sig_t &) { return true; }, 0, error);
+        const auto r2 = again.replay([](uint32_t, uint32_t, const std::string &, const sig_t &,
+                                        const std::string &) { return true; }, 0, error);
         assert(r2.accepted == 2);
         assert(count_lines(path) == 2);
     }
@@ -143,19 +180,22 @@ int main(int argc, char **argv) {
         append_raw(path, "301\t299\n");                                          // missing fields
         append_raw(path, "301\t299\tviz1\tdeadbeef\n");                          // short hex
         append_raw(path, "301\t299\tviz1\t" + std::string(65 * 2, 'z') + "\n");  // non-hex
-        append_raw(path, "301\t299\tbad\tname\t" + std::string(65 * 2, '0') + "\n");  // extra field
+        append_raw(path, "301\t299\tbad\tname\t" + std::string(65 * 2, '0') + "\n");  // bad name, bad sig
+        append_raw(path, "301\t299\tviz1\t" + std::string(65 * 2, '0') + "\t" +
+                         std::string(40, '0') + "\textra\n");                      // sixth field
         append_raw(path, "\n");
         const std::string truncated = "302\t301\tviz2\t" + std::string(130, '0');  // no trailing newline
         append_raw(path, truncated);
         timeout_vote_journal j(path);
         assert(j.open(error));
         int calls = 0;
-        const auto r = j.replay([&](uint32_t, uint32_t, const std::string &, const sig_t &) {
+        const auto r = j.replay([&](uint32_t, uint32_t, const std::string &, const sig_t &,
+                                     const std::string &) {
             ++calls;
             return true;
         }, 0, error);
         assert(r.accepted == 2);   // the valid line and the truncated-but-complete last line
-        assert(r.dropped == 5);
+        assert(r.dropped == 6);
         assert(calls == 2);
         assert(count_lines(path) == 2);
     }
@@ -169,7 +209,8 @@ int main(int argc, char **argv) {
         timeout_vote_journal j(path);
         assert(j.open(error));
         std::vector<uint32_t> rounds;
-        const auto r = j.replay([&](uint32_t round, uint32_t, const std::string &, const sig_t &) {
+        const auto r = j.replay([&](uint32_t round, uint32_t, const std::string &, const sig_t &,
+                                    const std::string &) {
             rounds.push_back(round);
             return true;
         }, 500, error);
@@ -206,7 +247,8 @@ int main(int argc, char **argv) {
         timeout_vote_journal j(path);
         assert(j.open(error));
         int calls = 0;
-        const auto r = j.replay([&](uint32_t, uint32_t, const std::string &, const sig_t &) {
+        const auto r = j.replay([&](uint32_t, uint32_t, const std::string &, const sig_t &,
+                                     const std::string &) {
             ++calls;
             return true;
         }, 0, error);
@@ -239,7 +281,8 @@ int main(int argc, char **argv) {
         j.flush();
         j.close();
         std::string ignored;
-        const auto r = j.replay([](uint32_t, uint32_t, const std::string &, const sig_t &) { return true; }, 0, ignored);
+        const auto r = j.replay([](uint32_t, uint32_t, const std::string &, const sig_t &,
+                                   const std::string &) { return true; }, 0, ignored);
         assert(r.lines == 0);
         assert(!ignored.empty());   // "not open" is said out loud, not silently green
     }
@@ -261,9 +304,17 @@ MUTATIONS = {
     'no-compaction-rewrite': (
         'if (!rewrite(keep, rewrite_error) && error.empty()) error = rewrite_error;',
         '(void)rewrite_error;'),
-    'signature-bytes-dropped': (
+    # Keep hi/lo in use: zeroing the whole byte makes them unused and the mutant would not
+    # compile, which reads as "case proven" without ever running it.
+    'signature-bytes-shifted': (
         'signature[i] = static_cast<unsigned char>(hi * 16 + lo);',
-        'signature[i] = 0;'),
+        'signature[i] = static_cast<unsigned char>(hi * 16 + lo + 1);'),
+    'block-id-unguarded-on-read': (
+        'if (!valid_hex(fields[4], HEX_BLOCK_ID_BYTES)) return false;',
+        'if (false) return false;'),
+    'block-id-unguarded-on-write': (
+        'if (!high_qc_block_id.empty() && !valid_hex(high_qc_block_id, HEX_BLOCK_ID_BYTES)) return;',
+        'if (false) return;'),
 }
 
 
