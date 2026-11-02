@@ -5,6 +5,7 @@
 #include <optional>
 #include <fc/crypto/elliptic.hpp>
 #include <map>
+#include <mutex>
 #include <vector>
 #include <iostream>
 #include <cstdlib>
@@ -21,6 +22,9 @@ struct fake_block { block_id_type block_id; fc::time_point_sec timestamp; block_
 struct database {
  validator_schedule_object schedule; std::map<account_name_type,validator_object> vals; chain_id_type chain;
  std::optional<fake_block> block; bool hf16=true,hf18=false; protocol::block_qc_certificate remembered;
+ struct block_qc {block_id_type block_id;uint32_t round=0;};
+ mutable std::mutex _block_votes_mutex; std::map<uint32_t,block_qc> _block_qcs;
+ std::map<uint32_t,block_id_type> branch_ids; std::map<block_id_type,signed_block> branch_blocks;
  static constexpr uint32_t skip_validator_signature=1;
  struct dynprops { account_name_type current_validator; };
  const validator_schedule_object& get_validator_schedule_object() const { return schedule; }
@@ -31,14 +35,16 @@ struct database {
  bool block_needs_parent_qc(const std::string&) const {return true;}
  dynprops get_dynamic_global_properties() const {return {};}
  fc::time_point_sec head_block_time() const {return fc::time_point_sec(200);}
- fc::optional<signed_block> fetch_block_by_id(const block_id_type&) const {return {};}
+ fc::optional<signed_block> fetch_block_by_id(const block_id_type& id) const {auto it=branch_blocks.find(id);if(it==branch_blocks.end())return {};return it->second;}
+ block_id_type find_block_id_for_num(uint32_t n) const {auto it=branch_ids.find(n);return it==branch_ids.end()?block_id_type():it->second;}
+ uint32_t highest_qc_on_main_branch(uint32_t) const;
  void validate_block_qc(const signed_block&,uint32_t) const;
  static uint32_t block_cert_round(const signed_block&);
  uint32_t verified_fork_cert_round(const signed_block&) const;
  std::optional<fake_block> fetch_block_by_number(uint32_t n) const {return block && protocol::block_header::num_from_id(block->id())==n ? block : std::nullopt;}
  uint32_t round_of(fc::time_point_sec t) const {return t.sec_since_epoch();}
  static uint32_t block_qc_quorum(uint32_t n) {return graphene::chain::emergency_quorum_for(n);}
- void remember_block_qc(const protocol::block_qc_certificate& c) {remembered=c;}
+ void remember_block_qc(const protocol::block_qc_certificate& c) {remembered=c;auto it=_block_qcs.find(c.block_num);if(it!=_block_qcs.end() && it->second.round>=c.round)return;_block_qcs[c.block_num]={c.block_id,c.round};}
  bool accept_block_qc_certificate(const protocol::block_qc_certificate&);
  bool verify_block_vote(uint32_t,const block_id_type&,uint32_t,const account_name_type&,const signature_type&) const;
  const validator_object* scheduled_timeout_voter(const account_name_type&) const;
@@ -64,7 +70,8 @@ int main(){
  REQUIRE(!db.verify_block_vote(123,id,201,alice,vote)); REQUIRE(!db.verify_block_vote(123,id,200,mallory,vote));
  REQUIRE(!db.verify_block_vote(123,id,200,inactive,vote));
  const auto fake=mallory_key.sign_compact(protocol::block_vote_digest(db.chain,123,id,200)); REQUIRE(!db.verify_block_vote(123,id,200,alice,fake));
- auto other_chain=db; other_chain.chain=fc::sha256::hash(std::string("network-b")); REQUIRE(!other_chain.verify_block_vote(123,id,200,alice,vote));
+ const auto original_chain=db.chain; db.chain=fc::sha256::hash(std::string("network-b"));
+ REQUIRE(!db.verify_block_vote(123,id,200,alice,vote)); db.chain=original_chain;
  const auto t1=alice_key.sign_compact(protocol::block_timeout_digest(db.chain,205,200));
  REQUIRE(db.verify_timeout_vote(205,200,alice,t1)); REQUIRE(!db.verify_timeout_vote(205,201,alice,t1));
  REQUIRE(!db.verify_timeout_vote(206,200,alice,t1)); REQUIRE(!db.verify_timeout_vote(200,200,alice,t1));
@@ -160,5 +167,29 @@ int main(){
  auto older_modern=child;older_modern.extensions.clear();older_modern.extensions.insert(block_header_extensions(qc));older_modern.extensions.insert(block_header_extensions(older_tc2));older_modern.sign(producer_key);
  REQUIRE(admitted(older_modern)==202); REQUIRE(check(older_modern));
  q.hf18=false; REQUIRE(!check(modern)); REQUIRE(admitted(modern)==0);
- std::cout << "PASS: real QC admission and block QC/TC validation with real signatures\n";
+ // Two actual signed headers and independently validated QCs on a simulated branch.
+ database f; f.chain=q.chain; f.schedule=q.schedule; f.vals=q.vals;
+ auto make_qc=[&](const signed_block& b){
+  protocol::block_qc_certificate cert;cert.block_num=b.block_num();cert.block_id=b.id();cert.round=f.round_of(b.timestamp);
+  for(int i=0;i<3;++i){const account_name_type name(std::string("val")+std::to_string(i));
+   auto key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key")+std::to_string(i)));
+   cert.signatures[name]=key.sign_compact(protocol::block_vote_digest(f.chain,cert.block_num,cert.block_id,cert.round));}
+  return cert;
+ };
+ signed_block parent;parent.previous=id;parent.previous._hash[0]=fc::endian_reverse_u32(122);parent.timestamp=fc::time_point_sec(200);parent.validator="val0";parent.sign(producer_key);
+ auto pcert=make_qc(parent);f.block=fake_block{parent.id(),parent.timestamp};REQUIRE(f.accept_block_qc_certificate(pcert));
+ f.branch_ids[123]=parent.id();f.branch_blocks[parent.id()]=parent;
+ REQUIRE(f.highest_qc_on_main_branch(124)==0); // one QC alone is insufficient
+ auto attach_child=[&](bool carry,uint32_t round){
+  signed_block b;b.previous=parent.id();b.timestamp=fc::time_point_sec(round);b.validator="val0";
+  if(carry)b.extensions.insert(block_header_extensions(pcert));b.sign(producer_key);
+  auto ccert=make_qc(b);f._block_qcs.erase(124);f.block=fake_block{b.id(),b.timestamp};REQUIRE(f.accept_block_qc_certificate(ccert));
+  f.branch_ids[124]=b.id();f.branch_blocks[b.id()]=b;
+ };
+ attach_child(true,201);REQUIRE(f.highest_qc_on_main_branch(124)==123);
+ REQUIRE(f.highest_qc_on_main_branch(123)==0);
+ f.branch_ids[123]=other;REQUIRE(f.highest_qc_on_main_branch(124)==0);f.branch_ids[123]=parent.id();
+ attach_child(false,201);REQUIRE(f.highest_qc_on_main_branch(124)==0);
+ attach_child(true,202);REQUIRE(f.highest_qc_on_main_branch(124)==0);
+ std::cout << "PASS: real QC/TC signature and admission rules and verified two-QC finality on a simulated branch\n";
 }
