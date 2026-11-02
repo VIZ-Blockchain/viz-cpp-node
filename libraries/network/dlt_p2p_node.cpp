@@ -521,12 +521,14 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         wlog(DLT_LOG_DGRAY "Incoming peer ${ep} disconnected: ${reason} (removed, no reconnect)" DLT_LOG_RESET,
              ("ep", state.endpoint)("reason", reason));
         _peer_states.erase(it);
+        refresh_peer_lib_cache();  // a removed peer's LIB must stop counting
         return;
     }
 
     state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
     state.disconnected_since = fc::time_point::now();
     state.expected_next_block = 0;
+    refresh_peer_lib_cache();      // a disconnected peer's LIB must stop counting
 
     // Double backoff, cap at max (skip for non-DLT peers sending garbage)
     if (!skip_backoff_increase) {
@@ -1250,6 +1252,7 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     }
 
     record_packet_result(peer, true);
+    refresh_peer_lib_cache();  // hello carries the peer's first LIB claim
 
     // If we're in SYNC mode and exchange is enabled, start fetching blocks.
     if (_node_status == DLT_NODE_STATUS_SYNC && reply.exchange_enabled) {
@@ -1986,6 +1989,7 @@ void dlt_p2p_node::on_dlt_fork_status(peer_id peer, const dlt_fork_status_messag
     state.peer_dlt_earliest = msg.dlt_earliest_block;
     state.peer_dlt_latest = msg.dlt_latest_block;
     state.peer_node_status = msg.node_status;
+    refresh_peer_lib_cache();  // the peer just moved its claim; the master gate reads this
 
     // When a peer transitions from SYNC to FORWARD (or is already FORWARD)
     // and we haven't enabled exchange with it yet, re-evaluate. The peer
@@ -2913,6 +2917,30 @@ bool dlt_p2p_node::is_on_majority_fork() const {
     return _fork_status != DLT_FORK_STATUS_MINORITY;
 }
 
+// Recompute the peer-LIB corroboration cache. P2P thread only: it walks _peer_states.
+//
+// Only peers that can actually take part in consensus count: a CONNECTING or
+// DISCONNECTED entry still carries the last claim it made, and letting a departed
+// peer's LIB hold the emergency master back would turn a dropped connection into a
+// self-inflicted stall. LIB (not head) is the measure on purpose: a head can be a
+// single node's invention, a LIB cannot be re-derived without two thirds of the
+// validators, and that is exactly the "somebody else's chain is real" signal.
+void dlt_p2p_node::refresh_peer_lib_cache() {
+    const uint32_t our_lib = _delegate ? _delegate->get_lib_block_num() : 0;
+    uint32_t above = 0;
+    uint32_t best = 0;
+    for (const auto& entry : _peer_states) {
+        const auto& state = entry.second;
+        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
+        if (state.peer_lib_num == 0) continue;  // peer advertised nothing yet
+        if (state.peer_lib_num > best) best = state.peer_lib_num;
+        if (state.peer_lib_num > our_lib) above++;
+    }
+    _cached_our_lib.store(our_lib, std::memory_order_release);
+    _best_peer_lib.store(best, std::memory_order_release);
+    _peers_above_our_lib.store(above, std::memory_order_release);
+}
+
 // ── Node status transitions ──────────────────────────────────────────
 
 void dlt_p2p_node::transition_to_forward() {
@@ -3488,6 +3516,11 @@ void dlt_p2p_node::on_block_applied(const signed_block& block, bool caused_fork_
 
     // DLT block log pruning check
     periodic_dlt_prune_check();
+
+    // Our LIB may have moved with this block: a peer that was "above our LIB" a
+    // slot ago may no longer be, and a stale count would keep the emergency
+    // master from producing for no reason.
+    refresh_peer_lib_cache();
 
     // Advance stale expected_next_block for all peers.
     // When a block is applied (from any source: own production, network
