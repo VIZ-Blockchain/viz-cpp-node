@@ -2824,6 +2824,10 @@ namespace graphene {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;
                     }
+                    // The skipped block may itself have activated HF18. A certificate
+                    // selected on its state cannot be carried on the pre-fork parent.
+                    if (skip_tc_v2 && db.with_weak_read_lock([&]() { return !db.has_hardfork(CHAIN_HARDFORK_18); }))
+                        return block_validation_condition::not_time_yet;
                     // Our block now sits on the anchor: it needs no parent QC and may
                     // carry no TC ("A TC goes only next to a parent QC").
                     if (rebuild_on_anchor) { skip_tc.reset(); skip_tc_v2.reset(); }

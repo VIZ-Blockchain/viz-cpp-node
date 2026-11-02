@@ -1085,6 +1085,8 @@ inline u256 to256(const fc::uint128_t &t) {
                         std::lock_guard<std::mutex> guard(_block_votes_mutex);
                         _timeout_votes.clear();
                         _timeout_certs.clear();
+                        _timeout_certs_v2.clear();
+                        _timeout_qc_claims.clear();
                     }
                     break;
                 case CHAIN_HARDFORK_16:

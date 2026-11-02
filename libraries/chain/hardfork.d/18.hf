@@ -12,12 +12,10 @@
 // block at THIS round", and the TC is only valid next to the parent QC of exactly that block:
 //
 //   * block_timeout_digest_v2(chain_id, round, high_qc_round, high_qc_block_id) is signed;
-//   * block_timeout_vote carries high_qc_block_id (FC_REFLECT, appended);
-//   * push_timeout_vote assembles a TC from the LARGEST set of votes that name the same
-//     (round, block id) pair, never from a mix — a voter that is behind simply cannot join;
-//   * validate_block_qc requires every TC vote to name exactly (cert->round, cert->block_id),
-//     where cert is the parent QC the block carries. A quorum of a TC therefore proves a
-//     quorum saw the same certified parent, which is what Jolteon's skip rule claims.
+//   * block_timeout_vote_v2 carries high_qc_block_id; the v1 type remains unchanged;
+//   * a TC includes votes below the parent QC round, and at that round only votes naming
+//     the parent QC block. A validator that is behind can therefore still join;
+//   * validate_block_qc enforces these same compatibility rules for every TC vote.
 //   * the local vote journal gains a fifth field (the block id) and still reads pre-fork
 //     four-field lines: they are verified with the v1 digest and can never join a post-fork TC.
 //
@@ -25,6 +23,8 @@
 // verify votes from 4.4.x nodes and vice versa. Activation needs the production 17/21
 // version-vote quorum, exactly like HF16; before that the old digest is used, so an upgraded
 // node on a pre-HF18 chain behaves like a 4.3.x node.
+// Upgrade every node, not only validators, before 2026-11-16 00:00 UTC: older nodes cannot
+// parse the new block extension.
 //
 // No state migration and no schema change: timeout votes live in node-local memory and the
 // journal (a cache), never in chainbase. CHAIN_SCHEMA_VERSION stays 16, so an upgrade does

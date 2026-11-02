@@ -727,6 +727,21 @@ BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
                             "a TC whose votes name the parent block was not offered next to that parent QC");
         BOOST_CHECK_MESSAGE(!db.get_timeout_cert_between_v2(parent_round, agree_round + 1, parent_round, block_b).valid(),
                             "a TC was offered next to a parent QC of a DIFFERENT block");
+
+        if (count >= 2 && quorum == 2 && parent_round > 1) {
+            // The cached minimum cut cannot form: each lower-round group has one vote.
+            // Both votes are nonetheless compatible with a later parent QC, regardless of
+            // which blocks they named at that earlier round.
+            const uint32_t split_round = agree_round + 1;
+            BOOST_REQUIRE(db.push_timeout_vote_v2(split_round, parent_round - 1, block_a, voter_a,
+                    sig_v2(voter_a, split_round, parent_round - 1, block_a)));
+            BOOST_REQUIRE(db.push_timeout_vote_v2(split_round, parent_round - 1, block_b, voter_b,
+                    sig_v2(voter_b, split_round, parent_round - 1, block_b)));
+            BOOST_CHECK(!db.get_timeout_cert_v2(split_round).valid());
+            const auto tc = db.get_timeout_cert_between_v2(agree_round, split_round + 1, parent_round, block_a);
+            BOOST_REQUIRE(tc.valid());
+            BOOST_CHECK_EQUAL(tc->votes.size(), 2u);
+        }
     } catch (const fc::exception &e) {
         BOOST_ERROR("chain raised: " << e.to_detail_string());
     }

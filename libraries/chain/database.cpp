@@ -3143,8 +3143,16 @@ namespace graphene { namespace chain {
                      ("fh", fork_head ? fork_head->num : 0)
                      ("prev", (fork_head && fork_head->prev.lock()) ? fork_head->prev.lock()->num : 0));
 
+                const bool was_hf18 = has_hardfork(CHAIN_HARDFORK_18);
                 _fork_db.pop_block();
                 undo();
+                if (was_hf18 && !has_hardfork(CHAIN_HARDFORK_18)) {
+                    std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                    _timeout_votes.clear();
+                    _timeout_certs.clear();
+                    _timeout_certs_v2.clear();
+                    _timeout_qc_claims.clear();
+                }
 
                 _popped_tx.insert(_popped_tx.begin(), head_block->transactions.begin(), head_block->transactions.end());
 
@@ -7801,22 +7809,28 @@ namespace graphene { namespace chain {
                 const block_id_type &max_high_qc_block_id) const {
             if (lo_exclusive + 1 >= hi_exclusive) return {};
             std::lock_guard<std::mutex> guard(_block_votes_mutex);
-            // Newest round first, same reasoning as the v1 search. A certificate is usable
-            // against the parent QC (round, id) when every vote is below the parent's round
-            // or, at that round, names the parent's block; assembly already builds each
-            // certificate that way, so the check is a re-read, not a new rule.
-            auto it = _timeout_certs_v2.lower_bound(hi_exclusive);
-            while (it != _timeout_certs_v2.begin()) {
+            // Build for the requested parent, not the single cached winning block. Several
+            // parent IDs can each have a quorum and the first cached one may be a decoy.
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            auto it = _timeout_votes.lower_bound(hi_exclusive);
+            while (it != _timeout_votes.begin()) {
                 --it;
                 if (it->first <= lo_exclusive) break;
-                bool usable = true;
-                for (const auto &tv : it->second.votes) {
-                    const auto &vote = tv.second;
-                    if (vote.high_qc_round > max_high_qc_round ||
-                        (vote.high_qc_round == max_high_qc_round &&
-                         vote.high_qc_block_id != max_high_qc_block_id)) { usable = false; break; }
+                protocol::block_timeout_certificate_v2 tc;
+                tc.round = it->first;
+                for (const auto &tv : it->second) {
+                    const auto &entry = tv.second;
+                    if (entry.high_qc_round > max_high_qc_round ||
+                        (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id)) continue;
+                    if (!verify_timeout_vote_v2(it->first, entry.high_qc_round, entry.high_qc_block_id, tv.first, entry.signature)) continue;
+                    protocol::block_timeout_vote_v2 vote;
+                    vote.high_qc_round = entry.high_qc_round;
+                    vote.high_qc_block_id = entry.high_qc_block_id;
+                    vote.signature = entry.signature;
+                    tc.votes.emplace(tv.first, vote);
                 }
-                if (usable) return it->second;
+                if (tc.votes.size() >= quorum) return tc;
             }
             return {};
         }
