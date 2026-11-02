@@ -8001,6 +8001,8 @@ namespace graphene { namespace chain {
                     FC_ASSERT(distance == 1 || distance == 2, "Fork QC is too far behind");
                     FC_ASSERT(distance != 1 || qc.block_id == b.previous,
                               "Fork parent QC certifies a different block");
+                    FC_ASSERT(distance != 2 || round_of(b.timestamp) - qc.round == 2,
+                              "Fork late QC is not two consecutive rounds behind");
                     for (const auto &v : qc.signatures)
                         FC_ASSERT(verify_block_vote(qc.block_num, qc.block_id, qc.round, v.first, v.second),
                                   "Invalid fork QC vote");

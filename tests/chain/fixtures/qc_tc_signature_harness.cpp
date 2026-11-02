@@ -25,6 +25,7 @@ struct database {
  struct block_qc {block_id_type block_id;uint32_t round=0;};
  mutable std::mutex _block_votes_mutex; std::map<uint32_t,block_qc> _block_qcs;
  std::map<uint32_t,block_id_type> branch_ids; std::map<block_id_type,signed_block> branch_blocks;
+ fc::time_point_sec mock_head_time=fc::time_point_sec(200);
  static constexpr uint32_t skip_validator_signature=1;
  struct dynprops { account_name_type current_validator; };
  const validator_schedule_object& get_validator_schedule_object() const { return schedule; }
@@ -34,7 +35,7 @@ struct database {
  bool emergency_unstick_block(fc::time_point_sec) const {return false;}
  bool block_needs_parent_qc(const std::string&) const {return true;}
  dynprops get_dynamic_global_properties() const {return {};}
- fc::time_point_sec head_block_time() const {return fc::time_point_sec(200);}
+ fc::time_point_sec head_block_time() const {return mock_head_time;}
  fc::optional<signed_block> fetch_block_by_id(const block_id_type& id) const {auto it=branch_blocks.find(id);if(it==branch_blocks.end())return {};return it->second;}
  block_id_type find_block_id_for_num(uint32_t n) const {auto it=branch_ids.find(n);return it==branch_ids.end()?block_id_type():it->second;}
  uint32_t highest_qc_on_main_branch(uint32_t) const;
@@ -190,8 +191,8 @@ int main(){
  auto alien_child=child;alien_child.extensions.clear();alien_child.extensions.insert(block_header_extensions(alien_qc));
  alien_child.extensions.insert(block_header_extensions(tc));alien_child.sign(producer_key);
  REQUIRE(admitted(alien_child)==0); REQUIRE(!check(alien_child));
- auto older_qc=[&](uint32_t height){
-  auto c=qc;c.block_num=height;c.block_id._hash[0]=fc::endian_reverse_u32(height);c.round=199;
+ auto older_qc=[&](uint32_t height,uint32_t round=199){
+  auto c=qc;c.block_num=height;c.block_id._hash[0]=fc::endian_reverse_u32(height);c.round=round;
   for(int i=0;i<4;++i){const account_name_type name(std::string("val")+std::to_string(i));
    auto key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key")+std::to_string(i)));
    c.signatures[name]=key.sign_compact(protocol::block_vote_digest(q.chain,height,c.block_id,c.round));}
@@ -199,16 +200,26 @@ int main(){
  };
  auto distant=child;distant.extensions.clear();distant.extensions.insert(block_header_extensions(older_qc(121)));distant.sign(producer_key);
  REQUIRE(admitted(distant)==0);REQUIRE(!check(distant));
- auto late_tc_valid=tc;
+ auto late_tc_valid=tc;late_tc_valid.round=203;
  for(int i=0;i<3;++i){const account_name_type name(std::string("val")+std::to_string(i));
   auto key=fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("key")+std::to_string(i)));
-  late_tc_valid.votes[name].high_qc_round=199;
-  late_tc_valid.votes[name].signature=key.sign_compact(protocol::block_timeout_digest(q.chain,202,199));}
- auto late_with_tc=child;late_with_tc.extensions.clear();late_with_tc.extensions.insert(block_header_extensions(older_qc(122)));
+  late_tc_valid.votes[name].high_qc_round=202;
+  late_tc_valid.votes[name].signature=key.sign_compact(protocol::block_timeout_digest(q.chain,203,202));}
+ auto late_with_tc=child;late_with_tc.extensions.clear();late_with_tc.extensions.insert(block_header_extensions(older_qc(122,202)));
  late_with_tc.extensions.insert(block_header_extensions(late_tc_valid));late_with_tc.sign(producer_key);
  REQUIRE(admitted(late_with_tc)==0);REQUIRE(!check(late_with_tc));
- auto late_without_tc=child;late_without_tc.extensions.clear();late_without_tc.extensions.insert(block_header_extensions(older_qc(122)));
- late_without_tc.sign(producer_key);REQUIRE(admitted(late_without_tc)==199);
+ auto late_bad_round=child;late_bad_round.extensions.clear();late_bad_round.extensions.insert(block_header_extensions(older_qc(122)));
+ late_bad_round.sign(producer_key);REQUIRE(admitted(late_bad_round)==0);REQUIRE(!check(late_bad_round));
+ auto late_without_tc=child;late_without_tc.extensions.clear();late_without_tc.extensions.insert(block_header_extensions(older_qc(122,202)));
+ late_without_tc.sign(producer_key);REQUIRE(admitted(late_without_tc)==202);
+ // A matching parent in the simulated branch completes the late-QC proof.
+ auto grandparent_qc=older_qc(122,202);
+ signed_block real_parent;real_parent.previous=grandparent_qc.block_id;real_parent.timestamp=fc::time_point_sec(203);
+ real_parent.validator="val0";real_parent.extensions.insert(block_header_extensions(grandparent_qc));real_parent.sign(producer_key);
+ auto valid_late=late_without_tc;valid_late.previous=real_parent.id();valid_late.sign(producer_key);
+ q.mock_head_time=fc::time_point_sec(203);q.branch_blocks[real_parent.id()]=real_parent;
+ REQUIRE(admitted(valid_late)==202);REQUIRE(check(valid_late));
+ q.mock_head_time=fc::time_point_sec(200);q.branch_blocks.clear();
  auto bad_producer=child;bad_producer.sign(mallory_key);REQUIRE(admitted(bad_producer)==0);
  auto no_quorum=fewer;no_quorum.sign(producer_key); REQUIRE(admitted(no_quorum)==0);
  auto bad_votes=corrupt;bad_votes.sign(producer_key); REQUIRE(admitted(bad_votes)==0);
