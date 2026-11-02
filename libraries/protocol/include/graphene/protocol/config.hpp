@@ -231,7 +231,12 @@
 ///   14 — HF14: prediction-market chainbase objects (pm_oracle, pm_market, pm_outcome,
 ///               pm_bet, pm_liquidity, pm_commit, pm_dispute, pm_dispute_vote, pm_lazy_*)
 ///   15 — HF15: persistent agent_permission and key_history chainbase indexes.
-#define CHAIN_SCHEMA_VERSION                  uint32_t(15)
+///   16 — HF17: emergency_schedule_size_on_entry added to dynamic_global_property_object.
+///               (HF16 added round_anchor_time/round_anchor_round to the same object without
+///               bumping this value; those nodes are only safe because they were re-created
+///               from a snapshot. Docblock of the chain plugin requires the bump on any
+///               layout change, so from here on it is kept exact.)
+#define CHAIN_SCHEMA_VERSION                  uint32_t(16)
 
 // HF14 prediction-market byte-length caps for variable-length on-chain strings.
 // These are CONSENSUS-MECHANICAL, not anti-spam (spec §7.12): without a hard cap two

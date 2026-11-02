@@ -180,3 +180,4 @@ See also: [Fair-DPOS](./fair-dpos.md), [Emergency Consensus](./emergency-consens
 | 14 | 4.0.0 | Prediction markets and governance |
 | 15 | 4.1.0 | PM audit fixes, agent access and permanent key history |
 | 16 | 4.2.0 | QC/TC, 1-second slot, DAO ceiling and no-contest fee freeze; [activation details](./hf16.md) |
+| 17 | 4.3.0 | Emergency exit: threshold = quorum of the schedule size measured on entry (floored at half the maximum), decided before the hybrid override |

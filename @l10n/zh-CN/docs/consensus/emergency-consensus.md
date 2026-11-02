@@ -12,7 +12,7 @@
 | `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` | `"committee"` | 紧急区块生产者账户 |
 | `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` | `VIZ75CR...` | 确定性紧急签名密钥 |
 | `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | 退出所需的连续真实验证者区块数 |
-| `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% | 退出所需的计划槽位比例 |
+| `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% | 以进入时的计划规模为基数构成退出法定人数（HF17：抬升到下限，不会更低） |
 | `CHAIN_MAX_VALIDATORS` | 21 | 最大验证者槽位数 |
 
 ### `dynamic_global_property_object` 中的状态字段
@@ -21,6 +21,7 @@
 |------|-------|------|
 | `emergency_consensus_active` | `false` | 紧急模式已激活 |
 | `emergency_consensus_start_block` | `0` | 激活时的区块号 |
+| `emergency_schedule_size_on_entry` | `0` | HF17：本次紧急事件开始时的计划槽位数；`0` = 未测量（事件早于 HF17、快照无此字段、启动修复） |
 
 ---
 
@@ -102,20 +103,37 @@ Committee 被排除在硬分叉版本统计和中位链属性计算之外（它�
 
 ## 停用
 
-每次计划重建检查退出条件：
+每次计划重建检查退出条件。
+
+**HF17 之前**，检查在混合覆盖*之后*执行，并与常量比较：
 
 ```
 real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 ```
 
-21 个验证者时：`21 × 0.75 = 15.75 → 15` 个真实验证者槽位需要。
+21 个槽位时：`21 × 0.75 = 15.75 → 15` 个真实验证者槽位——无论事件开始时计划多大，因此以 14 个持钥验证者进入紧急状态的链永远无法退出。
+
+**从 HF17 起**，检查在混合覆盖*之前*执行，基于正常计划，阈值由进入时测量的规模推导：
+
+```
+阈值 = max(quorum(emergency_schedule_size_on_entry), CHAIN_MAX_VALIDATORS / 2)
+quorum(n) = max(n × 2/3 + 1, n × CHAIN_IRREVERSIBLE_THRESHOLD)
+```
+
+在主网上：进入时 21 个槽位 → 15（不变），14 → 10，9 → 10（下限）。`0`（未测量）回退到完整计划的法定人数——即旧行为。
+
+由于退出在覆盖之前决定，退出区块已经携带正常计划：`R` 个槽位、`quorum(R)` 个签名。按旧顺序，覆盖会先把计划补齐到 21 个槽位，在下次重建前（最多 20 个区块）链要求 15 个签名，而真实签名者最多 `R` 个——被认证区块的生产者不签自己的区块，committee 账户只是补偿这一点，因此在 `R = 15` 时没有任何余量。
 
 当满足条件时：
 1. `dgp.emergency_consensus_active = false`。
 2. `_fork_db.set_emergency_mode(false)`。
-3. 日志：`"EMERGENCY CONSENSUS MODE deactivated at block #N. R real validators active."`。
+3. 日志：`"EMERGENCY CONSENSUS MODE deactivated at block #N (HF17 rule). R real validators active, N scheduled on entry (threshold: T)."`（HF17 之前：`"...deactivated at block #N. R real validators active."`）。
 
 网络在下一个计划周期恢复正常运行。
+
+### 下限的代价
+
+如果进入时的计划本身很小，下限可能高于本次事件中会持有密钥的验证者总数——集合不变的紧急事件将永远无法结束。这是有意为之：替代方案是带着不足最大计划一半的验证者退出紧急状态，而这正是一小撮验证者接管链的方式。早于 HF17 开始的事件按旧规则处理（`0` = 未测量），不适用下限。
 
 ---
 
@@ -138,7 +156,7 @@ real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 - 真实验证者在激活时被禁用（签名密钥设为 null）。
 - 验证者守护自动广播 `validator_update_operation`，一旦在链上检测到 null 密钥就恢复每个验证者的签名密钥。
 - 验证者守护中的 `enable-stale-production` 防护**不阻止**紧急模式下的密钥恢复（"紧急共识处理自己的恢复，密钥恢复可能仍然需要"）。
-- 一旦 15 个验证者恢复密钥，退出条件触发。
+- 一旦恢复密钥的验证者达到退出阈值（21 槽位事件为 15；见[停用](#停用)），退出条件触发。
 
 参见[验证者守护](../node/validator-guard.md)。
 
@@ -179,6 +197,7 @@ real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 
 - 快照中缺少 `emergency_consensus_active` → 默认为 `false`。
 - 缺少 `emergency_consensus_start_block` → 默认为 `0`。
+- 缺少 `emergency_schedule_size_on_entry`（HF17 之前的快照）→ 默认为 `0` = 未测量，阈值按旧规则计算。
 
 在活跃紧急期间创建的快照正确保留状态；在 HF12 之前创建的快照作为非紧急导入。
 
@@ -189,7 +208,7 @@ real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 | # | 位置 | 防护 |
 |---|------|------|
 | 1 | `update_global_dynamic_data` | 仅在 HF12 + 未激活 + LIB 区块可用时激活 |
-| 2 | `update_witness_schedule` | 混合覆盖 + 真实验证者 ≥75% 时的退出检查 |
+| 2 | `update_witness_schedule` | HF17：退出检查（以进入时的规模为法定人数，并取下限）在混合覆盖*之前*执行；HF17 之前覆盖先执行，检查使用常量 75% |
 | 3 | `update_last_irreversible_block` | 紧急期间将 LIB 上限设为 HEAD − 1 |
 | 4 | `verify_signing_witness` | 放宽槽位到验证者的映射 |
 | 5 | `fork_db._push_block` | 确定性哈希平局决胜 |
