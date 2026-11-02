@@ -145,6 +145,21 @@ namespace graphene {
             uint32_t emergency_consensus_start_block = 0;
 
             /**
+             * HF17: number of scheduled slots in force when this emergency episode began.
+             *
+             * It cannot be re-derived at exit time: while emergency is active every validator
+             * that stops signing loses its key, so "the validator exists but has not come back"
+             * and "the validator is gone" look identical. The exit threshold is the quorum of
+             * this number (floored at half the maximum schedule) instead of a constant derived
+             * from CHAIN_MAX_VALIDATORS.
+             *
+             * 0 = NOT MEASURED — an episode that started before HF17, or the startup schedule
+             * repair path. The threshold reads it as "the schedule was full", i.e. the legacy
+             * quorum, so such an episode ends exactly as it would have without this fork.
+             */
+            uint32_t emergency_schedule_size_on_entry = 0;
+
+            /**
              * One-time flag: the PM per-account frozen-funds counters
              * (account.pm_liquidity_committed / pm_bets_staked / pm_leverage_collateral)
              * have been seeded from existing objects. Set on the first block processed
@@ -261,5 +276,9 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (pm_batch_settle_bet_cursor)
                 (round_anchor_time)
                 (round_anchor_round)
+                // HF17. Appended, not inserted next to the other emergency fields above: the
+                // reflection order is the serialized order, and every earlier field must keep
+                // its position for readers of snapshots and RPC payloads built before this fork.
+                (emergency_schedule_size_on_entry)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

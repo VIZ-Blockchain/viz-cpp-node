@@ -107,8 +107,8 @@ inline u256 to256(const fc::uint128_t &t) {
             // HF15 (PM audit fixes) is registered in BOTH configs — production included, because the
             // shelter testnet runs the production config and a testnet-only fork could never
             // activate there. The gate is the activation time (15.hf) plus the validator quorum,
-            // not the build flavour; CHAIN_NUM_HARDFORKS is 16 everywhere so the arrays are sized
-            // [CHAIN_NUM_HARDFORKS + 1] = [17] and these indices are in bounds.
+            // not the build flavour; CHAIN_NUM_HARDFORKS (17) is the same everywhere so the arrays
+            // are sized [CHAIN_NUM_HARDFORKS + 1] and these indices are in bounds.
             _hardfork_times[CHAIN_HARDFORK_15] = fc::time_point_sec(CHAIN_HARDFORK_15_TIME);
             _hardfork_versions[CHAIN_HARDFORK_15] = CHAIN_HARDFORK_15_VERSION;
 
@@ -116,6 +116,13 @@ inline u256 to256(const fc::uint128_t &t) {
             // configs, gated by the time in 16.hf plus validator quorum.
             _hardfork_times[CHAIN_HARDFORK_16] = fc::time_point_sec(CHAIN_HARDFORK_16_TIME);
             _hardfork_versions[CHAIN_HARDFORK_16] = CHAIN_HARDFORK_16_VERSION;
+
+            // HF17 (how emergency consensus ends) — same rule: unconditional in both configs,
+            // gated by the time in 17.hf plus validator quorum. No migration runs at activation;
+            // the new DGP field defaults to 0 = "not measured", which the threshold reads as the
+            // legacy full-schedule quorum.
+            _hardfork_times[CHAIN_HARDFORK_17] = fc::time_point_sec(CHAIN_HARDFORK_17_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_17] = CHAIN_HARDFORK_17_VERSION;
 
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(

@@ -582,6 +582,14 @@ namespace graphene { namespace chain {
                                 modify(startup_dgp, [&](dynamic_global_property_object &_dgp) {
                                     _dgp.emergency_consensus_active = true;
                                     _dgp.emergency_consensus_start_block = head_block_num();
+                                    // The schedule here is BROKEN (that is why we are in this
+                                    // branch), so there is no size to measure on entry: reset to
+                                    // "not measured" so the exit threshold falls back to the
+                                    // legacy full-schedule quorum. A stale value from an earlier
+                                    // episode would otherwise decide this episode's exit, and the
+                                    // repair is about keeping the chain alive, not about changing
+                                    // when it leaves emergency.
+                                    _dgp.emergency_schedule_size_on_entry = 0;
                                 });
                                 _fork_db.set_emergency_mode(true);
                                 wlog("EMERGENCY SCHEDULE RECOVERY: re-activated emergency consensus mode");
@@ -3829,7 +3837,51 @@ namespace graphene { namespace chain {
             // during emergency). The hybrid override fills empty slots with committee.
             const dynamic_global_property_object &emergency_dgp = get_dynamic_global_properties();
 
-            if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
+            // === HARDFORK 17: DECIDE THE EXIT BEFORE THE HYBRID OVERRIDE ===
+            //
+            // Two things change here, and they only make sense together:
+            //  * the threshold is the quorum of the schedule size measured on entry into this
+            //    episode (floored at half the maximum schedule), not the constant
+            //    75% of CHAIN_MAX_VALIDATORS — see emergency_exit_threshold_effective();
+            //  * the check runs on the NORMAL schedule built a few lines above, so an exiting
+            //    block never runs the hybrid override. Previously the override padded the
+            //    schedule to 21 slots and only then did the old check fire, which left up to 20
+            //    blocks (until the next 21-block rebuild) demanding quorum(21) = 15 signatures
+            //    from at most R real signers.
+            //
+            // The count is of slots whose name is not empty: the normal build only schedules
+            // validators that hold a signing key (and never the committee account), so a
+            // non-empty slot at this point is a real validator that can sign right now.
+            bool exited_emergency = false;
+            if (has_hardfork(CHAIN_HARDFORK_12) && has_hardfork(CHAIN_HARDFORK_17) &&
+                emergency_dgp.emergency_consensus_active) {
+                const validator_schedule_object &normal_wso = get_validator_schedule_object();
+                uint32_t real_validator_slots = 0;
+                for (uint32_t i = 0; i < normal_wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                    if (normal_wso.current_shuffled_validators[i] != account_name_type())
+                        ++real_validator_slots;
+                }
+
+                const uint32_t exit_threshold =
+                    emergency_exit_threshold_effective(emergency_dgp.emergency_schedule_size_on_entry);
+
+                if (real_validator_slots >= exit_threshold) {
+                    modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
+                        _dgp.emergency_consensus_active = false;
+                    });
+                    _fork_db.set_emergency_mode(false);
+                    ilog("EMERGENCY CONSENSUS MODE deactivated at block ${b} (HF17 rule). "
+                         "${r} real validators active, ${n} scheduled on entry (threshold: ${t}).",
+                         ("b", head_block_num())
+                         ("r", real_validator_slots)
+                         ("n", emergency_dgp.emergency_schedule_size_on_entry)
+                         ("t", exit_threshold));
+                    exited_emergency = true;
+                }
+            }
+
+            if (has_hardfork(CHAIN_HARDFORK_12) && !exited_emergency &&
+                get_dynamic_global_properties().emergency_consensus_active) {
                 if (_debug_block_production) ilog("DEBUG_CRASH: hybrid override ENTER");
                 const validator_schedule_object &emergency_wso = get_validator_schedule_object();
                 uint32_t real_validator_slots = 0;
@@ -3932,9 +3984,14 @@ namespace graphene { namespace chain {
                 //     though normal consensus afterwards would only need emergency_quorum_for(n)
                 //     of them (10 for 14 validators).
                 // Changing the number changes the moment the chain leaves emergency and therefore
-                // needs a hardfork gate; this comment only states what the code does today.
+                // needs a hardfork gate; this comment only states what the code does today. From
+                // HF17 on, exits are decided earlier in this function (before the override) and
+                // this path is switched off entirely: on the production config its threshold (15)
+                // can never be below the HF17 one, but the testnet build (CHAIN_MAX_VALIDATORS=1)
+                // computes 0 here and would end emergency with zero real validators — leaving a
+                // committee-only padded schedule behind a rule that then demands a parent QC.
                 uint32_t exit_threshold = (CHAIN_MAX_VALIDATORS * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
-                if (real_validator_slots >= exit_threshold) {
+                if (!has_hardfork(CHAIN_HARDFORK_17) && real_validator_slots >= exit_threshold) {
                     modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
                         _dgp.emergency_consensus_active = false;
                     });
@@ -6713,9 +6770,24 @@ namespace graphene { namespace chain {
                     {
                         if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
                             // Enter emergency consensus mode
+                            //
+                            // HF17: remember the schedule that is in force NOW. After this block the
+                            // hybrid override pads it to CHAIN_MAX_VALIDATORS with committee slots
+                            // and blanked keys make "who was here" unanswerable, so the exit
+                            // threshold has to be derived from this measurement, not from a later
+                            // count. The schedule read here is the NORMAL one (emergency is only
+                            // being switched on): update_validator_schedule() ran earlier in this
+                            // block and, if it rebuilt, did so before this code. Both the fork test
+                            // and the schedule read are taken outside modify().
+                            const bool record_entry_size = has_hardfork(CHAIN_HARDFORK_17);
+                            const uint32_t schedule_size_on_entry = record_entry_size
+                                ? uint32_t(get_validator_schedule_object().num_scheduled_validators / CHAIN_BLOCK_VALIDATOR_REPEAT)
+                                : 0;
                             modify(_dgp, [&](dynamic_global_property_object &dgp) {
                                 dgp.emergency_consensus_active = true;
                                 dgp.emergency_consensus_start_block = b.block_num();
+                                if (record_entry_size)
+                                    dgp.emergency_schedule_size_on_entry = schedule_size_on_entry;
                             });
 
                             // Change 5: Ensure emergency validator object exists with correct key

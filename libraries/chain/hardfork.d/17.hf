@@ -1,0 +1,46 @@
+// HF17 / VIZ 4.3.0: how emergency consensus ENDS, and what schedule it ends on.
+//
+// Two changes, one fork, because they are the same moment in the chain's life:
+//  1. The exit threshold stops being a constant (75% of CHAIN_MAX_VALIDATORS = 15) and becomes
+//     the quorum of the schedule size MEASURED ON ENTRY into emergency, recorded in
+//     dynamic_global_property_object::emergency_schedule_size_on_entry, floored at half the
+//     maximum schedule (10 of 21). A chain that entered with 14 keyed validators can now leave
+//     once 10 return, instead of never: the old constant asked for 15 of a schedule that could
+//     not hold them, while the network's own quorum for 14 is 10.
+//  2. The exit check runs BEFORE the hybrid schedule override. Until now the override padded the
+//     schedule to 21 slots (committee filling the blanks) and only then did the exit fire, so for
+//     up to 20 more blocks — until the next 21-block schedule rebuild — the chain demanded
+//     quorum(21) = 15 signatures from at most R real signers (the producer of a certified block
+//     does not sign it, and the committee account compensates that rather than adding slack).
+//     With the check moved, the block after exit already uses the normal schedule the same block
+//     built: R real validators, quorum(R).
+//
+// Decision: owner question #3396, option A. The threshold switch itself is
+// emergency_exit_threshold_effective() in graphene/chain/emergency_exit.hpp — option B is that
+// function's floor returning 0, option C keeps the legacy constant and does not call it.
+//
+// Activation: CHAIN_HARDFORK_17_TIME is deliberately in the PAST (2026-11-02 00:00:00 UTC).
+// Owner decision of 2026-11-02, question #3396 answer A: «дату делай уже состоявшуюся, он
+// применится как только делегаты обновят ноды». This is an emergency-recovery rule, not a
+// scheduled protocol upgrade with an announceable moment to preserve — the owner explicitly does
+// not want weeks of waiting between the decision and the rule being live. With a past timestamp
+// the fork applies in the first block at or after the 17/21 version-vote quorum is reached, i.e.
+// as soon as enough delegates run this binary; nothing activates retroactively. Contrast with
+// the warning kept in 14.hf/15.hf/16.hf: there the future date IS the announcement, here the
+// announcement is the decision itself.
+//
+// This binary advertises version 4.3.0 (database.cpp _generate_block injects hardfork_version_vote
+// while current_hardfork_version < CHAIN_HARDFORK_VERSION), so every node running it votes for
+// HF17 by simply producing blocks. Upgrading changes CHAIN_SCHEMA_VERSION (15 → 16) — shared
+// memory is not compatible, so a node needs a replay or a snapshot import (the snapshot plugin
+// reads a missing emergency_schedule_size_on_entry as 0 = not measured).
+//
+// No state migration is needed at activation: emergency_schedule_size_on_entry defaults to 0,
+// which the threshold reads as "not measured" and answers with the full-schedule quorum — i.e.
+// exactly the legacy constant. An episode that started before this fork therefore still ends by
+// the old rule; every later entry records its own size.
+#ifndef CHAIN_HARDFORK_17
+#define CHAIN_HARDFORK_17 17
+#define CHAIN_HARDFORK_17_TIME 1793577600      // 2026-11-02 00:00:00 UTC — already past BY DECISION (q#3396=A)
+#define CHAIN_HARDFORK_17_VERSION hardfork_version( version(4, 3, 0) )
+#endif

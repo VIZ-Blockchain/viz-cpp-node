@@ -2,13 +2,13 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-// HF16 (BFT finality, 1 s slots, DAO cap and fee freeze) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
+// HF17 (how emergency consensus ends) — the middle component IS the hardfork version: CHAIN_HARDFORK_VERSION
 // is version's hardfork field, and the auto-vote in database.cpp _generate_block fires only while
 // current_hardfork_version < CHAIN_HARDFORK_VERSION. A new fork therefore has to move THAT field,
-// not the revision; 4.2.0 here must stay byte-equal to CHAIN_HARDFORK_16_VERSION in
-// hardfork.d/16.hf, which database_hardfork.cpp asserts. See
-// docs/prediction-markets/pm-no-contest-fee-freeze.md.
-#define CHAIN_VERSION                         (version(4, 2, 0))
+// not the revision; 4.3.0 here must stay byte-equal to CHAIN_HARDFORK_17_VERSION in
+// hardfork.d/17.hf, which database_hardfork.cpp asserts. See hardfork.d/17.hf for the rule and
+// the activation-time warning. (4.2.0 was HF16: BFT finality, 1 s slots, DAO cap, fee freeze.)
+#define CHAIN_VERSION                         (version(4, 3, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"
@@ -231,7 +231,12 @@
 ///   14 — HF14: prediction-market chainbase objects (pm_oracle, pm_market, pm_outcome,
 ///               pm_bet, pm_liquidity, pm_commit, pm_dispute, pm_dispute_vote, pm_lazy_*)
 ///   15 — HF15: persistent agent_permission and key_history chainbase indexes.
-#define CHAIN_SCHEMA_VERSION                  uint32_t(15)
+///   16 — HF17: emergency_schedule_size_on_entry added to dynamic_global_property_object.
+///               (HF16 added round_anchor_time/round_anchor_round to the same object without
+///               bumping this value; those nodes are only safe because they were re-created
+///               from a snapshot. Docblock of the chain plugin requires the bump on any
+///               layout change, so from here on it is kept exact.)
+#define CHAIN_SCHEMA_VERSION                  uint32_t(16)
 
 // HF14 prediction-market byte-length caps for variable-length on-chain strings.
 // These are CONSENSUS-MECHANICAL, not anti-spam (spec §7.12): without a hard cap two

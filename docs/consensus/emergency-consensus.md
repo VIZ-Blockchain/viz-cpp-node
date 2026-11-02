@@ -12,7 +12,7 @@ Emergency consensus mode (introduced in HF12) activates automatically when the n
 | `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` | `"committee"` | Emergency block producer account |
 | `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` | `VIZ75CR...` | Deterministic emergency signing key |
 | `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | Consecutive real-validator blocks for exit |
-| `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% | Fraction of schedule slots required to exit |
+| `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% | Share of the entry schedule that forms the exit quorum (HF17: raised to the floor below, never below) |
 | `CHAIN_MAX_VALIDATORS` | 21 | Maximum validator slots |
 
 ### State fields in `dynamic_global_property_object`
@@ -21,6 +21,7 @@ Emergency consensus mode (introduced in HF12) activates automatically when the n
 |-------|---------|---------|
 | `emergency_consensus_active` | `false` | Emergency mode is active |
 | `emergency_consensus_start_block` | `0` | Block number at activation |
+| `emergency_schedule_size_on_entry` | `0` | HF17: scheduled slots when this episode began; `0` = not measured (episode started before HF17, snapshot without the field, startup repair) |
 
 ---
 
@@ -102,20 +103,51 @@ Committee is excluded from hardfork version tallying and median chain property c
 
 ## Deactivation
 
-Every schedule rebuild checks the exit condition:
+Every schedule rebuild checks the exit condition.
+
+**Before HF17** the check ran *after* the hybrid override and compared against a constant:
 
 ```
 real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 ```
 
-With 21 validators: `21 × 0.75 = 15.75 → 15` real validator slots required.
+With 21 slots: `21 × 0.75 = 15.75 → 15` real validator slots required — whatever the episode
+started with, so a chain that entered emergency with 14 keyed validators could never leave.
+
+**From HF17** the check runs *before* the hybrid override, on the normal schedule, and the
+threshold is derived from the size measured on entry:
+
+```
+threshold = max(quorum(emergency_schedule_size_on_entry), CHAIN_MAX_VALIDATORS / 2)
+quorum(n) = max(n × 2/3 + 1, n × CHAIN_IRREVERSIBLE_THRESHOLD)
+```
+
+On mainnet that is: 21 slots on entry → 15 (unchanged), 14 → 10, 9 → 10 (the floor). `0` (not
+measured) falls back to the quorum of a full schedule — the legacy behaviour.
+
+Because the exit is decided before the override, the block that leaves emergency already
+publishes the normal schedule: `R` slots, `quorum(R)` signatures. Under the old order the
+override padded the schedule to 21 slots first, and until the next rebuild (up to 20 blocks)
+the chain demanded 15 signatures from at most `R` real signers — the producer of a certified
+block does not sign its own block, and the committee account only compensates that, so at
+`R = 15` there was no slack at all.
 
 When the condition is met:
 1. `dgp.emergency_consensus_active = false`.
 2. `_fork_db.set_emergency_mode(false)`.
-3. Log: `"EMERGENCY CONSENSUS MODE deactivated at block #N. R real validators active."`.
+3. Log: `"EMERGENCY CONSENSUS MODE deactivated at block #N (HF17 rule). R real validators
+   active, N scheduled on entry (threshold: T)."` (pre-HF17 wording: `"...deactivated at block
+   #N. R real validators active."`).
 
 The network resumes normal operation on the next schedule cycle.
+
+### Cost of the floor
+
+With a schedule that was already tiny on entry, the floor can exceed the number of validators
+that will ever hold a key in this episode — an episode with an unchanged holder set then never
+ends. That is deliberate: the alternative is leaving emergency with fewer than half the
+maximum schedule, which is how a handful of validators ends up owning the chain. An episode
+that began before HF17 keeps the old rule (`0` = not measured) and does not get the floor.
 
 ---
 
@@ -124,6 +156,9 @@ The network resumes normal operation on the next schedule cycle.
 `database::open()` checks the validator schedule after replay. If any slot is empty (string `""`), the emergency was in progress when the node shut down:
 
 1. If `emergency_consensus_active` is not already set → set it and set fork DB emergency flag.
+   `emergency_schedule_size_on_entry` is reset to `0` here: the schedule is broken (that is why
+   this path runs), so there is no size to measure, and a stale value from an earlier episode
+   must not decide when this one ends.
 2. Fill all slots with "committee".
 3. Log: `"schedule repaired, all N slots set to committee"`.
 
@@ -138,7 +173,8 @@ The `validator_guard` plugin continues to operate during emergency and is in fac
 - Real validators are disabled (signing key set to null) during activation.
 - The validator guard automatically broadcasts `validator_update_operation` to restore each validator's signing key once the null key is detected on-chain.
 - The `enable-stale-production` guard in the validator guard **does not block** key restoration during emergency mode ("Emergency consensus handles its own recovery and key restoration may still be needed").
-- Once 15 validators restore their keys, the exit condition triggers.
+- Once enough validators restore their keys for the exit threshold (15 on a 21-slot episode; see
+  [Deactivation](#deactivation)), the exit condition triggers.
 
 See [Validator Guard](../node/validator-guard.md).
 
@@ -189,7 +225,7 @@ Snapshots created during an active emergency preserve the state correctly; snaps
 | # | Location | Guard |
 |---|----------|-------|
 | 1 | `update_global_dynamic_data` | Only activate if HF12 + not already active + LIB block available |
-| 2 | `update_witness_schedule` | Hybrid override + exit check at ≥75% real validators |
+| 2 | `update_witness_schedule` | HF17: exit check (quorum of the entry size, floored) before the hybrid override; before HF17 the override ran first and the check used a constant 75% |
 | 3 | `update_last_irreversible_block` | Cap LIB at HEAD − 1 during emergency |
 | 4 | `verify_signing_witness` | Relax slot-to-validator mapping |
 | 5 | `fork_db._push_block` | Deterministic hash tie-breaking |
