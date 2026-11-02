@@ -1955,6 +1955,14 @@ namespace graphene {
                                         // 245..372 while the producer's slot round was 600+, so not
                                         // one rebuilt block ever collected a vote).
                                         const bool tc_covers_gap = tc_round > qc_round && tc_round < c.round;
+                                        // The exemption below is for a chain with no certificate to
+                                        // carry; it is not a licence to vote past one we hold (#236
+                                        // unstick blocks compete with a certified head otherwise).
+                                        if (!has_qc && db.qc_conflicts_with(*blk)) {
+                                            wlog("Not voting for QC-less #${n} round ${r}: a held QC certifies another block at or above its parent",
+                                                 ("n", c.num)("r", c.round));
+                                            continue;
+                                        }
                                         if (has_qc && qc_round + 1 != c.round && !tc_covers_gap && !late_ok) {
                                             wlog("Not voting for #${n} round ${r}: parent QC round ${q}, TC round ${t}",
                                                  ("n", c.num)("r", c.round)("q", qc_round)("t", tc_round));
@@ -2263,8 +2271,10 @@ namespace graphene {
                                     wlog("DLT MINORITY FORK UNRESOLVED for ${s}s (head stuck at #${h}), but no forced "
                                          "recovery could be started (see the snapshot plugin's log: no trusted peers, "
                                          "no snapshot ahead, or a snapshot operation already running) — staying on P2P "
-                                         "resync.",
+                                         "resync, retrying in ${s}s.",
                                          ("s", FORK_ESCALATION_SEC)("h", stuck_head));
+                                    _fork_loop_since = fc::time_point::now();
+                                    _fork_escalated = false;
                                 }
 
                                 p2p().resync_from_lib(true /*force_emergency*/);
@@ -2316,8 +2326,10 @@ namespace graphene {
                                 }
                                 wlog("EMERGENCY MASTER: still behind peer LIB after ${s}s at head #${h}, "
                                      "but no forced recovery could be started (see the snapshot plugin) — "
-                                     "staying on P2P resync",
+                                     "staying on P2P resync, retrying in ${s}s",
                                      ("s", EMERGENCY_PEER_LIB_ESCALATION_SEC)("h", stuck_head));
+                                _master_gate_since = fc::time_point::now();
+                                _master_gate_escalated = false;
                             }
 
                             p2p().resync_from_lib(true /*force_emergency*/);

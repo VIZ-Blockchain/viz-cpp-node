@@ -751,6 +751,13 @@ namespace graphene { namespace chain {
             /// The certificate formed for a height, if any (node-local view).
             fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
 
+            /// True when a QC we hold certifies a block at b's parent height other than
+            /// b's parent, at b's height other than b, or at any height above b (a
+            /// descendant cannot be told apart from a rival cheaply, and voting for b is
+            /// moot either way). Jolteon's rule for a block carrying no QC: never vote
+            /// past a certified block we know of.
+            bool qc_conflicts_with(const signed_block &b) const;
+
             /// Everything a stalled chain needs to explain itself in one place: the QC we
             /// hold for the head (if any), whether it still re-verifies against the current
             /// schedule, the highest QC round we know, and who timed out on the head's round

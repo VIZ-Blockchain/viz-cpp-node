@@ -44,7 +44,8 @@ void vote_for_head(simulated_node& n, const genesis_params& gp) {
     auto& db = n.db();
     if (!db.has_hardfork(CHAIN_HARDFORK_16) || db.head_block_num() == 0 || db.get_block_qc(db.head_block_num()))
         return;
-    const auto head = db.fetch_block_by_number(db.head_block_num());
+    // By id: fetch_block_by_number() walks fork_db's head branch, which may be a rival branch.
+    const auto head = db.fetch_block_by_id(db.head_block_id());
     const uint32_t round = db.round_of(head->timestamp);
     const auto digest = graphene::protocol::block_vote_digest(db.get_chain_id(), head->block_num(), head->id(), round);
     const auto& wso = db.get_validator_schedule_object();
@@ -745,6 +746,74 @@ BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
     } catch (const fc::exception &e) {
         BOOST_ERROR("chain raised: " << e.to_detail_string());
     }
+}
+
+// #236: an unstick block carries no QC, so the Jolteon vote rule and the certificate fork
+// choice both used to let it through. A certified head must not be abandoned for a longer
+// QC-less branch on HF12 stake weight, and a validator holding a QC for a sibling of a
+// QC-less block's parent (or for a sibling of the block itself) must not vote for it.
+BOOST_AUTO_TEST_CASE(certified_head_is_not_left_for_uncertified_branch) {
+    auto gp = make_genesis_params(0x236u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start)
+        start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node source("cert-source", gp, clk);
+    simulated_node rival("cert-rival", gp, clk);
+    simulated_node follower("cert-follower", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    BOOST_REQUIRE(bring_to_hf14(source, gp, when));
+    for (const auto& block : source.canonical_blocks_from(1)) {
+        rival.receive_block(block);
+        follower.receive_block(block);
+    }
+    for (auto* n : {&source, &rival, &follower}) n->db().set_hardfork(CHAIN_HARDFORK_16, true);
+
+    // Common certified prefix up to `base`; the follower then takes one more certified block.
+    for (int i = 0; i < 3; ++i) produce(source, gp, when);
+    const uint32_t base = source.head_block_num();
+    for (const auto& block : source.canonical_blocks_from(base - 2)) {
+        rival.receive_block(block);
+        follower.receive_block(block);
+    }
+    BOOST_REQUIRE(rival.head_block_id() == source.head_block_id());
+    produce(source, gp, when);  // base+1 carries QC(base)
+    const auto certified_head = source.canonical_blocks_from(base + 1).front();
+    BOOST_REQUIRE(follower.receive_block(certified_head) == block_outcome::accepted_extends_head);
+    BOOST_REQUIRE_EQUAL(follower.head_block_num(), base + 1);
+    BOOST_REQUIRE(graphene::chain::database::block_cert_round(certified_head) > 0);
+
+    // Rival: two unstick blocks (no QC, 60 s gaps) from `base`, one longer than the follower's chain.
+    std::vector<signed_block> unstick;
+    fc::time_point_sec rival_when = rival.head_block_time();
+    for (int i = 0; i < 2; ++i) {
+        rival_when += fc::seconds(CHAIN_EMERGENCY_UNSTICK_TIMEOUT_SEC + 1);
+        const auto v = rival.db().get_scheduled_validator(rival.db().get_slot_at_time(rival_when));
+        unstick.push_back(rival.produce_block(v, key_for(gp, v), rival_when));
+        BOOST_REQUIRE_EQUAL(graphene::chain::database::block_cert_round(unstick.back()), 0u);
+    }
+    BOOST_REQUIRE_EQUAL(rival.head_block_num(), base + 2);
+
+    for (const auto& block : unstick) {
+        follower.receive_block(block);
+        // Still in fork_db: the certificate rule never attempts the switch. The old rule
+        // attempted it and was stopped only by the LIB guard, which removes the block.
+        BOOST_CHECK(follower.db().get_fork_db().is_known_block(block.id()));
+    }
+    BOOST_REQUIRE_EQUAL(follower.db().get_fork_db().head()->num, base + 2);      // rival branch is fork_db's longest
+    BOOST_CHECK_EQUAL(follower.head_block_num(), base + 1);
+    BOOST_CHECK(follower.head_block_id() == certified_head.id());
+
+    // Vote rule: once the follower holds QC(base+1) for the certified head, both unstick
+    // blocks conflict with it; the certified chain's own next block does not.
+    vote_for_head(follower, gp);
+    BOOST_REQUIRE(follower.db().get_block_qc(base + 1));
+    BOOST_CHECK(follower.db().qc_conflicts_with(unstick[0]));   // sibling of the certified block
+    BOOST_CHECK(follower.db().qc_conflicts_with(unstick[1]));   // parent is that sibling
+    produce(source, gp, when);
+    const auto next_certified = source.canonical_blocks_from(base + 2).front();
+    BOOST_CHECK(!follower.db().qc_conflicts_with(next_certified));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

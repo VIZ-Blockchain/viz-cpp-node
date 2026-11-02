@@ -253,8 +253,8 @@ public:
     // Pure atomics: safe on the witness production thread, no p2p-thread hop. The
     // values are refreshed on the p2p thread whenever a peer's claim changes.
     struct peer_lib_view {
-        uint32_t peers_above_our_lib = 0;  ///< active peers whose LIB is strictly above ours
-        uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active peer
+        uint32_t peers_above_our_lib = 0;  ///< active seed/trusted peers whose LIB is strictly above ours
+        uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active seed/trusted peer
         uint32_t our_lib = 0;              ///< our LIB at the last refresh
     };
     peer_lib_view get_peer_lib_view() const noexcept {

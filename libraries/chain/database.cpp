@@ -2201,7 +2201,11 @@ namespace graphene { namespace chain {
                             if (head_blk) {
                                 const uint32_t new_r = admitted_round(new_head->data);
                                 const uint32_t head_r = block_cert_round(*head_blk);
-                                if (new_r) cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
+                                // Compared even when the new tip carries nothing (new_r == 0): a
+                                // certified head is never left for an uncertified branch on stake
+                                // weight alone. An unstick block (#236) is QC-less by design; its
+                                // branch competes only once it is certified. Both zero -> HF12.
+                                cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
                             }
                         }
                         if (cert_cmp != 0) {
@@ -8338,6 +8342,18 @@ namespace graphene { namespace chain {
             auto it = _block_qcs.find(block_num);
             if (it == _block_qcs.end()) return fc::optional<block_qc>();
             return it->second;
+        }
+
+        bool database::qc_conflicts_with(const signed_block &b) const {
+            const uint32_t num = b.block_num();
+            if (num < 2) return false;
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            for (auto it = _block_qcs.lower_bound(num - 1); it != _block_qcs.end(); ++it) {
+                if (it->first == num - 1) { if (it->second.block_id != b.previous) return true; }
+                else if (it->first == num) { if (it->second.block_id != b.id()) return true; }
+                else return true;
+            }
+            return false;
         }
 
         std::string database::qc_state_report() const {
