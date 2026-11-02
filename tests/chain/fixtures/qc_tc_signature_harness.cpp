@@ -46,7 +46,7 @@ struct database {
  uint32_t round_of(fc::time_point_sec t) const {return t.sec_since_epoch();}
  static uint32_t block_qc_quorum(uint32_t n) {return graphene::chain::emergency_quorum_for(n);}
  void remember_block_qc(const protocol::block_qc_certificate& c) {remembered=c;auto it=_block_qcs.find(c.block_num);if(it!=_block_qcs.end() && it->second.round>=c.round)return;_block_qcs[c.block_num]={c.block_id,c.round};}
- bool accept_block_qc_certificate(const protocol::block_qc_certificate&);
+ bool accept_block_qc_certificate(const protocol::block_qc_certificate&, protocol::block_qc_certificate* = nullptr);
  bool verify_block_vote(uint32_t,const block_id_type&,uint32_t,const account_name_type&,const signature_type&) const;
  const validator_object* scheduled_timeout_voter(const account_name_type&) const;
  bool verify_timeout_vote(uint32_t,uint32_t,const account_name_type&,const signature_type&) const;
@@ -98,7 +98,10 @@ int main(){
  auto short_qc=qc; short_qc.signatures.erase(short_qc.signatures.begin()); short_qc.signatures.erase(short_qc.signatures.begin());
  REQUIRE(!q.accept_block_qc_certificate(short_qc));
  auto mixed=qc; mixed.signatures.begin()->second=mallory_key.sign_compact(protocol::block_vote_digest(q.chain,123,qc_id,200));
- REQUIRE(q.accept_block_qc_certificate(mixed)); REQUIRE(q.remembered.signatures.size()==3);
+ protocol::block_qc_certificate sanitized;
+ REQUIRE(q.accept_block_qc_certificate(mixed, &sanitized)); REQUIRE(q.remembered.signatures.size()==3);
+ REQUIRE(sanitized.signatures.size()==3); REQUIRE(sanitized.signatures.count(mixed.signatures.begin()->first)==0);
+ auto in_place=mixed; REQUIRE(q.accept_block_qc_certificate(in_place, &in_place)); REQUIRE(in_place.signatures.size()==3);
  mixed.signatures.begin()->second=vote; auto second=mixed.signatures.begin();++second;second->second=vote;
  REQUIRE(!q.accept_block_qc_certificate(mixed));
  auto wrong=qc; wrong.block_id=other; REQUIRE(!q.accept_block_qc_certificate(wrong));

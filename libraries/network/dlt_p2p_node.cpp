@@ -2721,7 +2721,8 @@ void dlt_p2p_node::on_dlt_block_qc(peer_id peer, const dlt_block_qc_message& msg
     process_block_qc(msg, peer);
 }
 
-void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& msg, peer_id from) {
+void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& incoming, peer_id from) {
+    auto msg = incoming; // The delegate strips signatures it cannot verify before relay.
     const auto now = fc::time_point::now();
     // Cheap shape checks before the (much dearer) signature verification in the chain.
     const auto& cert = msg.cert;
@@ -2742,7 +2743,10 @@ void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& msg, peer_id fro
         }
         return;
     }
+    const auto verified_key = fc::sha256::hash(fc::raw::pack(msg));
     _block_qcs_seen.insert(key, now);
+    if (_block_qcs_seen.contains(verified_key, now) && verified_key != key) return;
+    _block_qcs_seen.insert(verified_key, now);
     gossip_to_capable(message(msg), DLT_CAP_BLOCK_QC, from);
 }
 

@@ -7738,7 +7738,8 @@ namespace graphene { namespace chain {
             _block_qcs.emplace(cert.block_num, std::move(qc));
         }
 
-        bool database::accept_block_qc_certificate(const protocol::block_qc_certificate &cert) {
+        bool database::accept_block_qc_certificate(const protocol::block_qc_certificate &cert,
+                                                   protocol::block_qc_certificate *verified_out) {
             // No HF16, no parent QCs at all: a peer must not be able to plant one.
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             if (cert.block_num == 0 ||
@@ -7771,6 +7772,7 @@ namespace graphene { namespace chain {
             if (verified.signatures.size() < block_qc_quorum(scheduled)) return false;
 
             remember_block_qc(verified);
+            if (verified_out) *verified_out = verified;
             ilog("Accepted QC for #${n} round ${r} from a peer: ${k}/${q} votes verified locally",
                  ("n", verified.block_num)("r", verified.round)
                  ("k", verified.signatures.size())("q", block_qc_quorum(scheduled)));

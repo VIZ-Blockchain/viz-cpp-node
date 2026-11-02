@@ -140,8 +140,9 @@ public:
     // Same contract for an HF18 vote, which also names the block whose QC it saw.
     virtual bool           accept_timeout_vote_v2(const dlt_timeout_vote_v2_message& vote) { return false; }
     // Re-verify a gossiped block QC against our own schedule and keep it if it is
-    // better than the one we hold. True = valid, worth relaying.
-    virtual bool           accept_block_qc(const dlt_block_qc_message& msg) { return false; }
+    // better than the one we hold. On success, replace msg.cert with the verified
+    // quorum so the network relays only signatures checked by the chain.
+    virtual bool           accept_block_qc(dlt_block_qc_message& msg) { return false; }
 
     // ── Fork resolution ──────────────────────────────────────────
     virtual int            compare_fork_branches(const block_id_type& a, const block_id_type& b) const = 0;

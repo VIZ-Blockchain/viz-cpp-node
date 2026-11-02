@@ -392,10 +392,10 @@ public:
         }
     }
 
-    bool accept_block_qc(const graphene::network::dlt_block_qc_message& msg) override {
+    bool accept_block_qc(graphene::network::dlt_block_qc_message& msg) override {
         try {
             return chain.db().with_weak_read_lock([&]() {
-                return chain.db().accept_block_qc_certificate(msg.cert);
+                return chain.db().accept_block_qc_certificate(msg.cert, &msg.cert);
             });
         } catch (const fc::exception& e) {
             dlog("QC for #${n} rejected: ${e}", ("n", msg.cert.block_num)("e", e.what()));
