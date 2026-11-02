@@ -90,6 +90,25 @@ using graphene::protocol::signed_block;
 FC_DECLARE_EXCEPTION(snapshot_rewind_refused, 3030000,
                      "Refusing to import a snapshot that would rewind final state")
 
+/**
+ * The import failed AFTER the database was cleared.
+ *
+ * A distinct type on purpose, and the distinction is the whole point: an import refuses
+ * for many reasons that write nothing (bad header, checksum, chain id, an older file),
+ * and on those the caller may keep the state and carry on. But the import first CLEARS
+ * every multi-instance index, so a failure from that point on leaves a partial state —
+ * and a node that resumes block processing on it is a node that will produce a fork, or
+ * die later on a duplicate id, with nothing in the log saying which step did it.
+ * Mainnet 31.10.2026: `import failed` then "we keep running" is exactly how one node
+ * drifted into a minority fork.
+ *
+ * The callers that can restart (startup load, P2P sync) wipe and retry — that is right
+ * for this type. The hot-reload path (stalled-sync recovery) must NOT resume P2P on it
+ * and must stop the node instead.
+ */
+FC_DECLARE_EXCEPTION(snapshot_import_left_partial_state, 3030001,
+                     "Snapshot import failed after the database was cleared")
+
 // ANSI color codes for console log messages
 #define CLOG_GREEN  "\033[92m"   // snapshot export
 #define CLOG_ORANGE "\033[33m"   // snapshot import
@@ -196,6 +215,96 @@ uint32_t import_objects_generic(
         ++count;
     }
     return count;
+}
+
+// ── Cursor integrity: the id a create() will hand out must be above every stored id ──
+//
+// chainbase keeps a per-index cursor (`next_id`) and emplace() assigns it, then increments.
+// Snapshot import sets that cursor to each object's id BEFORE create() (it has to: create()
+// assigns whatever the cursor says, and the snapshot must keep its ids), which is correct only
+// while the ids in the snapshot are strictly ascending. When they are not — a reordered array,
+// a duplicate, a section written by an older exporter — the loop ends with the cursor BELOW
+// the highest id it just stored, and nothing complains at import time: the next create() either
+// collides (uniqueness violation, the node dies later with no reference to the import) or, worse,
+// overwrites an object that came from the snapshot with a different one.
+// Measured 31.10.2026 on cryptobot: import died on a duplicate id at 17:39:42Z, and the same
+// node had produced a minority fork an hour earlier.
+//
+// The check is `next > max(id)`, not `next == max(id)+1`: removing the highest-id object is a
+// legal operation that leaves the cursor above max, and a chain that deletes a proposal must
+// not be refused for it. What must never happen is a cursor AT or BELOW a stored id.
+template<typename IndexType>
+void verify_index_cursor(graphene::chain::database& db, const char* name, const char* when) {
+    if (!db.has_index<IndexType>())
+        return;   // index not registered in this build/plugin set
+    int64_t max_id = -1;
+    {
+        const auto& idx = db.get_index<IndexType>().indices();
+        for (auto itr = idx.begin(); itr != idx.end(); ++itr) {
+            const int64_t id = int64_t(itr->id._id);
+            if (id > max_id) max_id = id;
+        }
+    }
+    const int64_t next = int64_t(db.get_index<IndexType>().next_id()._id);
+    FC_ASSERT(next > max_id,
+        "State integrity (${w}): index ${n} holds an object with id ${max}, but its cursor is "
+        "next_id=${next}. The next create() would reuse an id that is already in the state${dup}, "
+        "so this database is refused: an import that leaves the cursor behind its own objects "
+        "means the state was written out of order.",
+        ("w", when)("n", name)("max", max_id)("next", next)
+        ("dup", next == max_id ? std::string(" (it is exactly the highest id)") : std::string("")));
+}
+
+/// Every index the chain registers, for the two moments that can leave a cursor behind:
+/// after a snapshot import, and when an existing database is opened.
+void verify_all_index_cursors(graphene::chain::database& db, const char* when) {
+            verify_index_cursor<account_authority_index>(db, "account_authority", when);
+            verify_index_cursor<account_index>(db, "account", when);
+            verify_index_cursor<account_metadata_index>(db, "account_metadata", when);
+            verify_index_cursor<account_recovery_request_index>(db, "account_recovery_request", when);
+            verify_index_cursor<agent_permission_index>(db, "agent_permission", when);
+            verify_index_cursor<award_shares_expire_index>(db, "award_shares_expire", when);
+            verify_index_cursor<block_summary_index>(db, "block_summary", when);
+            verify_index_cursor<change_recovery_account_request_index>(db, "change_recovery_account_request", when);
+            verify_index_cursor<committee_request_index>(db, "committee_request", when);
+            verify_index_cursor<committee_vote_index>(db, "committee_vote", when);
+            verify_index_cursor<content_index>(db, "content", when);
+            verify_index_cursor<content_type_index>(db, "content_type", when);
+            verify_index_cursor<content_vote_index>(db, "content_vote", when);
+            verify_index_cursor<escrow_index>(db, "escrow", when);
+            verify_index_cursor<fix_vesting_delegation_index>(db, "fix_vesting_delegation", when);
+            verify_index_cursor<invite_index>(db, "invite", when);
+            verify_index_cursor<key_history_index>(db, "key_history", when);
+            verify_index_cursor<master_authority_history_index>(db, "master_authority_history", when);
+            verify_index_cursor<paid_subscribe_index>(db, "paid_subscribe", when);
+            verify_index_cursor<paid_subscription_index>(db, "paid_subscription", when);
+            verify_index_cursor<pm_bet_index>(db, "pm_bet", when);
+            verify_index_cursor<pm_commit_index>(db, "pm_commit", when);
+            verify_index_cursor<pm_creator_ban_index>(db, "pm_creator_ban", when);
+            verify_index_cursor<pm_deferred_claim_index>(db, "pm_deferred_claim", when);
+            verify_index_cursor<pm_dispute_index>(db, "pm_dispute", when);
+            verify_index_cursor<pm_dispute_vote_index>(db, "pm_dispute_vote", when);
+            verify_index_cursor<pm_lazy_allocation_index>(db, "pm_lazy_allocation", when);
+            verify_index_cursor<pm_lazy_deposit_index>(db, "pm_lazy_deposit", when);
+            verify_index_cursor<pm_lazy_pool_index>(db, "pm_lazy_pool", when);
+            verify_index_cursor<pm_lazy_withdraw_request_index>(db, "pm_lazy_withdraw_request", when);
+            verify_index_cursor<pm_leverage_position_index>(db, "pm_leverage_position", when);
+            verify_index_cursor<pm_liquidity_index>(db, "pm_liquidity", when);
+            verify_index_cursor<pm_market_index>(db, "pm_market", when);
+            verify_index_cursor<pm_market_meta_index>(db, "pm_market_meta", when);
+            verify_index_cursor<pm_oracle_index>(db, "pm_oracle", when);
+            verify_index_cursor<pm_outcome_index>(db, "pm_outcome", when);
+            verify_index_cursor<pm_settlement_index>(db, "pm_settlement", when);
+            verify_index_cursor<proposal_index>(db, "proposal", when);
+            verify_index_cursor<required_approval_index>(db, "required_approval", when);
+            verify_index_cursor<transaction_index>(db, "transaction", when);
+            verify_index_cursor<validator_confirmation_index>(db, "validator_confirmation", when);
+            verify_index_cursor<validator_index>(db, "validator", when);
+            verify_index_cursor<validator_penalty_expire_index>(db, "validator_penalty_expire", when);
+            verify_index_cursor<validator_vote_index>(db, "validator_vote", when);
+            verify_index_cursor<vesting_delegation_expiration_index>(db, "vesting_delegation_expiration", when);
+            verify_index_cursor<vesting_delegation_index>(db, "vesting_delegation", when);
+            verify_index_cursor<withdraw_vesting_route_index>(db, "withdraw_vesting_route", when);
 }
 
 // ============================================================================
@@ -1949,6 +2058,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     // Importing a large state holds the write lock for a long time; tell the
     // deadlock watchdog not to mistake it for a wedged writer.
     chainbase::database::expected_long_write_guard long_write_guard(db);
+    // Set once the database is no longer the previous one: from here on a failure leaves a
+    // PARTIAL state, and callers must not resume block processing on it (see
+    // snapshot_import_left_partial_state).
+    bool state_cleared = false;
     db.with_strong_write_lock([&]() {
         try {
         // Clear ALL existing multi-instance objects before importing.
@@ -2094,6 +2207,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             }
 
             ilog(CLOG_ORANGE "Existing objects cleared" CLOG_RESET);
+            state_cleared = true;
         }
 
         // After all removes, undo sessions are empty (objects are gone).
@@ -2762,15 +2876,33 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                  ("w", db.get_index<validator_index>().indices().size()));
         }
 
+        // Cursor integrity: after this import every index must be able to hand out ids that
+        // collide with nothing it just stored. See verify_index_cursor() above.
+        detail::verify_all_index_cursors(db, "after snapshot import");
+
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
+        } catch (const snapshot_import_left_partial_state& e) {
+            throw;   // already named: nothing new to add, and the flag is what matters
         } catch (const fc::exception& e) {
             elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));
+            if (state_cleared)
+                FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
+                    "Snapshot import failed after the database was cleared: ${e}. The state is "
+                    "partial — block processing must not resume on it.", ("e", e.to_detail_string()));
             throw;
         } catch (const std::exception& e) {
             elog(CLOG_RED "Snapshot import failed with std::exception: ${e}" CLOG_RESET, ("e", e.what()));
+            if (state_cleared)
+                FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
+                    "Snapshot import failed after the database was cleared: ${e}. The state is "
+                    "partial — block processing must not resume on it.", ("e", e.what()));
             throw;
         } catch (...) {
             elog(CLOG_RED "Snapshot import failed with unknown exception" CLOG_RESET);
+            if (state_cleared)
+                FC_THROW_EXCEPTION(snapshot_import_left_partial_state,
+                    "Snapshot import failed after the database was cleared (unknown exception). "
+                    "The state is partial — block processing must not resume on it.");
             throw;
         }
     });
@@ -3428,9 +3560,26 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     } catch (...) {}
                     stalled_sync_check_running.store(true);
                     last_block_received_time = fc::time_point::now();
+                } catch (const snapshot_import_left_partial_state& e) {
+                    // The database was cleared and the import did not finish. Resuming block
+                    // processing here is exactly what produced the 31.10.2026 minority fork: the
+                    // node looks alive, holds half a snapshot, and the split is discovered an hour
+                    // later by an alarm that has no way to say why. The previous state is gone
+                    // inside this process, so the only correct move is to stop and let the restart
+                    // import a snapshot again.
+                    std::cerr << "   FATAL: snapshot reload failed after the state was cleared: " << e.what() << "\n";
+                    elog(CLOG_RED "Snapshot reload FAILED after the database was cleared: ${e}. "
+                         "The state is PARTIAL — NOT resuming block processing. Stopping the node; "
+                         "restart it to import a snapshot again." CLOG_RESET, ("e", e.to_detail_string()));
+                    _snapshot_reloading.store(false, std::memory_order_release);
+                    appbase::app().quit();
+                    break;
                 } catch (const fc::exception& e) {
                     std::cerr << "   Failed to reload snapshot: " << e.what() << "\n";
                     elog("Failed to reload snapshot: ${e}", ("e", e.to_detail_string()));
+                    // Nothing was cleared (header, checksum, chain id, or a refusal): the state is
+                    // the one we had. Resuming P2P and clearing the reloading flag is safe HERE
+                    // and only here — a partial import takes the branch above instead.
                     // Resume P2P and clear reloading flag on failure
                     _snapshot_reloading.store(false, std::memory_order_release);
                     try {
@@ -5406,6 +5555,15 @@ void snapshot_plugin::plugin_startup() {
     } catch (const std::runtime_error&) {
         // Chain plugin not registered — nothing to trigger
     }
+
+    // A database that was opened normally (no import) is asked the same question the import
+    // asks at its end: can every index still hand out an id that collides with nothing it
+    // holds? State written by an older build can fail this while looking healthy — the
+    // damage then appears at the first create(), as a uniqueness violation far from the
+    // import that caused it. Refusing to start here is the whole point: a node that cannot
+    // name its own next id must not produce blocks. Run AFTER the optional snapshot load
+    // above, which performs its own check and may legitimately start from an empty state.
+    detail::verify_all_index_cursors(my->db, "on startup");
 
     // Note: --snapshot loading is handled via snapshot_load_callback registered
     // in plugin_initialize(). It runs during chain plugin's startup, before on_sync(),
