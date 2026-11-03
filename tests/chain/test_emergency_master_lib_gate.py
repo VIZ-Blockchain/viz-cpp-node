@@ -27,6 +27,12 @@ therefore built from three pieces that must stay wired exactly like this:
      coming back after the rewind escalates to a fresh snapshot, guarded like every other
      escalation: a missing callback must not throw inside block processing.
 
+  4. (03.11.2026) the gate above needs peers to speak; a master that reaches its slot before
+     the first seed answers sailed through on "nobody objects" and forked from a LIB thousands
+     of blocks behind. So the cache also counts the witnesses that spoke, and until one of them
+     reports a LIB not above ours (or a grace period runs out on a genuinely isolated master)
+     the master answers not_synced. One witness is enough to WAIT — waiting is the safe side.
+
 Run: python3 tests/chain/test_emergency_master_lib_gate.py [--selftest]
      python3 tests/chain/test_emergency_master_lib_gate.py --baseline origin/master
 """
@@ -52,6 +58,30 @@ FILES = {
 }
 
 MUTATIONS = {
+    'startup-gate-ignores-witnesses': ('validator_cpp', [
+        ('if (!_startup_cleared && peer_libs.witnesses > 0 &&',
+         'if (!_startup_cleared && true &&')]),
+    'startup-gate-clears-when-behind': ('validator_cpp', [
+        ('peer_libs.best_peer_lib <= peer_libs.our_lib) {\n                            _startup_cleared = true;',
+         'true) {\n                            _startup_cleared = true;')]),
+    'startup-gate-produces-anyway': ('validator_cpp', [
+        ('                                return block_validation_condition::not_synced;\n'
+         '                            }\n'
+         '                            _startup_cleared = true;  // isolated past the grace: fall through',
+         '                            }\n'
+         '                            _startup_cleared = true;  // isolated past the grace: fall through')]),
+    'startup-gate-after-quorum-gate': ('validator_cpp', [
+        ('                        if (!_startup_cleared && peer_libs.witnesses > 0 &&',
+         '                        if (false && !_startup_cleared && peer_libs.witnesses > 0 &&')]),
+    'startup-clock-never-set': ('validator_cpp', [
+        ('pimpl->_startup_time = fc::time_point::now();', '')]),
+    'witness-count-not-published': ('node_cpp', [
+        ('_lib_witnesses.store(witnesses, std::memory_order_release);', '')]),
+    'witness-count-not-read': ('node_hpp', [
+        ('v.witnesses = _lib_witnesses.load(std::memory_order_acquire);', '')]),
+    'witness-count-counts-strangers': ('node_cpp', [
+        ('        if (!witness) continue;\n        witnesses++;',
+         '        witnesses++;\n        if (!witness) continue;')]),
     'getter-walks-the-peer-map': ('node_hpp', [
         ('v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);',
          'v.peers_above_our_lib = (uint32_t)_peer_states.size();')]),
@@ -343,6 +373,43 @@ def wiring_problems(**files):
             problems.append('a refused forced recovery (download failed, another snapshot operation '
                             'running) is never retried while the head stays put: the escalation is '
                             'spent on the first refusal')
+
+    # --- 4. Startup witness gate (03.11.2026) --------------------------------------------
+    if getter is not None and '_lib_witnesses' not in _masked(getter):
+        problems.append('get_peer_lib_view() does not read _lib_witnesses: the startup gate sees '
+                        'zero witnesses forever and waits out the whole grace on every restart')
+    refresh = method(files['node_cpp'], 'void dlt_p2p_node::refresh_peer_lib_cache()')
+    if refresh is not None:
+        r = _masked(refresh)
+        if '_lib_witnesses.store(witnesses' not in r:
+            problems.append('refresh_peer_lib_cache() never publishes the witness count')
+        w_at, filt_at = r.find('witnesses++'), r.find('if (!witness) continue;')
+        if w_at < 0 or filt_at < 0 or w_at < filt_at:
+            problems.append('the witness count is taken before the seed/trusted filter: any inbound '
+                            'stranger would clear the startup gate')
+    if not re.search(r'pimpl->_startup_time\s*=\s*fc::time_point::now\(\);', _masked(val)):
+        problems.append('the startup clock is never set: the grace period is measured from the '
+                        'epoch and has always expired, so the startup gate never holds')
+    clear_at = val.find('if (!_startup_cleared && peer_libs.witnesses > 0 &&')
+    if clear_at < 0:
+        problems.append('the emergency master has no startup witness gate: with zero peers the '
+                        'peer-LIB gate is silent and a stale restart signs a committee block on a '
+                        'head far behind the network (03.11.2026 03:05Z, #84961416)')
+    else:
+        clear = enclosing_if(val, clear_at + len('if (!_startup_cleared'))
+        if clear is None or not re.search(r'peer_libs\.best_peer_lib\s*<=\s*peer_libs\.our_lib', clear):
+            problems.append('the startup gate clears without comparing the witness LIB to ours: a '
+                            'witness reporting a LIB far above ours would wave the stale master on')
+        if not (clear_at < cond_at):
+            problems.append('the startup gate is not before the quorum gate: the master consults the '
+                            'quorum of two first and the single-witness wait never applies')
+        hold_at = val.find('if (!_startup_cleared) {', clear_at)
+        hold = enclosing_if(val, hold_at + len('if (!_startup_cleared')) if hold_at >= 0 else None
+        if hold is None or 'return block_validation_condition::not_synced;' not in _masked(hold):
+            problems.append('the startup gate never refuses: it logs and falls through to signing')
+        elif 'EMERGENCY_STARTUP_WITNESS_GRACE_SEC' not in _masked(hold):
+            problems.append('the startup gate has no grace period: a dead seed list would halt the '
+                            'only producer forever')
 
     return problems
 

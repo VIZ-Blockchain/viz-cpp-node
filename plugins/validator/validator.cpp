@@ -411,6 +411,20 @@ namespace graphene {
                 uint32_t _master_gate_head = 0;          // head the quorum was first seen on
                 fc::time_point _master_gate_since;       // when that head became stuck
                 bool _master_gate_escalated = false;     // one forced snapshot per stuck head
+                // Startup witness gate. The peer-LIB gate needs peers to say something, so a
+                // master that opens its state and reaches its slot before the first seed has
+                // answered sails through on "nobody objects". 03.11.2026 03:05Z, api.viz.world:
+                // restarted with LIB #84961415 while the network sat thousands of blocks
+                // ahead, produced committee #84961416 four seconds later with zero peers, and
+                // forked. Until a seed/trusted witness has reported a LIB that is NOT above
+                // ours, the master does not sign — at startup one witness is enough to make
+                // it wait (waiting is the safe direction; the quorum of two below guards the
+                // opposite case, a running master told to stop). After the grace period a
+                // genuinely isolated master may produce again, so a dead seed list cannot
+                // halt the chain forever.
+                static constexpr int64_t EMERGENCY_STARTUP_WITNESS_GRACE_SEC = 300;
+                fc::time_point _startup_time;            // set in plugin_startup()
+                bool _startup_cleared = false;           // latched: a witness confirmed we are not behind
 
                 // Operator override (testnet / single-operator fork): when set via
                 // 'disable-minority-fork-detection', both the standard and the DLT
@@ -624,6 +638,7 @@ namespace graphene {
                 try {
                     ilog("validator plugin:  plugin_startup() begin");
                     auto &d = pimpl->database();
+                    pimpl->_startup_time = fc::time_point::now();
                     //Start NTP time client
                     graphene::time::now();
 
@@ -2318,6 +2333,23 @@ namespace graphene {
                         // be invented without two thirds of the validators: several peers
                         // finalising PAST OUR LIB means the network is building elsewhere.
                         const auto peer_libs = p2p().get_peer_lib_view();
+                        if (!_startup_cleared && peer_libs.witnesses > 0 &&
+                            peer_libs.best_peer_lib <= peer_libs.our_lib) {
+                            _startup_cleared = true;
+                        }
+                        if (!_startup_cleared) {
+                            const int64_t since_start = (fc::time_point::now() - _startup_time).to_seconds();
+                            if (since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC) {
+                                wlog("EMERGENCY MASTER: startup ${s}s ago, ${w} witness(es), best peer LIB "
+                                     "#${pl} vs ours #${ol} — not signing a committee block on head #${h} "
+                                     "until a seed/trusted peer confirms we are not behind (grace ${g}s)",
+                                     ("s", since_start)("w", peer_libs.witnesses)("pl", peer_libs.best_peer_lib)
+                                     ("ol", peer_libs.our_lib)("h", db.head_block_num())
+                                     ("g", EMERGENCY_STARTUP_WITNESS_GRACE_SEC));
+                                return block_validation_condition::not_synced;
+                            }
+                            _startup_cleared = true;  // isolated past the grace: fall through
+                        }
                         if (peer_libs.peers_above_our_lib >= EMERGENCY_PEER_LIB_QUORUM &&
                             peer_libs.best_peer_lib > peer_libs.our_lib) {
                             const uint32_t stuck_head = db.head_block_num();
