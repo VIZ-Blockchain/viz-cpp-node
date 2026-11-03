@@ -1800,7 +1800,30 @@ namespace graphene {
                             // DISTRESSED NETWORK (participation < 33%, not yet emergency):
                             // Honor manual config overrides -- operator may be trying to
                             // accelerate recovery before the 1-hour timeout.
-                            if (prate < _required_validator_participation) {
+                            //
+                            // HF16: the 128-slot window is the pre-BFT proxy for "is a
+                            // supermajority alive on my branch". A QC we hold for head or its
+                            // parent IS that proof, and the unstick rule (60 s of chain silence)
+                            // was written to produce exactly when the window says no. After any
+                            // stall the window stays below 33% for ~2 min, so without this the
+                            // chain the unstick block just restarted stops on the next slot:
+                            // mainnet 02.11.2026 21:47 -- one unstick block, then 31 min of
+                            // silence until an operator forced stale production, then emergency.
+                            // A minority partition cannot form a QC, so it stays bounded to one
+                            // uncertified block per unstick window.
+                            bool quorum_proven = false;
+                            if (db.has_hardfork(CHAIN_HARDFORK_16)) {
+                                db.with_weak_read_lock([&]() {
+                                    const uint32_t hn = db.head_block_num();
+                                    auto qc_on_branch = [&](uint32_t n) {
+                                        const auto qc = db.get_block_qc(n);
+                                        return qc && qc->block_id == db.find_block_id_for_num(n);
+                                    };
+                                    quorum_proven = qc_on_branch(hn) || (hn > 1 && qc_on_branch(hn - 1)) ||
+                                                    db.emergency_unstick_block(now);
+                                });
+                            }
+                            if (prate < _required_validator_participation && !quorum_proven) {
                                 if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
                                     // enable-stale-production=true: operator override, produce anyway
                                     // to bootstrap/recover a fully stalled network where all nodes

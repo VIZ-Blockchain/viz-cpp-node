@@ -8557,10 +8557,19 @@ namespace graphene { namespace chain {
                 // normal LIB computation continues seamlessly.
                 // === END HARDFORK 12 EMERGENCY LIB ===
 
+                // One entry per VALIDATOR, not per slot. The HF12 hybrid schedule hands the
+                // committee every slot nobody holds a key for (13 of 21 on mainnet
+                // 03.11.2026); counted per slot that is 13 of the 21 values this percentile
+                // ranks, so the moment the committee key goes silent LIB freezes at its last
+                // block however many real validators produce, and head walks every node into
+                // the max_undo halt below. The normal schedule has no duplicates, so outside
+                // emergency this is the same list.
                 vector<const validator_object *> wit_objs;
                 wit_objs.reserve(wso.num_scheduled_validators);
                 for (int i = 0; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
-                    wit_objs.push_back(&get_validator(wso.current_shuffled_validators[i]));
+                    const validator_object *w = &get_validator(wso.current_shuffled_validators[i]);
+                    if (std::find(wit_objs.begin(), wit_objs.end(), w) == wit_objs.end())
+                        wit_objs.push_back(w);
                 }
 
                 static_assert(CHAIN_IRREVERSIBLE_THRESHOLD >
