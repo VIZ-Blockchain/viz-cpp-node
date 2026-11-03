@@ -2974,6 +2974,7 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
     const uint32_t our_lib = _delegate ? _delegate->get_lib_block_num() : 0;
     uint32_t above = 0;
     uint32_t best = 0;
+    uint32_t witnesses = 0;
     for (const auto& entry : _peer_states) {
         const auto& state = entry.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
@@ -2984,12 +2985,14 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
         bool witness = _trusted_peers.count(state.endpoint) > 0;
         for (const auto& sep : _seed_nodes) if (sep == state.endpoint) { witness = true; break; }
         if (!witness) continue;
+        witnesses++;
         if (state.peer_lib_num > best) best = state.peer_lib_num;
         if (state.peer_lib_num > our_lib) above++;
     }
     _cached_our_lib.store(our_lib, std::memory_order_release);
     _best_peer_lib.store(best, std::memory_order_release);
     _peers_above_our_lib.store(above, std::memory_order_release);
+    _lib_witnesses.store(witnesses, std::memory_order_release);
 }
 
 // ── Node status transitions ──────────────────────────────────────────

@@ -256,12 +256,14 @@ public:
         uint32_t peers_above_our_lib = 0;  ///< active seed/trusted peers whose LIB is strictly above ours
         uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active seed/trusted peer
         uint32_t our_lib = 0;              ///< our LIB at the last refresh
+        uint32_t witnesses = 0;            ///< active seed/trusted peers that advertised any LIB
     };
     peer_lib_view get_peer_lib_view() const noexcept {
         peer_lib_view v;
         v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);
         v.best_peer_lib = _best_peer_lib.load(std::memory_order_acquire);
         v.our_lib = _cached_our_lib.load(std::memory_order_acquire);
+        v.witnesses = _lib_witnesses.load(std::memory_order_acquire);
         return v;
     }
 
@@ -691,6 +693,7 @@ private:
     // value dropped with it in refresh_peer_lib_cache(), so a vanished peer cannot
     // keep blocking production forever.
     std::atomic<uint32_t>           _peers_above_our_lib{0};
+    std::atomic<uint32_t>           _lib_witnesses{0};
     std::atomic<uint32_t>           _best_peer_lib{0};
     std::atomic<uint32_t>           _cached_our_lib{0};
     void                            refresh_peer_lib_cache();
