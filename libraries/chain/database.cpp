@@ -7727,7 +7727,20 @@ namespace graphene { namespace chain {
             // TC carries a newer-round QC; keeping the first (possibly for an equivocating twin) pinned the height.
             auto held = _block_qcs.find(cert.block_num);
             if (held != _block_qcs.end()) {
-                if (held->second.round >= cert.round) return;
+                if (held->second.round > cert.round) return;
+                if (held->second.round == cert.round) {
+                    // Never mix certificates for different blocks in the same round.
+                    // Keep signatures from both sources for this block. Block replay
+                    // may skip signature checks, so do not overwrite an existing vote.
+                    if (held->second.block_id != cert.block_id) return;
+                    for (const auto &sv : cert.signatures) {
+                        auto &sigs = held->second.signatures;
+                        auto existing = std::find_if(sigs.begin(), sigs.end(),
+                            [&](const auto &entry) { return entry.first == sv.first; });
+                        if (existing == sigs.end()) sigs.emplace_back(sv.first, sv.second);
+                    }
+                    return;
+                }
                 _block_qcs.erase(held);
             }
             block_qc qc;
@@ -8276,6 +8289,16 @@ namespace graphene { namespace chain {
             // of #546 in round 649, fork choice took another, then 40+ rebuilds of #546
             // with 15/15 votes each and no QC; chain stuck for 20+ min).
             auto held_qc = _block_qcs.find(block_num);
+            if (held_qc != _block_qcs.end() && held_qc->second.round == round &&
+                held_qc->second.block_id == block_id) {
+                // The certificate may have formed at quorum before later valid
+                // votes arrived. Retain those votes for production-time rechecking.
+                auto &sigs = held_qc->second.signatures;
+                auto existing = std::find_if(sigs.begin(), sigs.end(),
+                    [&](const auto &entry) { return entry.first == validator; });
+                if (existing == sigs.end()) sigs.emplace_back(validator, signature);
+                else existing->second = signature;
+            }
             if (tally.votes.size() >= quorum && (held_qc == _block_qcs.end() || held_qc->second.round < round)) {
                 if (held_qc != _block_qcs.end()) _block_qcs.erase(held_qc);
                 block_qc qc;

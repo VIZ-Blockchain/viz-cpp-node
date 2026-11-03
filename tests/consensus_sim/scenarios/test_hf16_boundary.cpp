@@ -351,6 +351,31 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
         follower.receive_block(*b);
         BOOST_REQUIRE(follower.head_block_id() == b->id());
     };
+#ifdef CHAIN_TESTNET_VALIDATORS
+    // Real database regression: form a one-vote QC, expand the fixture's
+    // schedule, then add another valid vote for the same block and round.
+    // The cached QC must grow even though it already exists. Restore the real
+    // schedule before continuing the rest of this scenario.
+    produce(node, gp, when); relay();
+    auto head_for_refresh = db.fetch_block_by_id(db.head_block_id());
+    BOOST_REQUIRE(head_for_refresh.valid());
+    const auto &schedule_for_refresh = db.get_validator_schedule_object();
+    const auto full_schedule_size = schedule_for_refresh.num_scheduled_validators;
+    const auto first_voter = schedule_for_refresh.current_shuffled_validators[0];
+    const auto second_voter = schedule_for_refresh.current_shuffled_validators[CHAIN_BLOCK_VALIDATOR_REPEAT];
+    BOOST_REQUIRE(first_voter != second_voter);
+    const auto vote_round = db.round_of(head_for_refresh->timestamp);
+    const auto vote_digest = block_vote_digest(db.get_chain_id(), head_for_refresh->block_num(), head_for_refresh->id(), vote_round);
+    db.modify(schedule_for_refresh, [&](validator_schedule_object &s) { s.num_scheduled_validators = CHAIN_BLOCK_VALIDATOR_REPEAT; });
+    BOOST_REQUIRE(db.push_block_vote(head_for_refresh->block_num(), head_for_refresh->id(), vote_round, first_voter,
+                                    key_for(gp, first_voter).sign_compact(vote_digest)));
+    BOOST_REQUIRE(db.get_block_qc(head_for_refresh->block_num()).valid());
+    BOOST_CHECK_EQUAL(db.get_block_qc(head_for_refresh->block_num())->signatures.size(), 1u);
+    db.modify(schedule_for_refresh, [&](validator_schedule_object &s) { s.num_scheduled_validators = full_schedule_size; });
+    BOOST_REQUIRE(db.push_block_vote(head_for_refresh->block_num(), head_for_refresh->id(), vote_round, second_voter,
+                                    key_for(gp, second_voter).sign_compact(vote_digest)));
+    BOOST_CHECK_EQUAL(db.get_block_qc(head_for_refresh->block_num())->signatures.size(), 2u);
+#endif
     for (int i = 0; i < 8; ++i) { produce(node, gp, when); relay(); }
     vote_for_head(node, gp);
     BOOST_REQUIRE(db.get_block_qc(db.head_block_num()).valid());
