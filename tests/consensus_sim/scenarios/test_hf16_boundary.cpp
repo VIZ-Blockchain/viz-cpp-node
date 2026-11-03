@@ -888,16 +888,49 @@ BOOST_AUTO_TEST_CASE(certified_head_is_not_left_for_uncertified_branch) {
     BOOST_REQUIRE_EQUAL(follower.db().get_fork_db().head()->num, base + 2);      // rival branch is fork_db's longest
     BOOST_CHECK_EQUAL(follower.head_block_num(), base + 1);
     BOOST_CHECK(follower.head_block_id() == certified_head.id());
+    // By number too: with the rival at base+1 in fork_db and fork_db's head on the rival
+    // branch, the lookup must still answer with the applied block (QC cert matching,
+    // head extension reads in the validator all go through it).
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 1)->id() == certified_head.id());
+
+    // The callers that read "head" through that lookup:
+    // 1. grandparent_qc_for_next_block() reads head's parent-QC extension. The rival at
+    //    base+1 carries none, so the old lookup made the next block go out without one.
+    const auto gp_qc = follower.db().grandparent_qc_for_next_block(
+        next_validator(follower), follower.db().round_of(certified_head.timestamp) + 1);
+    BOOST_CHECK(gp_qc.valid());
+    if (gp_qc) {
+        BOOST_CHECK(gp_qc->block_id == certified_head.previous);
+        BOOST_CHECK_EQUAL(gp_qc->block_num, base);
+    }
+
+    // 2. accept_block_qc_certificate() matches the peer's certificate against the block at
+    //    that height: with the rival returned, QC(base+1) for our own head was refused.
+    produce(source, gp, when);                                        // base+2 carries QC(base+1)
+    const auto next_certified = source.canonical_blocks_from(base + 2).front();
+    const graphene::protocol::block_qc_certificate* peer_qc = nullptr;
+    for (const auto& e : next_certified.extensions)
+        if (e.which() == 3) peer_qc = &e.get<graphene::protocol::block_qc_certificate>();
+    BOOST_REQUIRE(peer_qc && peer_qc->block_id == certified_head.id());
+    BOOST_CHECK(!follower.db().get_block_qc(base + 1));
+    BOOST_CHECK(follower.db().accept_block_qc_certificate(*peer_qc));
+    BOOST_REQUIRE(follower.db().get_block_qc(base + 1));
+    BOOST_CHECK(follower.db().get_block_qc(base + 1)->block_id == certified_head.id());
 
     // Vote rule: once the follower holds QC(base+1) for the certified head, both unstick
     // blocks conflict with it; the certified chain's own next block does not.
-    vote_for_head(follower, gp);
-    BOOST_REQUIRE(follower.db().get_block_qc(base + 1));
+    vote_for_head(follower, gp);                                       // no-op: QC already held
     BOOST_CHECK(follower.db().qc_conflicts_with(unstick[0]));   // sibling of the certified block
     BOOST_CHECK(follower.db().qc_conflicts_with(unstick[1]));   // parent is that sibling
-    produce(source, gp, when);
-    const auto next_certified = source.canonical_blocks_from(base + 2).front();
     BOOST_CHECK(!follower.db().qc_conflicts_with(next_certified));
+
+    // Applying base+2 moves fork_db's head onto our branch. The rival at base+1 is still
+    // below head, and the lookup there must keep answering with the applied block.
+    BOOST_REQUIRE(follower.receive_block(next_certified) == block_outcome::accepted_extends_head);
+    BOOST_REQUIRE_EQUAL(follower.head_block_num(), base + 2);
+    BOOST_CHECK(follower.db().get_fork_db().is_known_block(unstick[0].id()));
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 1)->id() == certified_head.id());
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 2)->id() == next_certified.id());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
