@@ -888,6 +888,10 @@ BOOST_AUTO_TEST_CASE(certified_head_is_not_left_for_uncertified_branch) {
     BOOST_REQUIRE_EQUAL(follower.db().get_fork_db().head()->num, base + 2);      // rival branch is fork_db's longest
     BOOST_CHECK_EQUAL(follower.head_block_num(), base + 1);
     BOOST_CHECK(follower.head_block_id() == certified_head.id());
+    // By number too: with the rival at base+1 in fork_db and fork_db's head on the rival
+    // branch, the lookup must still answer with the applied block (QC cert matching,
+    // head extension reads in the validator all go through it).
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 1)->id() == certified_head.id());
 
     // Vote rule: once the follower holds QC(base+1) for the certified head, both unstick
     // blocks conflict with it; the certified chain's own next block does not.

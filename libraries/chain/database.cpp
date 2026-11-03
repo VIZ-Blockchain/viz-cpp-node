@@ -1454,9 +1454,20 @@ namespace graphene { namespace chain {
                 // fetch_block_by_number() skips anchor entries (they carry no
                 // block data), so anything it returns is a real block.
                 auto results = _fork_db.fetch_block_by_number(block_num);
-                if (results.size() == 1) {
+                if (results.size() > 1) {
+                    // Competing blocks at this height. fork_db's head may sit on a
+                    // rival branch (a longer QC-less fork we refused to switch to),
+                    // so walking from it can hand back the rival; callers reading
+                    // head's QC extension or matching a peer's QC certificate need
+                    // the applied chain's block, which the TAPOS buffer names.
+                    const auto *bs = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+                    if (bs && protocol::block_header::num_from_id(bs->block_id) == block_num)
+                        for (const auto &r : results)
+                            if (r->id == bs->block_id) { b = r->data; break; }
+                }
+                if (!b.valid() && results.size() == 1) {
                     b = results[0]->data;
-                } else {
+                } else if (!b.valid()) {
                     // fork_db by-number index returned 0 or >1 results.
                     // Walk the main branch from fork_db head — this
                     // handles the case where set_max_size() pruned the
@@ -2072,7 +2083,9 @@ namespace graphene { namespace chain {
                              ("n", new_block.block_num())("h", head_block_num())("g", gap));
                         return false;
                     }
-                    dlog(DB_LOG_DGRAY "Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})" DB_LOG_RESET,
+                    // Not necessarily unlinkable: the parent may be a known fork_db block
+                    // (a fork extension); only a truly unknown parent lands in _unlinked_index.
+                    dlog(DB_LOG_DGRAY "Block ${n} does not extend head (head=${h}, gap=${g}); deferred to fork_db unlinked index if its parent is unknown" DB_LOG_RESET,
                          ("n", new_block.block_num())("h", head_block_num())("g", gap));
                     expect_unlinkable = true;
                 }
