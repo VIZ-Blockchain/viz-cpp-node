@@ -242,7 +242,7 @@ max_lines = 10000
 
 * `removable` — `false` у `chain` и `node_admin`: `admin.plugins.plan` всё равно откажет в
   их удалении. Клиент обязан рисовать их как «непереключаемые», а не как «выключенные».
-* `params` — allow-list-ключи этого плагина (`p2p`, `webserver`, `validator_guard`); пустой
+* `params` — allow-list-ключи этого плагина (`p2p`, `webserver`, `validator_guard`, `chain`, `snapshot`, `operation_history`); пустой
   массив значит «редактируемых параметров нет», и панель должна это сказать, а не показать
   пустую форму. Ключи логов сгруппированы под `logging` — это не плагин, они в
   `admin.config.get`.
@@ -815,6 +815,9 @@ webserver отвечает клиентам из чёрного списка `40
 | `validator-guard-enabled`, `validator-guard-disable`, `validator-guard-disable-on-shutdown` | bool | — |
 | `validator-guard-interval`, `validator-guard-shutdown-grace` | uint | 1–3600 |
 | `validator-guard-disable-max` | uint | 0–1000 |
+| `history-count-blocks`, `dlt-block-log-max-blocks` | uint | 1–100000000 (в блоках; пересчитывать при смене интервала блока; 0 у DLT-лога = выключить, только руками) |
+| `snapshot-every-n-blocks` | uint | 0–100000000 (0 = выкл.) |
+| `snapshot-max-age-days` | uint | 0–3650 (0 = не удалять) |
 | `logger.default.level`, `logger.p2p.level` | уровень лога | `all`, `debug`, `info`, `warn`, `error`, `off` |
 | `log.capped_file_appender.node.max_lines` | uint | 0–10000000 |
 | `log.capped_file_appender.node.flush` | bool | — |

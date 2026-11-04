@@ -244,7 +244,7 @@ Two further fields exist for the operator panel:
 * `removable` — `false` for `chain` and `node_admin`, which `admin.plugins.plan` refuses to
   remove anyway. A client must render those as non-toggleable, not as merely "off".
 * `params` — the allow-listed keys that belong to this plugin (`p2p`, `webserver`,
-  `validator_guard`); an empty array means the plugin has no editable parameters and the
+  `validator_guard`, `chain`, `snapshot`, `operation_history`); an empty array means the plugin has no editable parameters and the
   panel should say so instead of showing an empty form. Logging keys are grouped under
   `logging`, which is not a plugin: they live in `admin.config.get`.
 * `status_method` — the method that returns this plugin's **own** status (`admin.p2p.status`,
@@ -388,7 +388,7 @@ It also returns `allow`: the editable subset, ready to render. Each item is
   matches the option list; `valid:false` means the line could not be normalized and should
   be flagged.
 * `type` is `boolean`, `unsigned_int` (with `min`/`max`) or `log_level` (with `values`).
-* `group` is the plugin the key belongs to (`p2p`, `webserver`, `validator_guard`) or
+* `group` is the plugin the key belongs to (`p2p`, `webserver`, `validator_guard`, `chain`, `snapshot`, `operation_history`) or
   `logging` for logger and appender settings.
 
 ### `admin.logs.list`
@@ -815,6 +815,9 @@ The admin API edits only these keys. Everything else — identity, keys, data di
 | `validator-guard-enabled`, `validator-guard-disable`, `validator-guard-disable-on-shutdown` | bool | — |
 | `validator-guard-interval`, `validator-guard-shutdown-grace` | uint | 1–3600 |
 | `validator-guard-disable-max` | uint | 0–1000 |
+| `history-count-blocks`, `dlt-block-log-max-blocks` | uint | 1–100000000 (block counts; recompute after a block-interval change; 0 for the DLT log = disabled, hand edit only) |
+| `snapshot-every-n-blocks` | uint | 0–100000000 (0 = off) |
+| `snapshot-max-age-days` | uint | 0–3650 (0 = keep forever) |
 | `logger.default.level`, `logger.p2p.level` | log level | `all`, `debug`, `info`, `warn`, `error`, `off` |
 | `log.capped_file_appender.node.max_lines` | uint | 0–10000000 |
 | `log.capped_file_appender.node.flush` | bool | — |
