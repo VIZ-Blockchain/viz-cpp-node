@@ -30,7 +30,7 @@ therefore built from three pieces that must stay wired exactly like this:
   4. (03.11.2026) the gate above needs peers to speak; a master that reaches its slot before
      the first seed answers sailed through on "nobody objects" and forked from a LIB thousands
      of blocks behind. So the cache also counts the witnesses that spoke, and until one of them
-     reports a LIB not above ours (or a grace period runs out on a genuinely isolated master)
+     reports a LIB not above ours (or a grace period runs out on a master no witness answered)
      the master answers not_synced. One witness is enough to WAIT — waiting is the safe side.
 
 Run: python3 tests/chain/test_emergency_master_lib_gate.py [--selftest]
@@ -73,6 +73,9 @@ MUTATIONS = {
     'startup-gate-after-quorum-gate': ('validator_cpp', [
         ('                        if (!_startup_cleared && peer_libs.witnesses > 0 &&',
          '                        if (false && !_startup_cleared && peer_libs.witnesses > 0 &&')]),
+    'startup-grace-ignores-witnesses': ('validator_cpp', [
+        ('since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC || peer_libs.witnesses > 0) {',
+         'since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC) {')]),
     'startup-clock-never-set': ('validator_cpp', [
         ('pimpl->_startup_time = fc::time_point::now();', '')]),
     'witness-count-not-published': ('node_cpp', [
@@ -410,6 +413,11 @@ def wiring_problems(**files):
         elif 'EMERGENCY_STARTUP_WITNESS_GRACE_SEC' not in _masked(hold):
             problems.append('the startup gate has no grace period: a dead seed list would halt the '
                             'only producer forever')
+        elif not re.search(r'EMERGENCY_STARTUP_WITNESS_GRACE_SEC\s*\|\|\s*peer_libs\.witnesses\s*>\s*0',
+                           _masked(hold)):
+            problems.append('the grace releases a master that a witness reports behind: with one '
+                            'matching seed the quorum gate never fires and a stale master signs '
+                            'after the grace')
 
     return problems
 

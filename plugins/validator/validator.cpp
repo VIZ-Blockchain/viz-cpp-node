@@ -2339,7 +2339,10 @@ namespace graphene {
                         }
                         if (!_startup_cleared) {
                             const int64_t since_start = (fc::time_point::now() - _startup_time).to_seconds();
-                            if (since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC) {
+                            // The grace frees only a master nobody has answered: a witness that
+                            // reports a LIB above ours keeps it waiting, because with a single
+                            // matching seed the quorum gate below never fires.
+                            if (since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC || peer_libs.witnesses > 0) {
                                 wlog("EMERGENCY MASTER: startup ${s}s ago, ${w} witness(es), best peer LIB "
                                      "#${pl} vs ours #${ol} — not signing a committee block on head #${h} "
                                      "until a seed/trusted peer confirms we are not behind (grace ${g}s)",
