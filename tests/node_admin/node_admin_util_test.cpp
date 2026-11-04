@@ -198,6 +198,21 @@ BOOST_AUTO_TEST_CASE(config_allowlist_excludes_identity_and_endpoints) {
     BOOST_CHECK(!config_spec_for("shared-file-size"));
 }
 
+BOOST_AUTO_TEST_CASE(block_retention_keys_are_editable_with_bounds) {
+    std::string v;
+    std::string why;
+    BOOST_CHECK(normalize_config_value("history-count-blocks", "630000", v, why));
+    BOOST_CHECK_EQUAL(v, "630000");
+    BOOST_CHECK(!normalize_config_value("history-count-blocks", "0", v, why));
+    BOOST_CHECK(normalize_config_value("snapshot-every-n-blocks", "0", v, why));
+    BOOST_CHECK(normalize_config_value("snapshot-max-age-days", "0", v, why));
+    BOOST_CHECK(!normalize_config_value("snapshot-max-age-days", "3651", v, why));
+    // 0 would switch the rolling block log off: that stays a hand edit.
+    BOOST_CHECK(!normalize_config_value("dlt-block-log-max-blocks", "0", v, why));
+    BOOST_CHECK(normalize_config_value("dlt-block-log-max-blocks", "100000", v, why));
+    BOOST_CHECK(config_spec_for("history-count-blocks")->needs_restart);
+}
+
 BOOST_AUTO_TEST_CASE(config_values_are_normalized_and_bounded) {
     std::string v;
     std::string why;
@@ -484,6 +499,10 @@ BOOST_AUTO_TEST_CASE(config_groups_map_to_plugins) {
     BOOST_CHECK_EQUAL(config_key_group("validator-guard-interval"), "validator_guard");
     BOOST_CHECK_EQUAL(config_key_group("logger.default.level"), "logging");
     BOOST_CHECK_EQUAL(config_key_group("log.capped_file_appender.node.max_lines"), "logging");
+    BOOST_CHECK_EQUAL(config_key_group("dlt-block-log-max-blocks"), "chain");
+    BOOST_CHECK_EQUAL(config_key_group("history-count-blocks"), "operation_history");
+    BOOST_CHECK_EQUAL(config_key_group("snapshot-every-n-blocks"), "snapshot");
+    BOOST_CHECK_EQUAL(config_key_group("snapshot-max-age-days"), "snapshot");
     BOOST_CHECK_EQUAL(config_key_group("something-else"), "other");
 }
 

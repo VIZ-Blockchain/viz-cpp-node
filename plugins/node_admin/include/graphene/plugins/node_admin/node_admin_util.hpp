@@ -190,6 +190,9 @@ inline const std::vector<std::string> &log_level_values() {
 /// Which plugin a parameter belongs to, for grouping in the UI and in admin.plugins.list.
 /// `logging` is not a plugin: it is the runtime logging section of the same panel.
 inline std::string config_key_group(const std::string &name) {
+    if (name == "dlt-block-log-max-blocks") return "chain";
+    if (name == "history-count-blocks") return "operation_history";
+    if (name.compare(0, 9, "snapshot-") == 0) return "snapshot";
     if (name.compare(0, 4, "p2p-") == 0 || name.compare(0, 4, "dlt-") == 0 ||
         name == "auto-resync-on-wedge") return "p2p";
     if (name.compare(0, 10, "webserver-") == 0) return "webserver";
@@ -229,6 +232,14 @@ inline const std::vector<config_spec> &config_allowlist() {
         {"validator-guard-disable-max", config_type::unsigned_int, 0, 1000, true},
         {"validator-guard-disable-on-shutdown", config_type::boolean, 0, 0, true},
         {"validator-guard-shutdown-grace", config_type::unsigned_int, 1, 3600, true},
+        // Retention windows counted in blocks: they must be recomputed whenever the block interval
+        // changes (HF16 moved 3 s -> 1 s), so they are editable here with bounds. The minimum of
+        // dlt-block-log-max-blocks is 1 on purpose: 0 disables the rolling block log, and that is a
+        // storage-mode decision for a human, not a retention tweak.
+        {"history-count-blocks", config_type::unsigned_int, 1, 100000000, true},
+        {"dlt-block-log-max-blocks", config_type::unsigned_int, 1, 100000000, true},
+        {"snapshot-every-n-blocks", config_type::unsigned_int, 0, 100000000, true},
+        {"snapshot-max-age-days", config_type::unsigned_int, 0, 3650, true},
         // Logging (owner decision 20.10.2026, Q#3081=A: the parameters panel plus log settings).
         // Levels only: appender filenames and rotation windows stay operator decisions, while the
         // capped appender's bounds are exactly the knobs against a log that fills the disk.
