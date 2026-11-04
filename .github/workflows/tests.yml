@@ -172,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        validators: [1, 2]
+        validators: [1, 2, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -213,8 +213,8 @@ jobs:
           set -euo pipefail
           mkdir -p build && cd build
           multi=()
-          if [ "${{ matrix.validators }}" = "2" ]; then
-            multi=(-DCHAIN_TESTNET_VALIDATORS=2)
+          if [ "${{ matrix.validators }}" != "1" ]; then
+            multi=(-DCHAIN_TESTNET_VALIDATORS=${{ matrix.validators }})
           fi
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -246,7 +246,9 @@ jobs:
           # --min-cases: floor of enabled cases in a testnet build (checked before --filter).
           run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 175)
           if [ "${{ matrix.validators }}" = "2" ]; then
-            "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite
+            "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite,canonical_progress_suite,canonical_cache_lifecycle_suite
+          elif [ "${{ matrix.validators }}" = "4" ]; then
+            "${run[@]}" --filter legal_tc_progress_suite
           else
             "${run[@]}"
           fi

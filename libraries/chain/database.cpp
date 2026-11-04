@@ -1964,6 +1964,18 @@ namespace graphene { namespace chain {
 
         bool database::_push_block(const signed_block &new_block, uint32_t skip) {
             try {
+                if (!(skip & skip_fork_db)) {
+                    // A retained nonpreferred fork can advance fork_db's head without
+                    // applying a block, so the window last set during LIB update is
+                    // stale. Refresh the same LIB-bounded window before admission,
+                    // including parent seeding, or a valid canonical child can be
+                    // rejected as too old before the linear-extension path runs.
+                    const auto &dpo = get_dynamic_global_properties();
+                    _fork_db.set_max_size(
+                        std::max(dpo.head_block_number,
+                                 _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                        dpo.last_irreversible_block_num + 1);
+                }
                 // Early rejection: if the block is at or before our head block number
                 // and its ID matches the block on our preferred chain, it's already
                 // applied. This prevents unnecessary fork_db push attempts that would
@@ -2172,7 +2184,7 @@ namespace graphene { namespace chain {
                         new_head->id != new_block.id() &&
                         new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
                         new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
-                        admitted_round(new_block) > block_cert_round(new_head->data)) {
+                        admitted_round(new_block) > admitted_round(new_head->data)) {
                         auto pushed = _fork_db.fetch_block(new_block.id());
                         if (pushed && !pushed->invalid) {
                             _fork_db.set_head(pushed);

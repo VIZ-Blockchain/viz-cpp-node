@@ -79,6 +79,18 @@ if(BUILD_TESTNET)
     list(APPEND SCENARIO_SOURCES scenarios/test_hf16_boundary.cpp)
     list(APPEND SCENARIO_SOURCES scenarios/test_hf16_production_safety.cpp)
     list(APPEND SCENARIO_SOURCES ../validator/test_committed_chain_state.cpp)
+
+    # These native fixtures register their own voting identities. Keep their
+    # schedule-cap premises explicit rather than registering failing/skipped tests
+    # in the default single-validator build.
+    if(CHAIN_TESTNET_VALIDATORS STREQUAL "2")
+        list(APPEND SCENARIO_SOURCES
+            scenarios/test_canonical_progress.cpp
+            scenarios/test_canonical_cache_lifecycle.cpp)
+    endif()
+    if(CHAIN_TESTNET_VALIDATORS STREQUAL "4")
+        list(APPEND SCENARIO_SOURCES scenarios/test_legal_tc_progress.cpp)
+    endif()
 else()
     message(STATUS "PM audit consensus regressions require BUILD_TESTNET=ON")
 endif()
