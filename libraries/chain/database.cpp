@@ -2184,7 +2184,14 @@ namespace graphene { namespace chain {
                         new_head->id != new_block.id() &&
                         new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
                         new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
-                        admitted_round(new_block) > admitted_round(new_head->data)) {
+                        admitted_round(new_block) > admitted_round(new_head->data) &&
+                        ![&]() {
+                            // A head certified by its own QC is not given up for a block that
+                            // only carries a later certificate (05.11.2026 stall: TC siblings
+                            // claiming QC r683 displaced a sibling holding QC r688).
+                            const auto own = get_block_qc(new_head->num);
+                            return own && own->block_id == new_head->id;
+                        }()) {
                         auto pushed = _fork_db.fetch_block(new_block.id());
                         if (pushed && !pushed->invalid) {
                             _fork_db.set_head(pushed);
@@ -8393,6 +8400,62 @@ namespace graphene { namespace chain {
             auto it = _block_qcs.find(block_num);
             if (it == _block_qcs.end()) return fc::optional<block_qc>();
             return it->second;
+        }
+
+        bool database::switch_head_to_certified_sibling() {
+            // Mainnet 05.11.2026 09:44-10:04Z: two siblings of #85147200 gathered a QC (15 and
+            // 20 votes), but head was a third, QC-less one. Each producer then took the TC path,
+            // dropped head and built one more QC-less #85147200 on the parent; nobody votes for
+            // a block whose TC claims a QC older than one already seen, so the chain stood
+            // until emergency. The certified sibling never became head: the same-height
+            // comparison ranks blocks by the certificate they CARRY, and a TC sibling always
+            // carries a later round than the parent QC of a certified one.
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dpo = get_dynamic_global_properties();
+            if (dpo.emergency_consensus_active) return false;
+            const uint32_t num = dpo.head_block_number;
+            if (num <= dpo.last_irreversible_block_num) return false;
+            const auto qc = get_block_qc(num);
+            if (!qc || qc->block_num != num || qc->block_id == head_block_id()) return false;
+            const auto head_item = _fork_db.fetch_block(head_block_id());
+            const auto sib = _fork_db.fetch_block(qc->block_id);
+            if (!head_item || !sib || sib->invalid || sib->anchor_only) return false;
+            if (sib->num != num || sib->data.previous != head_item->data.previous) return false;
+
+            // Same re-verification as parent_qc_for_next_block: the votes must still pass the
+            // check the next block's consensus validation runs.
+            uint32_t ok = 0;
+            for (const auto &sv : qc->signatures)
+                if (verify_block_vote(qc->block_num, qc->block_id, qc->round, sv.first, sv.second)) ++ok;
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            if (ok < quorum) {
+                wlog("Certified sibling ${id} of head #${n} not taken: ${k}/${q} QC signatures re-verified",
+                     ("id", qc->block_id)("n", num)("k", ok)("q", quorum));
+                return false;
+            }
+
+            wlog("Head #${n} ${h} has no QC, sibling ${id} has ${k}/${q} (round ${r}): switching head to it",
+                 ("n", num)("h", head_block_id())("id", qc->block_id)("k", ok)("q", quorum)("r", qc->round));
+            pop_block();
+            try {
+                auto session = start_undo_session();
+                apply_block(sib->data, skip_nothing);
+                session.push();
+                _fork_db.set_head(sib);
+                return true;
+            } catch (const shared_memory_corruption_exception &) {
+                throw;
+            } catch (const fc::exception &e) {
+                wlog("Certified sibling ${id} failed to apply, restoring head ${h}: ${e}",
+                     ("id", qc->block_id)("h", head_item->id)("e", e.to_string()));
+                _fork_db.remove(sib->id);
+            }
+            auto session = start_undo_session();
+            apply_block(head_item->data, skip_nothing);
+            session.push();
+            _fork_db.set_head(head_item);
+            return false;
         }
 
         bool database::qc_conflicts_with(const signed_block &b) const {

@@ -2793,6 +2793,21 @@ namespace graphene {
                 // Late-QC head: the block to rebuild on is the one its QC certifies.
                 fc::optional<graphene::protocol::block_id_type> rebuild_on;
                 const uint32_t own_round = db.round_of(scheduled_time);
+                // A certified sibling of a QC-less head is taken before any TC is looked for:
+                // a TC rebuild would add one more uncertified sibling nobody votes for.
+                try {
+                    // Read-lock pre-check: the write lock is taken only when a QC at head's
+                    // height names another block, not on every production tick.
+                    const bool sibling_qc = db.with_weak_read_lock([&]() {
+                        if (!db.block_needs_parent_qc(scheduled_validator)) return false;
+                        const auto qc = db.get_block_qc(db.head_block_num());
+                        return qc && qc->block_id != db.head_block_id();
+                    });
+                    if (sibling_qc) db.with_strong_write_lock([&]() { db.switch_head_to_certified_sibling(); });
+                } catch (const fc::exception &e) {
+                    wlog("Switch to certified sibling failed: ${e}", ("e", e.to_string()));
+                    return block_validation_condition::not_time_yet;
+                }
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
                     const bool hf18 = db.has_hardfork(CHAIN_HARDFORK_18);
