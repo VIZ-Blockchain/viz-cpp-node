@@ -750,6 +750,9 @@ namespace graphene { namespace chain {
 
             /// The certificate formed for a height, if any (node-local view).
             fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
+            // A sibling of head at the same height holds a re-verified QC while head holds none:
+            // make the sibling head. Returns true when head changed. Producer-side only.
+            bool switch_head_to_certified_sibling();
 
             /// True when a QC we hold certifies a block at b's parent height other than
             /// b's parent, at b's height other than b, or at any height above b (a
