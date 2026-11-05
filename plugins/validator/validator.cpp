@@ -2876,6 +2876,23 @@ namespace graphene {
                         }
                         rebuild_on = parent_qc->block_id;
                     }
+                    // Head activated HF18: the block we would rebuild on is pre-fork, so the
+                    // v2 TC cannot ride on it, and no v1 TC exists (everyone signed v2). Popping
+                    // anyway leaves us on the pre-fork parent, where the next tick builds a
+                    // TC-less block that gets no votes and activates HF18 again -- every slot,
+                    // with a fresh head time, so the 60 s unstick never fires. Keep head and
+                    // wait: the unstick builds on it.
+                    // ponytail: timestamp test is exact only when the version quorum held before
+                    // the HF time (mainnet 17/17); a late quorum falls back to the post-pop guard.
+                    if (skip_tc_v2) {
+                        const auto &hfp = db.get_hardfork_property_object();
+                        const auto base = db.fetch_block_by_id(rebuild_on ? *rebuild_on : head->previous);
+                        if (base && hfp.next_hardfork == CHAIN_HARDFORK_18_VERSION &&
+                            base->timestamp < hfp.next_hardfork_time) {
+                            skip_tc_v2.reset();
+                            skip_refused("head activated HF18; its TC cannot ride on the pre-fork parent, waiting for the unstick");
+                        }
+                    }
                 });
                 if (waiting_for_qc && (skip_tc || skip_tc_v2)) {
                     const auto skipped = db.head_block_id();
@@ -2894,8 +2911,9 @@ namespace graphene {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;
                     }
-                    // The skipped block may itself have activated HF18. A certificate
-                    // selected on its state cannot be carried on the pre-fork parent.
+                    // The skipped block may itself have activated HF18 (only reachable when the
+                    // check above could not see it). A certificate selected on its state cannot
+                    // be carried on the pre-fork parent.
                     if (skip_tc_v2 && db.with_weak_read_lock([&]() { return !db.has_hardfork(CHAIN_HARDFORK_18); }))
                         return block_validation_condition::not_time_yet;
                     // Our block now sits on the anchor: it needs no parent QC and may
