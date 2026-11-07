@@ -8438,6 +8438,16 @@ namespace graphene { namespace chain {
             wlog("Head #${n} ${h} has no QC, sibling ${id} has ${k}/${q} (round ${r}): switching head to it",
                  ("n", num)("h", head_block_id())("id", qc->block_id)("k", ok)("q", quorum)("r", qc->round));
             pop_block();
+            if (head_block_id() == head_item->id) {
+                // Same guard as every other pop site: undo() had nothing to revert (committed or
+                // empty undo session, e.g. right after a restart), so the state still holds head
+                // while _fork_db already points at the parent. Applying the sibling on top of
+                // that state fails the header check and the re-apply of head fails the same way,
+                // leaving the two heads apart. Put the fork_db head back and keep waiting.
+                wlog("Certified sibling switch: pop_block() made no progress at head #${n}, keeping head", ("n", num));
+                _fork_db.set_head(head_item);
+                return false;
+            }
             try {
                 auto session = start_undo_session();
                 apply_block(sib->data, skip_nothing);
