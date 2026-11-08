@@ -776,10 +776,7 @@ namespace graphene { namespace chain {
                 // The state was rebuilt from the block log while the journal was left open but not
                 // replayed (see open_timeout_vote_journal). The chain is the same one and the head
                 // exists now, so the cached votes can be judged exactly as on a normal start.
-                if (_timeout_vote_journal_restore_pending) {
-                    _timeout_vote_journal_restore_pending = false;
-                    open_timeout_vote_journal(data_dir, /*replay_votes=*/true);
-                }
+                resume_timeout_vote_journal(data_dir);
 
                 if (signal_guard::get_is_interrupted()) {
                     sg.restore();
@@ -7638,11 +7635,17 @@ namespace graphene { namespace chain {
             }
 
             if (!replay_votes) {
-                if (!journal->truncate(error))
-                    elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
-                else
-                    ilog("Timeout vote journal: chain state was wiped, starting with an empty cache ${p}", ("p", path));
-                _timeout_vote_journal_restore_pending = false;
+                // A snapshot import wipes the state and rebuilds it -- but from the SAME chain:
+                // the production image ships `plugin = snapshot`, `snapshot-every-n-blocks = 2400`
+                // and auto-recovery takes the latest snapshot first, so THIS is the door a
+                // production node goes through on a restart under a stall (the stand had no
+                // snapshots, hence the reindex door). Nothing in the file is trusted by itself:
+                // the vote digest binds the chain id, and the replay re-checks schedule
+                // membership, the signing key, the signature and the one-hour window, so votes of
+                // another chain are refused. Keep the file and let do_snapshot_load() replay it
+                // once the snapshot (and the dlt replay on top of it) has a head.
+                ilog("Timeout vote journal: snapshot import, keeping ${p} for restore after the load", ("p", path));
+                _timeout_vote_journal_restore_pending = true;
                 _timeout_vote_journal = std::move(journal);
                 return;
             }
@@ -7729,6 +7732,16 @@ namespace graphene { namespace chain {
                      ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped));
 
             _timeout_vote_journal = std::move(journal);
+        }
+
+        void database::resume_timeout_vote_journal(const fc::path &data_dir) {
+            // Called once a state rebuild has a head: block-log reindex (open() kept the cache
+            // because head was 0 while the block log was intact) or snapshot import
+            // (open_from_snapshot() keeps it for the same reason). Nothing to do on a normal
+            // start -- the journal was already replayed at the end of open().
+            if (!_timeout_vote_journal_restore_pending) return;
+            _timeout_vote_journal_restore_pending = false;
+            open_timeout_vote_journal(data_dir, /*replay_votes=*/true);
         }
 
         void database::apply_equivocation_proofs(const signed_block &b, uint32_t skip) {
