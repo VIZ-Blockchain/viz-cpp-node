@@ -91,6 +91,12 @@ if(BUILD_TESTNET)
     if(CHAIN_TESTNET_VALIDATORS STREQUAL "4")
         list(APPEND SCENARIO_SOURCES scenarios/test_legal_tc_progress.cpp)
     endif()
+    # switch_head_to_certified_sibling() needs a schedule where the producer is not the whole
+    # quorum: four identities (quorum three, producer excluded) is the minimum, and the native
+    # 21-validator build runs the same fixture because only registered voters are scheduled.
+    if(CHAIN_TESTNET_VALIDATORS STREQUAL "4" OR CHAIN_TESTNET_VALIDATORS STREQUAL "21")
+        list(APPEND SCENARIO_SOURCES scenarios/test_certified_sibling_switch.cpp)
+    endif()
 else()
     message(STATUS "PM audit consensus regressions require BUILD_TESTNET=ON")
 endif()

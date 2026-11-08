@@ -252,7 +252,10 @@ jobs:
           if [ "${{ matrix.validators }}" = "2" ]; then
             "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite,canonical_progress_suite,canonical_cache_lifecycle_suite
           elif [ "${{ matrix.validators }}" = "4" ]; then
-            "${run[@]}" --filter legal_tc_progress_suite
+            # legal_tc_progress_suite exists only in this arm; certified_sibling_switch_suite is built
+            # in both the 4- and 21-validator arms, but this arm runs only named suites, so it must be
+            # listed here or it would be built and never executed (the 21-validator arm runs all).
+            "${run[@]}" --filter legal_tc_progress_suite,certified_sibling_switch_suite
           else
             "${run[@]}"
           fi
