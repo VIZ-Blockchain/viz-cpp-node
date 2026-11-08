@@ -172,6 +172,29 @@ def wiring_problems(cpp, hpp):
     elif replay_at >= 0 and guard_at > replay_at:
         problems.append('the genesis guard sits after the replay -- it cannot prevent it')
 
+    # A REINDEX is not a rebuilt chain: the block log is intact, so the reopened state at head 0
+    # is the same chain being rebuilt from its own blocks. The cache must be kept there and
+    # restored once the replay has a head (measured 08.11.2026: a mid-stall restart lost 435
+    # cached votes to "chain is at genesis, discarding" after "Shared memory corrupted").
+    reindex_body = method(cpp, 'void database::reindex(')
+    if reindex_body is None:
+        problems.append('database::reindex() not found -- the reindex path cannot be judged')
+    else:
+        reindex_m = _masked(reindex_body)
+        genesis_branch = init_m[guard_at:replay_at] if guard_at >= 0 and replay_at >= 0 else ''
+        # The CONDITION is what matters: a mention of the block log inside a log string would
+        # satisfy a looser check while the truncate still runs on every reindex.
+        if genesis_branch and not re.search(r'if\s*\(\s*_block_log\.head\(\)\s*&&[^{]*>\s*0\s*\)',
+                                            genesis_branch):
+            problems.append('the genesis guard truncates without checking the block log: a reindex '
+                            'restart would discard a cache that describes this same chain')
+        if not re.search(r'if\s*\(\s*_timeout_vote_journal_restore_pending\s*\)', reindex_m):
+            problems.append('reindex() does not restore the journal kept at head 0 -- the cache '
+                            'would survive the replay on disk but never return to the pool')
+        elif not re.search(call_pattern('open_timeout_vote_journal', 'data_dir', 'true'), reindex_m):
+            problems.append('reindex() does not replay the pending journal '
+                            '(open_timeout_vote_journal(data_dir, true) missing)')
+
     # A cache that cannot be read must never become a startup blocker: replay is contained,
     # and a failed replay leaves the journal detached instead of appending to a half-written file.
     flag_on = init_m.find('_timeout_vote_journal_replaying = true;')
@@ -214,6 +237,9 @@ def wiring_problems(cpp, hpp):
         problems.append('database.hpp has no _timeout_vote_journal member')
     if '_timeout_vote_journal_replaying' not in masked_hpp:
         problems.append('database.hpp has no _timeout_vote_journal_replaying flag')
+    if '_timeout_vote_journal_restore_pending' not in masked_hpp:
+        problems.append('database.hpp has no _timeout_vote_journal_restore_pending flag '
+                        '(reindex() could not tell whether a kept cache is waiting)')
     if '#include <graphene/chain/timeout_vote_journal.hpp>' not in hpp:
         problems.append('database.hpp does not include the journal header')
     return problems
@@ -237,8 +263,15 @@ MUTATIONS = {
     'v1-accepted-after-fork': ('if (has_hardfork(CHAIN_HARDFORK_18)) return false;', 'if (false) return false;'),
     'v2-accepted-before-fork': ('if (!has_hardfork(CHAIN_HARDFORK_18)) return false;', 'if (false) return false;'),
     'v2-block-id-not-cached': ('v2 ? std::string(high_qc_block_id) : std::string()', 'std::string()'),
-    'no-genesis-guard': ('if (head_block_num() == 0) {\n                if (!journal->truncate(error))',
-                         'if (head_block_num() < 0) {\n                if (!journal->truncate(error))'),
+    'no-genesis-guard': ('if (head_block_num() == 0) {\n                if (_block_log.head() && _block_log.head()->block_num() > 0) {',
+                         'if (head_block_num() < 0) {\n                if (false) {'),
+    'reindex-truncates-cache': ('if (_block_log.head() && _block_log.head()->block_num() > 0) {',
+                                'if (false) {'),
+    'reindex-never-restores': ('if (_timeout_vote_journal_restore_pending) {\n'
+                               '                    _timeout_vote_journal_restore_pending = false;\n'
+                               '                    open_timeout_vote_journal(data_dir, /*replay_votes=*/true);\n'
+                               '                }',
+                               '(void)nullptr;'),
     'replay-exception-escapes': ('error = "unknown exception";', 'throw;'),
     'failed-replay-attaches': ('elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));\n'
                                '                return;',

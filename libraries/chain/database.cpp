@@ -773,6 +773,14 @@ namespace graphene { namespace chain {
                     set_revision(head_block_num());
                 });
 
+                // The state was rebuilt from the block log while the journal was left open but not
+                // replayed (see open_timeout_vote_journal). The chain is the same one and the head
+                // exists now, so the cached votes can be judged exactly as on a normal start.
+                if (_timeout_vote_journal_restore_pending) {
+                    _timeout_vote_journal_restore_pending = false;
+                    open_timeout_vote_journal(data_dir, /*replay_votes=*/true);
+                }
+
                 if (signal_guard::get_is_interrupted()) {
                     sg.restore();
 
@@ -7634,6 +7642,7 @@ namespace graphene { namespace chain {
                     elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
                 else
                     ilog("Timeout vote journal: chain state was wiped, starting with an empty cache ${p}", ("p", path));
+                _timeout_vote_journal_restore_pending = false;
                 _timeout_vote_journal = std::move(journal);
                 return;
             }
@@ -7642,11 +7651,27 @@ namespace graphene { namespace chain {
             // file belongs to an instance that used to live in this data dir (genesis rebuild,
             // wiped blockchain/ but kept data dir). Replaying it would seed the pool of a fresh
             // chain with votes its validators never cast here.
+            //
+            // A REINDEX is the exception. The block log is intact and the reopened state is only
+            // being rebuilt from it, so this is the SAME chain: the cached votes describe rounds
+            // inside the same one-hour window and can be judged normally once the replay has a
+            // head. Discarding them here is what made a mid-stall restart lose its cache --
+            // measured 08.11.2026 on the 21-validator stand: "Shared memory corrupted (open
+            // failed)" -> replay -> "chain is at genesis, discarding", 435 cached votes gone.
+            // Keep the file open (no truncate, no replay yet) and let reindex() restore it.
             if (head_block_num() == 0) {
+                if (_block_log.head() && _block_log.head()->block_num() > 0) {
+                    ilog("Timeout vote journal: reindex pending (block log head ${h}), keeping ${p} "
+                         "for restore after the replay", ("h", _block_log.head()->block_num())("p", path));
+                    _timeout_vote_journal_restore_pending = true;
+                    _timeout_vote_journal = std::move(journal);
+                    return;
+                }
                 if (!journal->truncate(error))
                     elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
                 else
                     ilog("Timeout vote journal: chain is at genesis, discarding ${p}", ("p", path));
+                _timeout_vote_journal_restore_pending = false;
                 _timeout_vote_journal = std::move(journal);
                 return;
             }
