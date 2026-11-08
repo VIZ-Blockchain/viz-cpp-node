@@ -51,6 +51,8 @@ def wiring_problems(val_cpp, db_cpp):
             (r'ok\s*<\s*quorum', 'switches on a QC below quorum'),
             (r'_fork_db\.set_head\(sib\)', 'fork_db head is left on the parent after the switch'),
             (r'apply_block\(head_item->data', 'a failed sibling does not restore the previous head'),
+            (r'pop_block\(\);\s*if\s*\(head_block_id\(\)\s*==\s*head_item->id\)\s*\{[^}]*_fork_db\.set_head\(head_item\);\s*return\s+false;',
+             'a no-progress pop_block() (committed/empty undo) goes on to apply the sibling on the old state'),
         ]:
             if not re.search(pat, sw):
                 problems.append(f'switch_head_to_certified_sibling {why}')
@@ -68,6 +70,7 @@ MUTATIONS = {
     'not-sibling': ('|| sib->data.previous != head_item->data.previous', ''),
     'no-own-qc-guard': ('return own && own->block_id == new_head->id;', 'return false;'),
     'no-restore': ('apply_block(head_item->data, skip_nothing);', ''),
+    'no-pop-guard': ('if (head_block_id() == head_item->id) {', 'if (false) {'),
 }
 
 
