@@ -1018,6 +1018,10 @@ namespace graphene { namespace chain {
             /// True while re-feeding the journal through push_timeout_vote: those votes are already
             /// on disk and must not be appended again.
             bool _timeout_vote_journal_replaying = false;
+            /// Set when the journal was opened before a reindex (head 0, block log intact) and its
+            /// votes could not be judged yet: the state is being rebuilt from the same chain, so the
+            /// cache is kept on disk and restored once reindex() has a head to judge it against.
+            bool _timeout_vote_journal_restore_pending = false;
             mutable std::mutex _block_votes_mutex;
             std::atomic<uint32_t> _head_reject_logged{0};
             // Diagnostics: (validator, height) / (validator, claimed QC round) already named
