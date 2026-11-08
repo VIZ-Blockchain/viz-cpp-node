@@ -139,8 +139,11 @@ void push_quorum_votes(simulated_node& n, const genesis_params& gp, const keys_t
     const uint32_t round = db.round_of(target.timestamp);
     const auto digest = block_vote_digest(db.get_chain_id(), target.block_num(), target.id(), round);
     uint32_t pushed = 0;
+    // The producer may vote for its own block: verify_block_vote() only checks that the voter is
+    // scheduled and the signature matches (database.cpp:7368) - there is no self-vote ban. That
+    // matters on small schedules: with four identities and quorum three, excluding the producer
+    // would leave two voters and make a real QC unreachable (measured in CI: 2 != 3).
     for (const auto& v : scheduled(db)) {
-        if (v == target.validator) continue;      // a producer never votes for its own block
         if (pushed >= limit) break;
         BOOST_REQUIRE_MESSAGE(db.push_block_vote(target.block_num(), target.id(), round, v,
                                                  key_for(gp, keys, v).sign_compact(digest)),
