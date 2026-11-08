@@ -652,6 +652,16 @@ namespace graphene { namespace chain {
             void open_timeout_vote_journal(const fc::path &data_dir, bool replay_votes);
 
             /**
+             * Replays the timeout-vote journal that a state rebuild (block-log reindex, snapshot
+             * import) kept on disk, once that rebuild has given the node a head to judge the votes
+             * against. A no-op when nothing is pending. Nothing from the file is trusted by itself:
+             * the digest binds the chain id, and every line is re-checked for schedule membership,
+             * key, signature and the one-hour window, so votes of another chain are refused rather
+             * than replayed.
+             */
+            void resume_timeout_vote_journal(const fc::path &data_dir);
+
+            /**
              *  This method validates transactions without adding it to the pending state.
              *  @throw if an error occurs
              *  @return modified skip flags

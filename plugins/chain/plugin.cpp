@@ -1093,6 +1093,13 @@ namespace chain {
         }
 
         if (is_recovery) write_schema_version(data_dir);
+        // The snapshot import kept the timeout-vote cache on disk (open_from_snapshot()): the state
+        // is final here -- snapshot loaded, dlt_block_log replayed -- so the cached votes can be
+        // judged exactly as on a normal start. This is the door a PRODUCTION node takes on a
+        // restart under a stall (the image ships snapshot-every-n-blocks = 2400 and auto-recovery
+        // prefers the newest snapshot over a block-log replay), so skipping it here would lose
+        // the cache precisely when it matters.
+        my->db.resume_timeout_vote_journal(data_dir);
         // Arm --validate-database-invariants on the snapshot path too: testnet-vizd boots with
         // --replay-from-snapshot, and plugin_startup() returns before its arming point, so a
         // flag armed only there is a silent no-op on that deployment.  State is final here
