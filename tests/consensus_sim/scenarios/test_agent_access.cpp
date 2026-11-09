@@ -264,6 +264,42 @@ BOOST_AUTO_TEST_CASE(agent_access_agent_key_signs_granted_operation) {
     BOOST_CHECK_EQUAL(liquid(f.node, f.gp.initiator_name) - before, 1000);
 }
 
+// validator_update is delegable: a row naming this operation lets the agent key rotate the
+// validator's block signing key. That is the flow validator_guard needs — the host then holds an
+// agent key scoped to one operation instead of the account's active key.
+BOOST_AUTO_TEST_CASE(agent_access_validator_update_is_delegable) {
+    agent_fixture f(0xAA9E41, "aa-vupdate");
+    const auto rotated = derive_key("rotated-signing-key");
+    grant(f.node, f.gp, f.when, f.gp.initiator_name, f.gp.initiator_key, "slot-guard",
+          f.agent_key.get_public_key(), {"validator_update"});
+
+    validator_update_operation vu;
+    vu.owner = f.gp.initiator_name;
+    vu.url = "agent-managed";
+    vu.block_signing_key = rotated.get_public_key();
+    f.node.push_pending_transaction(sign_ops({vu}, f.agent_key, f.node));
+    produce(f.node, f.gp, f.when);
+
+    BOOST_CHECK(f.node.db().get_validator(f.gp.initiator_name).signing_key ==
+                rotated.get_public_key());
+}
+
+// The grant list IS the permission: the same agent key cannot rotate the signing key when its row
+// names another operation.
+BOOST_AUTO_TEST_CASE(agent_access_validator_update_needs_the_grant) {
+    agent_fixture f(0xAA9E42, "aa-vupdate-denied");
+    f.issue({"transfer"});
+
+    validator_update_operation vu;
+    vu.owner = f.gp.initiator_name;
+    vu.url = "agent-managed";
+    vu.block_signing_key = derive_key("unused-key").get_public_key();
+    expect_rejected(f.node, sign_ops({vu}, f.agent_key, f.node),
+                    "agent without the validator_update grant rotated the signing key");
+    BOOST_CHECK(f.node.db().get_validator(f.gp.initiator_name).signing_key ==
+                f.gp.initiator_key.get_public_key());
+}
+
 std::string stored_addons(simulated_node& n, const account_name_type& p, const account_name_type& a) {
     const auto& idx = n.db().get_index<agent_permission_index>().indices().get<by_permission_account>();
     auto it = idx.find(boost::make_tuple(p, a));
