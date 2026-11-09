@@ -74,7 +74,9 @@ namespace graphene {
 
             struct validator_plugin::impl final {
                 uint32_t skip_diag_head = 0;
-                const char *skip_diag_why = nullptr;
+                // Key of the last refusal reason, not its text: one reason now carries counts
+                // that change as votes arrive, and a changing message would defeat the dedup.
+                std::string skip_diag_why;
                 impl():
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
@@ -2829,7 +2831,7 @@ namespace graphene {
                     // dropped): say once per head why the TC skip is not taken.
                     // Keyed by head AND reason: keyed by head alone, the first refusal
                     // ("no TC yet") hid the real one for the rest of the stall.
-                    const auto skip_refused = [&](const char *why) {
+                    const auto skip_refused = [&](const std::string &why) {
                         if (skip_diag_head == db.head_block_num() && skip_diag_why == why) return;
                         skip_diag_head = db.head_block_num();
                         skip_diag_why = why;
@@ -2871,7 +2873,30 @@ namespace graphene {
                     if (hf18) {
                         skip_tc_v2 = db.get_timeout_cert_between_v2(parent_qc->round, own_round,
                                                                     parent_qc->round, parent_qc->block_id);
-                        if (!skip_tc_v2) { skip_refused("no usable TC between head's QC round and our round"); return; }
+                        if (!skip_tc_v2) {
+                            // Name the cause, not just the verdict: on 01.11.2026 mainnet sat
+                            // here with 12 usable votes of 13 and the log could not say whether
+                            // votes were missing, claimed a higher QC round, or named another
+                            // block at the parent's round (three voters on a divergent tip).
+                            const auto d = db.diagnose_timeout_cert_window_v2(
+                                    parent_qc->round, own_round, parent_qc->round, parent_qc->block_id);
+                            if (skip_diag_head != db.head_block_num() ||
+                                skip_diag_why != "no usable TC between head's QC round and our round") {
+                                skip_diag_head = db.head_block_num();
+                                skip_diag_why = "no usable TC between head's QC round and our round";
+                                wlog("TC skip of QC-less head #${h} refused for slot round ${r}: "
+                                     "no usable TC between head's QC round ${a} and our round ${b} — "
+                                     "rounds scanned ${n}, best ${k}/${q} at round ${c} (dropped: "
+                                     "${x} claimed a QC round above the parent's, ${y} named another "
+                                     "block at it, ${z} bad signature)",
+                                     ("h", db.head_block_num())("r", own_round)
+                                     ("a", parent_qc->round)("b", own_round)("n", d.rounds)
+                                     ("k", d.usable)("q", d.quorum)("c", d.best_round)
+                                     ("x", d.above_parent_qc)("y", d.other_block)
+                                     ("z", d.bad_signature));
+                            }
+                            return;
+                        }
                     } else {
                         skip_tc = db.get_timeout_cert_between(parent_qc->round, own_round, parent_qc->round);
                         if (!skip_tc) { skip_refused("no usable TC between head's QC round and our round"); return; }
