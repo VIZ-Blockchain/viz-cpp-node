@@ -284,17 +284,37 @@ void validator_guard_plugin::impl::send_validator_update(
         ilog("validator_guard: broadcasting validator_update [ID: ${id}] for '${w}' — restoring key to ${k}",
              ("id", tx_id)("w", validator_name)("k", signing_pub));
 
-        // Apply to OUR OWN chain first. `p2p_.broadcast_transaction` only puts the transaction into
-        // the p2p mempool and relays it to peers (dlt_p2p_node.cpp:2741-2748); the chain applies a
-        // peer transaction, never our own, and nothing drains that mempool into a block
-        // (accept_transaction is called only for messages received FROM a peer, dlt_p2p_node.cpp:2177).
-        // Without this line a node with no peers cannot restore anything, and the log still says
-        // "sent successfully" every check cycle — measured on testnet 2026-11-09: the on-chain key
-        // stayed null while the guard retried each 5 blocks.
+        // Apply to OUR OWN chain as well. `p2p_.broadcast_transaction` only puts the transaction
+        // into the p2p mempool and relays it to peers (dlt_p2p_node.cpp:2741-2748); the chain
+        // applies a peer transaction, never our own, and nothing drains that mempool into a block
+        // (accept_transaction is called only for messages received FROM a peer,
+        // dlt_p2p_node.cpp:2177). Without a local apply a node with no peers cannot restore
+        // anything, while the log still says "sent successfully" on every check cycle.
+        //
+        // The apply is POSTED, not called inline: this runs on the block-apply thread, which holds
+        // the database write lock. `chain::plugin::accept_transaction` posts to the io_service and
+        // waits for the result (plugin.cpp:327-344); io_service is single-threaded (one run(),
+        // appbase application.cpp:222), so calling it from here waits for a task that can only run
+        // after this thread returns — and push_transaction hits its 2 s write-lock timeout. Live
+        // testnet 2026-11-09 17:54:32 showed exactly that:
+        //   local apply of validator_update FAILED: Unable to acquire WRITE lock ... wait_ms=2000
+        // Posting our own task and pushing directly avoids both the inline wait and the deadlock.
         try {
-            chain_.accept_transaction(tx);
+            auto& database = db();
+            auto pending_tx = tx;
+            boost::asio::post(appbase::app().get_io_service(),
+                [&database, pending_tx]() {
+                    try {
+                        auto skip = database.validate_transaction(
+                            pending_tx, graphene::chain::database::skip_apply_transaction);
+                        database.push_transaction(pending_tx, skip);
+                    } catch (const fc::exception& e) {
+                        elog("validator_guard: local apply of validator_update FAILED: ${e}",
+                             ("e", e.to_detail_string()));
+                    }
+                });
         } catch (const fc::exception& e) {
-            elog("validator_guard: local apply of validator_update FAILED for '${w}': ${e}",
+            elog("validator_guard: could not schedule local apply for '${w}': ${e}",
                  ("w", validator_name)("e", e.to_detail_string()));
         }
 
