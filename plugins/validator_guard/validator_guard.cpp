@@ -2,6 +2,7 @@
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/account_object.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -1001,8 +1002,28 @@ void validator_guard_plugin::plugin_startup() {
                 }
             }
             if (!active_key_has_authority) {
-                elog("validator_guard: WARNING: Configured active key for validator '${w}' "
-                     "does NOT have authority on-chain. Restoration will fail.", ("w", name));
+                // The key may legitimately be an AGENT key: HF15 lets a principal delegate
+                // `validator_update` to a key that is not in active.key_auths. Ask the same hook the
+                // chain uses, so the operator is not told "restoration will fail" about a setup that
+                // works (measured on testnet 2026-11-09: the agent-signed update rotated the
+                // validator signing key while this check printed the failure warning).
+                bool delegated = false;
+                try {
+                    graphene::protocol::validator_update_operation probe;
+                    probe.owner = name;
+                    delegated = graphene::chain::agent_operation_allowed(
+                        pimpl->db(), probe, name, active_pub_key);
+                } catch (const fc::exception&) {
+                    // Fall through: an inconclusive probe must not be reported as "allowed".
+                }
+                if (delegated) {
+                    ilog("validator_guard: configured key for validator '${w}' is an AGENT key with "
+                         "delegated 'validator_update' — restoration will use it", ("w", name));
+                } else {
+                    elog("validator_guard: WARNING: Configured active key for validator '${w}' "
+                         "does NOT have authority on-chain and holds no agent grant for "
+                         "'validator_update'. Restoration will fail.", ("w", name));
+                }
             }
             ++it;
         } catch (const fc::exception& e) {
