@@ -617,6 +617,19 @@ std::vector<validator_status> validator_guard_plugin::impl::validators_status() 
                 for (const auto& k : auth.active.key_auths) {
                     if (k.first == pk) { st.active_authority = true; break; }
                 }
+                // A key outside active.key_auths may still be a working AGENT key (HF15). Ask the
+                // same hook the chain uses, so the status page does not repeat the startup warning
+                // about a setup that works (measured on testnet 2026-11-09).
+                if (!st.active_authority && st.on_chain) {
+                    try {
+                        graphene::protocol::validator_update_operation probe;
+                        probe.owner = st.name;
+                        st.agent_grant = graphene::chain::agent_operation_allowed(db(), probe, st.name, pk);
+                    } catch (const fc::exception&) {
+                        // Inconclusive probe stays false: the view must not promise authority it
+                        // could not prove (same rule as the startup check).
+                    }
+                }
             } catch (...) {
                 // A validator whose account is gone is reported as on_chain=false above.
             }
