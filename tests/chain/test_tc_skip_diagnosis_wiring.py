@@ -11,12 +11,15 @@ could not say whether the votes were missing, carried a higher high-QC round, or
 another block.
 
 Checks:
-  1. `diagnose_timeout_cert_window_v2()` mirrors the search's three filters, builds nothing (a
-     diagnosis must not change what the node accepts) and is BOUNDED: every counted vote costs a
-     signature verification, and an uncapped walk of the 01.11 window (22 716 rounds) would hold
-     the vote mutex for seconds on the production path;
-  2. the HF18 refusal path calls it once per head and logs the counts (scanned/window,
-     usable/quorum/round and the dropped buckets), so the next refusal answers "why" on its own;
+  1. `diagnose_timeout_cert_window_v2()` mirrors the search's three filters and builds nothing (a
+     diagnosis must not change what the node accepts). Cost is bounded by capping VERIFICATION,
+     not the walk: a signature check is the expensive part, so the whole window is walked for
+     counters and only rounds that could answer are verified. Capping the walk itself was the
+     first version and it was blind by design — in the 01.11.2026 stall the surviving votes sat
+     22 714 rounds below the newest;
+  2. the HF18 refusal path calls it once per head and logs the counts (rounds walked, rounds
+     verified with the budget flag, usable/quorum/round and the dropped buckets), so the next
+     refusal answers "why" on its own;
   3. the once-per-head dedup is keyed by a stable reason, not by the counts that change as votes
      arrive (otherwise the line repeats every slot).
 
@@ -47,17 +50,23 @@ def wiring_problems(val_cpp, db_cpp):
         diag = _masked(diag_raw)
         for pat, why in [
             (r'_block_votes_mutex', 'does not read the vote store under the same lock as the search'),
-            (r'entry\.high_qc_round\s*>\s*max_high_qc_round', 'does not separate votes that claimed a higher QC round'),
-            (r'entry\.high_qc_round\s*==\s*max_high_qc_round\s*&&\s*entry\.high_qc_block_id\s*!=\s*max_high_qc_block_id',
-             'does not separate votes that named another block at the parent QC round'),
+            # The COUNTING form, not the verifying one: the buckets are what the log reports, and
+            # a filter that only skips during verification would leave every round looking dirty.
+            (r'if \(entry\.high_qc_round\s*>\s*max_high_qc_round\)\s*\+\+above;',
+             'does not count votes that claimed a higher QC round'),
+            (r'else if \(entry\.high_qc_round\s*==\s*max_high_qc_round\s*&&\s*entry\.high_qc_block_id\s*!=\s*max_high_qc_block_id\)\s*\+\+other;',
+             'does not count votes that named another block at the parent QC round'),
             (r'verify_timeout_vote_v2\(', 'does not separate votes with a bad signature'),
-            (r'scanned\s*<\s*max_rounds', 'walks the whole window uncapped: every counted vote is a signature check'),
-            (r'rounds_in_window', 'does not size the window, so a capped scan cannot say how much it skipped'),
+            (r'rounds_verified\s*>=\s*max_verified_rounds', 'verifies every round: the signature budget is the only bound on this path'),
+            (r'sig_budget_spent\s*=\s*true', 'never says when older rounds were counted but not verified'),
         ]:
             if not re.search(pat, diag):
                 problems.append(f'diagnose_timeout_cert_window_v2 {why}')
         if 'block_timeout_certificate_v2' in diag:
             problems.append('diagnose_timeout_cert_window_v2 builds a certificate: a diagnosis must be read-only')
+        if re.search(r'(rounds_scanned|scanned)\s*(>=|<)\s*\d+', diag) or \
+           re.search(r'while \(it != _timeout_votes\.begin\(\)\s*&&', diag):
+            problems.append('the walk itself is capped: a stall can push the answer far below the newest round')
 
     body_raw = method(val_cpp, 'validator_plugin::impl::maybe_validate_block(')
     if body_raw is None:
@@ -74,8 +83,9 @@ def wiring_problems(val_cpp, db_cpp):
         elif search_at >= 0 and diag_at < search_at:
             problems.append('the diagnosis runs before the search it explains')
         for pat, why in [
-            (r'\("n",\s*d\.rounds_scanned\)\s*\("t",\s*d\.rounds_in_window\)',
-             'does not say how much of the window the scan covered'),
+            (r'\("n",\s*d\.rounds_scanned\)\s*\("v",\s*d\.rounds_verified\)',
+             'does not say how many rounds were walked and how many were signature-checked'),
+            (r'd\.sig_budget_spent\s*\?', 'does not say when the signature budget ran out'),
             (r'\("k",\s*d\.usable\)\s*\("q",\s*d\.quorum\)', 'does not say how many votes survived against the quorum'),
             (r'\("x",\s*d\.above_parent_qc\)\s*\("y",\s*d\.other_block\)', 'does not say why votes were dropped'),
             (r'\("z",\s*d\.bad_signature\)', 'does not count votes with a bad signature'),
@@ -99,15 +109,18 @@ def wiring_problems(val_cpp, db_cpp):
 MUTATIONS = {
     'no-call': ('const auto d = db.diagnose_timeout_cert_window_v2(',
                 'const auto d = db.get_timeout_cert_between_v2('),
-    'no-round-filter': ('if (entry.high_qc_round > max_high_qc_round) { ++above; continue; }', ''),
-    'no-block-id-filter': ('if (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id) { ++other; continue; }', ''),
+    'no-round-filter': ('if (entry.high_qc_round > max_high_qc_round) ++above;', ''),
+    'no-block-id-filter': ('else if (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id) ++other;', ''),
     'no-signature-check': ('if (!verify_timeout_vote_v2(it->first, entry.high_qc_round, entry.high_qc_block_id, tv.first, entry.signature)) { ++bad_sig; continue; }', ''),
     'builds-certificate': ('timeout_cert_window_diagnosis d;', 'timeout_cert_window_diagnosis d; protocol::block_timeout_certificate_v2 tc;'),
-    'uncapped-walk': ('while (it != _timeout_votes.begin() && scanned < max_rounds) {', 'while (it != _timeout_votes.begin()) {'),
+    'capped-walk': ('if (it->first <= lo_exclusive) break;\n                ++d.rounds_scanned;',
+                    'if (it->first <= lo_exclusive || d.rounds_scanned >= 128) break;\n                ++d.rounds_scanned;'),
+    'verify-every-round': ('if (d.rounds_verified >= max_verified_rounds) { d.sig_budget_spent = true; continue; }', ''),
+    'budget-flag-dropped': ('d.sig_budget_spent = true;', ''),
     'unstable-dedup-key': (f'const std::string why = "{KEY}";', 'const std::string why = std::to_string(own_round);'),
     'diagnose-outside-guard': ('if (skip_diag_head != db.head_block_num() || skip_diag_why != why) {', 'if (true) {'),
     'counts-dropped-from-log': ('("x", d.above_parent_qc)("y", d.other_block)', '("x", 0)("y", 0)'),
-    'window-total-dropped': ('("n", d.rounds_scanned)("t", d.rounds_in_window)', '("n", d.rounds_scanned)("t", 0)'),
+    'verified-count-dropped': ('("n", d.rounds_scanned)("v", d.rounds_verified)', '("n", d.rounds_scanned)("v", 0)'),
 }
 
 

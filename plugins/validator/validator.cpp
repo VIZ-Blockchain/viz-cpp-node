@@ -2882,18 +2882,20 @@ namespace graphene {
                                 // here with 12 usable votes of 13 and the log could not say whether
                                 // votes were missing, claimed a higher QC round, or named another
                                 // block at the parent's round (three voters on a divergent tip).
-                                // Once per head: the walk verifies signatures, so it is not
-                                // something to repeat on every slot of a long stall.
+                                // Once per head: the walk verifies signatures in the rounds that
+                                // could answer, so it is not something to repeat on every slot.
                                 const auto d = db.diagnose_timeout_cert_window_v2(
                                         parent_qc->round, own_round, parent_qc->round, parent_qc->block_id);
                                 wlog("TC skip of QC-less head #${h} refused for slot round ${r}: "
                                      "no usable TC between head's QC round ${a} and our round ${b} — "
-                                     "rounds scanned ${n} of ${t}, best ${k}/${q} at round ${c} (dropped: "
+                                     "walked ${n} rounds, signatures checked in ${v}${budget}, "
+                                     "best ${k}/${q} at round ${c} (dropped: "
                                      "${x} claimed a QC round above the parent's, ${y} named another "
                                      "block at it, ${z} bad signature)",
                                      ("h", db.head_block_num())("r", own_round)
                                      ("a", parent_qc->round)("b", own_round)
-                                     ("n", d.rounds_scanned)("t", d.rounds_in_window)
+                                     ("n", d.rounds_scanned)("v", d.rounds_verified)
+                                     ("budget", d.sig_budget_spent ? " (budget spent: older rounds counted only)" : "")
                                      ("k", d.usable)("q", d.quorum)("c", d.best_round)
                                      ("x", d.above_parent_qc)("y", d.other_block)
                                      ("z", d.bad_signature));

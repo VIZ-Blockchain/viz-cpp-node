@@ -898,28 +898,31 @@ namespace graphene { namespace chain {
             /// the parent's round. Mainnet 01.11.2026 paid for that: 12 usable votes of 13
             /// needed, three voters on a divergent tip, and the log said only "no usable TC".
             struct timeout_cert_window_diagnosis {
-                uint32_t rounds_in_window = 0; ///< rounds present inside (lo, hi)
-                uint32_t rounds_scanned = 0;   ///< of those, how many were examined
-                uint32_t best_round = 0;       ///< round the counts below belong to
-                uint32_t usable = 0;           ///< votes that passed every check
-                uint32_t quorum = 0;           ///< votes a TC needs
-                uint32_t above_parent_qc = 0;  ///< dropped: high_qc_round > the parent's round
-                uint32_t other_block = 0;      ///< dropped: same round, another block id
-                uint32_t bad_signature = 0;    ///< dropped: signature does not verify
+                uint32_t rounds_scanned = 0;    ///< rounds walked inside (lo, hi), newest first
+                uint32_t rounds_verified = 0;   ///< of those, how many had signatures checked
+                uint32_t best_round = 0;        ///< round the counts below belong to
+                uint32_t usable = 0;            ///< votes that passed every check
+                uint32_t quorum = 0;            ///< votes a TC needs
+                uint32_t above_parent_qc = 0;   ///< dropped: high_qc_round > the parent's round
+                uint32_t other_block = 0;       ///< dropped: same round, another block id
+                uint32_t bad_signature = 0;     ///< dropped: signature does not verify
+                bool sig_budget_spent = false;  ///< older rounds were counted but not verified
             };
             /// Read-only twin of the search: reports the NEWEST round that had any usable vote
-            /// (that is the one the search would have taken), or the newest round scanned when
-            /// no vote is usable anywhere. Never builds a certificate.
+            /// (that is the one the search would have taken), or the newest round that could
+            /// have counted when no vote is usable anywhere. Never builds a certificate.
             ///
-            /// Bounded on purpose. Every counted vote costs a signature verification, so an
-            /// uncapped walk of a long stall (01.11.2026: 22 716 rounds in the window) would
-            /// hold `_block_votes_mutex` for seconds on the production path — the same
-            /// unbounded-work class the search itself can hit. `max_rounds` caps the walk and
-            /// `rounds_in_window` says how much of the window that was, so the log never reads
-            /// as "nothing anywhere" when it only looked at the newest part.
+            /// Cost model: the round and block-id filters are hash comparisons, the signature
+            /// check is the expensive part. So the WHOLE window is walked for counters and only
+            /// rounds that could answer are signature-checked, newest first, at most
+            /// `max_verified_rounds` of them (`sig_budget_spent` says when that ran out).
+            /// Capping the WALK instead — the first version did, at 128 rounds — silently missed
+            /// the case this exists for: in the 01.11.2026 stall the votes that survived sat
+            /// 22 714 rounds below the newest, because the head had stood still for six hours,
+            /// so a capped walk reported "0 usable, scanned 128 of 22 716" and named nothing.
             timeout_cert_window_diagnosis diagnose_timeout_cert_window_v2(
                     uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
-                    const block_id_type &max_high_qc_block_id, uint32_t max_rounds = 128) const;
+                    const block_id_type &max_high_qc_block_id, uint32_t max_verified_rounds = 8) const;
 
             /// HF16: does a block by `producer` on top of head need the parent's QC?
             bool block_needs_parent_qc(const account_name_type &producer) const;
