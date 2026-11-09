@@ -7934,20 +7934,30 @@ namespace graphene { namespace chain {
 
         database::timeout_cert_window_diagnosis database::diagnose_timeout_cert_window_v2(
                 uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
-                const block_id_type &max_high_qc_block_id) const {
+                const block_id_type &max_high_qc_block_id, uint32_t max_rounds) const {
             timeout_cert_window_diagnosis d;
             const auto &wso = get_validator_schedule_object();
             d.quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
             std::lock_guard<std::mutex> guard(_block_votes_mutex);
             if (lo_exclusive + 1 >= hi_exclusive) return d;
+            // Size of the window first (no signature work), so a capped scan can say what
+            // fraction of it it looked at.
+            for (auto it = _timeout_votes.lower_bound(hi_exclusive);
+                 it != _timeout_votes.begin();) {
+                --it;
+                if (it->first <= lo_exclusive) break;
+                ++d.rounds_in_window;
+            }
             // Same walk as the search (newest round first, same filters), but it keeps counting
             // instead of returning: the first round with a usable vote is the one the search
             // would have taken, so stop there; otherwise report the newest round scanned.
+            uint32_t scanned = 0;
             auto it = _timeout_votes.lower_bound(hi_exclusive);
-            while (it != _timeout_votes.begin()) {
+            while (it != _timeout_votes.begin() && scanned < max_rounds) {
                 --it;
                 if (it->first <= lo_exclusive) break;
-                ++d.rounds;
+                ++scanned;
+                d.rounds_scanned = scanned;
                 uint32_t usable = 0, above = 0, other = 0, bad_sig = 0;
                 for (const auto &tv : it->second) {
                     const auto &entry = tv.second;
@@ -7956,7 +7966,7 @@ namespace graphene { namespace chain {
                     if (!verify_timeout_vote_v2(it->first, entry.high_qc_round, entry.high_qc_block_id, tv.first, entry.signature)) { ++bad_sig; continue; }
                     ++usable;
                 }
-                if (d.rounds == 1 || usable > 0) {
+                if (scanned == 1 || usable > 0) {
                     d.best_round = it->first;
                     d.usable = usable;
                     d.above_parent_qc = above;
