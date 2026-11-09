@@ -89,6 +89,15 @@ struct validator_guard_plugin::impl {
     // Transaction IDs awaiting block inclusion: tx_id -> (validator_name, expiration)
     std::map<graphene::chain::transaction_id_type, std::pair<std::string, fc::time_point_sec>> _pending_confirmations;
 
+    // Futility tracking. A confirmed restoration whose key is null again within one blanking
+    // threshold means the chain is discarding what we restore: this node either does not produce
+    // blocks for that validator (`validator = [...]` in config.ini) or it is far behind
+    // last_confirmed_block_num. Restoring again only repeats the churn, so count the cycles,
+    // then pause with a single explicit warning instead of a transaction every round.
+    std::map<std::string, fc::time_point_sec> _restore_confirmed_at;
+    std::map<std::string, uint32_t>           _restore_reblank_count;
+    std::map<std::string, fc::time_point_sec> _restore_backoff_until;
+
     // ── core ──────────────────────────────────────────────────────────────────
 
     bool check_and_restore_internal();
@@ -208,11 +217,60 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
         // Signing key is present on-chain — nothing to do
         if (itr->signing_key != null_key) {
             _restore_pending.erase(name);
+            // A key that stays on-chain means the futility cycle is over; keep the reblank
+            // counter though — it is what accumulates across "restore -> blanked" pairs.
+            _restore_backoff_until.erase(name);
             // If this validator was auto-disabled and the key is now present on-chain,
             // clear the auto-disabled flag (operator must have manually restored)
             _auto_disabled_validators.erase(name);
             _auto_disable_count.erase(name); 
             continue;
+        }
+
+        // Restore backoff: the key was restored, confirmed in a block, and is null again within
+        // one blanking threshold — the chain discarded it (emergency rule `head -
+        // last_confirmed > threshold`). Restoring again just repeats the cycle, so count it and
+        // pause instead of broadcasting every round.
+        {
+            auto backoff = _restore_backoff_until.find(name);
+            if (backoff != _restore_backoff_until.end() && now < backoff->second) {
+                dlog("validator_guard: '${w}' restore backoff active for ${left}s",
+                     ("w", name)("left", (backoff->second - now).to_seconds()));
+                continue;
+            }
+
+            auto confirmed = _restore_confirmed_at.find(name);
+            if (confirmed != _restore_confirmed_at.end()) {
+                const auto window = fc::seconds(CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS
+                                                * (CHAIN_BLOCK_INTERVAL / db().block_interval()));
+                if (now - confirmed->second <= window) {
+                    const auto age = now - confirmed->second;
+                    _restore_confirmed_at.erase(confirmed);
+                    const uint32_t cycles = ++_restore_reblank_count[name];
+                    if (cycles >= 2) {
+                        const auto pause = fc::seconds(3600);
+                        _restore_backoff_until[name] = now + pause;
+                        _restore_reblank_count.erase(name);
+                        wlog("validator_guard: '${w}' was restored and its key is null again "
+                             "${age}s later (${cy} futile cycles). The chain blanks keys of validators "
+                             "that are more than ${t} blocks behind last_confirmed, so this node either "
+                             "does not produce blocks for '${w}' (check `validator = [...]` against "
+                             "`validator-guard-validator` in config.ini) or the validator is far "
+                             "behind. Auto-restore paused for ${p} s.",
+                             ("w", name)("age", age.to_seconds())
+                             ("cy", cycles)
+                             ("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS
+                                   * (CHAIN_BLOCK_INTERVAL / db().block_interval()))
+                             ("p", pause.to_seconds()));
+                        continue;
+                    }
+                } else {
+                    // The marker is older than the window: that restoration held, the key going
+                    // null now is a new event, not a futile cycle.
+                    _restore_confirmed_at.erase(confirmed);
+                    _restore_reblank_count.erase(name);
+                }
+            }
         }
 
         // If this validator was auto-disabled by the consecutive-block guard,
@@ -1135,6 +1193,10 @@ void validator_guard_plugin::plugin_startup() {
                     const auto w_name = it->second.first;
                     pimpl->_restore_pending.erase(w_name);
                     pimpl->_pending_confirmations.erase(it);
+                    // Remember when the key landed: if it is null again soon, the chain blanked
+                    // it and restoring is futile (see the backoff in check_and_restore_internal).
+                    pimpl->_restore_confirmed_at[w_name] =
+                        fc::time_point_sec(graphene::time::now());
                     ilog("validator_guard: CONFIRMED restoration for '${w}' in block #${n} [TX: ${id}]",
                          ("w", w_name)("n", b.block_num())("id", id));
                 }
