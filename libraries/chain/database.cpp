@@ -7728,11 +7728,13 @@ namespace graphene { namespace chain {
                 return;
             }
             // The two halves of "stale or invalid" mean opposite things: aged votes are the
-            // normal compaction of a file that keeps hours of history, rejected votes are a
-            // defect (key/window mismatch). One total hid that split until 09.11.2026.
+            // normal compaction of a file that keeps hours of history, while a refusal (key or
+            // window mismatch) and a line cut short by a crash mid-write are both defects.
+            // One total hid that split until 09.11.2026.
             if (result.lines > 0)
                 ilog("Timeout vote journal: restored ${a} of ${l} cached votes from ${p} "
-                     "(${d} stale or invalid: ${g} older than the round window, ${r} rejected)",
+                     "(${d} stale or invalid: ${g} older than the round window, "
+                     "${r} rejected or unparsable)",
                      ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped)
                      ("g", result.aged)("r", result.dropped - result.aged));
 
