@@ -239,10 +239,17 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
                 continue;
             }
 
+            // The chain blanks a key once `head - last_confirmed` exceeds this many BLOCKS
+            // (database.cpp, emergency offline-validator branch, which inlines the same
+            // expression — keep the two in step). Post-HF16 a block is 1 s, so the effective
+            // threshold is 315 blocks, about five minutes; that is the wall-clock window this
+            // check compares against.
+            const uint32_t blank_after_blocks = CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS
+                                                * (CHAIN_BLOCK_INTERVAL / db().block_interval());
+
             auto confirmed = _restore_confirmed_at.find(name);
             if (confirmed != _restore_confirmed_at.end()) {
-                const auto window = fc::seconds(CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS
-                                                * (CHAIN_BLOCK_INTERVAL / db().block_interval()));
+                const auto window = fc::seconds(blank_after_blocks * db().block_interval());
                 if (now - confirmed->second <= window) {
                     const auto age = now - confirmed->second;
                     _restore_confirmed_at.erase(confirmed);
@@ -259,8 +266,7 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
                              "behind. Auto-restore paused for ${p} s.",
                              ("w", name)("age", age.to_seconds())
                              ("cy", cycles)
-                             ("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS
-                                   * (CHAIN_BLOCK_INTERVAL / db().block_interval()))
+                             ("t", blank_after_blocks)
                              ("p", pause.to_seconds()));
                         continue;
                     }
