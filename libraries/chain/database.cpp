@@ -7932,6 +7932,65 @@ namespace graphene { namespace chain {
             return {};
         }
 
+        database::timeout_cert_window_diagnosis database::diagnose_timeout_cert_window_v2(
+                uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
+                const block_id_type &max_high_qc_block_id, uint32_t max_verified_rounds) const {
+            timeout_cert_window_diagnosis d;
+            const auto &wso = get_validator_schedule_object();
+            d.quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            if (lo_exclusive + 1 >= hi_exclusive) return d;
+            // The round and block-id filters are hash comparisons; only the signature check is
+            // expensive. So walk the WHOLE window counting, and verify signatures only in rounds
+            // that could be the answer, newest first, at most `max_verified_rounds` of them.
+            // Capping the walk itself (the first version did, at 128 rounds) is blind by design:
+            // in the 01.11.2026 stall the surviving votes sat 22 714 rounds below the newest,
+            // because the head had stood still for six hours.
+            bool have_report = false;
+            auto it = _timeout_votes.lower_bound(hi_exclusive);
+            while (it != _timeout_votes.begin()) {
+                --it;
+                if (it->first <= lo_exclusive) break;
+                ++d.rounds_scanned;
+                uint32_t above = 0, other = 0;
+                for (const auto &tv : it->second) {
+                    const auto &entry = tv.second;
+                    if (entry.high_qc_round > max_high_qc_round) ++above;
+                    else if (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id) ++other;
+                }
+                if (it->second.size() <= above + other) continue;  // nothing left to verify here
+                if (d.rounds_verified >= max_verified_rounds) { d.sig_budget_spent = true; continue; }
+                ++d.rounds_verified;
+                uint32_t usable = 0, bad_sig = 0;
+                for (const auto &tv : it->second) {
+                    const auto &entry = tv.second;
+                    if (entry.high_qc_round > max_high_qc_round) continue;
+                    if (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id) continue;
+                    if (!verify_timeout_vote_v2(it->first, entry.high_qc_round, entry.high_qc_block_id, tv.first, entry.signature)) { ++bad_sig; continue; }
+                    ++usable;
+                }
+                if (usable > 0 || !have_report) {
+                    have_report = true;
+                    d.best_round = it->first;
+                    d.usable = usable;
+                    d.above_parent_qc = above;
+                    d.other_block = other;
+                    d.bad_signature = bad_sig;
+                }
+                if (usable > 0) break;   // the search would have taken this round
+            }
+            if (!have_report) {
+                // No round held a vote that could count at all: name the newest round anyway so
+                // the log says where it looked, with zeroed counters.
+                auto newest = _timeout_votes.lower_bound(hi_exclusive);
+                if (newest != _timeout_votes.begin()) {
+                    --newest;
+                    if (newest->first > lo_exclusive) d.best_round = newest->first;
+                }
+            }
+            return d;
+        }
+
         bool database::block_needs_parent_qc(const account_name_type &producer) const {
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             const auto &dgp = get_dynamic_global_properties();
