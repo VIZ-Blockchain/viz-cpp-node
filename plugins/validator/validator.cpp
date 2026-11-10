@@ -2979,6 +2979,7 @@ namespace graphene {
                     try {
                         // TODO: the same thread as used in chain-plugin,
                         //       but in the future it should refactored to calling of a chain-plugin function
+                        const auto gen_started = fc::time_point::now();
                         auto block = db.generate_block(
                                 scheduled_time,
                                 scheduled_validator,
@@ -2988,6 +2989,13 @@ namespace graphene {
                                 late_qc,
                                 skip_tc_v2
                         );
+                        // dlog, not ilog: the build cost must be measurable on a testnet without
+                        // flooding production logs. Enabled per node via the `logger` config
+                        // ("validator": "debug"); zero effect on consensus or state layout.
+                        dlog("PROD-TIMING: build of block #${n} took ${us} us (slot ${t})",
+                             ("n", block.block_num())
+                             ("us", (fc::time_point::now() - gen_started).count())
+                             ("t", block.timestamp));
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_validator)("tx", block.transactions.size());
                         p2p().broadcast_block(block);
 
