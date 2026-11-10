@@ -1,4 +1,4 @@
-name: Build docker image for a PR
+name: Build docker image for a PR (or a manual testnet21 build)
 
 on:
   pull_request:
@@ -10,6 +10,19 @@ on:
     # No paths-ignore on purpose: this job is a required status check on master,
     # and a required check that never runs keeps the PR blocked forever. See
     # tests.yml for the same reasoning.
+  # The 21-validator bench accepts a TESTNET build (`Dockerfile-testnet`), while
+  # `docker-main.yml` publishes only the production `latest`. A merged revision
+  # therefore had no testnet image of its own, and the acceptance checklist
+  # ("build the image from the revision you intend to cover") could not be
+  # followed without opening a dummy PR. This manual trigger closes that gap:
+  # it builds `<ref>-testnet21` for any branch or tag, and never publishes the
+  # production tag.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build the testnet21 image from
+        required: false
+        default: master
 
 # A new push to a PR makes the previous run's result irrelevant; cancel it instead
 # of letting a ~30 min run hold runners. Master pushes are never cancelled
@@ -26,6 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # On workflow_dispatch the run may be started from any branch, so the
+          # revision under test is an input rather than the caller's ref.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.pull_request.head.sha }}
           submodules: recursive
 
       # setup-buildx-action is required for advanced cache features
@@ -36,7 +52,7 @@ jobs:
 
       # Fork PRs build without registry secrets and never publish images.
       - uses: docker/login-action@v4
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -48,7 +64,10 @@ jobs:
       - name: Compute docker tag from branch name
         id: tag
         env:
-          BRANCH_NAME: ${{ github.head_ref }}
+          # On workflow_dispatch there is no PR branch: the tag comes from the
+          # requested ref, so `master` gives `master-testnet21` and a tag input
+          # gives `<tag>-testnet21`.
+          BRANCH_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.head_ref }}
         run: |
           set -euo pipefail
           echo "value=${BRANCH_NAME//\//-}" >> "$GITHUB_OUTPUT"
@@ -94,6 +113,9 @@ jobs:
       # targeting master share one warm-cache pool, while PRs against
       # release branches cannot poison master's cache.
       - uses: docker/build-push-action@v7
+        # Production tag only for PRs: a manual run exists to get a testnet21
+        # image, and must not publish vizblockchain/vizd:<ref>.
+        if: github.event_name == 'pull_request'
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-production
@@ -107,12 +129,12 @@ jobs:
       # `testnet21-stand` label: a consensus change that has to be accepted on the bench
       # needs its own image, and building it here keeps the compile off the shared host.
       - uses: docker/build-push-action@v7
-        if: github.head_ref == 'pm' || contains(github.event.pull_request.labels.*.name, 'testnet21-stand')
+        if: github.event_name == 'workflow_dispatch' || github.head_ref == 'pm' || contains(github.event.pull_request.labels.*.name, 'testnet21-stand')
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet
           build-args: TESTNET_VALIDATORS=21
-          push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          push: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
           tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}-testnet21
           cache-from: type=gha,scope=pr-testnet21
           cache-to:   type=gha,scope=pr-testnet21,mode=max
