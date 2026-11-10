@@ -15,6 +15,7 @@ struct validator_status {
     bool enabled = false;           // on-chain signing key is not null
     bool hold = false;              // operator disabled it: auto-restore is suppressed
     bool active_authority = false;  // the guard's active key is in the account's active authority
+    bool agent_grant = false;       // ...or holds an HF15 agent grant for `validator_update`
     int32_t scheduled_in = -1;      // first of the next 3 slots this validator produces, -1 if none
     std::string signing_key;        // on-chain signing key, empty when null/absent
     std::string configured_key;     // public half of the guard's own signing key
