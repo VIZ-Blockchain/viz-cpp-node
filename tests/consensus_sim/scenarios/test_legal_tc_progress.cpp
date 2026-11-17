@@ -103,11 +103,12 @@ signed_transaction ops(simulated_node& n, const genesis_params& gp,
 
 signed_block make_block(simulated_node& n, const genesis_params& gp,
                         const keys_type& keys, fc::time_point_sec when, signing_ledger& ledger,
-                        const fc::optional<block_timeout_certificate>& tc = {}) {
+                        const fc::optional<block_timeout_certificate>& tc = {},
+                        const fc::optional<block_timeout_certificate_v2>& tc_v2 = {}) {
     auto& db = n.db();
     const auto v = db.get_scheduled_validator(db.get_slot_at_time(when));
     const auto& key = key_for(db, gp, keys, v);
-    auto b = db.generate_block(when, v, key, database::skip_nothing, tc, {});
+    auto b = db.generate_block(when, v, key, database::skip_nothing, tc, {}, tc_v2);
     ledger.block(b, db.round_of(b.timestamp));
     return b;
 }
@@ -125,6 +126,7 @@ void check_head_voting_gate(database& db, const signed_block& b) {
     for (const auto& e : b.extensions) {
         if (e.which() == 3) { has_qc = true; qr = e.get<block_qc_certificate>().round; }
         if (e.which() == 4) tr = e.get<block_timeout_certificate>().round;
+        if (e.which() == 6) tr = e.get<block_timeout_certificate_v2>().round;
     }
     const auto round = db.round_of(b.timestamp);
     const auto held = db.get_block_qc(b.block_num() - 1);
@@ -485,7 +487,7 @@ void linear_baseline() {
 
 // Native fork-choice regression. The real validator plugin and P2P delivery
 // are not exercised here; the two proposals reuse one legitimately formed TC.
-void equal_tc_sibling_order() {
+void equal_tc_sibling_order(bool hf18 = false) {
     BOOST_REQUIRE(CHAIN_MAX_VALIDATORS >= 4);
     auto gp = make_genesis_params(0x7C714u, 8);
     auto start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME) + fc::seconds(CHAIN_BLOCK_INTERVAL);
@@ -501,6 +503,9 @@ void equal_tc_sibling_order() {
         for (auto* n : {&other, &ascending, &descending, &protected_head, &rejects_invalid, &parent_view}) apply_exact(*n, b);
     for (auto* n : {&source, &other, &ascending, &descending, &protected_head, &rejects_invalid, &parent_view})
         n->db().set_hardfork(CHAIN_HARDFORK_16, true);
+    if (hf18)
+        for (auto* n : {&source, &other, &ascending, &descending, &protected_head, &rejects_invalid, &parent_view})
+            n->db().set_hardfork(CHAIN_HARDFORK_18, true);
     for (int i = 0; i < 3; ++i) {
         const auto qc = certify_head(source, gp, keys, ledger);
         for (auto* n : {&other, &ascending, &descending, &protected_head, &rejects_invalid, &parent_view})
@@ -514,18 +519,22 @@ void equal_tc_sibling_order() {
         BOOST_REQUIRE(n->db().accept_block_qc_certificate(qc));
     const auto parent = source.head_block_id();
     const auto tr = qc.round + 1;
-    const auto td = block_timeout_digest(source.chain_id(), tr, qc.round);
+    const auto td = hf18 ? block_timeout_digest_v2(source.chain_id(), tr, qc.round, parent)
+                         : block_timeout_digest(source.chain_id(), tr, qc.round);
     for (const auto& v : scheduled(source.db())) {
         ledger.timeout(v, tr, qc.round);
-        BOOST_REQUIRE(source.db().push_timeout_vote(tr, qc.round, v,
-            key_for(source.db(), gp, keys, v).sign_compact(td)));
+        const auto sig = key_for(source.db(), gp, keys, v).sign_compact(td);
+        if (hf18) BOOST_REQUIRE(source.db().push_timeout_vote_v2(tr, qc.round, parent, v, sig));
+        else BOOST_REQUIRE(source.db().push_timeout_vote(tr, qc.round, v, sig));
     }
     const auto tc = source.db().get_timeout_cert(tr);
-    BOOST_REQUIRE(tc.valid());
+    const auto tc_v2 = source.db().get_timeout_cert_v2(tr);
+    if (hf18) BOOST_REQUIRE(tc_v2.valid());
+    else BOOST_REQUIRE(tc.valid());
     when += fc::seconds(2 * source.db().block_interval());
-    const auto a = make_block(source, gp, keys, when, ledger, tc);
+    const auto a = make_block(source, gp, keys, when, ledger, tc, tc_v2);
     when += fc::seconds(other.db().block_interval());
-    const auto b = make_block(other, gp, keys, when, ledger, tc);
+    const auto b = make_block(other, gp, keys, when, ledger, tc, tc_v2);
     BOOST_REQUIRE(a.previous == parent && b.previous == parent && a.id() != b.id());
     BOOST_REQUIRE_EQUAL(database::block_cert_round(a), database::block_cert_round(b));
     const auto& low = a.id() < b.id() ? a : b;
@@ -583,5 +592,6 @@ BOOST_AUTO_TEST_CASE(tc_control_without_competitor) { replacement_case(true, fal
 BOOST_AUTO_TEST_CASE(tc_replacement_delivery_orders_without_rotation) { replacement_case(false); }
 BOOST_AUTO_TEST_CASE(tc_replacement_delivery_orders_with_authorized_rotation) { replacement_case(true); }
 BOOST_AUTO_TEST_CASE(equal_tc_siblings_choose_same_id_without_displacing_qc) { equal_tc_sibling_order(); }
+BOOST_AUTO_TEST_CASE(equal_tc_v2_siblings_choose_same_id_without_displacing_qc) { equal_tc_sibling_order(true); }
 BOOST_AUTO_TEST_SUITE_END()
 #endif
