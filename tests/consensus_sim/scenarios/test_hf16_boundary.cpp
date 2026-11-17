@@ -527,7 +527,8 @@ void tc_window_scenario() {
     // that stops at the first (or the exact) certificate still stalls: the window search
     // must skip it and carry the newest usable one.
     auto gp = make_genesis_params(0x7C3E7u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    // This scenario tests the pre-HF18 wire form explicitly; do not let wall-clock activation skip it.
+    fc::time_point_sec start(CHAIN_HARDFORK_18_TIME - 86400);
     if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
     virtual_clock clk(start);
@@ -668,7 +669,8 @@ BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
 BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
     try {
         auto gp = make_genesis_params(0xBF718u, 1);
-        fc::time_point_sec start(fc::time_point::now());
+        // This scenario tests the pre-HF18 wire form explicitly; do not let wall-clock activation skip it.
+        fc::time_point_sec start(CHAIN_HARDFORK_18_TIME - 86400);
         if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
         start += fc::seconds(CHAIN_BLOCK_INTERVAL);
         virtual_clock clk(start);
