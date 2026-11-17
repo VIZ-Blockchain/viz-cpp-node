@@ -2235,6 +2235,13 @@ void dlt_p2p_node::on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_requ
         if (num < our_earliest || num > our_head + GAP_FILL_MAX_BLOCKS) continue;
         auto block = _delegate->read_block_by_num(num);
         if (block.valid()) {
+            // A reorg can occur between separate reads. Never splice two
+            // branches into a consecutive gap-fill response.
+            if (!reply.blocks.empty() && num == reply.blocks.back().block_num() + 1 &&
+                block->previous != reply.blocks.back().id()) {
+                wlog("Gap fill branch changed at #${n}; returning linked prefix", ("n", num));
+                break;
+            }
             reply.blocks.push_back(std::move(*block));
         }
     }

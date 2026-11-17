@@ -201,6 +201,12 @@ void progress_case(int rival_length, bool rotated, bool local_production) {
         BOOST_REQUIRE(branch_a.db().get_fork_db().is_known_block(b.id()));
         BOOST_REQUIRE(branch_a.head_block_id() == a_tip.id());
     }
+    // Gap-fill must return the applied block even when a rival exists at the
+    // same height. A number-only fork_db front can select the rival instead.
+    const auto served_tip = branch_a.db().fetch_applied_block_by_number(a_tip.block_num());
+    BOOST_REQUIRE(served_tip.valid());
+    BOOST_CHECK(served_tip->id() == a_tip.id());
+    BOOST_CHECK(!branch_a.db().fetch_applied_block_by_number(branch_a.head_block_num() + 1).valid());
     const auto entry_lib = branch_a.last_irreversible_block_num();
     state("after-retention", branch_a);
     // Produce independently, then replay in an uncontaminated DB using skip_nothing.
