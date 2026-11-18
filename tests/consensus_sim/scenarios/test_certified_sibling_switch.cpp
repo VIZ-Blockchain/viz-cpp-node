@@ -468,5 +468,63 @@ BOOST_AUTO_TEST_CASE(moves_to_a_sibling_with_more_votes_when_head_has_no_qc) {
     BOOST_CHECK(db.head_block_id() == y.id());
 }
 
+// Multi-node determinism of the convergence rule, end to end (18.11.2026 shape). The single-node
+// cases above prove the rule moves a head; they do NOT prove the property that makes it a
+// convergence rule at all - that independent nodes, each ranking on its own copy, land on the SAME
+// block. On 18.11 the network died precisely because that property was absent: every producer made
+// its own choice and no two agreed. Three nodes here share no state, receive the same blocks and
+// the same votes, and must answer identically.
+BOOST_AUTO_TEST_CASE(three_nodes_converge_on_the_same_sibling_without_talking) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0x57057u);
+
+    // The third peer joins on the SHARED PREFIX, before the split - the same way the fixture brings
+    // up b, and the only order the harness supports: replaying a chain that already contains the
+    // split fails header validation ("slot_num > 0", measured in CI twice). A neutral peer is also
+    // the honest version of this test: it has no side, it only sees both blocks and the votes.
+    simulated_node c("storm-third-peer", f.gp, f.clk);
+    replay_to(*f.a, c);
+    c.db().set_hardfork(CHAIN_HARDFORK_16, true);
+
+    auto [x, y] = f.sibling_pair();        // a: head X (and Y in fork_db) · b: head Y
+    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.previous, "PREMISE: the third peer must sit on the shared parent");
+
+    // Gossip so that every node holds BOTH siblings: c takes X then Y, b takes X (it already has Y).
+    c.receive_block(x);
+    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.id(), "PREMISE: X did not apply on the neutral peer");
+    c.receive_block(y);
+    BOOST_REQUIRE_MESSAGE(c.db().get_fork_db().fetch_block(y.id()), "PREMISE: Y did not reach the neutral peer");
+    f.b->receive_block(x);
+    BOOST_REQUIRE_MESSAGE(f.b->db().get_fork_db().fetch_block(x.id()), "PREMISE: X did not reach b");
+
+    // Identical vote set everywhere: one scheduled voter names Y, nobody names X. One vote is below
+    // quorum by construction, so the certified path cannot be what resolves this - only the rule
+    // under test can.
+    for (auto* n : {f.a.get(), f.b.get(), &c}) push_quorum_votes(*n, f.gp, f.keys, y, 1);
+
+    // Each node answers on its own copy, without consulting the others.
+    const auto a_pick = f.a->db().canonical_sibling_id();
+    const auto b_pick = f.b->db().canonical_sibling_id();
+    const auto c_pick = c.db().canonical_sibling_id();
+    BOOST_CHECK_MESSAGE(a_pick.valid() && *a_pick == y.id(), "peer a must rank Y as canonical");
+    BOOST_CHECK_MESSAGE(!b_pick.valid(), "peer b already holds Y: it must see nothing to change");
+    BOOST_CHECK_MESSAGE(c_pick.valid() && *c_pick == y.id(), "the neutral peer must rank Y as canonical");
+
+    BOOST_CHECK(f.a->db().converge_to_canonical_sibling());
+    BOOST_CHECK(!f.b->db().converge_to_canonical_sibling());
+    BOOST_CHECK(c.db().converge_to_canonical_sibling());
+
+    // The whole point: same head on every node, computed independently.
+    BOOST_CHECK_MESSAGE(f.a->head_block_id() == y.id(), "peer a did not land on Y");
+    BOOST_CHECK_MESSAGE(f.b->head_block_id() == y.id(), "peer b left Y");
+    BOOST_CHECK_MESSAGE(c.head_block_id() == y.id(), "the neutral peer did not land on Y");
+    BOOST_CHECK_EQUAL(f.a->head_block_num(), y.block_num());
+    BOOST_CHECK_EQUAL(c.head_block_num(), y.block_num());
+    // And the split is closed: nothing is left to converge towards.
+    BOOST_CHECK(!f.a->db().canonical_sibling_id().valid());
+    BOOST_CHECK(!c.db().canonical_sibling_id().valid());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 #endif
