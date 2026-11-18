@@ -22,6 +22,7 @@
 #include "virtual_clock.hpp"
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/chain_objects.hpp>
+#include <graphene/chain/emergency_exit.hpp>
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/block_vote.hpp>
@@ -310,6 +311,62 @@ BOOST_AUTO_TEST_CASE(keeps_head_when_nobody_voted_for_any_sibling) {
     BOOST_CHECK(!db.canonical_sibling_id().valid());
     BOOST_CHECK(!db.converge_to_canonical_sibling());
     BOOST_CHECK(db.head_block_id() == x.id());
+}
+
+// 18.11.2026: emergency entry blanked every signing key and padded the schedule with `committee`,
+// whose key no operator holds, while the certificate quorum in emergency is measured against the
+// padded 21 slots. Ten keys of the fifteen that were needed meant the chain could never certify
+// again. emergency_entry_allowed() is the door that refuses that shape; these cases pin the
+// arithmetic at the boundary, because "almost enough keys" reads exactly like "enough" in a log.
+BOOST_AUTO_TEST_CASE(emergency_entry_refuses_below_the_exit_threshold) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0xEEEE0001u);
+    f.sibling_pair();                                  // leave a normal HF16 chain behind
+    auto& db = f.a->db();
+
+    const uint32_t scheduled = uint32_t(db.get_validator_schedule_object().num_scheduled_validators
+                                        / CHAIN_BLOCK_VALIDATOR_REPEAT);
+    const uint32_t required = emergency_exit_threshold_effective(scheduled);
+
+    std::vector<account_name_type> keyed;
+    for (const auto& v : db.get_index<validator_index>().indices()) {
+        if (v.owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) continue;
+        if (v.signing_key != public_key_type()) keyed.push_back(v.owner);
+    }
+
+    // The guard must agree with its own arithmetic before anything is blanked: this is the line that
+    // keeps the two from drifting when the threshold helpers change.
+    BOOST_CHECK_EQUAL(db.emergency_entry_allowed(), keyed.size() >= required);
+
+    if (keyed.size() < required) {
+        // Builds whose floor (half of CHAIN_MAX_VALIDATORS) is above the schedule of this fixture can
+        // never satisfy the exit threshold — so refusal is the correct and only verdict, there is no
+        // boundary left to walk. Say so instead of skipping silently.
+        BOOST_TEST_MESSAGE("schedule " << scheduled << " cannot reach exit threshold " << required
+                                       << "; refusal is the expected verdict on this build");
+        return;
+    }
+    BOOST_CHECK(db.emergency_entry_allowed());
+
+    // At the threshold entry is still allowed: refusing there would block a mode the chain can leave.
+    const auto saved = db.get_validator(keyed.front()).signing_key;
+    for (size_t i = 0; i + required < keyed.size(); ++i)
+        db.modify(db.get_validator(keyed[i]), [](validator_object& v) { v.signing_key = public_key_type(); });
+    BOOST_CHECK_MESSAGE(db.emergency_entry_allowed(),
+                        "exactly the exit threshold in keys must still allow entry");
+
+    // One below it must refuse — that is the 18.11.2026 shape exactly.
+    db.modify(db.get_validator(keyed[keyed.size() - required]), [](validator_object& v) {
+        v.signing_key = public_key_type();
+    });
+    BOOST_CHECK_MESSAGE(!db.emergency_entry_allowed(),
+                        "entry into emergency must be refused when the keys cannot reach the exit threshold");
+
+    // And the refusal is not sticky: returning the keys re-opens the door, because the guard reads
+    // chain state and nothing else.
+    db.modify(db.get_validator(keyed.front()), [&](validator_object& v) { v.signing_key = saved; });
+    BOOST_CHECK(db.emergency_entry_allowed());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
