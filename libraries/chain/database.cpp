@@ -6882,7 +6882,7 @@ namespace graphene { namespace chain {
                     uint32_t gap_sec = (missed_blocks + 1) * block_interval();
 
                     {
-                        if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
+                        if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC && emergency_entry_allowed()) {
                             // Enter emergency consensus mode
                             //
                             // HF17: remember the schedule that is in force NOW. After this block the
@@ -8075,6 +8075,30 @@ namespace graphene { namespace chain {
             return true;
         }
 
+        bool database::emergency_entry_allowed() const {
+            const uint32_t scheduled = uint32_t(get_validator_schedule_object().num_scheduled_validators
+                                                / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            const uint32_t required = emergency_exit_threshold_effective(scheduled);
+            uint32_t keyed = 0;
+            for (const auto &w : get_index<validator_index>().indices()) {
+                if (w.owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) continue;
+                if (w.signing_key != public_key_type()) ++keyed;
+            }
+            if (keyed >= required) return true;
+            // Said once per height, not once per block: the reason has to be readable, and a
+            // stall applies no blocks anyway, but a quiet refusal is how the 18.11 mode locked
+            // the chain for six hours without anyone naming the arithmetic.
+            const uint32_t head = head_block_num();
+            if (head != _emergency_refusal_head) {
+                _emergency_refusal_head = head;
+                elog("Emergency consensus REFUSED at block #${h}: ${k} validators with a signing key, "
+                     "entry needs ${r} (exit threshold for a schedule of ${s}). Entering would blank every "
+                     "key and leave the chain unable to certify: staying in normal mode.",
+                     ("h", head)("k", keyed)("r", required)("s", scheduled));
+            }
+            return false;
+        }
+
         bool database::emergency_unstick_block(const fc::time_point_sec &when) const {
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             const auto &dgp = get_dynamic_global_properties();
@@ -8602,6 +8626,13 @@ namespace graphene { namespace chain {
 
             wlog("Head #${n} ${h} has no QC, sibling ${id} has ${k}/${q} (round ${r}): switching head to it",
                  ("n", num)("h", head_block_id())("id", qc->block_id)("k", ok)("q", quorum)("r", qc->round));
+            return make_sibling_head(sib, head_item, "Certified sibling");
+        }
+
+        bool database::make_sibling_head(const item_ptr &sib,
+                                         const item_ptr &head_item,
+                                         const char *why) {
+            const uint32_t num = head_item->num;
             pop_block();
             if (head_block_id() == head_item->id) {
                 // Same guard as every other pop site: undo() had nothing to revert (committed or
@@ -8609,7 +8640,7 @@ namespace graphene { namespace chain {
                 // while _fork_db already points at the parent. Applying the sibling on top of
                 // that state fails the header check and the re-apply of head fails the same way,
                 // leaving the two heads apart. Put the fork_db head back and keep waiting.
-                wlog("Certified sibling switch: pop_block() made no progress at head #${n}, keeping head", ("n", num));
+                wlog("${w} switch: pop_block() made no progress at head #${n}, keeping head", ("w", why)("n", num));
                 _fork_db.set_head(head_item);
                 return false;
             }
@@ -8622,8 +8653,8 @@ namespace graphene { namespace chain {
             } catch (const shared_memory_corruption_exception &) {
                 throw;
             } catch (const fc::exception &e) {
-                wlog("Certified sibling ${id} failed to apply, restoring head ${h}: ${e}",
-                     ("id", qc->block_id)("h", head_item->id)("e", e.to_string()));
+                wlog("${w} ${id} failed to apply, restoring head ${h}: ${e}",
+                     ("w", why)("id", sib->id)("h", head_item->id)("e", e.to_string()));
                 _fork_db.remove(sib->id);
             }
             auto session = start_undo_session();
@@ -8631,6 +8662,78 @@ namespace graphene { namespace chain {
             session.push();
             _fork_db.set_head(head_item);
             return false;
+        }
+
+        fc::optional<block_id_type> database::canonical_sibling_id(size_t *out_head_votes,
+                                                                  size_t *out_best_votes) const {
+            const auto &dpo = get_dynamic_global_properties();
+            const uint32_t num = dpo.head_block_number;
+            if (num <= dpo.last_irreversible_block_num) return fc::optional<block_id_type>();
+            const auto head_item = _fork_db.fetch_block(head_block_id());
+            if (!head_item) return fc::optional<block_id_type>();
+            const block_id_type head_id = head_block_id();
+
+            // Distinct voters per block at this height, across every round: one validator may
+            // vote at the same height in two rounds (a rebuild), and counting it twice would
+            // rank a block by how often it was retried rather than by how many back it.
+            std::map<block_id_type, std::set<account_name_type>> voters;
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                for (auto it = _block_vote_tallies.lower_bound(std::make_tuple(num, 0u, block_id_type()));
+                     it != _block_vote_tallies.end() && std::get<0>(it->first) == num; ++it) {
+                    auto &set = voters[std::get<2>(it->first)];
+                    for (const auto &v : it->second.votes) set.insert(v.first);
+                }
+            }
+
+            const auto count_of = [&](const block_id_type &id) -> size_t {
+                const auto it = voters.find(id);
+                return it == voters.end() ? 0 : it->second.size();
+            };
+
+            block_id_type best = head_id;
+            size_t best_count = count_of(head_id);
+            const size_t head_count = best_count;
+            // Only real siblings: same height, same parent. A different parent is a fork
+            // switch, and compare_fork_branches owns that decision.
+            for (const auto &entry : voters) {
+                if (entry.first == head_id) continue;
+                const auto item = _fork_db.fetch_block(entry.first);
+                if (!item || item->invalid || item->anchor_only) continue;
+                if (item->num != num || item->data.previous != head_item->data.previous) continue;
+                const size_t n = entry.second.size();
+                // Strictly more votes than head, or nothing: a move on silence would be a coin
+                // flip between nodes that know different subsets of the siblings.
+                if (n <= head_count) continue;
+                if (best == head_id || n > best_count || (n == best_count && entry.first < best)) {
+                    best = entry.first;
+                    best_count = n;
+                }
+            }
+            if (out_head_votes) *out_head_votes = head_count;
+            if (out_best_votes) *out_best_votes = best_count;
+            if (best == head_id) return fc::optional<block_id_type>();
+            return best;
+        }
+
+        bool database::converge_to_canonical_sibling() {
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dpo = get_dynamic_global_properties();
+            if (dpo.emergency_consensus_active) return false;
+            size_t head_votes = 0, sib_votes = 0;
+            const auto target = canonical_sibling_id(&head_votes, &sib_votes);
+            if (!target) return false;
+            const uint32_t num = dpo.head_block_number;
+            const auto head_item = _fork_db.fetch_block(head_block_id());
+            const auto sib = _fork_db.fetch_block(*target);
+            if (!head_item || !sib) return false;
+
+            // Say WHY, with numbers: a silent preference is indistinguishable from a bug, and
+            // the 18.11 stall was read for hours as "one vote short" while the real defect was
+            // that no rule moved the heads together.
+            wlog("Head #${n} ${h} is not canonical (${j} votes vs ${k} for ${id}): switching head to it",
+                 ("n", num)("h", head_block_id())("id", *target)("j", head_votes)("k", sib_votes));
+            return make_sibling_head(sib, head_item, "Canonical sibling");
         }
 
         bool database::qc_conflicts_with(const signed_block &b) const {

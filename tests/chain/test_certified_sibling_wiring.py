@@ -37,6 +37,8 @@ def wiring_problems(val_cpp, db_cpp):
         problems.append('the certified sibling is taken after the TC search: the TC rebuild wins first')
     elif not re.search(r'qc\s*&&\s*qc->block_id\s*!=\s*db\.head_block_id\(\)', body[:call]):
         problems.append('no read-lock pre-check: the write lock is taken on every production tick')
+    if 'db.converge_to_canonical_sibling()' not in body:
+        problems.append('the producer never converges on the sibling the votes name (the 18.11.2026 hole)')
 
     sw = method(_masked(db_cpp), 'bool database::switch_head_to_certified_sibling(')
     if sw is None:
@@ -49,13 +51,77 @@ def wiring_problems(val_cpp, db_cpp):
             (r'sib->data\.previous\s*!=\s*head_item->data\.previous', 'takes a block that is not a sibling of head'),
             (r'verify_block_vote\(', 'trusts the stored QC without re-verifying its signatures'),
             (r'ok\s*<\s*quorum', 'switches on a QC below quorum'),
+            (r'make_sibling_head\(sib,\s*head_item,', 'does not go through the shared switch (guard and restore live there)'),
+        ]:
+            if not re.search(pat, sw):
+                problems.append(f'switch_head_to_certified_sibling {why}')
+
+    # 18.11.2026: the QC-less siblings of #86227200 never gathered a QC, so the certified rule
+    # above had nothing to take and the chain stood for six hours. The voted-sibling rule must
+    # exist, read only block properties and received votes, require a strict lead, and go through
+    # the same switch.
+    cv = method(_masked(db_cpp), 'bool database::converge_to_canonical_sibling(')
+    if cv is None:
+        problems.append('database::converge_to_canonical_sibling() is missing')
+    else:
+        cv = _masked(cv)
+        for pat, why in [
+            (r'emergency_consensus_active\)\s*return\s+false', 'converges during emergency consensus'),
+            (r'make_sibling_head\(sib,\s*head_item,', 'does not go through the shared switch (guard and restore live there)'),
+        ]:
+            if not re.search(pat, cv):
+                problems.append(f'converge_to_canonical_sibling {why}')
+
+    cs = method(_masked(db_cpp), 'fc::optional<block_id_type> database::canonical_sibling_id(')
+    if cs is None:
+        problems.append('database::canonical_sibling_id() is missing')
+    else:
+        cs = _masked(cs)
+        for pat, why in [
+            (r'num\s*<=\s*dpo\.last_irreversible_block_num\)\s*return', 'ranked a fork at or below LIB'),
+            (r'item->data\.previous\s*!=\s*head_item->data\.previous', 'ranked a block that is not a sibling of head'),
+            (r'item->invalid\s*\|\|\s*item->anchor_only', 'ranked an invalid or anchor-only entry'),
+            (r'if\s*\(n\s*<=\s*head_count\)\s*continue;', 'switches on a tie: without a strict lead the answer depends on which siblings a node happens to know'),
+            (r'set\.insert\(v\.first\)', 'counted the same validator twice (a rebuild would outrank a real majority)'),
+            (r'_block_votes_mutex', 'read the vote tallies without their mutex'),
+        ]:
+            if not re.search(pat, cs):
+                problems.append(f'canonical_sibling_id {why}')
+
+    # 18.11.2026: entering emergency with ten keyed validators blanked every key and left the
+    # chain unable to certify anything. The entry must refuse when the exit threshold is out of
+    # reach, and the refusal must be written down.
+    ea = method(_masked(db_cpp), 'bool database::emergency_entry_allowed(')
+    if ea is None:
+        problems.append('database::emergency_entry_allowed() is missing')
+    else:
+        ea = _masked(ea)
+        for pat, why in [
+            (r'emergency_exit_threshold_effective\(', 'does not compare the keyed count with the exit threshold'),
+            (r'keyed\s*>=\s*required', 'never refuses entry'),
+        ]:
+            if not re.search(pat, ea):
+                problems.append(f'emergency_entry_allowed {why}')
+        # The refusal has to be readable in the log; _masked blanks string literals, so this one
+        # reads the raw source.
+        if 'Emergency consensus REFUSED' not in db_cpp:
+            problems.append('emergency_entry_allowed refuses entry silently')
+    if not re.search(r'CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC\s*&&\s*emergency_entry_allowed\(\)', _masked(db_cpp)):
+        problems.append('the emergency entry site does not consult emergency_entry_allowed()')
+
+    ms = method(_masked(db_cpp), 'bool database::make_sibling_head(')
+    if ms is None:
+        problems.append('database::make_sibling_head() is missing')
+    else:
+        ms = _masked(ms)
+        for pat, why in [
             (r'_fork_db\.set_head\(sib\)', 'fork_db head is left on the parent after the switch'),
             (r'apply_block\(head_item->data', 'a failed sibling does not restore the previous head'),
             (r'pop_block\(\);\s*if\s*\(head_block_id\(\)\s*==\s*head_item->id\)\s*\{[^}]*_fork_db\.set_head\(head_item\);\s*return\s+false;',
              'a no-progress pop_block() (committed/empty undo) goes on to apply the sibling on the old state'),
         ]:
-            if not re.search(pat, sw):
-                problems.append(f'switch_head_to_certified_sibling {why}')
+            if not re.search(pat, ms):
+                problems.append(f'make_sibling_head {why}')
 
     if not re.search(r'const\s+auto\s+own\s*=\s*get_block_qc\(new_head->num\);\s*'
                      r'return\s+own\s*&&\s*own->block_id\s*==\s*new_head->id;', _masked(db_cpp)):
@@ -71,6 +137,12 @@ MUTATIONS = {
     'no-own-qc-guard': ('return own && own->block_id == new_head->id;', 'return false;'),
     'no-restore': ('apply_block(head_item->data, skip_nothing);', ''),
     'no-pop-guard': ('if (head_block_id() == head_item->id) {', 'if (false) {'),
+    'converge-no-call': ('db.converge_to_canonical_sibling(); });', '});'),
+    'converge-tie-moves': ('if (n <= head_count) continue;', ''),
+    'converge-not-sibling': ('if (item->num != num || item->data.previous != head_item->data.previous) continue;', ''),
+    'converge-counts-twice': ('set.insert(v.first);', 'set.insert(account_name_type(std::to_string(set.size())));'),
+    'emergency-guard-removed': ('&& emergency_entry_allowed()', ''),
+    'emergency-never-refuses': ('if (keyed >= required) return true;', 'return true;'),
 }
 
 
