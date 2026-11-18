@@ -538,12 +538,17 @@ BOOST_AUTO_TEST_CASE(tie_between_two_siblings_resolves_to_the_smaller_id) {
                           "PREMISE: this build caps the schedule below four identities");
     fixture f(0x71E7u);
 
-    simulated_node c("tie-third-peer", f.gp, f.clk);
+    simulated_node c("tie-third-producer", f.gp, f.clk);
     replay_to(*f.a, c);
     c.db().set_hardfork(CHAIN_HARDFORK_16, true);
+    // The neutral peer is a FOURTH node: c cannot serve, its head becomes Z the moment it produces it.
+    simulated_node d("tie-neutral-peer", f.gp, f.clk);
+    replay_to(*f.a, d);
+    d.db().set_hardfork(CHAIN_HARDFORK_16, true);
 
     auto [x, y] = f.sibling_pair();
-    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.previous, "PREMISE: the third peer must sit on the shared parent");
+    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.previous, "PREMISE: the third producer must sit on the shared parent");
+    BOOST_REQUIRE_MESSAGE(d.head_block_id() == x.previous, "PREMISE: the neutral peer must sit on the shared parent");
 
     // Third sibling Z: same height, same parent, produced one slot LATER. In Y's own slot the block
     // would be byte-identical to Y (same producer, same parent, no transactions), so the tie this
@@ -554,27 +559,28 @@ BOOST_AUTO_TEST_CASE(tie_between_two_siblings_resolves_to_the_smaller_id) {
     BOOST_REQUIRE_MESSAGE(z.previous == x.previous, "PREMISE: Z must share the parent of X and Y");
     BOOST_REQUIRE_MESSAGE(z.id() != y.id(), "PREMISE: Z must be a distinct block, not a re-delivery of Y");
 
-    // Every peer ends on the SAME head X, holding Y and Z as siblings: c takes X first (so it applies)
+    // Every peer ends on the SAME head X, holding Y and Z as siblings: d takes X first (so it applies)
     // and then the other two, which an equal-length head keeps in fork_db.
-    c.receive_block(x);
-    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.id(), "PREMISE: X did not apply on the neutral peer");
-    c.receive_block(y);
-    c.receive_block(z);
-    BOOST_REQUIRE_MESSAGE(c.db().get_fork_db().fetch_block(y.id()) && c.db().get_fork_db().fetch_block(z.id()),
+    d.receive_block(x);
+    BOOST_REQUIRE_MESSAGE(d.head_block_id() == x.id(), "PREMISE: X did not apply on the neutral peer");
+    d.receive_block(y);
+    d.receive_block(z);
+    BOOST_REQUIRE_MESSAGE(d.db().get_fork_db().fetch_block(y.id()) && d.db().get_fork_db().fetch_block(z.id()),
                           "PREMISE: both rivals must reach the neutral peer's fork_db");
     f.a->receive_block(z);
     BOOST_REQUIRE_MESSAGE(f.a->db().get_fork_db().fetch_block(z.id()), "PREMISE: Z did not reach the producer's fork_db");
     BOOST_REQUIRE_MESSAGE(f.a->head_block_id() == x.id(), "PREMISE: delivering Z moved the head");
 
+
     auto& db_a = f.a->db();
-    auto& db_c = c.db();
+    auto& db_d = d.db();
     const auto quorum = database::block_qc_quorum(
         uint32_t(db_a.get_validator_schedule_object().num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
     BOOST_REQUIRE_MESSAGE(quorum > 1u, "PREMISE: with a quorum of one a single vote certifies, and this is the wrong case");
 
     // One vote each, so the rivals tie; head carries none. Both stay below quorum, so the certified
     // path cannot be what resolves this.
-    for (auto* n : {f.a.get(), &c}) {
+    for (auto* n : {f.a.get(), &d}) {
         push_quorum_votes(*n, f.gp, f.keys, y, 1);
         push_quorum_votes(*n, f.gp, f.keys, z, 1);
     }
@@ -586,18 +592,18 @@ BOOST_AUTO_TEST_CASE(tie_between_two_siblings_resolves_to_the_smaller_id) {
     const block_id_type expected = std::min(y.id(), z.id());
     size_t head_votes = 0, sib_votes = 0;
     const auto a_pick = db_a.canonical_sibling_id(&head_votes, &sib_votes);
-    const auto c_pick = db_c.canonical_sibling_id();
+    const auto d_pick = db_d.canonical_sibling_id();
     BOOST_REQUIRE_MESSAGE(a_pick.valid(), "a head with no votes must yield to rivals that have one");
     BOOST_CHECK_EQUAL(head_votes, 0u);
     BOOST_CHECK_EQUAL(sib_votes, 1u);
     BOOST_CHECK_MESSAGE(*a_pick == expected, "the tie must be broken by the smaller id, not by delivery order");
-    BOOST_CHECK_MESSAGE(c_pick.valid() && *c_pick == expected,
+    BOOST_CHECK_MESSAGE(d_pick.valid() && *d_pick == expected,
                         "an independent peer holding the same head and votes must name the same block");
 
     BOOST_CHECK(db_a.converge_to_canonical_sibling());
-    BOOST_CHECK(db_c.converge_to_canonical_sibling());
+    BOOST_CHECK(db_d.converge_to_canonical_sibling());
     BOOST_CHECK_MESSAGE(f.a->head_block_id() == expected, "peer a did not land on the tie-break winner");
-    BOOST_CHECK_MESSAGE(c.head_block_id() == expected, "the neutral peer did not land on the tie-break winner");
+    BOOST_CHECK_MESSAGE(d.head_block_id() == expected, "the neutral peer did not land on the tie-break winner");
     BOOST_CHECK_EQUAL(f.a->head_block_num(), x.block_num());
 
     // The losing rival is still known and still rankable: the rule moves the head, it does not prune
