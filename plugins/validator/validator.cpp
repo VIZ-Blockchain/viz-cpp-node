@@ -2806,6 +2806,14 @@ namespace graphene {
                         return qc && qc->block_id != db.head_block_id();
                     });
                     if (sibling_qc) db.with_strong_write_lock([&]() { db.switch_head_to_certified_sibling(); });
+                    // No QC at head's height (the 18.11.2026 shape): converge on the sibling the
+                    // network's own votes name, so every producer stops minting a new one. Cheap
+                    // read-lock pre-check; the ranking reads votes and block ids only, so every
+                    // node computes the same answer.
+                    const bool canonical_differs = db.with_weak_read_lock([&]() {
+                        return db.canonical_sibling_id().valid();
+                    });
+                    if (canonical_differs) db.with_strong_write_lock([&]() { db.converge_to_canonical_sibling(); });
                 } catch (const fc::exception &e) {
                     wlog("Switch to certified sibling failed: ${e}", ("e", e.to_string()));
                     return block_validation_condition::not_time_yet;

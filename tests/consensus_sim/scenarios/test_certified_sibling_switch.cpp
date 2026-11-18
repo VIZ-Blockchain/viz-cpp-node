@@ -260,5 +260,57 @@ BOOST_AUTO_TEST_CASE(keeps_head_without_quorum) {
     BOOST_CHECK_EQUAL(db.head_block_num(), y.block_num());
 }
 
+// 18.11.2026 mainnet: the siblings of #86227200 never gathered a QC (27 of them, the best six
+// votes of the seven a quorum needed), so the certified path above had nothing to take and every
+// producer kept dropping its own head and minting a new sibling. These two cases cover the rule
+// that closes that hole: converge on the sibling the votes name, QC or no QC.
+BOOST_AUTO_TEST_CASE(converges_to_sibling_with_votes_but_no_qc) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0xC0FFEEu);
+    auto [x, y] = f.sibling_pair();
+    auto& db = f.a->db();
+    const auto quorum = database::block_qc_quorum(
+        uint32_t(db.get_validator_schedule_object().num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+    BOOST_REQUIRE_GT(quorum, 1u);
+
+    push_quorum_votes(*f.a, f.gp, f.keys, y, 1);
+    BOOST_REQUIRE_MESSAGE(!db.get_block_qc(y.block_num()).valid(),
+                          "PREMISE: a single vote must not form a QC (otherwise this is the certified case)");
+    BOOST_REQUIRE_MESSAGE(f.a->head_block_id() == x.id(), "PREMISE: head must still be the QC-less sibling");
+
+    const auto canonical = db.canonical_sibling_id();
+    BOOST_REQUIRE_MESSAGE(canonical.valid(), "the sibling carries a vote and head carries none: it is canonical");
+    BOOST_CHECK(*canonical == y.id());
+
+    BOOST_REQUIRE_MESSAGE(db.converge_to_canonical_sibling(),
+                          "converge refused a sibling the network voted for while head had no votes");
+    BOOST_CHECK(db.head_block_id() == y.id());
+    BOOST_CHECK_EQUAL(db.head_block_num(), y.block_num());
+    const auto applied = db.fetch_block_by_number(y.block_num());
+    BOOST_REQUIRE(applied.valid());
+    BOOST_CHECK(applied->id() == y.id());
+
+    // Second call: head IS canonical now, nothing to move. The rule must not oscillate.
+    BOOST_CHECK(!db.canonical_sibling_id().valid());
+    BOOST_CHECK(!db.converge_to_canonical_sibling());
+    BOOST_CHECK(db.head_block_id() == y.id());
+}
+
+BOOST_AUTO_TEST_CASE(keeps_head_when_nobody_voted_for_any_sibling) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0x0DDF00Du);
+    auto [x, y] = f.sibling_pair();
+    auto& db = f.a->db();
+    BOOST_REQUIRE(db.head_block_id() == x.id());
+
+    // No votes at all: a switch on silence would be a coin flip between nodes that know
+    // different subsets of the siblings, so the rule must not invent a winner.
+    BOOST_CHECK(!db.canonical_sibling_id().valid());
+    BOOST_CHECK(!db.converge_to_canonical_sibling());
+    BOOST_CHECK(db.head_block_id() == x.id());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 #endif

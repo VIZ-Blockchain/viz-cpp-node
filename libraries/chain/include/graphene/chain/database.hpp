@@ -767,6 +767,27 @@ namespace graphene { namespace chain {
             // make the sibling head. Returns true when head changed. Producer-side only.
             bool switch_head_to_certified_sibling();
 
+            /// The sibling of head that the network's own votes name as canonical, or empty.
+            ///
+            /// Ranking is (distinct votes across every round at head's height, then the smaller
+            /// block id). Every input is a property of the block or of a signed vote we received,
+            /// so every node computes the same answer without talking to anyone: that is what
+            /// makes it a convergence rule and not a preference. Head itself is a candidate and
+            /// wins ties by its smaller id, so the rule never moves back and forth.
+            fc::optional<block_id_type> canonical_sibling_id(size_t *out_head_votes = nullptr,
+                                                             size_t *out_best_votes = nullptr) const;
+
+            /// Make canonical_sibling_id() head. Returns true when head changed.
+            ///
+            /// Mainnet 18.11.2026: a QC-less head at #86227200 was dropped by the TC path and
+            /// rebuilt on its parent, and every producer did that to ITS OWN head, so each slot
+            /// minted one more sibling (27 of them in 95 s). Nothing then moved the heads
+            /// together: switch_head_to_certified_sibling() needs a QC that can no longer form
+            /// (votes are keyed by round and the round window is an hour), and the same-height
+            /// comparison returns "tie" for equal length. This rule closes that hole without
+            /// needing a vote it cannot get. Producer-side only.
+            bool converge_to_canonical_sibling();
+
             /// True when a QC we hold certifies a block at b's parent height other than
             /// b's parent, at b's height other than b, or at any height above b (a
             /// descendant cannot be told apart from a rival cheaply, and voting for b is
@@ -947,6 +968,22 @@ namespace graphene { namespace chain {
             /// every validator must run the same build (flag day).
             bool emergency_unstick_block(const fc::time_point_sec &when) const;
 
+            /// May this block switch emergency consensus on?
+            ///
+            /// Mainnet 18.11.2026: the chain entered emergency with ten signing keys on the
+            /// schedule. Entry blanks EVERY real validator's key and pads the schedule with
+            /// `committee`, whose key nobody holds, while the quorum for a certificate in
+            /// emergency is measured against the padded 21 slots (15 votes) although at most
+            /// eleven identities exist. The exit threshold is the quorum of the schedule size
+            /// measured on entry, floored at half the maximum (10 of 21), and the keys are
+            /// blanked — so with fewer keys than that, entering is a one-way door: the chain
+            /// can never certify another block, by committee (no key) or by validators (no key).
+            ///
+            /// Refusing keeps the node in the normal mode it can actually leave: QC of seven of
+            /// ten is reachable, emergency's fifteen of eleven is not. The count reads chain
+            /// data only, so every node reaches the same verdict in the same block.
+            bool emergency_entry_allowed() const;
+
             /// HF16: the parent certificate `producer` would put into its next
             /// block, built from the node-local QC of head and re-verified against
             /// state; empty when not needed or not formed yet.
@@ -1068,6 +1105,9 @@ namespace graphene { namespace chain {
             /// cache is kept on disk and restored once reindex() has a head to judge it against.
             bool _timeout_vote_journal_restore_pending = false;
             mutable std::mutex _block_votes_mutex;
+
+            /// Last height at which emergency entry was refused (log once per height).
+            mutable uint32_t _emergency_refusal_head = 0;
             std::atomic<uint32_t> _head_reject_logged{0};
             // Diagnostics: (validator, height) / (validator, claimed QC round) already named
             // in the log, so a fork or a QC we do not hold is reported once, not per vote.
