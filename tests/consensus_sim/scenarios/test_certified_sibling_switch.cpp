@@ -27,6 +27,7 @@
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/protocol/block_vote.hpp>
 #include <graphene/protocol/chain_operations.hpp>
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <set>
@@ -524,6 +525,85 @@ BOOST_AUTO_TEST_CASE(three_nodes_converge_on_the_same_sibling_without_talking) {
     // And the split is closed: nothing is left to converge towards.
     BOOST_CHECK(!f.a->db().canonical_sibling_id().valid());
     BOOST_CHECK(!c.db().canonical_sibling_id().valid());
+}
+
+// A TIE between two rivals, which is the one shape the cases above never build (each has exactly one
+// candidate). 18.11.2026 produced 27 siblings at one height with the votes split 6/…: the ranking
+// then has to choose between blocks that are equal on the only measure it has, and any answer that
+// depends on delivery order would put the nodes back where they started. The rule answers with the
+// smaller block id; this case pins that, and pins it on two independent peers holding the same head,
+// because "each node picks the smaller id" is what makes the answer the same everywhere without talk.
+BOOST_AUTO_TEST_CASE(tie_between_two_siblings_resolves_to_the_smaller_id) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0x71E7u);
+
+    simulated_node c("tie-third-peer", f.gp, f.clk);
+    replay_to(*f.a, c);
+    c.db().set_hardfork(CHAIN_HARDFORK_16, true);
+
+    auto [x, y] = f.sibling_pair();
+    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.previous, "PREMISE: the third peer must sit on the shared parent");
+
+    // Third sibling Z: same height, same parent, produced one slot LATER. In Y's own slot the block
+    // would be byte-identical to Y (same producer, same parent, no transactions), so the tie this
+    // case exists to build would silently become a duplicate.
+    fc::time_point_sec when_z = y.timestamp;
+    const auto z = produce(c, f.gp, f.keys, when_z);
+    BOOST_REQUIRE_EQUAL(z.block_num(), x.block_num());
+    BOOST_REQUIRE_MESSAGE(z.previous == x.previous, "PREMISE: Z must share the parent of X and Y");
+    BOOST_REQUIRE_MESSAGE(z.id() != y.id(), "PREMISE: Z must be a distinct block, not a re-delivery of Y");
+
+    // Every peer ends on the SAME head X, holding Y and Z as siblings: c takes X first (so it applies)
+    // and then the other two, which an equal-length head keeps in fork_db.
+    c.receive_block(x);
+    BOOST_REQUIRE_MESSAGE(c.head_block_id() == x.id(), "PREMISE: X did not apply on the neutral peer");
+    c.receive_block(y);
+    c.receive_block(z);
+    BOOST_REQUIRE_MESSAGE(c.db().get_fork_db().fetch_block(y.id()) && c.db().get_fork_db().fetch_block(z.id()),
+                          "PREMISE: both rivals must reach the neutral peer's fork_db");
+    f.a->receive_block(z);
+    BOOST_REQUIRE_MESSAGE(f.a->db().get_fork_db().fetch_block(z.id()), "PREMISE: Z did not reach the producer's fork_db");
+    BOOST_REQUIRE_MESSAGE(f.a->head_block_id() == x.id(), "PREMISE: delivering Z moved the head");
+
+    auto& db_a = f.a->db();
+    auto& db_c = c.db();
+    const auto quorum = database::block_qc_quorum(
+        uint32_t(db_a.get_validator_schedule_object().num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+    BOOST_REQUIRE_MESSAGE(quorum > 1u, "PREMISE: with a quorum of one a single vote certifies, and this is the wrong case");
+
+    // One vote each, so the rivals tie; head carries none. Both stay below quorum, so the certified
+    // path cannot be what resolves this.
+    for (auto* n : {f.a.get(), &c}) {
+        push_quorum_votes(*n, f.gp, f.keys, y, 1);
+        push_quorum_votes(*n, f.gp, f.keys, z, 1);
+    }
+    BOOST_REQUIRE_MESSAGE(!db_a.get_block_qc(y.block_num()).valid(), "PREMISE: a single vote must not form a QC");
+    BOOST_REQUIRE_MESSAGE(f.a->head_block_id() == x.id(), "PREMISE: head must still be the unvoted X");
+
+    // The tie is real: equal counts, head behind both. Without the id tie-break the answer would be
+    // whichever block the map happened to reach first.
+    const block_id_type expected = std::min(y.id(), z.id());
+    size_t head_votes = 0, sib_votes = 0;
+    const auto a_pick = db_a.canonical_sibling_id(&head_votes, &sib_votes);
+    const auto c_pick = db_c.canonical_sibling_id();
+    BOOST_REQUIRE_MESSAGE(a_pick.valid(), "a head with no votes must yield to rivals that have one");
+    BOOST_CHECK_EQUAL(head_votes, 0u);
+    BOOST_CHECK_EQUAL(sib_votes, 1u);
+    BOOST_CHECK_MESSAGE(*a_pick == expected, "the tie must be broken by the smaller id, not by delivery order");
+    BOOST_CHECK_MESSAGE(c_pick.valid() && *c_pick == expected,
+                        "an independent peer holding the same head and votes must name the same block");
+
+    BOOST_CHECK(db_a.converge_to_canonical_sibling());
+    BOOST_CHECK(db_c.converge_to_canonical_sibling());
+    BOOST_CHECK_MESSAGE(f.a->head_block_id() == expected, "peer a did not land on the tie-break winner");
+    BOOST_CHECK_MESSAGE(c.head_block_id() == expected, "the neutral peer did not land on the tie-break winner");
+    BOOST_CHECK_EQUAL(f.a->head_block_num(), x.block_num());
+
+    // The losing rival is still known and still rankable: the rule moves the head, it does not prune
+    // the fork, so a later vote that breaks the tie must still be able to act.
+    BOOST_CHECK(f.a->db().get_fork_db().fetch_block(expected == y.id() ? z.id() : y.id()));
+    BOOST_CHECK(!db_a.canonical_sibling_id().valid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
