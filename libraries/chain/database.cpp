@@ -1452,6 +1452,26 @@ namespace graphene { namespace chain {
             } FC_CAPTURE_AND_RETHROW()
         }
 
+        optional<signed_block> database::fetch_applied_block_by_number(uint32_t block_num) const {
+            if (block_num == 0 || block_num > head_block_num()) return {};
+            // Recent applied blocks have their exact ID in the TAPOS ring. Do not
+            // guess a reversible block from the DLT log or the fork DB ordering.
+            if (block_num > get_dynamic_global_properties().last_irreversible_block_num) {
+                const auto *summary = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+                if (!summary || protocol::block_header::num_from_id(summary->block_id) != block_num) return {};
+                return fetch_block_by_id(summary->block_id);
+            }
+            // At or below LIB the durable logs represent irreversible history.
+            optional<signed_block> block;
+            if (_block_log.is_open()) block = _block_log.read_block_by_num(block_num);
+            if (!block.valid() && _dlt_block_log.is_open()) block = _dlt_block_log.read_block_by_num(block_num);
+            if (block.valid()) return block;
+            // If logs lack this height, use only a known applied ID.
+            const auto *summary = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+            if (!summary || protocol::block_header::num_from_id(summary->block_id) != block_num) return {};
+            return fetch_block_by_id(summary->block_id);
+        }
+
         optional<signed_block> database::fetch_block_by_number(uint32_t block_num) const {
             try {
                 optional<signed_block> b;

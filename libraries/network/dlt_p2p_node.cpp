@@ -1499,7 +1499,10 @@ void dlt_p2p_node::on_dlt_range_reply(peer_id peer, const dlt_range_reply_messag
 
 void dlt_p2p_node::on_dlt_get_block_range(peer_id peer, const dlt_get_block_range_message& req) {
     dlt_block_range_reply_message reply;
-    uint32_t our_latest = _delegate->get_dlt_latest_block();
+    // The DLT log normally ends at LIB, but peers also need the applied
+    // reversible suffix through head. read_block_by_num identifies that
+    // suffix by applied block ID and returns empty when it cannot prove it.
+    uint32_t our_latest = _delegate->get_head_block_num();
 
     // Leave 64KB headroom for the reply wrapper fields
     // (last_block_next_available, is_last, vector overhead)
@@ -1510,6 +1513,12 @@ void dlt_p2p_node::on_dlt_get_block_range(peer_id peer, const dlt_get_block_rang
     for (uint32_t n = req.start_block_num; n <= req.end_block_num && n <= our_latest; ++n) {
         auto block = _delegate->read_block_by_num(n);
         if (block.valid()) {
+            // The head may reorganize between reads; never splice branches.
+            if (!reply.blocks.empty() && n == reply.blocks.back().block_num() + 1 &&
+                block->previous != reply.blocks.back().id()) {
+                wlog("Range reply branch changed at #${n}; returning linked prefix", ("n", n));
+                break;
+            }
             // Check if adding this block would exceed the message size budget.
             // pack_size is expensive but we only call it per-block here.
             uint32_t block_size = static_cast<uint32_t>(fc::raw::pack_size(*block));
@@ -2235,6 +2244,13 @@ void dlt_p2p_node::on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_requ
         if (num < our_earliest || num > our_head + GAP_FILL_MAX_BLOCKS) continue;
         auto block = _delegate->read_block_by_num(num);
         if (block.valid()) {
+            // A reorg can occur between separate reads. Never splice two
+            // branches into a consecutive gap-fill response.
+            if (!reply.blocks.empty() && num == reply.blocks.back().block_num() + 1 &&
+                block->previous != reply.blocks.back().id()) {
+                wlog("Gap fill branch changed at #${n}; returning linked prefix", ("n", num));
+                break;
+            }
             reply.blocks.push_back(std::move(*block));
         }
     }

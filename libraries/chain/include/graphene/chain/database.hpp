@@ -240,6 +240,9 @@ namespace graphene { namespace chain {
 
             optional<signed_block> fetch_block_by_number(uint32_t num) const;
 
+            /// Return only the applied-chain block at this height, or nothing if its identity is unknown.
+            optional<signed_block> fetch_applied_block_by_number(uint32_t num) const;
+
             const signed_transaction get_recent_transaction(const transaction_id_type &trx_id) const;
 
             std::vector<block_id_type> get_block_ids_on_fork(block_id_type head_of_fork) const;

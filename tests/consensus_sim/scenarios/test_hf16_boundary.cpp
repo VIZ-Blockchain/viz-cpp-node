@@ -416,16 +416,23 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     auto &recovery_db = follower.db();
     vote_for_head(follower, gp);
     const auto &wso = recovery_db.get_validator_schedule_object();
+    const bool hf18 = recovery_db.has_hardfork(CHAIN_HARDFORK_18);
     for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
         const auto v = wso.current_shuffled_validators[i];
-        const auto d = block_timeout_digest(recovery_db.get_chain_id(), timeout_round, high->round);
-        BOOST_CHECK(recovery_db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
+        if (hf18) {
+            const auto d = block_timeout_digest_v2(recovery_db.get_chain_id(), timeout_round, high->round, high->block_id);
+            BOOST_CHECK(recovery_db.push_timeout_vote_v2(timeout_round, high->round, high->block_id, v, key_for(gp, v).sign_compact(d)));
+        } else {
+            const auto d = block_timeout_digest(recovery_db.get_chain_id(), timeout_round, high->round);
+            BOOST_CHECK(recovery_db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
+        }
     }
     const auto tc = recovery_db.get_timeout_cert(timeout_round);
-    BOOST_REQUIRE(tc.valid());
+    const auto tc_v2 = recovery_db.get_timeout_cert_v2(timeout_round);
+    BOOST_REQUIRE(hf18 ? tc_v2.valid() : tc.valid());
     when += fc::seconds(recovery_db.block_interval());
     const auto v = recovery_db.get_scheduled_validator(recovery_db.get_slot_at_time(when));
-    const auto recovered = recovery_db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc);
+    const auto recovered = recovery_db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc, {}, tc_v2);
     db.push_block(recovered, database::skip_nothing);
     BOOST_REQUIRE(node.head_block_id() == recovered.id());
     BOOST_REQUIRE(follower.head_block_id() == recovered.id());
@@ -438,11 +445,19 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     const auto missed = db.get_validator(voter).total_missed;
     // Preserve the old one-hour wall-time vote window after changing slot length.
     const uint32_t historical = round - 2000;
-    const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
-    BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
     const uint32_t expired = round - 3601;
-    const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
-    BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
+    if (db.has_hardfork(CHAIN_HARDFORK_18)) {
+        const block_id_type no_qc;
+        const auto historic_digest = block_timeout_digest_v2(db.get_chain_id(), historical, 0, no_qc);
+        BOOST_CHECK(db.push_timeout_vote_v2(historical, 0, no_qc, voter, key_for(gp, voter).sign_compact(historic_digest)));
+        const auto expired_digest = block_timeout_digest_v2(db.get_chain_id(), expired, 0, no_qc);
+        BOOST_CHECK(!db.push_timeout_vote_v2(expired, 0, no_qc, voter, key_for(gp, voter).sign_compact(expired_digest)));
+    } else {
+        const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
+        BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
+        const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
+        BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
+    }
 
     signed_block twin = head;
     twin.timestamp += fc::seconds(1);
@@ -512,7 +527,8 @@ void tc_window_scenario() {
     // that stops at the first (or the exact) certificate still stalls: the window search
     // must skip it and carry the newest usable one.
     auto gp = make_genesis_params(0x7C3E7u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    // This scenario tests the pre-HF18 wire form explicitly; do not let wall-clock activation skip it.
+    fc::time_point_sec start(CHAIN_HARDFORK_18_TIME - 86400);
     if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
     virtual_clock clk(start);
@@ -653,7 +669,8 @@ BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
 BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
     try {
         auto gp = make_genesis_params(0xBF718u, 1);
-        fc::time_point_sec start(fc::time_point::now());
+        // This scenario tests the pre-HF18 wire form explicitly; do not let wall-clock activation skip it.
+        fc::time_point_sec start(CHAIN_HARDFORK_18_TIME - 86400);
         if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
         start += fc::seconds(CHAIN_BLOCK_INTERVAL);
         virtual_clock clk(start);
