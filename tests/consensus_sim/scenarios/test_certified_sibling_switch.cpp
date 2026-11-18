@@ -369,5 +369,104 @@ BOOST_AUTO_TEST_CASE(emergency_entry_refuses_below_the_exit_threshold) {
     BOOST_CHECK(db.emergency_entry_allowed());
 }
 
+// Adversarial review of the convergence rule (18.11.2026, after #280 merged): a vote is one per
+// validator per ROUND, not per height, so a sibling can hold MORE distinct voters than a head that
+// already carries a certificate - no fork required, just a rebuild. Without an own-QC guard the
+// ranking would pull the node off a certified block, which is the network's answer. The certified
+// path has that guard (switch_head_to_certified_sibling); this case is the same promise for the
+// voted path, and its mirror case proves the test is not vacuous.
+BOOST_AUTO_TEST_CASE(keeps_certified_head_even_when_a_sibling_has_more_votes) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0xC0DE01u);
+    auto [x, y] = f.sibling_pair();
+    auto& db = f.a->db();
+    const auto quorum = database::block_qc_quorum(
+        uint32_t(db.get_validator_schedule_object().num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+    BOOST_REQUIRE_MESSAGE(quorum > 1, "PREMISE: quorum must allow a certificate on this build");
+    BOOST_REQUIRE_MESSAGE(db.head_block_id() == x.id(), "PREMISE: head must be x");
+
+    // x becomes CERTIFIED: exactly a quorum of voters in x's own round.
+    push_quorum_votes(*f.a, f.gp, f.keys, x, quorum);
+    const auto qc = db.get_block_qc(x.block_num());
+    BOOST_REQUIRE_MESSAGE(qc.valid() && qc->block_id == x.id(),
+                          "PREMISE: x must hold its own QC (otherwise this is the voted case, not this one)");
+
+    const size_t voters = scheduled(db).size();
+    if (voters <= quorum) {
+        // Reached on the 4-validator CI arm, measured: the schedule holds 3 names and the quorum for
+        // 3 is 3. "More distinct voters than a certified head" then needs two votes from one
+        // validator in one round, which the vote key (validator, round) forbids - the shape is not
+        // constructible here, and pretending otherwise is how a green test proves nothing. The guard
+        // still has to be there for the mainnet shape (21 slots, quorum 15, slack of six), and the
+        // thing that holds it on THIS build is the source-level pin plus its mutation
+        // (tests/chain/test_certified_sibling_wiring.py, converge-off-certified-head), not a case
+        // that silently cannot run.
+        BOOST_TEST_MESSAGE("schedule " << voters << " equals the quorum " << quorum
+                           << ": a sibling cannot out-vote a certified head on this build (one vote per "
+                              "validator per round); the guard is held by the wiring mutation");
+        BOOST_CHECK_MESSAGE(!db.canonical_sibling_id().valid(),
+                            "a certified head must not be a candidate even when no sibling can out-vote it");
+        BOOST_CHECK(!db.converge_to_canonical_sibling());
+        BOOST_CHECK(db.head_block_id() == x.id());
+        return;
+    }
+
+    // The sibling collects ONE MORE distinct voter than the quorum, in a LATER round - legal,
+    // because the vote key is (validator, round). Every scheduled validator may vote again.
+    const uint32_t later_round = db.round_of(x.timestamp) + 1;
+    const auto digest = block_vote_digest(db.get_chain_id(), y.block_num(), y.id(), later_round);
+    uint32_t pushed = 0;
+    for (const auto& v : scheduled(db)) {
+        BOOST_REQUIRE_MESSAGE(db.push_block_vote(y.block_num(), y.id(), later_round, v,
+                                                 key_for(f.gp, f.keys, v).sign_compact(digest)),
+                              "PREMISE: a later-round vote for the sibling was refused");
+        ++pushed;
+    }
+    BOOST_REQUIRE_MESSAGE(pushed > quorum,
+                          "PREMISE: the sibling needs more distinct voters than the quorum, got " << pushed);
+
+    // The guard: a certified head is not a candidate.
+    BOOST_CHECK_MESSAGE(!db.canonical_sibling_id().valid(),
+                        "a head holding its own QC must not be ranked against siblings at all");
+    BOOST_CHECK_MESSAGE(!db.converge_to_canonical_sibling(),
+                        "converge must refuse to leave a certified head, however many votes a sibling shows");
+    BOOST_CHECK(db.head_block_id() == x.id());
+    BOOST_CHECK_EQUAL(db.head_block_num(), x.block_num());
+}
+
+BOOST_AUTO_TEST_CASE(moves_to_a_sibling_with_more_votes_when_head_has_no_qc) {
+    BOOST_REQUIRE_MESSAGE(CHAIN_MAX_VALIDATORS >= 4,
+                          "PREMISE: this build caps the schedule below four identities");
+    fixture f(0xC0DE02u);
+    auto [x, y] = f.sibling_pair();
+    auto& db = f.a->db();
+    const auto quorum = database::block_qc_quorum(
+        uint32_t(db.get_validator_schedule_object().num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+    BOOST_REQUIRE_MESSAGE(quorum > 1, "PREMISE: quorum must allow a near-quorum");
+    BOOST_REQUIRE_MESSAGE(db.head_block_id() == x.id(), "PREMISE: head must be x");
+
+    // One vote SHORT of a certificate: the guard above must not apply, and the ranking must act.
+    push_quorum_votes(*f.a, f.gp, f.keys, x, quorum - 1);
+    BOOST_REQUIRE_MESSAGE(!db.get_block_qc(x.block_num()).valid(),
+                          "PREMISE: x must NOT be certified (otherwise the own-QC guard is what refuses)");
+    // Same height means the same round, and one vote per (validator, round) is the rule, so the
+    // sibling's votes come in a later round - that is how a rebuild of one height actually votes.
+    const uint32_t later_round = db.round_of(x.timestamp) + 1;
+    const auto digest = block_vote_digest(db.get_chain_id(), y.block_num(), y.id(), later_round);
+    uint32_t pushed = 0;
+    for (const auto& v : scheduled(db)) {
+        if (pushed >= quorum) break;
+        db.push_block_vote(y.block_num(), y.id(), later_round, v, key_for(f.gp, f.keys, v).sign_compact(digest));
+        ++pushed;
+    }
+    BOOST_REQUIRE_EQUAL(pushed, quorum);
+
+    BOOST_CHECK_MESSAGE(db.canonical_sibling_id().valid(),
+                        "an uncertified head with fewer votes must lose the ranking");
+    BOOST_CHECK(db.converge_to_canonical_sibling());
+    BOOST_CHECK(db.head_block_id() == y.id());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 #endif
