@@ -1320,6 +1320,25 @@ void dlt_p2p_node::on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_messag
             // fallen behind (missed broadcast blocks) — transition to SYNC
             // and request the missing range.
             uint32_t our_head = _delegate->get_head_block_num();
+            // A same-height peer can have a different reversible head even
+            // though neither side is numerically ahead. Ask once per hello;
+            // do not enter SYNC or claim that the peer's block is preferred.
+            // The common LIB gate avoids using this for unrelated histories.
+            if (_delegate->get_lib_block_num() > 0 &&
+                our_head > _delegate->get_lib_block_num() &&
+                state.peer_head_num == our_head &&
+                state.peer_head_id != _delegate->get_head_block_id() &&
+                state.peer_lib_num == _delegate->get_lib_block_num() &&
+                state.peer_lib_id != block_id_type() &&
+                state.peer_lib_id == _delegate->get_lib_block_id()) {
+                dlt_get_block_range_message req;
+                req.start_block_num = our_head;
+                req.end_block_num = our_head;
+                req.prev_block_id = _delegate->get_head_block_id();
+                send_message(peer, message(req));
+                ilog(DLT_LOG_ORANGE "Equal-height competing head #${h} from ${ep}: requesting one block" DLT_LOG_RESET,
+                     ("h", our_head)("ep", state.endpoint));
+            }
             if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD * slot_scale()) {
                 ilog(DLT_LOG_ORANGE "Falling behind in FORWARD mode: peer ${ep} at #${pn}, our head #${hn} — transitioning to SYNC" DLT_LOG_RESET,
                      ("ep", state.endpoint)("pn", state.peer_head_num)("hn", our_head));

@@ -41,6 +41,9 @@ jobs:
       - name: P2P reversible range regression (offline)
         run: python3 tests/p2p/test_reversible_range.py
 
+      - name: P2P equal-height competing head regression (offline)
+        run: python3 tests/p2p/test_equal_height_hello.py
+
       # Every field in FC_REFLECT travels to the snapshot file, but the importer is written
       # by hand; a field added to a struct and forgotten there is dropped silently on
       # restore. Runs first because it takes a second and needs no submodules.
