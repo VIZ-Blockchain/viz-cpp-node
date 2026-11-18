@@ -84,6 +84,8 @@ def wiring_problems(val_cpp, db_cpp):
             (r'if\s*\(n\s*<=\s*head_count\)\s*continue;', 'switches on a tie: without a strict lead the answer depends on which siblings a node happens to know'),
             (r'set\.insert\(v\.first\)', 'counted the same validator twice (a rebuild would outrank a real majority)'),
             (r'_block_votes_mutex', 'read the vote tallies without their mutex'),
+            (r'own->block_id\s*==\s*head_id\)\s*return\s+fc::optional<block_id_type>\(\)',
+             'ranks a CERTIFIED head against siblings: a re-vote in a later round could pull the node off a block the network already certified'),
         ]:
             if not re.search(pat, cs):
                 problems.append(f'canonical_sibling_id {why}')
@@ -139,6 +141,7 @@ MUTATIONS = {
     'no-pop-guard': ('if (head_block_id() == head_item->id) {', 'if (false) {'),
     'converge-no-call': ('db.converge_to_canonical_sibling(); });', '});'),
     'converge-tie-moves': ('if (n <= head_count) continue;', ''),
+    'converge-off-certified-head': ('if (own && own->block_id == head_id) return fc::optional<block_id_type>();', ''),
     'converge-not-sibling': ('if (item->num != num || item->data.previous != head_item->data.previous) continue;', ''),
     'converge-counts-twice': ('set.insert(v.first);', 'set.insert(account_name_type(std::to_string(set.size())));'),
     'emergency-guard-removed': ('&& emergency_entry_allowed()', ''),

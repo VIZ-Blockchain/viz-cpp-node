@@ -8673,6 +8673,20 @@ namespace graphene { namespace chain {
             if (!head_item) return fc::optional<block_id_type>();
             const block_id_type head_id = head_block_id();
 
+            // A certified head is the network's answer, not a candidate. The certified path already
+            // refuses to displace a head that holds its own QC (switch_head_to_certified_sibling,
+            // own-QC guard); without the same guard here a sibling could win the ranking and pull the
+            // node OFF a certified block. That is reachable without any fork: a vote is one per
+            // validator per ROUND, not per height, so a validator may vote for head in one round and
+            // for its sibling in the next, and the sibling then holds more distinct voters than the
+            // block that already has a certificate. Mainnet 18.11.2026 was exactly a storm of rebuilds
+            // at one height, so "more votes than a certified head" is a shape to expect, not a
+            // hypothetical.
+            {
+                const auto own = get_block_qc(num);
+                if (own && own->block_id == head_id) return fc::optional<block_id_type>();
+            }
+
             // Distinct voters per block at this height, across every round: one validator may
             // vote at the same height in two rounds (a rebuild), and counting it twice would
             // rank a block by how often it was retried rather than by how many back it.
