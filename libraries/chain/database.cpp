@@ -2194,6 +2194,39 @@ namespace graphene { namespace chain {
                         catch (const fc::exception &) { return 0; }
                     };
 
+                    // An equal TC can certify the same parent for two different
+                    // proposals.  Use the block id as a deterministic final key,
+                    // but only for siblings whose nonzero certificate scores
+                    // have both passed admission.  A QC of the head still wins.
+                    bool equal_tc_tiebreak = false;
+                    if (has_hardfork(CHAIN_HARDFORK_16) &&
+                        !get_dynamic_global_properties().emergency_consensus_active &&
+                        new_head && !new_head->anchor_only &&
+                        new_head->id == head_block_id() &&
+                        new_block.block_num() == new_head->num &&
+                        new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
+                        new_block.previous == new_head->data.previous &&
+                        new_block.id() < new_head->id) {
+                        const auto tc_for_parent = [](const signed_block &b)
+                            -> const protocol::block_header_extensions * {
+                            bool parent_qc = false;
+                            const protocol::block_header_extensions *tc = nullptr;
+                            for (const auto &e : b.extensions)
+                                if (e.which() == 3)
+                                    parent_qc = e.get<protocol::block_qc_certificate>().block_id == b.previous;
+                                else if (e.which() == 4 || e.which() == 6) tc = &e;
+                            return parent_qc ? tc : nullptr;
+                        };
+                        const auto a = admitted_round(new_block);
+                        const auto b = admitted_round(new_head->data);
+                        const auto own = get_block_qc(new_head->num);
+                        const auto *tc_a = tc_for_parent(new_block);
+                        const auto *tc_b = tc_for_parent(new_head->data);
+                        equal_tc_tiebreak = tc_a && tc_b &&
+                            fc::raw::pack(*tc_a) == fc::raw::pack(*tc_b) &&
+                            a != 0 && a == b && !(own && own->block_id == new_head->id);
+                    }
+
                     // HF16: fork_db keeps the first block at a height as its head, so a
                     // same-height sibling never reached the certificate comparison below:
                     // a TC replacement of a QC-less head (Jolteon) was stored and never
@@ -2209,7 +2242,7 @@ namespace graphene { namespace chain {
                         new_head->id != new_block.id() &&
                         new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
                         new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
-                        admitted_round(new_block) > admitted_round(new_head->data) &&
+                        (admitted_round(new_block) > admitted_round(new_head->data) || equal_tc_tiebreak) &&
                         ![&]() {
                             // A head certified by its own QC is not given up for a block that
                             // only carries a later certificate (05.11.2026 stall: TC siblings
@@ -2265,7 +2298,9 @@ namespace graphene { namespace chain {
                                 cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
                             }
                         }
-                        if (cert_cmp != 0) {
+                        if (equal_tc_tiebreak && new_head->id == new_block.id()) {
+                            should_switch = true;
+                        } else if (cert_cmp != 0) {
                             should_switch = cert_cmp > 0;
                         } else if (has_hardfork(CHAIN_HARDFORK_12)) {
                             // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
@@ -2440,6 +2475,11 @@ namespace graphene { namespace chain {
                                     session.push();
                                 }
                                 catch (const wrong_scheduled_validator_exception &e) {
+                                    // Hash order is not evidence of collective producer
+                                    // support. Never weaken slot validation for a tie-break.
+                                    if (equal_tc_tiebreak) {
+                                        except = e;
+                                    } else {
                                     // Schedule mismatch on a branch already chosen
                                     // as heavier by vote-weighted comparison.  The
                                     // branch represents collective consensus of
@@ -2456,6 +2496,7 @@ namespace graphene { namespace chain {
                                         throw; // Recovery must reach the chain/P2P handler with its type intact.
                                     } catch (const fc::exception &e2) {
                                         except = e2;
+                                    }
                                     }
                                 }
                                 catch (const shared_memory_corruption_exception&) {
