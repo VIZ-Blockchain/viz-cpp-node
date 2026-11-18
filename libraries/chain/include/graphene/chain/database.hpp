@@ -767,6 +767,16 @@ namespace graphene { namespace chain {
             // make the sibling head. Returns true when head changed. Producer-side only.
             bool switch_head_to_certified_sibling();
 
+            /// Make `sib` (same height as head, same parent) head, restoring head if it fails.
+            ///
+            /// Shared by the certified-sibling rule and the voted-sibling rule on purpose: the
+            /// no-progress guard after pop_block() and the re-apply of the previous head are the
+            /// two places where a copy would drift, and drift there leaves state and _fork_db
+            /// pointing at different blocks. `why` names the rule in the log lines.
+            bool make_sibling_head(const item_ptr &sib,
+                                   const item_ptr &head_item,
+                                   const char *why);
+
             /// The sibling of head that the network's own votes name as canonical, or empty.
             ///
             /// Ranking is (distinct votes across every round at head's height, then the smaller

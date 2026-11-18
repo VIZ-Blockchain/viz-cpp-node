@@ -8626,6 +8626,13 @@ namespace graphene { namespace chain {
 
             wlog("Head #${n} ${h} has no QC, sibling ${id} has ${k}/${q} (round ${r}): switching head to it",
                  ("n", num)("h", head_block_id())("id", qc->block_id)("k", ok)("q", quorum)("r", qc->round));
+            return make_sibling_head(sib, head_item, "Certified sibling");
+        }
+
+        bool database::make_sibling_head(const item_ptr &sib,
+                                         const item_ptr &head_item,
+                                         const char *why) {
+            const uint32_t num = head_item->num;
             pop_block();
             if (head_block_id() == head_item->id) {
                 // Same guard as every other pop site: undo() had nothing to revert (committed or
@@ -8633,7 +8640,7 @@ namespace graphene { namespace chain {
                 // while _fork_db already points at the parent. Applying the sibling on top of
                 // that state fails the header check and the re-apply of head fails the same way,
                 // leaving the two heads apart. Put the fork_db head back and keep waiting.
-                wlog("Certified sibling switch: pop_block() made no progress at head #${n}, keeping head", ("n", num));
+                wlog("${w} switch: pop_block() made no progress at head #${n}, keeping head", ("w", why)("n", num));
                 _fork_db.set_head(head_item);
                 return false;
             }
@@ -8646,8 +8653,8 @@ namespace graphene { namespace chain {
             } catch (const shared_memory_corruption_exception &) {
                 throw;
             } catch (const fc::exception &e) {
-                wlog("Certified sibling ${id} failed to apply, restoring head ${h}: ${e}",
-                     ("id", qc->block_id)("h", head_item->id)("e", e.to_string()));
+                wlog("${w} ${id} failed to apply, restoring head ${h}: ${e}",
+                     ("w", why)("id", sib->id)("h", head_item->id)("e", e.to_string()));
                 _fork_db.remove(sib->id);
             }
             auto session = start_undo_session();
@@ -8726,33 +8733,7 @@ namespace graphene { namespace chain {
             // that no rule moved the heads together.
             wlog("Head #${n} ${h} is not canonical (${j} votes vs ${k} for ${id}): switching head to it",
                  ("n", num)("h", head_block_id())("id", *target)("j", head_votes)("k", sib_votes));
-            pop_block();
-            if (head_block_id() == head_item->id) {
-                // Same guard as the certified path: pop_block() reverted nothing (committed or
-                // empty undo session right after a restart), so state still holds head while
-                // _fork_db points at the parent. Put the fork_db head back and wait.
-                wlog("Canonical sibling switch: pop_block() made no progress at head #${n}, keeping head", ("n", num));
-                _fork_db.set_head(head_item);
-                return false;
-            }
-            try {
-                auto session = start_undo_session();
-                apply_block(sib->data, skip_nothing);
-                session.push();
-                _fork_db.set_head(sib);
-                return true;
-            } catch (const shared_memory_corruption_exception &) {
-                throw;
-            } catch (const fc::exception &e) {
-                wlog("Canonical sibling ${id} failed to apply, restoring head ${h}: ${e}",
-                     ("id", sib->id)("h", head_item->id)("e", e.to_string()));
-                _fork_db.remove(sib->id);
-            }
-            auto session = start_undo_session();
-            apply_block(head_item->data, skip_nothing);
-            session.push();
-            _fork_db.set_head(head_item);
-            return false;
+            return make_sibling_head(sib, head_item, "Canonical sibling");
         }
 
         bool database::qc_conflicts_with(const signed_block &b) const {
