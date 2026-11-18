@@ -8719,7 +8719,7 @@ namespace graphene { namespace chain {
                 // Strictly more votes than head, or nothing: a move on silence would be a coin
                 // flip between nodes that know different subsets of the siblings.
                 if (n <= head_count) continue;
-                if (best == head_id || n > best_count || (n == best_count && entry.first < best)) {
+                if (best == head_id || n > best_count || (n == best_count && entry.first > best)) {
                     best = entry.first;
                     best_count = n;
                 }
