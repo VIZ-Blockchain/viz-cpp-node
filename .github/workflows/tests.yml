@@ -108,17 +108,26 @@ jobs:
         # and when that mirror goes quiet apt retries it until the job's 180-minute timeout
         # instead of failing (seen 2026-08-19; the guarded form had been added everywhere
         # except here, the one job that runs on every code PR and every master push).
-        timeout-minutes: 15
+        # 2026-11-19: same fix as the testnet arms below — ForceIPv4 (stalled attempts on a
+        # dead IPv6 route showed up as `Ign:` lines 20-40 s apart) and only the Boost
+        # components the build requests instead of the 154-package meta-package.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
-          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           $apt update
           $apt install -y --no-install-recommends \
-            build-essential ccache cmake libboost-all-dev libssl-dev \
+            build-essential ccache cmake libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
+          $apt install -y --no-install-recommends \
+            libboost-thread-dev libboost-date-time-dev libboost-filesystem-dev \
+            libboost-program-options-dev libboost-serialization-dev libboost-chrono-dev \
+            libboost-test-dev libboost-context-dev libboost-locale-dev libboost-coroutine-dev \
+            libboost-iostreams-dev libboost-regex-dev \
+            || $apt install -y --no-install-recommends libboost-all-dev
 
       # ccache >= 4 keeps its cache in ~/.cache/ccache, not ~/.ccache, so the old path
       # never existed and nothing was ever saved ("Path Validation Error"). Pin the
@@ -200,17 +209,32 @@ jobs:
         # Runners fetch packages from azure.archive.ubuntu.com; when that mirror goes quiet
         # apt keeps retrying it and the job hangs for hours instead of failing (seen
         # 2026-08-19). Pin the canonical mirror, bound the wait, and cap the step.
-        timeout-minutes: 15
+        # 2026-11-19: the 15-minute cap was hit three times in a row on the same signature —
+        # a stream of `Ign:` lines 20-40 s apart where the retry then succeeded. Two causes
+        # are addressed here: stalled attempts usually mean a dead IPv6 route (ForceIPv4),
+        # and `libboost-all-dev` pulls 154 packages / 94 MB, most of it OpenCL/HIP/MPI that
+        # this build never links. Only the components CMakeLists actually requests are
+        # installed, with the meta-package kept as a fallback if a component is ever renamed.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
-          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           $apt update
           $apt install -y --no-install-recommends \
-            build-essential ccache cmake libboost-all-dev libssl-dev \
+            build-essential ccache cmake libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
+          # Mirrors the components the build actually requests: BOOST_COMPONENTS in CMakeLists.txt
+          # (thread date_time filesystem program_options serialization chrono unit_test_framework
+          # context locale coroutine), plus iostreams (thirdparty/fc) and regex (cli_wallet).
+          $apt install -y --no-install-recommends \
+            libboost-thread-dev libboost-date-time-dev libboost-filesystem-dev \
+            libboost-program-options-dev libboost-serialization-dev libboost-chrono-dev \
+            libboost-test-dev libboost-context-dev libboost-locale-dev libboost-coroutine-dev \
+            libboost-iostreams-dev libboost-regex-dev \
+            || $apt install -y --no-install-recommends libboost-all-dev
 
       # One cache per matrix arm: CHAIN_TESTNET_VALIDATORS changes compile flags.
       - name: Restore ccache
