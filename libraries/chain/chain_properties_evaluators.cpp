@@ -111,10 +111,11 @@ namespace graphene { namespace chain {
             FC_ASSERT(p.pm_closed_market_retention_sec > reveal_blocks * _db.block_interval(),
                       "retention must exceed the live worst-case commit reveal deadline");
             if (_db.has_hardfork(CHAIN_HARDFORK_16)) {
-                // CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH is CHAIN_BLOCKS_PER_HOUR, i.e. already native
-                // 1 s blocks = one hour. No x3 here: the old factor existed only because the
-                // constant used to be a 3 s number (owner 19.11.2026: nothing is multiplied).
-                FC_ASSERT(p.distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH,
+                // The floor is a wall-clock promise, so it has one named value per block scale.
+                // No multiplication here: the pre-HF16 value (CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH)
+                // counts 3 s blocks, this one counts live 1 s blocks, and both mean the same time
+                // (owner 19.11.2026: nothing is multiplied).
+                FC_ASSERT(p.distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16,
                           "distribution_epoch_length must preserve the minimum epoch duration after HF16");
                 return;
             }

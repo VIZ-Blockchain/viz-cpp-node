@@ -216,7 +216,12 @@
 /// 21 blocks (1 round) is too short: epoch distribution runs synchronously in _apply_block
 /// and iterates all validators × all their stakeholders; at 63-second intervals this
 /// would fire too frequently under any realistic validator/stakeholder count.
-#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(CHAIN_BLOCKS_PER_HOUR)
+#define CHAIN_BLOCKS_PER_HOUR_LEGACY          (60*60/CHAIN_BLOCK_INTERVAL) // one hour in the pre-HF16 3 s blocks
+// The epoch floor is a WALL-CLOCK promise (one hour), so it has one named value per block scale —
+// no call site multiplies. Testnet deliberately keeps a much smaller floor; both configs keep the
+// invariant `before * 3 s == after * 1 s`, which the boundary test asserts directly.
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH        uint32_t(CHAIN_BLOCKS_PER_HOUR_LEGACY) // one hour before HF16
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16   uint32_t(CHAIN_BLOCKS_PER_HOUR)        // one hour after HF16
 
 /// Minimum TOKEN amount per stakeholder payout at epoch end (1 atomic unit = 0.001 VIZ).
 /// Stakeholder rewards below this threshold are not distributed; the validator retains them.

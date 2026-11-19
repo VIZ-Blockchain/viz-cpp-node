@@ -82,7 +82,10 @@ namespace graphene {
             chain_properties_pm defaults;
             result["CHAIN_DEFAULT_CHAIN_PROPERTIES"] = fc::variant(defaults);
             result["CHAIN_PROPERTY_BLOCK_UNITS"] = "native-blocks";
+            // Both scales are named: a client on a pre-HF16 chain reads the first key, a client after
+            // HF16 reads the second. Neither is derived by multiplying at runtime.
             result["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH"] = uint32_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
+            result["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16"] = uint32_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16);
             result["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_MAX_VALIDATOR_MISSED_BLOCKS);
             result["CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS);
             return result;

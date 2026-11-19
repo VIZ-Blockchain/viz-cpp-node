@@ -223,7 +223,9 @@
 #define CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH  CHAIN_BLOCKS_PER_HOUR
 
 /// Minimum epoch length: 1 block in testnet to allow any interval.
-#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(1)
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH        uint32_t(1) // testnet floor: one 3 s block
+// Same wall-clock value as the pre-HF16 floor above (1 x 3 s), expressed in native 1 s blocks.
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16   uint32_t(3) // 3 x 1 s
 
 /// Minimum TOKEN amount per stakeholder payout (1 atomic unit = 0.001 VIZ).
 #define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)

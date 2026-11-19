@@ -285,15 +285,16 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     db.set_hardfork(CHAIN_HARDFORK_16, true);
     // Other block-denominated settings have been migrated too: start from those props.
     props = db.get_validator(gp.initiator_name).props;
-    // HF16: the floor is CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH native 1 s blocks, i.e. exactly one
-    // hour of wall time. Asserted through SECONDS, not through the same macro expression, so the
-    // test cannot follow a silent change of meaning (owner 19.11.2026: nothing is multiplied).
-    const uint32_t hour_blocks = uint32_t(CHAIN_SECONDS_PER_YEAR / (365 * 24));
-    BOOST_CHECK_EQUAL(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, hour_blocks);
-    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH - 1;
+    // The floor is a wall-clock promise. Both configs keep it as one named value per block
+    // scale, so the invariant to assert is SECONDS, not a macro expression: mainnet
+    // 1200 x 3 s == 3600 x 1 s, testnet 1 x 3 s == 3 x 1 s. A regression that drops or
+    // duplicates the factor breaks this line whatever the config is.
+    BOOST_CHECK_EQUAL(uint64_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH) * CHAIN_BLOCK_INTERVAL,
+                      uint64_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16) * CHAIN_BLOCK_INTERVAL_HF16);
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16 - 1;
     op.props = props;
     BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
-    props.distribution_epoch_length += 1;
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16;
     auto overflowing = props;
     overflowing.pm_batch_epoch_blocks = 0x80000000u;
     overflowing.pm_reveal_window_blocks = 0x80000000u;
@@ -308,10 +309,11 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
     produce(node, gp, when);
     BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
-                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
-    // Same floor in seconds before and after the fork: one hour.
+                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16);
+    // Same wall-clock floor as before the fork, now counted in 1 s blocks.
     BOOST_CHECK_EQUAL(uint64_t(db.get_validator(gp.initiator_name).props.distribution_epoch_length)
-                          * db.block_interval(), (uint64_t)3600);
+                          * db.block_interval(),
+                      uint64_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH) * CHAIN_BLOCK_INTERVAL);
 }
 
 // Every CI run now exercises real signatures, QC/LIB, timeout votes, late-QC and
