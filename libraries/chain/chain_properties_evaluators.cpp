@@ -99,7 +99,8 @@ namespace graphene { namespace chain {
         FC_ASSERT( _db.has_hardfork(CHAIN_HARDFORK_4), "versioned_chain_properties_update_evaluator not enabled until HF 4" );
         _db.get_account(o.owner); // verify owner exists
 
-        // #6737: protocol validate() allows up to 3 years of 1 s blocks; until HF16 the old
+        // #6737: protocol validate() allows up to one year counted in LIVE blocks (31 536 000 at
+        // 1 s, the same number the old `CHAIN_BLOCKS_PER_YEAR * 3` produced); until HF16 the
         // one-year-of-3-s-blocks bound stays consensus (the stored props are checked after the
         // visit, so a rejected op leaves nothing behind - the whole op is rolled back).
         const auto check_year_bound = [&](const chain_properties& p) {

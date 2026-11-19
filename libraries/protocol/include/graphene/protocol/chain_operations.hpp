@@ -591,7 +591,8 @@ namespace graphene { namespace protocol {
              *  Consensus - Period in blocks between delegator reward distributions.
              *  Each validator accumulates block rewards during this epoch and
              *  distributes the delegator share proportionally at epoch end.
-             *  Allowed range: [CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, CHAIN_BLOCKS_PER_YEAR].
+             *  Allowed range: [CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, CHAIN_BLOCKS_PER_YEAR_HF16]
+             *  (one year in live 1 s blocks; the pre-HF16 year in 3 s blocks is the same number).
              */
             uint32_t distribution_epoch_length = CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH;
 
