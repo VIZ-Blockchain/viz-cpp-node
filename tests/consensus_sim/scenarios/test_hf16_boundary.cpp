@@ -285,7 +285,12 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     db.set_hardfork(CHAIN_HARDFORK_16, true);
     // Other block-denominated settings have been migrated too: start from those props.
     props = db.get_validator(gp.initiator_name).props;
-    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3 - 1;
+    // HF16: the floor is CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH native 1 s blocks, i.e. exactly one
+    // hour of wall time. Asserted through SECONDS, not through the same macro expression, so the
+    // test cannot follow a silent change of meaning (owner 19.11.2026: nothing is multiplied).
+    const uint32_t hour_blocks = uint32_t(CHAIN_SECONDS_PER_YEAR / (365 * 24));
+    BOOST_CHECK_EQUAL(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, hour_blocks);
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH - 1;
     op.props = props;
     BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
     props.distribution_epoch_length += 1;
@@ -303,7 +308,10 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
     produce(node, gp, when);
     BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
-                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3);
+                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
+    // Same floor in seconds before and after the fork: one hour.
+    BOOST_CHECK_EQUAL(uint64_t(db.get_validator(gp.initiator_name).props.distribution_epoch_length)
+                          * db.block_interval(), (uint64_t)3600);
 }
 
 // Every CI run now exercises real signatures, QC/LIB, timeout votes, late-QC and

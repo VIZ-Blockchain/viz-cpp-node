@@ -34,6 +34,11 @@
 #define CHAIN_BLOCK_INTERVAL_HF16             1 // HF16 (#6737, Q#3103=A): slot after the fork block; database::block_interval()
 #define CHAIN_BLOCK_VALIDATOR_REPEAT            1
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
+// A year counted in the LIVE (1 s) blocks. Two named values instead of one obscured by a
+// runtime x3: CHAIN_BLOCKS_PER_YEAR keeps feeding emission (its own open question — see
+// per-block-constant-changes-meaning-when-cadence-changes), while every HF16-era BOUND
+// (epoch limits, penalty limits) uses this one. No multiplication at the call sites.
+#define CHAIN_BLOCKS_PER_YEAR_HF16            (365*24*60*60/CHAIN_BLOCK_INTERVAL_HF16)
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL_HF16) // native blocks of the live chain
 #define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL_HF16) // native blocks of the live chain
 #define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       600 // ~10 min in native 1 s blocks (was 200 at 3 s)

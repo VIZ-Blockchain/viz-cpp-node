@@ -466,7 +466,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(inflation_ratio_committee_vs_reward_fund <= CHAIN_100_PERCENT);
                 FC_ASSERT(inflation_recalc_period >= 0);
                 // HF16 (#6737): one year is 3x more blocks at 1 s; the pre-HF16 bound is kept by the evaluator.
-                FC_ASSERT(inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR * 3);
+                FC_ASSERT(inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR_HF16);
             }
 
             chain_properties_hf4& operator=(const chain_properties_init& src) {
@@ -499,7 +499,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(validator_miss_penalty_percent >= 0);
                 FC_ASSERT(validator_miss_penalty_percent <= CHAIN_100_PERCENT);
                 FC_ASSERT(validator_miss_penalty_duration >= 0);
-                FC_ASSERT(validator_miss_penalty_duration <= (CHAIN_BLOCKS_PER_YEAR * CHAIN_BLOCK_INTERVAL));
+                FC_ASSERT(validator_miss_penalty_duration <= CHAIN_SECONDS_PER_YEAR);
             }
 
             chain_properties_hf6& operator=(const chain_properties_init& src) {
@@ -600,7 +600,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH,
                     "distribution_epoch_length must be at least ${min} blocks",
                     ("min", CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH));
-                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR * 3), // HF16: see evaluator
+                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR_HF16),
                     "distribution_epoch_length must not exceed one year in blocks");
             }
 
