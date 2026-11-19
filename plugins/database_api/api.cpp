@@ -243,7 +243,12 @@ DEFINE_API(plugin, get_block_header) {
 }
 
 optional<block_header> plugin::api_impl::get_block_header(uint32_t block_num) const {
-    auto result = database().fetch_block_by_number(block_num);
+    /* Header-only lookup. This used to go through fetch_block_by_number(), which unpacks
+       the whole signed_block and returns its base as the header; the transactions that
+       were parsed and dropped cost ~129 KB of heap per unique block, and a client that
+       enumerates blocks turns that into gigabytes of RSS on a public node. Measured 19.11.2026: 245-249 MiB per 2000 fresh
+       blocks, identical with thread pool 8 and 256 and with prediction_market_api off. */
+    auto result = database().fetch_block_header_by_number(block_num);
     if (result) {
         return *result;
     }

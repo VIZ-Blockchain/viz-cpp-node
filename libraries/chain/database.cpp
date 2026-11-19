@@ -1521,6 +1521,47 @@ namespace graphene { namespace chain {
             } FC_LOG_AND_RETHROW()
         }
 
+        optional<block_header> database::fetch_block_header_by_number(uint32_t block_num) const {
+            try {
+                /* Same source order as fetch_block_by_number(): fork_db first (recent blocks
+                   that may not be in the block log yet, including a rival branch that the
+                   block_summary disambiguates), and only then the block log. The difference
+                   is the block_log step: it unpacks the header alone instead of the whole
+                   signed_block, because get_block_header() never looks at transactions and
+                   unpacking them is what costs the node ~129 KB per unique block. */
+                optional<block_header> h;
+
+                auto results = _fork_db.fetch_block_by_number(block_num);
+                if (results.size() > 1) {
+                    const auto *bs = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+                    if (bs && protocol::block_header::num_from_id(bs->block_id) == block_num)
+                        for (const auto &r : results)
+                            if (r->id == bs->block_id) { h = static_cast<const block_header&>(r->data); break; }
+                }
+                if (!h.valid() && results.size() == 1) {
+                    h = static_cast<const block_header&>(results[0]->data);
+                } else if (!h.valid()) {
+                    if (_fork_db.head()) {
+                        auto fitem = _fork_db.walk_main_branch_to_num(block_num);
+                        if (fitem && !fitem->anchor_only) {
+                            h = static_cast<const block_header&>(fitem->data);
+                        }
+                    }
+                    if (!h.valid()) {
+                        h = _block_log.read_block_header_by_num(block_num);
+                        // DLT rolling block_log fallback keeps the full-block path: the DLT log
+                        // has no header-only read and is bounded to _dlt_block_log_max_blocks.
+                        if (!h.valid()) {
+                            auto full = _dlt_block_log.read_block_by_num(block_num);
+                            if (full.valid()) h = static_cast<const block_header&>(*full);
+                        }
+                    }
+                }
+
+                return h;
+            } FC_LOG_AND_RETHROW()
+        }
+
         const signed_transaction database::get_recent_transaction(const transaction_id_type &trx_id) const {
             try {
                 auto &index = get_index<transaction_index>().indices().get<by_trx_id>();
