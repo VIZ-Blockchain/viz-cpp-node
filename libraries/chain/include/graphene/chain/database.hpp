@@ -240,6 +240,12 @@ namespace graphene { namespace chain {
 
             optional<signed_block> fetch_block_by_number(uint32_t num) const;
 
+            /// Same lookup as fetch_block_by_number(), but reads only the header from the
+            /// block log. Serving get_block_header through the full-block path costs
+            /// ~129 KB of heap per unique block (the transactions are unpacked and thrown
+            /// away), which a client enumerating blocks turns into gigabytes of RSS.
+            optional<block_header> fetch_block_header_by_number(uint32_t num) const;
+
             /// Return only the applied-chain block at this height, or nothing if its identity is unknown.
             optional<signed_block> fetch_applied_block_by_number(uint32_t num) const;
 

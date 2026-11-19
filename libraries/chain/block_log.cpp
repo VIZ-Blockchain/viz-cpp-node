@@ -88,6 +88,22 @@ namespace graphene { namespace chain {
                 return end_pos + sizeof(uint64_t);
             }
 
+            /// Header only: unpack the reflected block_header and stop. The transactions that
+            /// follow it in the stored block are never parsed, which is the whole point —
+            /// unpacking them costs ~129 KB of heap per unique block and get_block_header
+            /// does not need them.
+            void read_block_header(uint64_t pos, block_header& header) const {
+                const auto file_size = get_mapped_size(block_mapped_file);
+                FC_ASSERT(file_size > pos);
+
+                const auto* ptr = block_mapped_file.data() + pos;
+                const auto available_size = file_size - pos;
+                const auto max_block_size = std::min<std::size_t>(available_size, CHAIN_BLOCK_SIZE);
+
+                fc::datastream<const char*> ds(ptr, max_block_size);
+                fc::raw::unpack(ds, header);
+            }
+
             signed_block read_head() const {
                 auto pos = get_last_uint64(block_mapped_file);
                 signed_block block;
@@ -281,6 +297,26 @@ namespace graphene { namespace chain {
                 ("returned", block.block_num())
                 ("expected", block_num));
             result = std::move(block);
+        }
+        return result;
+    } FC_LOG_AND_RETHROW() }
+
+    optional<block_header> block_log::read_block_header_by_num(uint32_t block_num) const { try {
+        detail::read_lock lock(my->mutex);
+        optional<block_header> result;
+        uint64_t pos = my->get_block_pos(block_num);
+        if (pos != npos) {
+            block_header header;
+            my->read_block_header(pos, header);
+            // Same self-check as read_block_by_num: a header that names another height
+            // means the index and the file disagree, and a caller would get a header
+            // that silently belongs to a different block.
+            FC_ASSERT(
+                protocol::block_header::num_from_id(header.previous) + 1 == block_num,
+                "Wrong block was read from block log (${returned} != ${expected}).",
+                ("returned", protocol::block_header::num_from_id(header.previous) + 1)
+                ("expected", block_num));
+            result = std::move(header);
         }
         return result;
     } FC_LOG_AND_RETHROW() }
