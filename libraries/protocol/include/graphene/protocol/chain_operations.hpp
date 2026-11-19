@@ -661,8 +661,8 @@ namespace graphene { namespace protocol {
             uint16_t pm_no_contest_penalty_percent = 5000;   ///< bp of dispute fee (50%)
             uint32_t pm_dispute_reward_multiplier = 30000;   ///< bp multiplier (10000=1x; default 3x)
             // Batch / commit-reveal
-            uint32_t pm_batch_epoch_blocks        = 20;      ///< ~60 s
-            uint32_t pm_reveal_window_blocks      = 200;     ///< ~10 min liveness
+            uint32_t pm_batch_epoch_blocks        = 60;      ///< ~60 s in native 1 s blocks (was 20 at 3 s)
+            uint32_t pm_reveal_window_blocks      = 600;     ///< ~10 min liveness in native 1 s blocks (was 200 at 3 s)
             uint16_t pm_commit_no_reveal_penalty_percent = 2000; ///< bp (20%) → winners' pool
             asset    pm_min_batch_bet             = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
             bool     pm_commit_reveal_enabled     = true;    ///< kill-switch (median-voted)

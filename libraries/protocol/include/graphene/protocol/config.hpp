@@ -34,10 +34,10 @@
 #define CHAIN_BLOCK_INTERVAL_HF16             1 // HF16 (#6737, Q#3103=A): slot after the fork block; database::block_interval()
 #define CHAIN_BLOCK_VALIDATOR_REPEAT            1
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       200 // ~10 min; runtime multiplies block threshold by 3 after HF16
-#define CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS (5 * CHAIN_MAX_VALIDATORS) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min; runtime threshold scales at HF16)
+#define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL_HF16) // native blocks of the live chain
+#define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL_HF16) // native blocks of the live chain
+#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       600 // ~10 min in native 1 s blocks (was 200 at 3 s)
+#define CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS (15 * CHAIN_MAX_VALIDATORS) // ~5 min in native 1 s blocks: 5 rounds x 3 s
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
@@ -113,7 +113,7 @@
 #define CHAIN_MAX_BLOCK_SIZE_LIMIT            (2*1024*1024) // 2Mb p2p graphene limit : /libraries/net/include/graphene/net/config.hpp#L39
 #define CHAIN_BLOCK_SIZE                      (CHAIN_MAX_BLOCK_SIZE_LIMIT*CHAIN_BLOCK_INTERVAL) // initial block size, preset to max block size limit
 
-#define CHAIN_MAX_UNDO_HISTORY                10000
+#define CHAIN_MAX_UNDO_HISTORY                30000 // ~8.3 h in native 1 s blocks (was 10000 at 3 s)
 
 /// Emergency consensus mode: activates when no block has been produced for
 /// this many seconds since the last irreversible block.
@@ -161,7 +161,7 @@
 #define CONSENSUS_COMMITTEE_REQUEST_APPROVE_MIN_PERCENT 1000 // default: 10.00%
 #define CONSENSUS_DATA_OPERATIONS_COST_ADDITIONAL_BANDWIDTH 0
 #define CONSENSUS_VALIDATOR_MISS_PENALTY_PERCENT 100 // default: 1.00%
-#define CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION (CHAIN_BLOCKS_PER_DAY*CHAIN_BLOCK_INTERVAL) // default: 1 day
+#define CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION (24*60*60) // default: 1 day, in seconds (was blocks*interval)
 
 #define CONSENSUS_CREATE_INVITE_MIN_BALANCE   10000
 #define CONSENSUS_COMMITTEE_CREATE_REQUEST_FEE 100000

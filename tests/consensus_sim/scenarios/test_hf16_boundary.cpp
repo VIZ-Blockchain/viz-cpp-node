@@ -125,9 +125,19 @@ BOOST_AUTO_TEST_CASE(slot_and_round_switch_at_fork_block) {
     BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_HOUR"].as_uint64(), 3600u);
     BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_DAY"].as_uint64(), 86400u);
     BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_YEAR"].as_uint64(), CHAIN_SECONDS_PER_YEAR);
-    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"].as_uint64(), CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * 3);
-    BOOST_CHECK_EQUAL(live_config["CHAIN_DEFAULT_CHAIN_PROPERTIES"].get_object()["inflation_recalc_period"].as_uint64(),
-                      uint64_t(CHAIN_CONSENSUS_INFLATION_RECALC_PERIOD) * 3);
+    // Owner 19.11.2026: nothing is multiplied anywhere — compile-time constants are native 1 s
+    // blocks, so config reports them verbatim (this equals 600 blocks = 10 min at 1 s).
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"].as_uint64(), (uint64_t)CHAIN_MAX_VALIDATOR_MISSED_BLOCKS);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH"].as_uint64(), (uint64_t)CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_UNDO_HISTORY"].as_uint64(), (uint64_t)CHAIN_MAX_UNDO_HISTORY);
+    // The default the operation would store equals what config reports: no hidden x3.
+    const auto live_defaults = live_config["CHAIN_DEFAULT_CHAIN_PROPERTIES"].get_object();
+    BOOST_CHECK_EQUAL(live_defaults["inflation_recalc_period"].as_uint64(),
+                      uint64_t(CHAIN_CONSENSUS_INFLATION_RECALC_PERIOD));
+    BOOST_CHECK_EQUAL(live_defaults["distribution_epoch_length"].as_uint64(),
+                      uint64_t(CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH));
+    BOOST_CHECK_EQUAL(live_defaults["pm_batch_epoch_blocks"].as_uint64(), 60u);
+    BOOST_CHECK_EQUAL(live_defaults["pm_reveal_window_blocks"].as_uint64(), 600u);
 
     // The fork block is the anchor: same round as before the switch, next slot is +1 s.
     const auto& dgp = db.get_dynamic_global_properties();
