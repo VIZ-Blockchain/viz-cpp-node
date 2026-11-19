@@ -5,8 +5,13 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/protocol/block.hpp>
 
+// malloc_trim и _SC_PAGESIZE — glibc-специфичны. На MinGW/MSVC их нет, и сборка Windows падала
+// (19.11.2026: webserver_plugin.cpp:689 'sysconf' was not declared). Гард обязан стоять И на include,
+// И на теле функции: опция остаётся ради единого интерфейса, но на чужой платформе честно выключается.
+#if defined(__GLIBC__)
 #include <malloc.h>
 #include <unistd.h>
+#endif
 #include <cstdio>
 
 #include <fc/network/ip.hpp>
@@ -686,6 +691,13 @@ namespace graphene {
              * RSS is read from /proc/self/statm, so the delta is the kernel's view, not ours.
              */
             void webserver_plugin::webserver_plugin_impl::heap_trim_now() {
+#if !defined(__GLIBC__)
+                // На этой платформе возвращать нечего: нет ни malloc_trim, ни /proc/self/statm.
+                // Молчать нельзя — иначе лог обещает уборку, которой нет.
+                heap_trim_calls++;
+                wlog("heap trim: not available on this platform (needs glibc malloc_trim and /proc/self/statm)");
+                return;
+#else
                 const long page = sysconf(_SC_PAGESIZE);
                 auto rss_bytes = [page]() -> int64_t {
                     FILE *f = std::fopen("/proc/self/statm", "r");
@@ -711,6 +723,7 @@ namespace graphene {
                      ("mb", released / (1024 * 1024)) ("a", before / (1024 * 1024))
                      ("b", after / (1024 * 1024)) ("t", heap_trim_released_total / (1024 * 1024))
                      ("n", heap_trim_calls));
+#endif
             }
 
             bool webserver_plugin::webserver_plugin_impl::save_admin_state_locked() {
@@ -1284,8 +1297,17 @@ namespace graphene {
                 // Same overflow guard; 0 stays 0, it is the documented "trim off".
                 {
                     const uint32_t trim_sec = options.at("webserver-heap-trim-sec").as<uint32_t>();
+#if defined(__GLIBC__)
                     my->heap_trim_sec = trim_sec == 0 ? 0 : std::min<uint32_t>(86400, trim_sec);
                     ilog("heap trim every ${s} s (0 = off)", ("s", my->heap_trim_sec));
+#else
+                    // Опция остаётся в интерфейсе (общий конфиг на все платформы), но здесь она инертна:
+                    // сказать об этом обязан именно этот лог, а не тишина при запрошенной уборке.
+                    my->heap_trim_sec = 0;
+                    if (trim_sec != 0)
+                        wlog("heap trim: requested ${s} s but not available on this platform "
+                             "(needs glibc malloc_trim); disabled", ("s", trim_sec));
+#endif
                 }
 
                 const std::string data_dir = appbase::app().data_dir().string();
