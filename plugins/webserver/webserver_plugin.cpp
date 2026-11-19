@@ -5,6 +5,10 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/protocol/block.hpp>
 
+#include <malloc.h>
+#include <unistd.h>
+#include <cstdio>
+
 #include <fc/network/ip.hpp>
 #include <fc/log/logger_config.hpp>
 #include <fc/io/json.hpp>
@@ -349,6 +353,25 @@ namespace graphene {
                 uint64_t stats_log_max_bytes = 10ULL * 1024 * 1024;
                 uint32_t stats_log_keep = 5;
                 uint32_t stats_interval_sec = 60;
+                // Periodic return of free heap pages to the OS. 0 disables the trim.
+                //
+                // Why this exists (measured 19.11.2026): elements of one JSON-RPC batch are
+                // handed to different pool threads, each thread allocates in its own malloc
+                // arena, and glibc keeps a grown arena for the life of the process. A client
+                // sending batches of 2000 block headers left ~130 KB per call in the arenas
+                // of every thread that touched the batch: the same run cost +67 MiB on a
+                // stand with MALLOC_ARENA_MAX=2 and +9494 MiB on an identical image without
+                // it, and the production node (no cap, 143-233 arenas) stepped anon by
+                // +7.25 GB in one minute and was OOM-killed 47 minutes later.
+                //
+                // Capping arenas stops the growth but leaves what is already held, and it is
+                // an environment variable, i.e. the node's behaviour depends on how someone
+                // started the container. malloc_trim(0) returns the free part of EVERY arena
+                // to the OS from inside the process, which is what actually "cleans up" and
+                // does not depend on the launcher.
+                uint32_t heap_trim_sec = 60;
+                uint64_t heap_trim_released_total = 0;
+                uint64_t heap_trim_calls = 0;
                 std::string state_path;
                 std::atomic<bool> stats_stop{false};
                 std::thread stats_thread;
@@ -379,6 +402,7 @@ namespace graphene {
                 // `allow`, `blacklisted` or `rate_limited`; counters are updated here.
                 admission admit(const std::string &raw_ip);
 
+                void heap_trim_now();
                 void rotate_stats_log_locked();
                 void flush_stats_locked(bool force);
                 void stats_loop();
@@ -638,13 +662,55 @@ namespace graphene {
             void webserver_plugin::webserver_plugin_impl::stats_loop() {
                 const uint32_t step_ms = 1000;
                 uint32_t waited_ms = 0;
+                uint32_t trim_waited_ms = 0;
                 while (!stats_stop.load(std::memory_order_acquire)) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
                     waited_ms += step_ms;
+                    trim_waited_ms += step_ms;
+                    if (heap_trim_sec != 0 && trim_waited_ms >= heap_trim_sec * 1000) {
+                        trim_waited_ms = 0;
+                        heap_trim_now();
+                    }
                     if (waited_ms < stats_interval_sec * 1000) continue;
                     waited_ms = 0;
                     flush_stats_locked(false);
                 }
+            }
+
+            /**
+             * Return the free part of every malloc arena to the OS and log what actually moved.
+             *
+             * The number is the point: without it the line would claim "memory is cleaned"
+             * whether or not glibc had anything to give back, and a trim that releases nothing
+             * is indistinguishable from a trim that is not called ([[success-path-logs-nothing-gate-on-attempt]]).
+             * RSS is read from /proc/self/statm, so the delta is the kernel's view, not ours.
+             */
+            void webserver_plugin::webserver_plugin_impl::heap_trim_now() {
+                const long page = sysconf(_SC_PAGESIZE);
+                auto rss_bytes = [page]() -> int64_t {
+                    FILE *f = std::fopen("/proc/self/statm", "r");
+                    if (f == nullptr) return -1;
+                    long total = 0, resident = 0;
+                    const int got = std::fscanf(f, "%ld %ld", &total, &resident);
+                    std::fclose(f);
+                    if (got != 2) return -1;
+                    return static_cast<int64_t>(resident) * page;
+                };
+                const int64_t before = rss_bytes();
+                const int trimmed = malloc_trim(0);   // glibc: walks every arena, returns 1 if it released anything
+                const int64_t after = rss_bytes();
+                heap_trim_calls++;
+                if (before < 0 || after < 0) {
+                    wlog("heap trim: RSS not readable, trim returned ${r}", ("r", trimmed));
+                    return;
+                }
+                const int64_t released = before - after;
+                if (released < 16 * 1024 * 1024) return;   // below this the line is noise
+                heap_trim_released_total += static_cast<uint64_t>(released);
+                ilog("heap trim: released ${mb} MiB to the OS (rss ${a} -> ${b} MiB, total ${t} MiB over ${n} trims)",
+                     ("mb", released / (1024 * 1024)) ("a", before / (1024 * 1024))
+                     ("b", after / (1024 * 1024)) ("t", heap_trim_released_total / (1024 * 1024))
+                     ("n", heap_trim_calls));
             }
 
             bool webserver_plugin::webserver_plugin_impl::save_admin_state_locked() {
@@ -1165,6 +1231,11 @@ namespace graphene {
                         "How many rotated stats logs to keep. Default: 5.")
                     ("webserver-stats-interval", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between stats log flushes. Default: 60.")
+                    ("webserver-heap-trim-sec", boost::program_options::value<uint32_t>()->default_value(60),
+                        "Seconds between returning free heap pages of ALL malloc arenas to the OS (malloc_trim). "
+                        "A JSON-RPC batch is spread over pool threads, each with its own arena, and glibc keeps a "
+                        "grown arena forever; a trim releases the free part without restarting the node. "
+                        "0 disables the trim. Default: 60.")
                     ("webserver-admin-state", boost::program_options::value<string>(),
                         "Live state file (limits and IP lists) written by node_admin. Default: <data-dir>/webserver-admin.json.");
             }
@@ -1210,6 +1281,12 @@ namespace graphene {
                 // Cap the interval so `stats_interval_sec * 1000` cannot overflow uint32.
                 my->stats_interval_sec = std::min<uint32_t>(86400,
                     std::max<uint32_t>(1, options.at("webserver-stats-interval").as<uint32_t>()));
+                // Same overflow guard; 0 stays 0, it is the documented "trim off".
+                {
+                    const uint32_t trim_sec = options.at("webserver-heap-trim-sec").as<uint32_t>();
+                    my->heap_trim_sec = trim_sec == 0 ? 0 : std::min<uint32_t>(86400, trim_sec);
+                    ilog("heap trim every ${s} s (0 = off)", ("s", my->heap_trim_sec));
+                }
 
                 const std::string data_dir = appbase::app().data_dir().string();
                 my->stats_log_path = options.count("webserver-stats-log")
