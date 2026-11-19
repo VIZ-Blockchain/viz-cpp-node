@@ -3505,8 +3505,8 @@ namespace graphene { namespace chain {
         }
 
         void database::update_bandwidth_reserve_candidates() {
-            // HF16: keep the hourly cadence in wall time (3x more blocks per hour at 1 s).
-            if ((head_block_num() % (CHAIN_BLOCKS_PER_HOUR * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
+            // HF16: CHAIN_BLOCKS_PER_HOUR is already in native 1 s blocks, so no runtime scaling.
+            if ((head_block_num() % CHAIN_BLOCKS_PER_HOUR) != 0) return;
             uint32_t bandwidth_reserve_candidates = 1;
             const auto &gprops = get_dynamic_global_properties();
             const validator_schedule_object &consensus = get_validator_schedule_object();
@@ -3692,8 +3692,8 @@ namespace graphene { namespace chain {
                     }
                 }
             }
-            // HF16: same wall-time cadence as with 3 s slots.
-            if ((head_block_num() % (COMMITTEE_REQUEST_PROCESSING * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
+            // HF16: COMMITTEE_REQUEST_PROCESSING is already in native 1 s blocks (10 min cadence).
+            if ((head_block_num() % COMMITTEE_REQUEST_PROCESSING) != 0) return;
             uint32_t committee_payment_request_count = 1;
             const auto &idx4_count = get_index<committee_request_index>().indices().get<by_status>();
             auto itr3 = idx4_count.lower_bound(4);
@@ -6783,11 +6783,11 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
+                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS) {
                                     elog("Emergency consensus: Validator ${w} missed ${missed} blocks since last confirmed ${lc} "
                                          "(threshold=${t}), blanking signing_key",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
-                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())));
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS));
                                     w.signing_key = public_key_type();
                                     push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
@@ -6813,7 +6813,7 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
+                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS) {
                                     elog("Validator ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("k", w.signing_key));
@@ -6883,11 +6883,9 @@ namespace graphene { namespace chain {
                 });
 
                 if (!(skip & skip_undo_history_check)) {
-                    // HF16 (1 s blocks, Q#3108=A): the undo window is counted in blocks, so keep it equal in TIME —
-                    // 3× the blocks, otherwise a LIB stall halts the chain after 2.8 h instead of 8.3 h.
-                    const uint32_t max_undo = has_hardfork(CHAIN_HARDFORK_16)
-                        ? CHAIN_MAX_UNDO_HISTORY * (CHAIN_BLOCK_INTERVAL / CHAIN_BLOCK_INTERVAL_HF16)
-                        : CHAIN_MAX_UNDO_HISTORY;
+                    // HF16 (1 s blocks, Q#3108=A): CHAIN_MAX_UNDO_HISTORY is already in native 1 s blocks
+                    // (same 8.3 h wall-clock window), so no runtime scaling.
+                    const uint32_t max_undo = CHAIN_MAX_UNDO_HISTORY;
                     CHAIN_ASSERT(
                         _dgp.head_block_number - _dgp.last_irreversible_block_num < max_undo,
                         undo_database_exception,

@@ -14,7 +14,6 @@ namespace graphene {
         fc::variant_object get_config(uint32_t live_block_interval) {
             const uint32_t interval = live_block_interval ? live_block_interval : CHAIN_BLOCK_INTERVAL;
             FC_ASSERT(interval == CHAIN_BLOCK_INTERVAL || interval == CHAIN_BLOCK_INTERVAL_HF16);
-            const uint32_t scale = CHAIN_BLOCK_INTERVAL / interval;
             fc::mutable_variant_object result;
 
             result["CHAIN_100_PERCENT"] = CHAIN_100_PERCENT;
@@ -53,7 +52,7 @@ namespace graphene {
             result["CHAIN_MAX_SIG_CHECK_DEPTH"] = CHAIN_MAX_SIG_CHECK_DEPTH;
             result["CHAIN_MAX_TIME_UNTIL_EXPIRATION"] = CHAIN_MAX_TIME_UNTIL_EXPIRATION;
             result["CHAIN_MAX_TRANSACTION_SIZE"] = CHAIN_MAX_TRANSACTION_SIZE;
-            result["CHAIN_MAX_UNDO_HISTORY"] = uint32_t(CHAIN_MAX_UNDO_HISTORY * scale);
+            result["CHAIN_MAX_UNDO_HISTORY"] = uint32_t(CHAIN_MAX_UNDO_HISTORY);
             result["CHAIN_MAX_VOTE_CHANGES"] = CHAIN_MAX_VOTE_CHANGES;
             result["CHAIN_MAX_TOP_VALIDATORS"] = CHAIN_MAX_TOP_VALIDATORS;
             result["CHAIN_MAX_WITHDRAW_ROUTES"] = CHAIN_MAX_WITHDRAW_ROUTES;
@@ -76,19 +75,19 @@ namespace graphene {
             result["CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT"] = CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT;
             result["CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK"] = CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK;
 
-            // Stored/voted properties are native block counts (owner Q3108=A), not
-            // hidden 3-second units. Expose live defaults so clients need not re-vote
-            // stale compile-time values after HF16.
+            // Stored/voted properties are native block counts of the live chain (owner Q3108=A).
+            // Compile-time constants are native 1 s blocks too, so nothing is scaled here: what
+            // the chain stores and what clients receive are the same numbers (owner 19.11.2026:
+            // "no code that multiplies anything anywhere — what data we have is what we return").
             chain_properties_pm defaults;
-            defaults.inflation_recalc_period *= scale;
-            defaults.distribution_epoch_length *= scale;
-            defaults.pm_batch_epoch_blocks *= scale;
-            defaults.pm_reveal_window_blocks *= scale;
             result["CHAIN_DEFAULT_CHAIN_PROPERTIES"] = fc::variant(defaults);
             result["CHAIN_PROPERTY_BLOCK_UNITS"] = "native-blocks";
-            result["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH"] = uint32_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * scale);
-            result["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * scale);
-            result["CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * scale);
+            // Both scales are named: a client on a pre-HF16 chain reads the first key, a client after
+            // HF16 reads the second. Neither is derived by multiplying at runtime.
+            result["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH"] = uint32_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
+            result["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16"] = uint32_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16);
+            result["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_MAX_VALIDATOR_MISSED_BLOCKS);
+            result["CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS"] = uint32_t(CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS);
             return result;
         }
 

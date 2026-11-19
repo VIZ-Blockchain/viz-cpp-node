@@ -242,8 +242,9 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
             // expression — keep the two in step). Post-HF16 a block is 1 s, so the effective
             // threshold is about five minutes; that is the wall-clock window compared here.
             const int64_t block_sec = db().block_interval();
-            const int64_t blank_after_blocks = CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS
-                                               * (CHAIN_BLOCK_INTERVAL / block_sec);
+            // Native 1 s blocks already (owner 19.11.2026: no multiplication anywhere), so the
+            // threshold is used as is; wall-clock window = blocks x live interval.
+            const int64_t blank_after_blocks = CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS;
             const int64_t now_sec = now.sec_since_epoch();
 
             const auto verdict = _restore_backoff.on_null_key(name, now_sec,

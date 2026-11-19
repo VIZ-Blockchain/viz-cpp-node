@@ -99,7 +99,8 @@ namespace graphene { namespace chain {
         FC_ASSERT( _db.has_hardfork(CHAIN_HARDFORK_4), "versioned_chain_properties_update_evaluator not enabled until HF 4" );
         _db.get_account(o.owner); // verify owner exists
 
-        // #6737: protocol validate() allows up to 3 years of 1 s blocks; until HF16 the old
+        // #6737: protocol validate() allows up to one year counted in LIVE blocks (31 536 000 at
+        // 1 s, the same number the old `CHAIN_BLOCKS_PER_YEAR * 3` produced); until HF16 the
         // one-year-of-3-s-blocks bound stays consensus (the stored props are checked after the
         // visit, so a rejected op leaves nothing behind - the whole op is rolled back).
         const auto check_year_bound = [&](const chain_properties& p) {
@@ -110,8 +111,11 @@ namespace graphene { namespace chain {
             FC_ASSERT(p.pm_closed_market_retention_sec > reveal_blocks * _db.block_interval(),
                       "retention must exceed the live worst-case commit reveal deadline");
             if (_db.has_hardfork(CHAIN_HARDFORK_16)) {
-                FC_ASSERT(p.distribution_epoch_length >=
-                          CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * (CHAIN_BLOCK_INTERVAL / _db.block_interval()),
+                // The floor is a wall-clock promise, so it has one named value per block scale.
+                // No multiplication here: the pre-HF16 value (CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH)
+                // counts 3 s blocks, this one counts live 1 s blocks, and both mean the same time
+                // (owner 19.11.2026: nothing is multiplied).
+                FC_ASSERT(p.distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16,
                           "distribution_epoch_length must preserve the minimum epoch duration after HF16");
                 return;
             }
