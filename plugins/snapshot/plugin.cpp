@@ -43,6 +43,12 @@
 #include <cstdlib>
 #include <vector>
 #include <limits>
+
+// malloc_trim is glibc-only; guarded so the Windows/MinGW build keeps compiling.
+#if defined(__GLIBC__)
+#include <malloc.h>
+#include <unistd.h>
+#endif
 #include <set>
 #include <map>
 #include <algorithm>
@@ -115,6 +121,41 @@ FC_DECLARE_EXCEPTION(snapshot_import_left_partial_state, 3030001,
 #define CLOG_YELLOW "\033[93m"   // snapshot serving / P2P transfer
 #define CLOG_RED    "\033[91m"   // critical errors
 #define CLOG_RESET  "\033[0m"
+
+/**
+ * Hand the pages freed by a snapshot export back to the OS.
+ *
+ * WHY THIS EXISTS. Freeing the state tree (hundreds of thousands of small objects) leaves glibc
+ * arenas fragmented: the memory IS free, but no arena end is wholly free, so the periodic
+ * malloc_trim(0) in the webserver returns nothing and RSS stays at the peak. Measured on the
+ * testnet stand 20.11.2026: anon 289 MB -> 2 549 MB peak -> 1 685 MB and flat for 30+ minutes,
+ * ten 128 MB anonymous regions fully resident, while `heap trim: released ...` never appeared.
+ * Trimming right after the export, when we know exactly what was just freed, is the local fix.
+ *
+ * Platform guard: malloc_trim is glibc-only, and an unguarded call broke the Windows build
+ * before (see the heap-trim guard in webserver_plugin.cpp). On other platforms this is a no-op
+ * that says so once, instead of pretending the trim happened.
+ */
+static void release_snapshot_heap(const char* stage) {
+#if defined(__GLIBC__)
+    auto rss_kb = []() -> long {
+        std::ifstream f("/proc/self/statm");
+        long total = 0, resident = 0;
+        if (!(f >> total >> resident)) return -1;
+        return resident * (sysconf(_SC_PAGESIZE) / 1024);
+    };
+    const long before = rss_kb();
+    malloc_trim(0);
+    const long after = rss_kb();
+    if (before < 0 || after < 0) return;
+    const long released_kb = before - after;
+    if (released_kb < 16 * 1024) return;   // below this the line is noise
+    ilog(CLOG_GREEN "Snapshot: ${stage} released ${mb} MiB to the OS (rss ${a} -> ${b} MiB)" CLOG_RESET,
+         ("stage", stage)("mb", released_kb / 1024)("a", before / 1024)("b", after / 1024));
+#else
+    (void)stage;
+#endif
+}
 
 // ============================================================================
 // Import helpers: read individual fields from variant into chainbase objects
@@ -1783,11 +1824,16 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(
         fc::mutable_variant_object state) {
     auto start = fc::time_point::now();
 
-    // Compute checksum of serialized state
+    // Compute checksum of serialized state. The JSON of the state is only needed to hash it:
+    // on a node carrying ~48k prediction markets it is hundreds of megabytes, and it used to
+    // stay alive until the end of this function, i.e. through the whole second serialization
+    // and compression. Release it right after the hash (swap with an empty string, so the
+    // buffer actually goes away instead of waiting for the scope to end).
     std::string state_json = fc::json::to_string(state);
 
     // Fill in the checksum
     header.payload_checksum = fc::sha256::hash(state_json.data(), state_json.size());
+    std::string().swap(state_json);
 
     // Build final snapshot object
     fc::mutable_variant_object snapshot;
@@ -1796,8 +1842,12 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(
     snapshot["header"] = std::move(header_var);
     snapshot["state"] = std::move(state);
 
-    // Write to file with zlib compression
-    std::string snapshot_json = fc::json::to_string(fc::variant(snapshot));
+    // Write to file with zlib compression.
+    // `variant(mutable_variant_object)` takes its argument BY VALUE, so a plain
+    // `fc::variant(snapshot)` COPIES the whole state tree — on the testnet stand that is
+    // ~1.1 GB of extra live objects at the peak, right next to the JSON string. Move it
+    // instead: the tree is not used again after this line.
+    std::string snapshot_json = fc::json::to_string(fc::variant(std::move(snapshot)));
 
     auto compress_start = fc::time_point::now();
     std::string compressed = fc::zlib_compress(snapshot_json);
@@ -1867,6 +1917,15 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(
         ("path", output_path.string())
         ("size", compressed.size())
         ("time", double((end - start).count()) / 1000000.0));
+
+    // Give the pages back to the OS. Freeing a tree of a few hundred thousand small objects
+    // leaves glibc arenas fragmented: the memory IS free, but no arena end is wholly free, so
+    // malloc_trim(0) — which the webserver calls every minute — used to return nothing and the
+    // RSS stayed at the peak (measured 20.11.2026 on the testnet stand: +2.26 GB peak, +1.4 GB
+    // retained for 30+ minutes, ten 128 MB anon regions fully resident). Trimming here, while
+    // we know exactly what was just freed, is the cheap and local fix; the line is logged only
+    // when it actually returns something, so the log stays honest either way.
+    release_snapshot_heap("snapshot export");
 
     // Note: cache update is the caller's responsibility
     // (to avoid duplicate updates when callers already call update_snapshot_cache)
