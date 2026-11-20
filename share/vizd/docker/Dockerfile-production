@@ -141,6 +141,25 @@ COPY share/vizd/config/config.ini /etc/vizd/config.ini
 ENV KILL_PROCESS_TIMEOUT=30
 ENV KILL_ALL_PROCESSES_TIMEOUT=30
 
+# glibc arena cap — the node's default, not an operator's duty.
+#
+# vizd serves JSON-RPC from a thread pool (256 threads by default) and glibc gives
+# every thread its own arena; arenas are never returned to the OS. Measured on a
+# production node with malloc_info: 274 arenas holding 1149 MB, of which 1074 MB
+# (93%) were free chunks, while live objects were 76 MB. That is what filled the
+# host and got the node OOM-killed (35.4 / 16.9 / 14.6 GB in one day, with a node
+# whose live data is tens of megabytes).
+#
+# With MALLOC_ARENA_MAX=2 the same workload holds 2 arenas and 71 MB, and no OOM
+# followed. The cost is nil on real traffic (batch of 200 get_block_header calls:
+# 49-72 ms, same as before).
+#
+# Baked into the image deliberately: an operator who recreates the container from
+# an old command line would silently lose an `-e` flag, and the leak would come
+# back with no line in any log. An explicit `-e MALLOC_ARENA_MAX=<n>` still wins
+# over this default, so anyone who needs a different value can keep passing it.
+ENV MALLOC_ARENA_MAX=2
+
 # Log rotation — IMPORTANT for production deployments.
 #
 # vizd writes all output to stdout/stderr. Docker's default json-file log driver
