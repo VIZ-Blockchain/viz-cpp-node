@@ -7724,9 +7724,30 @@ namespace graphene { namespace chain {
         }
 
         void database::open_timeout_vote_journal(const fc::path &data_dir, bool replay_votes) {
-            _timeout_vote_journal.reset();
+            // The cache has TWO owners on a live node: this function (open(), open_from_snapshot()
+            // during a stalled-sync hot reload, resume_*()) and the P2P thread, which appends to it
+            // from push_timeout_vote_impl() while holding _block_votes_mutex. Destroying and
+            // replacing the pointer WITHOUT that mutex let the writer append into a journal whose
+            // destructor was already flushing and fclose()ing the same FILE: a use-after-free of
+            // the object and of its stdio handle. Measured on the 21-validator stand, 20.11.2026:
+            // SIGSEGV inside fclose() from ~timeout_vote_journal, with a FILE pointer that was
+            // already a reused stack address (see knowledge/testnet-node-segfault-20nov.md).
+            //
+            // Lock scope is deliberately narrow. It may NOT cover journal->open()/replay(): the
+            // replay callback re-enters push_timeout_vote(), which takes this same non-recursive
+            // mutex -- holding it across the replay would deadlock the node on every start.
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal.reset();
+            }
             const std::string path = (data_dir / "timeout-votes.log").string();
             std::unique_ptr<timeout_vote_journal> journal(new timeout_vote_journal(path));
+            // Every path below publishes the new journal through this lambda, never by direct
+            // assignment: the same first-use-after-destruction window applies to the swap.
+            auto install = [this](std::unique_ptr<timeout_vote_journal> j) {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal = std::move(j);
+            };
             std::string error;
             if (!journal->open(error)) {
                 // Not fatal: without the cache the node behaves exactly like before this feature.
@@ -7746,7 +7767,7 @@ namespace graphene { namespace chain {
                 // once the snapshot (and the dlt replay on top of it) has a head.
                 ilog("Timeout vote journal: snapshot import, keeping ${p} for restore after the load", ("p", path));
                 _timeout_vote_journal_restore_pending = true;
-                _timeout_vote_journal = std::move(journal);
+                install(std::move(journal));
                 return;
             }
 
@@ -7767,7 +7788,7 @@ namespace graphene { namespace chain {
                     ilog("Timeout vote journal: reindex pending (block log head ${h}), keeping ${p} "
                          "for restore after the replay", ("h", _block_log.head()->block_num())("p", path));
                     _timeout_vote_journal_restore_pending = true;
-                    _timeout_vote_journal = std::move(journal);
+                    install(std::move(journal));
                     return;
                 }
                 if (!journal->truncate(error))
@@ -7775,7 +7796,7 @@ namespace graphene { namespace chain {
                 else
                     ilog("Timeout vote journal: chain is at genesis, discarding ${p}", ("p", path));
                 _timeout_vote_journal_restore_pending = false;
-                _timeout_vote_journal = std::move(journal);
+                install(std::move(journal));
                 return;
             }
 
@@ -7787,7 +7808,14 @@ namespace graphene { namespace chain {
 
             timeout_vote_journal::replay_result result;
             bool replay_failed = false;
-            _timeout_vote_journal_replaying = true;
+            // Same mutex as the flag's readers: push_timeout_vote_impl() tests it while appending,
+            // so a plain bool written here was a data race of its own (and the value decides
+            // whether a vote is written to disk). Only the flag moves under the lock -- the replay
+            // below must run without it, see the note at the top of this function.
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal_replaying = true;
+            }
             try {
                 result = journal->replay(
                         [this](uint32_t round, uint32_t high_qc_round, const std::string &validator,
@@ -7817,7 +7845,10 @@ namespace graphene { namespace chain {
                 error = "unknown exception";
                 replay_failed = true;
             }
-            _timeout_vote_journal_replaying = false;
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal_replaying = false;
+            }
 
             if (!error.empty())
                 wlog("Timeout vote journal: ${e}", ("e", error));
@@ -7838,7 +7869,7 @@ namespace graphene { namespace chain {
                      ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped)
                      ("g", result.aged)("r", result.dropped - result.aged));
 
-            _timeout_vote_journal = std::move(journal);
+            install(std::move(journal));
         }
 
         void database::resume_timeout_vote_journal(const fc::path &data_dir) {
