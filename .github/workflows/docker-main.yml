@@ -79,6 +79,11 @@ jobs:
           file: ./share/vizd/docker/Dockerfile-testnet
           push: true
           tags: vizblockchain/vizd:testnet
+          # Lineage, readable from the image itself: `docker inspect` answers "which commit is
+          # this" instead of leaving it to be inferred from tags, digests or strings in the binary.
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
           cache-from: type=gha,scope=main
           cache-to:   type=gha,scope=main,mode=max
 
@@ -139,5 +144,8 @@ jobs:
           file: ./share/vizd/docker/Dockerfile-production
           push: true
           tags: vizblockchain/vizd:latest
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
           cache-from: type=gha,scope=main
           cache-to:   type=gha,scope=main,mode=max

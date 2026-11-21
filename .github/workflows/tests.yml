@@ -97,6 +97,10 @@ jobs:
           python3 tests/chain/test_tc_skip_diagnosis_wiring.py --selftest
           # Guards the registry itself: a Python test in tests/ that no workflow invokes does not
           # run anywhere (CMake knows only the C++ suites) and fails nothing.
+          # The image itself must answer "which commit am I": the label in the Dockerfiles
+          # and the build-arg that feeds it are two halves that both fail silently alone.
+          python3 tests/docker/test_image_lineage_labels.py
+          python3 tests/docker/test_image_lineage_labels.py --selftest
           python3 scripts/check_offline_tests_registered.py
           python3 scripts/check_offline_tests_registered.py --selftest
           python3 tests/consensus_sim/production_safety_offline.py
