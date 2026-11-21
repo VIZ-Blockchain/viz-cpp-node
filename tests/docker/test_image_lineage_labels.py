@@ -18,6 +18,14 @@ The class this file guards is at the SEAM, and both halves fail silently on thei
 
 So both are checked together, per image, for the two Dockerfiles we actually ship.
 
+The same file guards `org.opencontainers.image.version`, and for a subtler reason: the BASE image
+already ships that label with its own meaning (`24.04` - Ubuntu's release, set by
+phusion/baseimage). Inherited unmodified it answers "which Ubuntu" to the question "which vizd",
+which is worse than an absent label - a plausible-looking value on the wrong subject. Our value is
+derived by the workflow from `CHAIN_VERSION` in the protocol header, so this check also proves that
+derivation still matches the header's real shape: if the macro is renamed or reformatted, extraction
+yields nothing and the build fails instead of baking an empty version.
+
 The default is required to be the literal `unknown`: a default like `dev` or a plausible sha would
 make an unlabelled image look labelled, which is the failure this whole file exists to prevent
 (zero is a legal value, and the blindness hides behind it).
@@ -27,6 +35,7 @@ Run: python3 tests/docker/test_image_lineage_labels.py [--selftest]
 import argparse
 import re
 from pathlib import Path
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +48,12 @@ WORKFLOWS = (
     '.github/workflows/docker-pr-build.yml',
 )
 REVISION_LABEL = 'org.opencontainers.image.revision'
+VERSION_LABEL = 'org.opencontainers.image.version'
 FALLBACK = 'unknown'
+VERSION_HEADER = 'libraries/protocol/include/graphene/protocol/config.hpp'
+# The exact pipeline the workflows run to derive the version, kept here so that a change in one
+# place cannot leave the other behind.
+VERSION_SED = r"sed -n 's/^#define CHAIN_VERSION *(version(\(.*\))).*/\1/p'"
 
 
 def _comment_lines(text):
@@ -103,6 +117,23 @@ def dockerfile_problems(text, name='<dockerfile>'):
                 problems.append('%s:%d LABEL %s does not interpolate ${GIT_REVISION} - the label '
                                 'is a constant and can never disagree with reality'
                                 % (name, lineno, REVISION_LABEL))
+    version_labels = [(n, st) for n, st in statements if VERSION_LABEL in st]
+    if not version_labels:
+        problems.append('%s: no LABEL %s - the base image leaves its own (24.04) in place, which '
+                        'answers "which Ubuntu" instead of "which vizd"'
+                        % (name, VERSION_LABEL))
+    else:
+        for lineno, statement in version_labels:
+            if '${VIZD_VERSION}' not in statement:
+                problems.append('%s:%d LABEL %s does not interpolate ${VIZD_VERSION} - it would '
+                                'inherit or hardcode a value that cannot track the release'
+                                % (name, lineno, VERSION_LABEL))
+
+    version_args = [i for i, line in enumerate(lines, 1)
+                    if re.match(r'^\s*ARG\s+VIZD_VERSION', line) and i not in comments]
+    if not version_args:
+        problems.append('%s: no `ARG VIZD_VERSION` outside comments - the version label has '
+                        'nothing to read' % name)
     return problems
 
 
@@ -133,6 +164,13 @@ def workflow_problems(text, name='<workflow>'):
                         'or this check reads the wrong file' % name)
         return problems
 
+    missing_ver = [lineno for lineno, block in steps if 'VIZD_VERSION=' not in block]
+    if missing_ver:
+        problems.append('%s: %d of %d image build step(s) do not pass VIZD_VERSION (lines %s) - '
+                        'those images keep the base image version (24.04) as theirs'
+                        % (name, len(missing_ver), len(steps),
+                           ', '.join(str(n) for n in missing_ver)))
+
     missing = [lineno for lineno, block in steps if 'GIT_REVISION=' not in block]
     if missing:
         problems.append('%s: %d of %d image build step(s) do not pass GIT_REVISION (lines %s) - '
@@ -147,8 +185,20 @@ def problems_in(dockerfile_text, workflow_text, name='<fixture>'):
             + workflow_problems(workflow_text, name + '.workflow'))
 
 
+def version_extraction_problems(header_text, name=VERSION_HEADER):
+    """The workflow's pipeline must still yield a dotted version from the real header."""
+    out = subprocess.run(['bash', '-c', VERSION_SED + " | tr -d ' ' | tr ',' '.'"],
+                         input=header_text, capture_output=True, text=True)
+    value = out.stdout.strip()
+    if not re.fullmatch(r'\d+\.\d+\.\d+', value):
+        return ['%s: CHAIN_VERSION no longer extracts to a dotted version (got %r) - the image '
+                'version label would be empty or wrong' % (name, value)]
+    return []
+
+
 def scan():
     problems = []
+    problems += version_extraction_problems((ROOT / VERSION_HEADER).read_text())
     for rel in DOCKERFILES:
         problems += dockerfile_problems((ROOT / rel).read_text(), rel)
     for rel in WORKFLOWS:
@@ -160,8 +210,10 @@ GOOD_DOCKERFILE = '''
 FROM phusion/baseimage:noble-1.0.3 AS production
 ARG GIT_REVISION=unknown
 ARG GIT_REF=unknown
+ARG VIZD_VERSION=unknown
 LABEL org.opencontainers.image.title="vizd" \\
       org.opencontainers.image.revision="${GIT_REVISION}" \\
+      org.opencontainers.image.version="${VIZD_VERSION}" \\
       org.opencontainers.image.ref.name="${GIT_REF}"
 '''
 
@@ -173,6 +225,7 @@ GOOD_WORKFLOW = '''
           build-args: |
             GIT_REVISION=${{ github.sha }}
             GIT_REF=${{ github.ref_name }}
+            VIZD_VERSION=${{ steps.vizdver.outputs.value }}
 '''
 
 
@@ -190,10 +243,20 @@ def selftest():
             'ARG GIT_REVISION=unknown\n', 'ARG GIT_REVISION\n'), GOOD_WORKFLOW, 1),
         ('workflow does not pass the arg', GOOD_DOCKERFILE,
          GOOD_WORKFLOW.replace('            GIT_REVISION=${{ github.sha }}\n', ''), 1),
+        # Один LABEL-оператор несёт ОБЕ метки, поэтому закомментированный заголовок уносит обе:
+        # ожидание 2 — это и есть цена «одна строка = два обещания» (нашлось на этом же плече).
         ('commented-out label does not count', GOOD_DOCKERFILE.replace(
-            'LABEL org.opencontainers', '# LABEL org.opencontainers'), GOOD_WORKFLOW, 1),
+            'LABEL org.opencontainers', '# LABEL org.opencontainers'), GOOD_WORKFLOW, 2),
         ('commented-out arg does not count', GOOD_DOCKERFILE.replace(
             'ARG GIT_REVISION=unknown', '# ARG GIT_REVISION=unknown'), GOOD_WORKFLOW, 1),
+        # Версия: унаследованная от базового образа метка отвечает не на тот вопрос.
+        ('version label deleted', GOOD_DOCKERFILE.replace(
+            '      org.opencontainers.image.version="${VIZD_VERSION}" \\\n', ''),
+         GOOD_WORKFLOW, 1),
+        ('version label hardcoded', GOOD_DOCKERFILE.replace(
+            '"${VIZD_VERSION}"', '"24.04"'), GOOD_WORKFLOW, 1),
+        ('workflow does not pass VIZD_VERSION', GOOD_DOCKERFILE,
+         GOOD_WORKFLOW.replace('            VIZD_VERSION=${{ steps.vizdver.outputs.value }}\n', ''), 1),
     ]
     bad = 0
     for name, dockerfile, workflow, expected in arms:
@@ -203,10 +266,18 @@ def selftest():
             print('SELFTEST FAIL %s: expected %d finding(s), got %d' % (name, expected, len(found)))
             for item in found:
                 print('    ' + item)
+    # Производная версии проверяется на РЕАЛЬНОМ заголовке, поэтому и её отказ надо доказать:
+    # переименованный макрос обязан покраснить, иначе подпись «версия из источника» — обещание.
+    renamed = ('#define CHAIN_VERSION_V2                    (version(4, 4, 3))\n')
+    found = version_extraction_problems(renamed, '<renamed header>')
+    if len(found) != 1:
+        bad += 1
+        print('SELFTEST FAIL renamed CHAIN_VERSION: expected 1 finding, got %d' % len(found))
+
     if bad:
         print('selftest: %d arm(s) wrong -- the check is not trustworthy' % bad)
         return 1
-    print('selftest: %d arms pass' % len(arms))
+    print('selftest: %d arms pass' % (len(arms) + 1))
     return 0
 
 

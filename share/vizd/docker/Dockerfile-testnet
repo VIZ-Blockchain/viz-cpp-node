@@ -127,8 +127,16 @@ FROM phusion/baseimage:noble-1.0.3 AS production
 #   docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' <img>
 ARG GIT_REVISION=unknown
 ARG GIT_REF=unknown
+# The release version has to be passed in as well, because the BASE image already ships an
+# `org.opencontainers.image.version` of its own (24.04 — Ubuntu's, set by phusion/baseimage).
+# Inherited unmodified, that label answers "which Ubuntu" to a question about "which vizd", which
+# is worse than an absent label: it is a plausible-looking value on the wrong subject. The
+# workflow derives it from libraries/protocol/include/graphene/protocol/config.hpp, where
+# CHAIN_VERSION is the single source of truth and is bumped with every release.
+ARG VIZD_VERSION=unknown
 LABEL org.opencontainers.image.title="vizd" \
       org.opencontainers.image.revision="${GIT_REVISION}" \
+      org.opencontainers.image.version="${VIZD_VERSION}" \
       org.opencontainers.image.ref.name="${GIT_REF}" \
       org.opencontainers.image.source="https://github.com/VIZ-Blockchain/viz-cpp-node"
 # Two binaries are shipped: vizd (the daemon, started by share/vizd/vizd.sh) and

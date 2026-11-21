@@ -112,6 +112,17 @@ jobs:
       # Layer cache scope is keyed on the PR's base branch so all PRs
       # targeting master share one warm-cache pool, while PRs against
       # release branches cannot poison master's cache.
+      # Release version for the image label, read from the single source of truth. An empty value
+      # fails the job here rather than baking an empty (and therefore lying) label.
+      - name: Read vizd version
+        id: vizdver
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^#define CHAIN_VERSION *(version(\(.*\))).*/\1/p' \
+                libraries/protocol/include/graphene/protocol/config.hpp | tr -d ' ' | tr ',' '.')
+          test -n "$v" || { echo "cannot read CHAIN_VERSION"; exit 1; }
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v7
         # Production tag only for PRs: a manual run exists to get a testnet21
         # image, and must not publish vizblockchain/vizd:<ref>.
@@ -126,6 +137,7 @@ jobs:
           build-args: |
             GIT_REVISION=${{ github.event.pull_request.head.sha || github.sha }}
             GIT_REF=${{ github.head_ref || github.ref_name }}
+            VIZD_VERSION=${{ steps.vizdver.outputs.value }}
           cache-from: type=gha,scope=pr-${{ github.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
 
@@ -142,6 +154,7 @@ jobs:
             TESTNET_VALIDATORS=21
             GIT_REVISION=${{ github.event.pull_request.head.sha || github.sha }}
             GIT_REF=${{ github.head_ref || github.ref_name }}
+            VIZD_VERSION=${{ steps.vizdver.outputs.value }}
           push: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
           tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}-testnet21
           cache-from: type=gha,scope=pr-testnet21
