@@ -88,6 +88,53 @@ def call_pattern(fn, *args):
                                      for idx, a in enumerate(args))
 
 
+
+def _lock_regions(text):
+    """Spans of `{ std::lock_guard<std::mutex> g(_block_votes_mutex); ... }` blocks.
+
+    Only guards that are the FIRST statement of their block are counted: the span must be the lock
+    block itself, otherwise "inside a lock" would be true for everything that follows the guard
+    until the enclosing function ends.
+    """
+    regions = []
+    guard_re = re.compile(r'std::lock_guard\s*<\s*std::mutex\s*>\s*\w+\s*\(\s*_block_votes_mutex\s*\)\s*;')
+    for m in guard_re.finditer(text):
+        brace = text.rfind('{', 0, m.start())
+        if brace < 0 or text[brace + 1:m.start()].strip():
+            continue
+        depth = 0
+        for i in range(brace, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    regions.append((brace, i))
+                    break
+    return regions
+
+
+def _inside_lock_block(text, pos):
+    return any(a <= pos <= b for a, b in _lock_regions(text))
+
+
+def _lambda_named(text, name):
+    """Body of `auto <name> = [...] (...) { ... }` (masked source), or None."""
+    m = re.search(r'auto\s+' + re.escape(name) + r'\s*=\s*\[[^\]]*\]\s*\([^)]*\)\s*\{', text)
+    if not m:
+        return None
+    brace = text.index('{', m.start())
+    depth = 0
+    for i in range(brace, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:i]
+    return None
+
+
 def wiring_problems(cpp, hpp, plugin=''):
     problems = []
     open_body = method(cpp, 'void database::open(')
@@ -241,13 +288,55 @@ def wiring_problems(cpp, hpp, plugin=''):
         if 'throw;' in guarded:
             problems.append('the replay catch rethrows instead of containing the failure')
     failed_at = init_m.find('if (replay_failed)')
-    attach_at = init_m.rfind('_timeout_vote_journal = std::move(journal);')
+    # The journal can be published either directly or through a small installer lambda (the lock
+    # discipline below needs the swap under the votes mutex, and a lambda keeps that in one place).
+    # Both forms are attachments; a guard that knows only one of them reports "never attached" on
+    # a correct tree -- exactly what happened in PR #292 before this line learned the second form.
+    attach_re = re.compile(r'_timeout_vote_journal\s*=\s*std::move\s*\(\s*journal\s*\)'
+                           r'|install\s*\(\s*std::move\s*\(\s*journal\s*\)\s*\)')
+    attach_hits = [m.start() for m in attach_re.finditer(init_m)]
+    attach_at = attach_hits[-1] if attach_hits else -1
     if failed_at < 0:
         problems.append('a failed replay still attaches the journal (append would hit a half-rewritten file)')
+    elif attach_at < 0:
+        problems.append('cannot judge the failed-replay branch: the journal is never attached at all')
     elif attach_at < failed_at:
         problems.append('cannot judge the failed-replay branch: the journal is never attached at all')
     elif 'return;' not in init_m[failed_at:attach_at]:
         problems.append('the failed-replay branch attaches the journal instead of returning')
+
+    # Lifetime discipline (21.11.2026). The journal has two owners on a live node: this function
+    # (open(), open_from_snapshot() on a stalled-sync hot reload, resume_*) and the P2P thread,
+    # which appends to it from push_timeout_vote_impl() under _block_votes_mutex. Destroying or
+    # replacing it outside that mutex let the writer append into a journal whose destructor was
+    # already fclosing the same FILE -- measured on the 21-validator stand as SIGSEGV in fclose()
+    # with a FILE pointer that was a reused stack address. So: the reset and every publication
+    # must sit under the mutex, and the mutex must NOT be held across replay(), because the replay
+    # callback re-enters push_timeout_vote() and takes the same non-recursive mutex.
+    install_lambda = _lambda_named(init_m, 'install')
+    if install_lambda is not None and not _inside_lock_block('{' + install_lambda + '}', install_lambda.find('=') + 1):
+        problems.append('the installer lambda publishes the journal without _block_votes_mutex '
+                        '(the P2P writer can be inside the object being replaced)')
+    for m in re.finditer(r'_timeout_vote_journal\.reset\s*\(\s*\)', init_m):
+        if not _inside_lock_block(init_m, m.start()):
+            problems.append('_timeout_vote_journal.reset() runs without _block_votes_mutex '
+                            '(the destructor fcloses a FILE the P2P thread may be writing)')
+    if install_lambda is None:
+        for hit in attach_hits:
+            if not _inside_lock_block(init_m, hit):
+                problems.append('the journal is published by direct assignment outside '
+                                '_block_votes_mutex (the writer can hold the old object)')
+    # The flag decides whether a vote reaches the file and is read under the mutex, so writing it
+    # outside was a race of its own -- and the mutex must not span the replay between the writes.
+    for flag_stmt in ('_timeout_vote_journal_replaying = true;', '_timeout_vote_journal_replaying = false;'):
+        at = init_m.find(flag_stmt)
+        if at >= 0 and not _inside_lock_block(init_m, at):
+            problems.append(f'{flag_stmt} is written without _block_votes_mutex')
+    if replay_at := init_m.find('->replay('):
+        if replay_at >= 0 and _inside_lock_block(init_m, replay_at):
+            problems.append('the votes mutex is held across journal->replay() -- the callback '
+                            're-enters push_timeout_vote() and takes the same non-recursive mutex')
+
 
     # The file is a cache, not a second source of trust: replay runs through push_timeout_vote.
     if 'push_timeout_vote(' not in init_m or 'push_timeout_vote_v2(' not in init_m:
@@ -289,7 +378,9 @@ MUTATIONS = {
     'append-during-replay': ('if (_timeout_vote_journal && !_timeout_vote_journal_replaying)',
                              'if (_timeout_vote_journal)'),
     'no-flush-on-cert': ('if (_timeout_vote_journal) _timeout_vote_journal->flush();', '(void)nullptr;'),
-    'flag-never-cleared': ('_timeout_vote_journal_replaying = false;\n\n            if (!error.empty())',
+    'flag-never-cleared': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                           '                _timeout_vote_journal_replaying = false;\n            }\n\n'
+                           '            if (!error.empty())',
                            '\n            if (!error.empty())'),
     'replay-bypasses-checks': ('return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);',
                                'return true;'),
@@ -310,6 +401,24 @@ MUTATIONS = {
     'failed-replay-attaches': ('elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));\n'
                                '                return;',
                                'elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));'),
+    # Lifetime discipline (PR #292, crash of 20.11.2026). Each of these restores one half of the
+    # use-after-free: the destroyer and the publisher must sit under the votes mutex, and the mutex
+    # must not be held across replay() (the callback re-enters push_timeout_vote -> same mutex).
+    'reset-without-lock': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                           '                _timeout_vote_journal.reset();\n            }',
+                           '            _timeout_vote_journal.reset();'),
+    'install-without-lock': ('            auto install = [this](std::unique_ptr<timeout_vote_journal> j) {\n'
+                             '                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                             '                _timeout_vote_journal = std::move(j);\n            };',
+                             '            auto install = [this](std::unique_ptr<timeout_vote_journal> j) {\n'
+                             '                _timeout_vote_journal = std::move(j);\n            };'),
+    'replay-flag-without-lock': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                                 '                _timeout_vote_journal_replaying = true;\n            }',
+                                 '            _timeout_vote_journal_replaying = true;'),
+    'lock-held-across-replay': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                                '                _timeout_vote_journal_replaying = true;\n            }',
+                                '            std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                                '            _timeout_vote_journal_replaying = true;'),
 }
 
 MUTATIONS_PLUGIN = {
