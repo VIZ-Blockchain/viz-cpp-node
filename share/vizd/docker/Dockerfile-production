@@ -107,6 +107,37 @@ RUN set -xe ;\
     cp $APPDIR/build/programs/cli_wallet/cli_wallet /usr/local/bin/cli_wallet
 
 FROM phusion/baseimage:noble-1.0.3 AS production
+
+# Which commit is inside this image — answered by the image itself, not by inference.
+#
+# Why the labels exist: on 21.11.2026 I could not answer "does this image carry the vote-journal
+# lock fix?" from the image. `image.version` is 24.04 (the base Ubuntu), no label carried the
+# source, and the release version (4.4.3) lives in the binary only, so the answer had to be
+# argued from two indirect facts (a version string that existed only in that PR's tree, and the
+# digest changing right after that PR's build). That is exactly the shape of a wrong answer:
+# `strings` on a binary, a tag, or "it was built after the merge" each look like proof and none
+# of them is. A label is.
+#
+# The default is the literal `unknown`, never a plausible-looking value: an image built without
+# the build-arg must be distinguishable from one built with it, otherwise the label would lie in
+# exactly the case it exists to catch.
+#
+# Read it with:
+#   docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' <img>
+ARG GIT_REVISION=unknown
+ARG GIT_REF=unknown
+# The release version has to be passed in as well, because the BASE image already ships an
+# `org.opencontainers.image.version` of its own (24.04 — Ubuntu's, set by phusion/baseimage).
+# Inherited unmodified, that label answers "which Ubuntu" to a question about "which vizd", which
+# is worse than an absent label: it is a plausible-looking value on the wrong subject. The
+# workflow derives it from libraries/protocol/include/graphene/protocol/config.hpp, where
+# CHAIN_VERSION is the single source of truth and is bumped with every release.
+ARG VIZD_VERSION=unknown
+LABEL org.opencontainers.image.title="vizd" \
+      org.opencontainers.image.revision="${GIT_REVISION}" \
+      org.opencontainers.image.version="${VIZD_VERSION}" \
+      org.opencontainers.image.ref.name="${GIT_REF}" \
+      org.opencontainers.image.source="https://github.com/VIZ-Blockchain/viz-cpp-node"
 # Two binaries are shipped: vizd (the daemon, started by share/vizd/vizd.sh) and
 # cli_wallet (invoked manually via `docker exec` for wallet operations). Static link
 # (-DBUILD_SHARED_LIBRARIES=FALSE) means no .so dependencies beyond the base image's
