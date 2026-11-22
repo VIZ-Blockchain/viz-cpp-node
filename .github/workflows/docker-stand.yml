@@ -116,11 +116,29 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Read vizd version
+        id: vizdver
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^#define CHAIN_VERSION *(version(\(.*\))).*/\1/p' \
+                libraries/protocol/include/graphene/protocol/config.hpp | tr -d ' ' | tr ',' '.')
+          test -n "$v" || { echo "cannot read CHAIN_VERSION"; exit 1; }
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet
-          build-args: TESTNET_VALIDATORS=${{ github.event.inputs.validators }}
+          # Lineage, readable from the image itself. Without these the OCI labels carry the literal
+          # string "unknown": a plausible-looking value for the wrong question, worse than an empty
+          # one. Measured 21.11.2026: `docker inspect` on stand-votes292-21 answered
+          # revision=unknown while `vizd --version` inside named b0ee59a6562c -- the acceptance guard
+          # had to learn to treat "unknown" as absent, which is the wrong place to fix it.
+          build-args: |
+            TESTNET_VALIDATORS=${{ github.event.inputs.validators }}
+            GIT_REVISION=${{ steps.src.outputs.sha }}
+            GIT_REF=${{ github.event.inputs.ref }}
+            VIZD_VERSION=${{ steps.vizdver.outputs.value }}
           push: true
           tags: ${{ steps.tags.outputs.list }}
           # A separate scope owns this build's layers; the pr-testnet21 scope is read
