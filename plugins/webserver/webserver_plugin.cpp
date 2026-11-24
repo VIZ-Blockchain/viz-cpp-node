@@ -69,6 +69,30 @@ namespace graphene {
 
             typedef uint32_t thread_pool_size_t;
 
+            /**
+             * Resident size of THIS process, in KiB, read from /proc/self/statm.
+             *
+             * Why not the admission counter: it counts HTTP requests (one JSON-RPC batch of
+             * 4000 calls is one request), and it is only maintained when webserver stats or
+             * limits are enabled, which they are not by default. RSS is the quantity we want
+             * returned to the OS, so it is the quantity the trim trigger watches.
+             * Returns 0 if /proc is unavailable; the caller then simply never sees a peak.
+             */
+            inline uint64_t proc_rss_kb() {
+#ifdef __linux__
+                FILE* f = ::fopen("/proc/self/statm", "r");
+                if (f == nullptr) return 0;
+                unsigned long size_pages = 0, resident_pages = 0;
+                const int got = ::fscanf(f, "%lu %lu", &size_pages, &resident_pages);
+                ::fclose(f);
+                if (got != 2) return 0;
+                const long page_kb = ::sysconf(_SC_PAGESIZE) / 1024;
+                return static_cast<uint64_t>(resident_pages) * static_cast<uint64_t>(page_kb);
+#else
+                return 0;
+#endif
+            }
+
             struct asio_with_stub_log : public websocketpp::config::asio {
                 typedef asio_with_stub_log type;
                 typedef asio base;
@@ -379,32 +403,30 @@ namespace graphene {
                 uint64_t heap_trim_released_total = 0;
                 uint64_t heap_trim_calls = 0;
 
-                // TRIMMING RIGHT AFTER A PEAK, not only on the timer.
+                // TRIMMING RIGHT AFTER A MEMORY PEAK, not only on the timer.
                 //
-                // glibc can only return whole free pages at the END of an arena: one live
-                // object above the freed block and malloc_trim(0) gives back nothing. So a
-                // trim fired by a wall-clock timer lands in an arbitrary phase and almost
-                // always finds a busy arena. Measured on api.viz.world, 2026-11-24: 403
-                // timer trims returned memory TWICE (25 and 22 MiB), and both fired within
-                // two minutes after a heavy request batch ended.
+                // glibc can only return whole free pages at the END of an arena: one live object
+                // above the freed block and malloc_trim(0) gives back nothing. A trim fired by a
+                // wall-clock timer therefore lands in an arbitrary phase and almost always finds
+                // a busy arena. Measured on api.viz.world, 2026-11-24: 403 timer trims returned
+                // memory TWICE (25 and 22 MiB), both 1-2 minutes AFTER a heavy batch ended.
                 //
-                // So: watch the request rate over a rolling minute. When it crosses
-                // `heap_trim_peak_req` remember that a peak happened; when it falls back to a
-                // quarter of that, the work is over and the arenas have just been released —
-                // trim right there instead of waiting for the next tick of the timer.
+                // The trigger watches the RESIDENT SIZE of our own process, not the request count.
+                // Two reasons, both measured on the stand the same evening:
+                //   1. the admission counter counts HTTP requests, and one JSON-RPC batch of 4000
+                //      calls is ONE request - the threshold could never be crossed;
+                //   2. that counter is only maintained when webserver stats or limits are enabled,
+                //      and both are off by default ("webserver stats enabled: false").
+                // RSS is what we want back, so RSS is what we watch: when resident memory grows by
+                // `heap_trim_peak_mb` inside a window of `heap_trim_peak_window` seconds a peak is
+                // underway; when growth in the same window falls to a tenth of that, the work is
+                // over and the arenas have just been released - trim right there.
                 // 0 disables the event trigger and leaves the timer as the only caller.
-                // Window and threshold are in the SAME unit: requests inside a rolling window of
-                // `heap_trim_peak_window` seconds. A one-minute window looked right and is not:
-                // a batch stays inside it for the whole minute, so the falling edge arrives at
-                // the same moment the timer would have fired anyway. Measured on the stand
-                // 2026-11-24: one 4000-call batch (2.4 s) raised RSS 1111 -> 1980 MB and the
-                // timer returned 858-901 MB of it 40-60 s later. With a 10 s window the batch
-                // counts as a peak immediately and the edge is seen ~10 s after it ends.
-                uint32_t heap_trim_peak_req = 2000;   // requests inside the window that count as a peak
+                uint32_t heap_trim_peak_mb = 200;     // resident growth inside the window that marks a peak
                 uint32_t heap_trim_peak_window = 10;  // seconds in the rolling window
-                std::array<uint64_t, 60> sec_req{};
-                size_t sec_req_pos = 0;
-                uint64_t sec_req_last_total = 0;
+                std::array<uint64_t, 61> rss_kb{};    // resident sizes, one sample per second
+                size_t rss_pos = 0;
+                uint64_t rss_filled = 0;
                 bool peak_seen = false;
                 std::string state_path;
                 std::atomic<bool> stats_stop{false};
@@ -702,38 +724,31 @@ namespace graphene {
                     waited_ms += step_ms;
                     trim_waited_ms += step_ms;
 
-                    // Rolling one-minute request count, one sample per second. Sum over the
-                    // ring is the work done in the last minute, which is what the trim
-                    // decision needs: a peak is a minute of work, not a single request.
-                    if (heap_trim_peak_req != 0) {
-                        uint64_t total_now = 0;
-                        {
-                            std::lock_guard<std::mutex> lock(stats_mutex);
-                            total_now = total_requests;
-                        }
-                        const uint64_t delta = total_now >= sec_req_last_total
-                                             ? total_now - sec_req_last_total : 0;
-                        sec_req_last_total = total_now;
-                        sec_req[sec_req_pos] = delta;
-                        sec_req_pos = (sec_req_pos + 1) % sec_req.size();
-                        // Sum only the last `heap_trim_peak_window` seconds: the whole ring is a
-                        // minute, and using it would delay the falling edge to a full minute.
-                        uint64_t in_window = 0;
-                        const size_t win = std::min<size_t>(heap_trim_peak_window, sec_req.size());
-                        for (size_t k = 1; k <= win; ++k) {
-                            in_window += sec_req[(sec_req_pos + sec_req.size() - k) % sec_req.size()];
-                        }
+                    // Resident-size ring, one sample per second. Growth across the window is
+                    // the signal: a peak is memory that was just spent, not work that may or may
+                    // not be remembered by a counter.
+                    if (heap_trim_peak_mb != 0) {
+                        rss_kb[rss_pos] = webserver::proc_rss_kb();
+                        const size_t win = std::min<size_t>(heap_trim_peak_window, rss_kb.size() - 1);
+                        const uint64_t now_kb = rss_kb[rss_pos];
+                        const uint64_t then_kb = rss_kb[(rss_pos + rss_kb.size() - win) % rss_kb.size()];
+                        rss_pos = (rss_pos + 1) % rss_kb.size();
+                        if (rss_filled < rss_kb.size()) ++rss_filled;
 
-                        if (in_window >= heap_trim_peak_req) {
-                            peak_seen = true;
-                        } else if (peak_seen && in_window <= heap_trim_peak_req / 4) {
-                            // Work is over and the freed pages have just been released —
-                            // this is the moment glibc can actually give them back.
-                            peak_seen = false;
-                            trim_waited_ms = 0;
-                            ilog("heap trim: after peak, rate fell to ${n} requests in ${w} s (peak threshold ${r})",
-                                 ("n", in_window)("w", heap_trim_peak_window)("r", heap_trim_peak_req));
-                            heap_trim_now();
+                        if (rss_filled > win) {
+                            const int64_t grow_kb = static_cast<int64_t>(now_kb) - static_cast<int64_t>(then_kb);
+                            const int64_t peak_kb = static_cast<int64_t>(heap_trim_peak_mb) * 1024;
+                            if (grow_kb >= peak_kb) {
+                                peak_seen = true;
+                            } else if (peak_seen && grow_kb <= peak_kb / 10) {
+                                // Growth has stopped: the work is over, so the freed pages have
+                                // just been released and glibc can give them back right now.
+                                peak_seen = false;
+                                trim_waited_ms = 0;
+                                ilog("heap trim: after peak, resident growth fell to ${g} MiB in ${w} s (peak was >= ${p} MiB)",
+                                     ("g", grow_kb / 1024)("w", heap_trim_peak_window)("p", heap_trim_peak_mb));
+                                heap_trim_now();
+                            }
                         }
                     }
 
@@ -1309,12 +1324,12 @@ namespace graphene {
                         "How many rotated stats logs to keep. Default: 5.")
                     ("webserver-stats-interval", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between stats log flushes. Default: 60.")
-                    ("webserver-heap-trim-peak-req", boost::program_options::value<uint32_t>()->default_value(2000),
-                        "Requests inside the rolling window that count as a peak: after the rate falls to a "
-                        "quarter of it, free heap pages are returned immediately instead of waiting for the "
-                        "timer (0 = off). A timer alone almost never finds a free arena end.")
+                    ("webserver-heap-trim-peak-mb", boost::program_options::value<uint32_t>()->default_value(200),
+                        "Resident growth inside the rolling window that marks a memory peak: once growth "
+                        "falls back to a tenth of it, free heap pages are returned immediately instead of "
+                        "waiting for the timer (0 = off). A timer alone almost never finds a free arena end.")
                     ("webserver-heap-trim-peak-window", boost::program_options::value<uint32_t>()->default_value(10),
-                        "Seconds in the rolling window used by webserver-heap-trim-peak-req. Default: 10.")
+                        "Seconds in the rolling window used by webserver-heap-trim-peak-mb. Default: 10.")
                     ("webserver-heap-trim-sec", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between returning free heap pages of ALL malloc arenas to the OS (malloc_trim). "
                         "A JSON-RPC batch is spread over pool threads, each with its own arena, and glibc keeps a "
@@ -1367,15 +1382,15 @@ namespace graphene {
                     std::max<uint32_t>(1, options.at("webserver-stats-interval").as<uint32_t>()));
                 // Same overflow guard; 0 stays 0, it is the documented "trim off".
                 {
-                    if (options.count("webserver-heap-trim-peak-req") != 0) {
-                        my->heap_trim_peak_req = options.at("webserver-heap-trim-peak-req").as<uint32_t>();
+                    if (options.count("webserver-heap-trim-peak-mb") != 0) {
+                        my->heap_trim_peak_mb = options.at("webserver-heap-trim-peak-mb").as<uint32_t>();
                     }
                     if (options.count("webserver-heap-trim-peak-window") != 0) {
-                        my->heap_trim_peak_window = std::max<uint32_t>(1, std::min<uint32_t>(60,
+                        my->heap_trim_peak_window = std::max<uint32_t>(2, std::min<uint32_t>(60,
                             options.at("webserver-heap-trim-peak-window").as<uint32_t>()));
                     }
-                    ilog("heap trim after peak: ${r} requests in ${w} s (0 = off)",
-                         ("r", my->heap_trim_peak_req)("w", my->heap_trim_peak_window));
+                    ilog("heap trim after peak: resident growth ${p} MiB in ${w} s (0 = off)",
+                         ("p", my->heap_trim_peak_mb)("w", my->heap_trim_peak_window));
                     const uint32_t trim_sec = options.at("webserver-heap-trim-sec").as<uint32_t>();
 #if defined(__GLIBC__)
                     my->heap_trim_sec = trim_sec == 0 ? 0 : std::min<uint32_t>(86400, trim_sec);
