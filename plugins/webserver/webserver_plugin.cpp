@@ -773,10 +773,33 @@ namespace graphene {
                                 peak_seen = false;
                                 since_event_trim_ms = 0;
                                 trim_waited_ms = 0;
-                                ilog("heap trim: after peak, resident ${a} MiB above floor ${fl} MiB, growth ${g} MiB in ${w} s",
-                                     ("a", above_kb / 1024)("fl", static_cast<int64_t>(floor_kb) / 1024)
-                                     ("g", grow_kb / 1024)("w", heap_trim_peak_window));
+                                const uint64_t before_kb = now_kb;
                                 heap_trim_now();
+                                // NEW FLOOR AFTER THE RETURN. Without this the floor stays at the
+                                // pre-load level and the trigger stays armed forever once memory
+                                // settles legitimately higher: re-fill the ring with what is resident
+                                // NOW, so the next peak is measured from where we actually landed.
+                                // Measured on the stand 2026-11-24 without this: after a 99 MiB
+                                // return the node settled 186 MiB above the old floor and the trigger
+                                // fired every 30 s for as long as the series ran, returning nothing.
+                                const uint64_t after_kb = proc_rss_kb();
+                                if (after_kb > 0) {
+                                    rss_kb.fill(after_kb);
+                                    rss_filled = rss_kb.size();
+                                }
+                                // Log the event only when something was actually returned: trim_now
+                                // is silent below 16 MiB, and an armed trigger that cannot give
+                                // anything back would otherwise write a line every min_gap seconds.
+                                if (before_kb > after_kb + 16 * 1024) {
+                                    ilog("heap trim: after peak, resident ${a} MiB above floor ${fl} MiB, growth ${g} MiB in ${w} s, returned ${r} MiB",
+                                         ("a", above_kb / 1024)("fl", static_cast<int64_t>(floor_kb) / 1024)
+                                         ("g", grow_kb / 1024)("w", heap_trim_peak_window)
+                                         ("r", static_cast<int64_t>(before_kb - after_kb) / 1024));
+                                } else {
+                                    ilog("heap trim: after peak, nothing to return (resident ${a} MiB above floor, growth ${g} MiB in ${w} s); floor moved to ${n} MiB",
+                                         ("a", above_kb / 1024)("g", grow_kb / 1024)("w", heap_trim_peak_window)
+                                         ("n", static_cast<int64_t>(after_kb) / 1024));
+                                }
                             }
                         }
                     }
