@@ -393,7 +393,15 @@ namespace graphene {
                 // quarter of that, the work is over and the arenas have just been released —
                 // trim right there instead of waiting for the next tick of the timer.
                 // 0 disables the event trigger and leaves the timer as the only caller.
-                uint32_t heap_trim_peak_req = 2000;   // requests per rolling minute that count as a peak
+                // Window and threshold are in the SAME unit: requests inside a rolling window of
+                // `heap_trim_peak_window` seconds. A one-minute window looked right and is not:
+                // a batch stays inside it for the whole minute, so the falling edge arrives at
+                // the same moment the timer would have fired anyway. Measured on the stand
+                // 2026-11-24: one 4000-call batch (2.4 s) raised RSS 1111 -> 1980 MB and the
+                // timer returned 858-901 MB of it 40-60 s later. With a 10 s window the batch
+                // counts as a peak immediately and the edge is seen ~10 s after it ends.
+                uint32_t heap_trim_peak_req = 2000;   // requests inside the window that count as a peak
+                uint32_t heap_trim_peak_window = 10;  // seconds in the rolling window
                 std::array<uint64_t, 60> sec_req{};
                 size_t sec_req_pos = 0;
                 uint64_t sec_req_last_total = 0;
@@ -708,18 +716,23 @@ namespace graphene {
                         sec_req_last_total = total_now;
                         sec_req[sec_req_pos] = delta;
                         sec_req_pos = (sec_req_pos + 1) % sec_req.size();
-                        uint64_t per_min = 0;
-                        for (const uint64_t v : sec_req) per_min += v;
+                        // Sum only the last `heap_trim_peak_window` seconds: the whole ring is a
+                        // minute, and using it would delay the falling edge to a full minute.
+                        uint64_t in_window = 0;
+                        const size_t win = std::min<size_t>(heap_trim_peak_window, sec_req.size());
+                        for (size_t k = 1; k <= win; ++k) {
+                            in_window += sec_req[(sec_req_pos + sec_req.size() - k) % sec_req.size()];
+                        }
 
-                        if (per_min >= heap_trim_peak_req) {
+                        if (in_window >= heap_trim_peak_req) {
                             peak_seen = true;
-                        } else if (peak_seen && per_min <= heap_trim_peak_req / 4) {
+                        } else if (peak_seen && in_window <= heap_trim_peak_req / 4) {
                             // Work is over and the freed pages have just been released —
                             // this is the moment glibc can actually give them back.
                             peak_seen = false;
                             trim_waited_ms = 0;
-                            ilog("heap trim: after peak, minute rate ${r}/min fell to ${n}/min",
-                                 ("r", heap_trim_peak_req)("n", per_min));
+                            ilog("heap trim: after peak, rate fell to ${n} requests in ${w} s (peak threshold ${r})",
+                                 ("n", in_window)("w", heap_trim_peak_window)("r", heap_trim_peak_req));
                             heap_trim_now();
                         }
                     }
@@ -1297,9 +1310,11 @@ namespace graphene {
                     ("webserver-stats-interval", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between stats log flushes. Default: 60.")
                     ("webserver-heap-trim-peak-req", boost::program_options::value<uint32_t>()->default_value(2000),
-                        "Requests per rolling minute that count as a peak: after the rate falls to a quarter "
-                        "of it, free heap pages are returned immediately instead of waiting for the timer "
-                        "(0 = off). A timer alone almost never finds a free arena end.")
+                        "Requests inside the rolling window that count as a peak: after the rate falls to a "
+                        "quarter of it, free heap pages are returned immediately instead of waiting for the "
+                        "timer (0 = off). A timer alone almost never finds a free arena end.")
+                    ("webserver-heap-trim-peak-window", boost::program_options::value<uint32_t>()->default_value(10),
+                        "Seconds in the rolling window used by webserver-heap-trim-peak-req. Default: 10.")
                     ("webserver-heap-trim-sec", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between returning free heap pages of ALL malloc arenas to the OS (malloc_trim). "
                         "A JSON-RPC batch is spread over pool threads, each with its own arena, and glibc keeps a "
@@ -1355,8 +1370,12 @@ namespace graphene {
                     if (options.count("webserver-heap-trim-peak-req") != 0) {
                         my->heap_trim_peak_req = options.at("webserver-heap-trim-peak-req").as<uint32_t>();
                     }
-                    ilog("heap trim after peak: ${r} requests per rolling minute (0 = off)",
-                         ("r", my->heap_trim_peak_req));
+                    if (options.count("webserver-heap-trim-peak-window") != 0) {
+                        my->heap_trim_peak_window = std::max<uint32_t>(1, std::min<uint32_t>(60,
+                            options.at("webserver-heap-trim-peak-window").as<uint32_t>()));
+                    }
+                    ilog("heap trim after peak: ${r} requests in ${w} s (0 = off)",
+                         ("r", my->heap_trim_peak_req)("w", my->heap_trim_peak_window));
                     const uint32_t trim_sec = options.at("webserver-heap-trim-sec").as<uint32_t>();
 #if defined(__GLIBC__)
                     my->heap_trim_sec = trim_sec == 0 ? 0 : std::min<uint32_t>(86400, trim_sec);
