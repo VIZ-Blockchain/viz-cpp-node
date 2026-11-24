@@ -800,11 +800,13 @@ namespace graphene {
                                          ("a", above_kb / 1024)("fl", static_cast<int64_t>(floor_kb) / 1024)
                                          ("g", grow_kb / 1024)("w", heap_trim_peak_window)
                                          ("r", static_cast<int64_t>(before_kb - after_kb) / 1024));
-                                } else {
-                                    ilog("heap trim: after peak, nothing to return (resident ${a} MiB above floor, growth ${g} MiB in ${w} s); floor moved to ${n} MiB",
-                                         ("a", above_kb / 1024)("g", grow_kb / 1024)("w", heap_trim_peak_window)
-                                         ("n", static_cast<int64_t>(after_kb) / 1024));
                                 }
+                                // Empty events are NOT logged. A trigger that fires right after the
+                                // timer has already returned everything has nothing to report, and the
+                                // silence is the report: the timer line is three seconds above this one.
+                                // Measured on the stand 2026-11-24: of two idle events in seven minutes
+                                // one was exactly this case, and it read as noise in the operator's log.
+                                // The floor still moves either way - that part is not optional.
                             }
                         }
                     }
