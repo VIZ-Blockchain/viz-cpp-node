@@ -86,10 +86,18 @@ MUTATIONS = {
          'since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC) {')]),
     'startup-clock-never-set': ('validator_cpp', [
         ('pimpl->_startup_time = fc::time_point::now();', '')]),
+    # ЯКОРЬ ОБНОВЛЁН 24.11.2026: при мердже master с веткой seqlock запись счётчика переехала ВНУТРЬ
+    # секции и сменила порядок на seq_cst; прежний якорь (release) перестал находиться, и тест честно
+    # сказал «mutation did not land» — это работа якоря, а не поломка проверки.
     'witness-count-not-published': ('node_cpp', [
-        ('_lib_witnesses.store(witnesses, std::memory_order_release);', '')]),
+        ('_lib_witnesses.store(witnesses, std::memory_order_seq_cst);', '')]),
+    # ДВА ЧТЕНИЯ, А НЕ ОДНО (24.11.2026). После мерджа счётчик читается и на стабильном пути (seq_cst),
+    # и в fallback (acquire). Удаление одного оставляло второе, значение всё равно читалось — тест
+    # говорил «stayed GREEN». Мутация обязана снимать ОБА, иначе она проверяет половину механизма
+    # ([[fix-list-is-not-a-closed-class]]).
     'witness-count-not-read': ('node_hpp', [
-        ('v.witnesses = _lib_witnesses.load(std::memory_order_acquire);', '')]),
+        ('v.witnesses = _lib_witnesses.load(std::memory_order_acquire);', ''),
+        ('            v.witnesses = _lib_witnesses.load(std::memory_order_seq_cst);\n', '')]),
     'witness-count-counts-strangers': ('node_cpp', [
         ('        if (!witness) continue;\n        witnesses++;',
          '        witnesses++;\n        if (!witness) continue;')]),
