@@ -2844,9 +2844,13 @@ void dlt_p2p_node::broadcast_chain_status() {
     // УРОВЕНЬ — INFO, а не debug: живой замер 24.11.2026 показал, что при `[logger.default] level = info`
     // (так на тестнете) `dlog` в вывод не попадает ВООБЩЕ, и прибор наблюдаемости молчал, хотя тикал.
     // Дороже одна строка в 30 с, чем «не видно» — это цена той же ошибки, что «лог есть, а читателя нет».
-    const uint64_t sent = _chain_status_broadcast_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    // БЕЗ локальной переменной: offline-харнесы подменяют ilog на ((void)0), и любая переменная,
+    // живущая только ради лога, ловит -Werror=unused-variable (живой прогон CI 24.11.2026). Счётчик
+    // читается прямо в аргументах — тогда подмена лога ничего не оставляет «неиспользованным».
+    _chain_status_broadcast_count.fetch_add(1, std::memory_order_relaxed);
     ilog("Chain status broadcast #${n}: ${targets} active peer(s), head ${head}",
-         ("n", sent)("targets", targets.size())("head", msg.head_block_num));
+         ("n", _chain_status_broadcast_count.load(std::memory_order_relaxed))
+         ("targets", targets.size())("head", msg.head_block_num));
 }
 
 void dlt_p2p_node::periodic_chain_status() {
