@@ -2840,11 +2840,13 @@ void dlt_p2p_node::broadcast_chain_status() {
     }
     // Одна строка на рассылку (интервал 30 с) — это и есть наблюдаемость на стенде с одним узлом:
     // ноль активных пиров больше не означает «нечего измерять», видно, что периодика тикает.
+    //
+    // УРОВЕНЬ — INFO, а не debug: живой замер 24.11.2026 показал, что при `[logger.default] level = info`
+    // (так на тестнете) `dlog` в вывод не попадает ВООБЩЕ, и прибор наблюдаемости молчал, хотя тикал.
+    // Дороже одна строка в 30 с, чем «не видно» — это цена той же ошибки, что «лог есть, а читателя нет».
     const uint64_t sent = _chain_status_broadcast_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (sent != 0) {
-        dlog("Chain status broadcast #${n}: ${targets} active peer(s), head ${head}",
-             ("n", sent)("targets", targets.size())("head", msg.head_block_num));
-    }
+    ilog("Chain status broadcast #${n}: ${targets} active peer(s), head ${head}",
+         ("n", sent)("targets", targets.size())("head", msg.head_block_num));
 }
 
 void dlt_p2p_node::periodic_chain_status() {
