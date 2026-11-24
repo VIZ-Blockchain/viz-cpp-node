@@ -9,6 +9,10 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from boost_link import boost_libs
 
 ROOT = Path(__file__).resolve().parents[2]
 FC_ROOT = Path(os.environ.get('VIZ_FC_ROOT', str(ROOT)))
@@ -50,7 +54,6 @@ with tempfile.TemporaryDirectory(prefix='viz-qctc-') as directory:
            '-I' + str(FC_ROOT / 'thirdparty/fc/include'), '-I' + str(ROOT / 'libraries/protocol/include'), '-I' + str(ROOT / 'libraries/chain/include'),
            str(cpp), str(ROOT / 'libraries/protocol/types.cpp'), '-o', str(executable),
            str(FC_ROOT / 'build/thirdparty/fc/libfc.a'), str(secp)]
-    cmd += ['-l' + x for x in ('boost_context','boost_coroutine','boost_thread','boost_chrono','boost_system',
-                               'boost_filesystem','boost_date_time','boost_atomic','ssl','crypto','z','pthread','dl','rt')]
+    cmd += ['-l' + x for x in boost_libs()]
     subprocess.run(cmd, check=True, timeout=120)
     subprocess.run([str(executable)], check=True, timeout=20)
