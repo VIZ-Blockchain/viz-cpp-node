@@ -430,7 +430,12 @@ namespace graphene {
                 // event trim per `heap_trim_peak_min_gap` seconds, so a genuine leak cannot turn
                 // this into a per-second log flood.
                 // 0 disables the event trigger and leaves the timer as the only caller.
-                uint32_t heap_trim_peak_mb = 100;        // resident growth above the floor that marks a peak
+                uint32_t heap_trim_peak_mb = 50;         // resident growth above the floor that marks a peak
+                // 50, not 100: measured over the whole production day (11 h, 670 samples) the real
+                // steps above the local floor were +150, +54 and +84 MiB, and a 100 MiB threshold
+                // would have fired on ONE of three, while 50 MiB fired on all three with zero
+                // false positives in the background. The background's worst single minute is
+                // +42 MiB, and it always comes back, so the floor stays put.
                 uint32_t heap_trim_peak_window = 10;     // seconds: growth window and the quiet test
                 uint32_t heap_trim_peak_floor = 600;     // seconds: how far back the floor is taken
                 uint32_t heap_trim_peak_min_gap = 30;    // seconds: minimum distance between event trims
@@ -1376,7 +1381,7 @@ namespace graphene {
                         "How many rotated stats logs to keep. Default: 5.")
                     ("webserver-stats-interval", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between stats log flushes. Default: 60.")
-                    ("webserver-heap-trim-peak-mb", boost::program_options::value<uint32_t>()->default_value(100),
+                    ("webserver-heap-trim-peak-mb", boost::program_options::value<uint32_t>()->default_value(50),
                         "Resident growth above the recent floor that marks a memory peak: once growth over "
                         "the window falls back to a tenth of it, free heap pages are returned immediately "
                         "instead of waiting for the timer (0 = off). A timer alone almost never finds a "
