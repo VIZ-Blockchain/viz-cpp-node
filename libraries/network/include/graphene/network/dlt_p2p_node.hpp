@@ -97,11 +97,18 @@ struct dlt_peer_report {
  *  Implemented by p2p_plugin_impl to provide chain state queries
  *  and block/transaction handling. Similar to the old node_delegate.
  */
+struct dlt_chain_position {
+    block_id_type head_id, lib_id;
+    uint32_t head_num = 0, lib_num = 0;
+};
+
 class dlt_p2p_delegate {
 public:
     virtual ~dlt_p2p_delegate() = default;
 
     // ── Chain state queries ──────────────────────────────────────
+    // These four values must describe the same chain state.
+    virtual dlt_chain_position get_chain_position() const = 0;
     virtual block_id_type  get_head_block_id() const = 0;
     virtual uint32_t       get_head_block_num() const = 0;
     virtual block_id_type  get_lib_block_id() const = 0;
@@ -133,8 +140,9 @@ public:
     // Same contract for an HF18 vote, which also names the block whose QC it saw.
     virtual bool           accept_timeout_vote_v2(const dlt_timeout_vote_v2_message& vote) { return false; }
     // Re-verify a gossiped block QC against our own schedule and keep it if it is
-    // better than the one we hold. True = valid, worth relaying.
-    virtual bool           accept_block_qc(const dlt_block_qc_message& msg) { return false; }
+    // better than the one we hold. On success, replace msg.cert with the verified
+    // quorum so the network relays only signatures checked by the chain.
+    virtual bool           accept_block_qc(dlt_block_qc_message& msg) { return false; }
 
     // ── Fork resolution ──────────────────────────────────────────
     virtual int            compare_fork_branches(const block_id_type& a, const block_id_type& b) const = 0;
@@ -238,11 +246,9 @@ public:
     bool is_on_majority_fork() const;
 
     // ── Peer last-irreversible-block corroboration (read from ANY thread) ──
-    // How many connected peers report a LIB above ours, and the best such claim.
-    // A peer's LIB says two thirds of ITS validators finalised that height, and it
-    // is the one part of a peer's claim that a lone node cannot manufacture by
-    // simply producing blocks. Several peers agreeing on a LIB above ours therefore
-    // means the network is finalising a chain we are not on.
+    // How many active configured seed/trusted endpoints report a LIB above ours,
+    // and the highest such reported number. These numeric claims are unsigned;
+    // the cache does not verify a certificate, peer identity, or branch ancestry.
     //
     // The emergency master consults this before signing a committee block. It is
     // exempt from the "last N blocks are all ours" isolation scan by design (every
@@ -256,10 +262,24 @@ public:
         uint32_t peers_above_our_lib = 0;  ///< active seed/trusted peers whose LIB is strictly above ours
         uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active seed/trusted peer
         uint32_t our_lib = 0;              ///< our LIB at the last refresh
+        bool consistent = true;           ///< false only if a concurrent update prevented a stable read
         uint32_t witnesses = 0;            ///< active seed/trusted peers that advertised any LIB
     };
     peer_lib_view get_peer_lib_view() const noexcept {
+        for (unsigned attempt = 0; attempt < 4; ++attempt) {
+            const auto version = _peer_lib_version.load(std::memory_order_seq_cst);
+            if (version & 1) continue;
+            peer_lib_view v;
+            v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_seq_cst);
+            v.best_peer_lib = _best_peer_lib.load(std::memory_order_seq_cst);
+            v.our_lib = _cached_our_lib.load(std::memory_order_seq_cst);
+            v.witnesses = _lib_witnesses.load(std::memory_order_seq_cst);
+            if (_peer_lib_version.load(std::memory_order_seq_cst) == version) return v;
+        }
         peer_lib_view v;
+        // Не удалось взять согласованный снимок за 4 попытки: значения читаем, но помечаем
+        // несогласованность — потребитель обязан считать пару head/LIB недоказанной.
+        v.consistent = false;
         v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);
         v.best_peer_lib = _best_peer_lib.load(std::memory_order_acquire);
         v.our_lib = _cached_our_lib.load(std::memory_order_acquire);
@@ -422,6 +442,7 @@ private:
 
     // ── Periodic tasks ───────────────────────────────────────────
     void periodic_task();
+    void periodic_chain_status();
     void block_validation_timeout();
 
     // ── Wedged-behind-network watchdog ───────────────────────────
@@ -557,6 +578,10 @@ private:
     fc::thread*                     _thread = nullptr;
     bool                            _running = false;
     std::map<peer_id, fc::future<void>> _read_fibers;
+    // At most one asynchronous status sender per peer. Keep its future until
+    // it has finished or close() has closed sockets and waited for it.
+    std::map<peer_id, fc::future<void>> _status_send_fibers;
+    std::set<peer_id>               _status_sends_inflight;
     std::vector<fc::future<void>> _dead_fibers;
     fc::future<void>                _accept_fiber;
     fc::future<void>                _periodic_fiber;
@@ -596,6 +621,14 @@ private:
     static constexpr uint32_t       KNOWN_PEER_STALE_HOURS = 24;
     fc::time_point                  _last_known_peers_cleanup;
     void                            periodic_known_peers_cleanup();
+    // Status carries LIB; block gossip updates head but not the peer's LIB.
+    fc::time_point                  _last_chain_status_broadcast;
+    /// Наблюдаемость периодической рекламы состояния цепи. Heartbeat шлёт статус ПИРАМ и в лог ничего не
+    /// писал, поэтому на стенде с одним узлом (и нулём пиров) проверить его было НЕЧЕМ: «фича работает» и
+    /// «фича не работает» выглядели одинаково. Счётчик считает КАЖДУЮ состоявшуюся рассылку, а лог печатает
+    /// номер и число активных пиров — так факт тикания виден на одном узле, даже когда пиров ноль.
+    std::atomic<uint64_t>           _chain_status_broadcast_count{0};
+    static constexpr uint32_t       CHAIN_STATUS_BROADCAST_INTERVAL_SEC = 30;
 
     // ── Anti-spam ────────────────────────────────────────────────
     static constexpr uint32_t       SPAM_STRIKE_THRESHOLD = 10;
@@ -696,6 +729,7 @@ private:
     std::atomic<uint32_t>           _lib_witnesses{0};
     std::atomic<uint32_t>           _best_peer_lib{0};
     std::atomic<uint32_t>           _cached_our_lib{0};
+    std::atomic<uint64_t>           _peer_lib_version{0};
     void                            refresh_peer_lib_cache();
 
     // ── Incoming IP blocklist ─────────────────────────────────────

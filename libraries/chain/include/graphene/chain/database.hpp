@@ -898,7 +898,8 @@ namespace graphene { namespace chain {
             /// Why it exists: certificates are not gossiped with the votes, so a QC formed
             /// by three nodes never reached the producer of the next slot and mainnet sat on
             /// a certified head for 5 h 20 min (01.11.2026).
-            bool accept_block_qc_certificate(const protocol::block_qc_certificate &cert);
+            bool accept_block_qc_certificate(const protocol::block_qc_certificate &cert,
+                                             protocol::block_qc_certificate *verified_out = nullptr);
 
             /// HF16: check double-vote proofs a block carries and punish each validator
             /// like for a missed block (once per validator and round, newest first).

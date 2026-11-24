@@ -10,11 +10,13 @@ served that minority fork. Nothing in the node could see it:
   * the stalled-sync escalation keys on a head that does NOT move, and a producing master
     moves its head every slot.
 
-Peers are the only witnesses left, and the one part of a peer's claim that cannot be
-invented without two thirds of the validators is its last-irreversible block. The gate is
-therefore built from three pieces that must stay wired exactly like this:
+Peers report their last-irreversible heights, but these are unsigned numeric claims.
+The gate uses multiple configured trusted endpoints as an operational signal; it does
+not verify a QC/TC proof or authenticate a remote finalized chain. Its wiring has three
+pieces that must agree:
 
-  1. the P2P node keeps a lock-free cache of how many ACTIVE peers report a LIB above ours.
+  1. the P2P node keeps a lock-free cache of how many ACTIVE configured trusted peers
+     report a LIB above ours.
      A peer that disconnects or is removed must stop counting in the same breath — a stale
      claim from a departed peer would block the master forever. The cache is refreshed on
      hello, on every fork_status and after every applied block (our LIB moves too).
@@ -22,7 +24,7 @@ therefore built from three pieces that must stay wired exactly like this:
      thread inside a slot would put the block behind the network thread it is meant to
      outrun, and waiting on it from that thread is a self-deadlock.
   3. the master branch consults it BEFORE signing a committee block, requires a quorum of
-     peers (one stale snapshot is not evidence) AND a peer LIB strictly above ours, and
+     trusted peers AND a reported peer LIB strictly above ours, and
      answers with minority_fork so the node stops extending its own tip. A head that keeps
      coming back after the rewind escalates to a fresh snapshot, guarded like every other
      escalation: a missing callback must not throw inside block processing.
@@ -58,6 +60,12 @@ FILES = {
 }
 
 MUTATIONS = {
+    'gate-ignores-unstable-cache': ('validator_cpp', [
+        ('                        if (!peer_libs.consistent)\n'
+         '                            return block_validation_condition::not_time_yet;\n', '')]),
+    'gate-overstates-finality': ('validator_cpp', [
+        ('peer LIB claims are not verified finality proofs',
+         'network finality is proven')]),
     'startup-gate-ignores-witnesses': ('validator_cpp', [
         ('if (!_startup_cleared && peer_libs.witnesses > 0 &&',
          'if (!_startup_cleared && true &&')]),
@@ -78,15 +86,23 @@ MUTATIONS = {
          'since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC) {')]),
     'startup-clock-never-set': ('validator_cpp', [
         ('pimpl->_startup_time = fc::time_point::now();', '')]),
+    # ЯКОРЬ ОБНОВЛЁН 24.11.2026: при мердже master с веткой seqlock запись счётчика переехала ВНУТРЬ
+    # секции и сменила порядок на seq_cst; прежний якорь (release) перестал находиться, и тест честно
+    # сказал «mutation did not land» — это работа якоря, а не поломка проверки.
     'witness-count-not-published': ('node_cpp', [
-        ('_lib_witnesses.store(witnesses, std::memory_order_release);', '')]),
+        ('_lib_witnesses.store(witnesses, std::memory_order_seq_cst);', '')]),
+    # ДВА ЧТЕНИЯ, А НЕ ОДНО (24.11.2026). После мерджа счётчик читается и на стабильном пути (seq_cst),
+    # и в fallback (acquire). Удаление одного оставляло второе, значение всё равно читалось — тест
+    # говорил «stayed GREEN». Мутация обязана снимать ОБА, иначе она проверяет половину механизма
+    # ([[fix-list-is-not-a-closed-class]]).
     'witness-count-not-read': ('node_hpp', [
-        ('v.witnesses = _lib_witnesses.load(std::memory_order_acquire);', '')]),
+        ('v.witnesses = _lib_witnesses.load(std::memory_order_acquire);', ''),
+        ('            v.witnesses = _lib_witnesses.load(std::memory_order_seq_cst);\n', '')]),
     'witness-count-counts-strangers': ('node_cpp', [
         ('        if (!witness) continue;\n        witnesses++;',
          '        witnesses++;\n        if (!witness) continue;')]),
     'getter-walks-the-peer-map': ('node_hpp', [
-        ('v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);',
+        ('v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_seq_cst);',
          'v.peers_above_our_lib = (uint32_t)_peer_states.size();')]),
     'cache-counts-disconnected-peers': ('node_cpp', [
         ('if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;', '')]),
@@ -261,8 +277,8 @@ def wiring_problems(**files):
             problems.append('refresh_peer_lib_cache() counts peers that are not ACTIVE: a peer '
                             'that dropped keeps blocking the master with a claim it can no longer back')
         if 'peer_lib_num' not in r:
-            problems.append('refresh_peer_lib_cache() does not use the peers\' LIB claims: a head '
-                            'can be one node\'s invention, a LIB cannot')
+            problems.append('refresh_peer_lib_cache() does not use the peers\' LIB claims; '
+                            'these remain unsigned reports, not cryptographic proof')
         if not re.search(r'peer_lib_num\s*==\s*0', r):
             problems.append('refresh_peer_lib_cache() treats a peer that has not advertised a LIB '
                             'yet as a witness: a zero claim must not enter the count or the best-'
@@ -325,6 +341,12 @@ def wiring_problems(**files):
         problems.append('the peer-LIB gate is not inside the emergency master branch of the DLT '
                         'fork check: a slave already has the isolation scan, the master does not')
 
+    if gate_at >= 0:
+        gate_condition_at = val_masked.find('peer_libs.peers_above_our_lib', gate_at)
+        precondition = val_masked[gate_at:gate_condition_at] if gate_condition_at >= 0 else ''
+        if not re.search(r'if\s*\(\s*!peer_libs\.consistent\s*\)\s*return\s+block_validation_condition::not_time_yet\s*;', precondition):
+            problems.append('an unstable peer-LIB snapshot must defer production before testing the claims')
+
     helper = method(val, 'bool request_forced_snapshot_recovery()')
     if helper is None:
         problems.append('the validator has no request_forced_snapshot_recovery(): both escalation '
@@ -347,6 +369,8 @@ def wiring_problems(**files):
         problems.append('the peer-LIB gate is not inside an if-statement: nothing conditions '
                         'production on the peers\' claims')
     if gate_block is not None:
+        if 'peer LIB claims are not verified finality proofs' not in gate_block:
+            problems.append('the gate log must distinguish peer claims from verified finality')
         gb = _masked(gate_block)
         if 'EMERGENCY_PEER_LIB_QUORUM' not in gb:
             problems.append('the gate does not require a quorum of peers: a single stale peer '
@@ -487,10 +511,10 @@ def main():
         for p in problems:
             print('FINDING: %s' % p)
         return 1
-    print('PASS: the peer-LIB cache counts only active peers and is refreshed on every claim '
+    print('PASS: the peer-LIB cache counts only active trusted peers and is refreshed on every claim '
           'change; the production thread reads it without a P2P-thread hop; the emergency master '
-          'refuses to extend a tip whose LIB the network has finalised past, and escalates to a '
-          'fresh snapshot when a rewind keeps returning to the same head')
+          'halts on enough higher LIB claims and escalates when rewinds return to the same head. '
+          'LIB claims are not cryptographic proof')
     return 0
 
 

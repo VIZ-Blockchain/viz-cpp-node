@@ -151,6 +151,8 @@ def wiring_problems(**files):
     elif 'accept_block_qc_certificate(' not in _masked(accept):
         problems.append('accept_block_qc() does not reach database::accept_block_qc_certificate(): the message '
                         'would be relayed while nothing is ever stored')
+    elif not re.search(r'accept_block_qc_certificate\(\s*msg\.cert\s*,\s*&msg\.cert\s*\)', _masked(accept)):
+        problems.append('gossiped QC is not replaced by the locally verified signatures before relay')
 
     # 5b. Only capable peers are sent the message.
     broadcast = method(node_cpp, 'void dlt_p2p_node::broadcast_block_qc(')
@@ -187,6 +189,9 @@ def wiring_problems(**files):
         if not re.search(r'remember_block_qc\(\s*verified\s*\)', body):
             problems.append('accept_block_qc_certificate() does not store the RE-VERIFIED certificate '
                             '(remember_block_qc(cert) would keep the sender\'s unverified signatures)')
+
+        if not re.search(r'\*verified_out\s*=\s*verified', body):
+            problems.append('accept_block_qc_certificate() does not return the verified certificate for relay')
 
     # 8. HF18 carries the timeout vote in its own message. Same six places, same failure mode:
     #    miss one and the vote is silently dropped, which is a liveness bug, not a cosmetic one.
@@ -239,7 +244,11 @@ MUTATIONS = {
     'dispatch-removed': (
         NODE_CPP, '            case dlt_block_qc_message_type:\n                on_dlt_block_qc(peer, msg.as<dlt_block_qc_message>());\n                break;\n', ''),
     'delegate-does-not-reach-chain': (
-        P2P_CPP, 'return chain.db().accept_block_qc_certificate(msg.cert);', 'return true;'),
+        P2P_CPP, 'return chain.db().accept_block_qc_certificate(msg.cert, &msg.cert);', 'return true;'),
+    'relay-keeps-unverified-signatures': (
+        P2P_CPP, 'accept_block_qc_certificate(msg.cert, &msg.cert)', 'accept_block_qc_certificate(msg.cert)'),
+    'chain-does-not-return-sanitized-qc': (
+        DB_CPP, '*verified_out = verified;', '*verified_out = cert;'),
     'broadcast-not-capability-gated': (
         NODE_CPP, 'gossip_to_capable(message(msg), DLT_CAP_BLOCK_QC, INVALID_PEER_ID);',
         'send_to_all_our_fork_peers(message(msg));'),

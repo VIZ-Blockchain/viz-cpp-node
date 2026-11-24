@@ -274,6 +274,13 @@ void dlt_p2p_node::close() {
         try { if (conn) conn->close(); } catch (...) {}
     }
     _connections.clear();
+    // The status senders may be blocked in writesome. Close their sockets first,
+    // then wait before destroying the state they reference.
+    for (auto& item : _status_send_fibers) {
+        try { if (item.second.valid()) item.second.cancel_and_wait(__FUNCTION__); } catch (...) {}
+    }
+    _status_send_fibers.clear();
+    _status_sends_inflight.clear();
     _peer_states.clear();
     _peer_sending.clear();
     ilog("DLT P2P node closed");
@@ -1070,10 +1077,11 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
 dlt_hello_message dlt_p2p_node::build_hello_message() const {
     dlt_hello_message hello;
     hello.protocol_version = 1;  // keep at 1 for backward compat — node_id is read optionally by unpack_hello_compat
-    hello.head_block_id = _delegate->get_head_block_id();
-    hello.head_block_num = _delegate->get_head_block_num();
-    hello.lib_block_id = _delegate->get_lib_block_id();
-    hello.lib_block_num = _delegate->get_lib_block_num();
+    const auto position = _delegate->get_chain_position();
+    hello.head_block_id = position.head_id;
+    hello.head_block_num = position.head_num;
+    hello.lib_block_id = position.lib_id;
+    hello.lib_block_num = position.lib_num;
     hello.dlt_earliest_block = _delegate->get_dlt_earliest_block();
     hello.dlt_latest_block = _delegate->get_dlt_latest_block();
     hello.emergency_active = _delegate->is_emergency_consensus_active();
@@ -2748,7 +2756,8 @@ void dlt_p2p_node::on_dlt_block_qc(peer_id peer, const dlt_block_qc_message& msg
     process_block_qc(msg, peer);
 }
 
-void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& msg, peer_id from) {
+void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& incoming, peer_id from) {
+    auto msg = incoming; // The delegate strips signatures it cannot verify before relay.
     const auto now = fc::time_point::now();
     // Cheap shape checks before the (much dearer) signature verification in the chain.
     const auto& cert = msg.cert;
@@ -2769,7 +2778,10 @@ void dlt_p2p_node::process_block_qc(const dlt_block_qc_message& msg, peer_id fro
         }
         return;
     }
+    const auto verified_key = fc::sha256::hash(fc::raw::pack(msg));
     _block_qcs_seen.insert(key, now);
+    if (_block_qcs_seen.contains(verified_key, now) && verified_key != key) return;
+    _block_qcs_seen.insert(verified_key, now);
     gossip_to_capable(message(msg), DLT_CAP_BLOCK_QC, from);
 }
 
@@ -2783,6 +2795,7 @@ void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
 }
 
 void dlt_p2p_node::broadcast_chain_status() {
+    if (!_delegate || !_thread || !_running) return;
     auto hello = build_hello_message();
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
@@ -2793,7 +2806,65 @@ void dlt_p2p_node::broadcast_chain_status() {
     msg.dlt_earliest_block = hello.dlt_earliest_block;
     msg.dlt_latest_block = hello.dlt_latest_block;
     msg.node_status = hello.node_status;
-    send_to_all_our_fork_peers(message(msg));
+    // Unlike blocks and transactions, status must also reach an ACTIVE peer
+    // whose fork is not currently aligned: that is exactly the peer which
+    // needs to learn that our LIB has advanced. Collect first because a failed
+    // send can disconnect and erase a peer.
+    std::vector<peer_id> targets;
+    for (const auto& item : _peer_states)
+        if (item.second.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)
+            targets.push_back(item.first);
+    // A slow socket must not hold the periodic watchdog fiber or prevent other
+    // peers from receiving status. The in-flight set bounds this to one task
+    // per peer; completed futures are pruned before the next broadcast.
+    for (auto it = _status_send_fibers.begin(); it != _status_send_fibers.end(); ) {
+        if (!_status_sends_inflight.count(it->first)) it = _status_send_fibers.erase(it);
+        else ++it;
+    }
+    const message frame(msg);
+    for (auto id : targets) {
+        if (!_status_sends_inflight.insert(id).second) continue;
+        try {
+            _status_send_fibers[id] = _thread->async([this, id, frame]() {
+                struct done {
+                    std::set<peer_id>& pending;
+                    peer_id id;
+                    ~done() { pending.erase(id); }
+                } guard{_status_sends_inflight, id};
+                if (_running) send_message(id, frame);
+            }, "dlt chain status send");
+        } catch (...) {
+            _status_sends_inflight.erase(id);
+            throw;
+        }
+    }
+    // Одна строка на рассылку (интервал 30 с) — это и есть наблюдаемость на стенде с одним узлом:
+    // ноль активных пиров больше не означает «нечего измерять», видно, что периодика тикает.
+    //
+    // УРОВЕНЬ — INFO, а не debug: живой замер 24.11.2026 показал, что при `[logger.default] level = info`
+    // (так на тестнете) `dlog` в вывод не попадает ВООБЩЕ, и прибор наблюдаемости молчал, хотя тикал.
+    // Дороже одна строка в 30 с, чем «не видно» — это цена той же ошибки, что «лог есть, а читателя нет».
+    // БЕЗ локальной переменной: offline-харнесы подменяют ilog на ((void)0), и любая переменная,
+    // живущая только ради лога, ловит -Werror=unused-variable (живой прогон CI 24.11.2026). Счётчик
+    // читается прямо в аргументах — тогда подмена лога ничего не оставляет «неиспользованным».
+    _chain_status_broadcast_count.fetch_add(1, std::memory_order_relaxed);
+    ilog("Chain status broadcast #${n}: ${targets} active peer(s), head ${head}",
+         ("n", _chain_status_broadcast_count.load(std::memory_order_relaxed))
+         ("targets", targets.size())("head", msg.head_block_num));
+}
+
+void dlt_p2p_node::periodic_chain_status() {
+    // Do not touch the database while a snapshot holds its read lock.
+    if (_block_processing_paused || !_delegate) return;
+    const auto now = fc::time_point::now();
+    if (_last_chain_status_broadcast != fc::time_point() &&
+        now >= _last_chain_status_broadcast &&
+        (now - _last_chain_status_broadcast).count() <
+            int64_t(CHAIN_STATUS_BROADCAST_INTERVAL_SEC) * 1000000LL) return;
+    // Also recover after the wall clock moves backwards; otherwise a clock
+    // correction could suppress status broadcasts until it catches up.
+    _last_chain_status_broadcast = now;
+    broadcast_chain_status();
 }
 
 // ── State queries ────────────────────────────────────────────────────
@@ -3002,9 +3073,8 @@ bool dlt_p2p_node::is_on_majority_fork() const {
 // Only peers that can actually take part in consensus count: a CONNECTING or
 // DISCONNECTED entry still carries the last claim it made, and letting a departed
 // peer's LIB hold the emergency master back would turn a dropped connection into a
-// self-inflicted stall. LIB (not head) is the measure on purpose: a head can be a
-// single node's invention, a LIB cannot be re-derived without two thirds of the
-// validators, and that is exactly the "somebody else's chain is real" signal.
+// self-inflicted stall. The reported LIB is only an unsigned operational claim:
+// this cache does not verify a QC, the remote chain, or peer identity.
 void dlt_p2p_node::refresh_peer_lib_cache() {
     const uint32_t our_lib = _delegate ? _delegate->get_lib_block_num() : 0;
     uint32_t above = 0;
@@ -3024,10 +3094,15 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
         if (state.peer_lib_num > best) best = state.peer_lib_num;
         if (state.peer_lib_num > our_lib) above++;
     }
-    _cached_our_lib.store(our_lib, std::memory_order_release);
-    _best_peer_lib.store(best, std::memory_order_release);
-    _peers_above_our_lib.store(above, std::memory_order_release);
-    _lib_witnesses.store(witnesses, std::memory_order_release);
+    // Single writer on the P2P thread; odd means publication is in progress. Все поля снимка
+    // публикуются ВНУТРИ секции, иначе читатель получит пару head/LIB от разных обновлений
+    // (witnesses добавлен master-ом, его тоже кладём под секцию).
+    _peer_lib_version.fetch_add(1, std::memory_order_seq_cst);
+    _cached_our_lib.store(our_lib, std::memory_order_seq_cst);
+    _best_peer_lib.store(best, std::memory_order_seq_cst);
+    _peers_above_our_lib.store(above, std::memory_order_seq_cst);
+    _lib_witnesses.store(witnesses, std::memory_order_seq_cst);
+    _peer_lib_version.fetch_add(1, std::memory_order_seq_cst);
 }
 
 // ── Node status transitions ──────────────────────────────────────────
@@ -4495,6 +4570,12 @@ void dlt_p2p_node::periodic_task() {
     }
 
     // Normal path: all periodic operations run.
+    // A hello reports a snapshot, not a subscription. Refresh the advertised
+    // LIB even in a quiet but healthy network. This helps a peer only when this
+    // node has upgraded; old nodes do not send periodic statuses themselves.
+    try { periodic_chain_status(); }
+        catch (const fc::exception& e) { wlog("periodic_chain_status: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("periodic_chain_status: ${e}", ("e", std::string(e.what()))); }
     try { sync_stagnation_check(); }
         catch (const fc::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", std::string(e.what()))); }

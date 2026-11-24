@@ -47,6 +47,19 @@ public:
     // shared memory yet (--snapshot defers the open until the snapshot plugin
     // registers its callback). Reading a chainbase object then dereferences a null
     // segment and kills the process; "no state" is block 0 / empty id.
+    graphene::network::dlt_chain_position get_chain_position() const override {
+        if (!chain.db().is_state_open()) return {};
+        return chain.db().with_weak_read_lock([&]() {
+            const auto& dgp = chain.db().get_dynamic_global_properties();
+            graphene::network::dlt_chain_position position;
+            position.head_id = dgp.head_block_id;
+            position.head_num = dgp.head_block_number;
+            position.lib_id = dgp.last_irreversible_block_id;
+            position.lib_num = dgp.last_irreversible_block_num;
+            return position;
+        });
+    }
+
     block_id_type get_head_block_id() const override {
         if (!chain.db().is_state_open()) return block_id_type();
         return chain.db().head_block_id();
@@ -359,10 +372,10 @@ public:
         }
     }
 
-    bool accept_block_qc(const graphene::network::dlt_block_qc_message& msg) override {
+    bool accept_block_qc(graphene::network::dlt_block_qc_message& msg) override {
         try {
             return chain.db().with_weak_read_lock([&]() {
-                return chain.db().accept_block_qc_certificate(msg.cert);
+                return chain.db().accept_block_qc_certificate(msg.cert, &msg.cert);
             });
         } catch (const fc::exception& e) {
             dlog("QC for #${n} rejected: ${e}", ("n", msg.cert.block_num)("e", e.what()));

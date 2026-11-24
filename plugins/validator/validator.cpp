@@ -403,9 +403,8 @@ namespace graphene {
                 // Emergency-master peer-LIB gate (see maybe_validate_block). The master is
                 // exempt from the isolation scan by design, so this is the only place that
                 // can notice the network moved to another chain while we kept producing.
-                // Two peers must make the claim before it counts: one peer's LIB can be a
-                // stale snapshot from before its own reorg, two agreeing ones cannot be
-                // produced by a single node with a key.
+                // Require reports from two configured trusted endpoints; these claims are
+                // unsigned and do not prove independent operators or remote finality.
                 static constexpr uint32_t EMERGENCY_PEER_LIB_QUORUM = 2;
                 // A head that keeps coming back after a rewind needs the state REPLACED, not
                 // rewound (same reasoning as FORK_ESCALATION_SEC below).
@@ -499,6 +498,11 @@ namespace graphene {
                 // any of them, dumps full plugin state for diagnosis.
                 void on_block_applied(const graphene::chain::signed_block &block);
             };
+
+            // C++14 requires definitions when a constexpr member is odr-used,
+            // including when logging forwards it by reference in an unoptimised build.
+            constexpr uint32_t validator_plugin::impl::EMERGENCY_PEER_LIB_QUORUM;
+            constexpr int64_t validator_plugin::impl::EMERGENCY_PEER_LIB_ESCALATION_SEC;
 
             void validator_plugin::set_program_options(
                     boost::program_options::options_description &command_line_options,
@@ -2330,11 +2334,14 @@ namespace graphene {
                         // branch, and the public API served the minority fork for ~18 minutes.
                         // The exemption above is exactly why nothing caught it: "all blocks are
                         // ours" is expected FROM the master, and the master's head keeps moving,
-                        // so the stalled-sync escalation cannot fire either. Peers are the only
-                        // witnesses left, and their LIB is the one part of the claim that cannot
-                        // be invented without two thirds of the validators: several peers
-                        // finalising PAST OUR LIB means the network is building elsewhere.
+                        // so the stalled-sync escalation cannot fire either. Multiple configured
+                        // peers reporting a higher LIB are an operational warning. Their numeric
+                        // claims are unsigned and do not prove finality or a competing fork.
                         const auto peer_libs = p2p().get_peer_lib_view();
+                        // A concurrent cache publication made all bounded read attempts
+                        // unstable. Defer this slot instead of acting on a mixed snapshot.
+                        if (!peer_libs.consistent)
+                            return block_validation_condition::not_time_yet;
                         if (!_startup_cleared && peer_libs.witnesses > 0 &&
                             peer_libs.best_peer_lib <= peer_libs.our_lib) {
                             _startup_cleared = true;
@@ -2359,8 +2366,8 @@ namespace graphene {
                             peer_libs.best_peer_lib > peer_libs.our_lib) {
                             const uint32_t stuck_head = db.head_block_num();
                             elog("EMERGENCY MASTER: ${n} peer(s) report LIB #${pl} above ours #${ol} — "
-                                 "refusing to extend our tip (head=#${h}) with a committee block: the "
-                                 "network is finalising a chain we are not on",
+                                 "refusing to extend our tip (head=#${h}) with a committee block; "
+                                 "peer LIB claims are not verified finality proofs",
                                  ("n", peer_libs.peers_above_our_lib)("pl", peer_libs.best_peer_lib)
                                  ("ol", peer_libs.our_lib)("h", stuck_head));
 

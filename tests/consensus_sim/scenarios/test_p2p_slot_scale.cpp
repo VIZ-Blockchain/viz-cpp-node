@@ -53,6 +53,10 @@ struct mock_delegate : dlt_p2p_delegate {
     uint32_t interval = CHAIN_BLOCK_INTERVAL;
     size_t tips = 1;
 
+    dlt_chain_position get_chain_position() const override {
+        dlt_chain_position p; p.head_num = HEAD; p.lib_num = HEAD - 10; return p;
+    }
+
     uint32_t block_interval() const override { return interval; }
     block_id_type get_head_block_id() const override { return block_id_type(); }
     uint32_t get_head_block_num() const override { return HEAD; }
