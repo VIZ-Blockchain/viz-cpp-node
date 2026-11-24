@@ -623,6 +623,11 @@ private:
     void                            periodic_known_peers_cleanup();
     // Status carries LIB; block gossip updates head but not the peer's LIB.
     fc::time_point                  _last_chain_status_broadcast;
+    /// Наблюдаемость периодической рекламы состояния цепи. Heartbeat шлёт статус ПИРАМ и в лог ничего не
+    /// писал, поэтому на стенде с одним узлом (и нулём пиров) проверить его было НЕЧЕМ: «фича работает» и
+    /// «фича не работает» выглядели одинаково. Счётчик считает КАЖДУЮ состоявшуюся рассылку, а лог печатает
+    /// номер и число активных пиров — так факт тикания виден на одном узле, даже когда пиров ноль.
+    std::atomic<uint64_t>           _chain_status_broadcast_count{0};
     static constexpr uint32_t       CHAIN_STATUS_BROADCAST_INTERVAL_SEC = 30;
 
     // ── Anti-spam ────────────────────────────────────────────────

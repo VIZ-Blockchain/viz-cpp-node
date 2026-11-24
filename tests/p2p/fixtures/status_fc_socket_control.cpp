@@ -21,6 +21,8 @@
 #define assert(condition) do { if (!(condition)) { std::cerr << "Assertion failed: " #condition " at " << __FILE__ << ":" << __LINE__ << "\n"; std::abort(); } } while (false)
 #undef ilog
 #define ilog(...) ((void)0)
+#undef dlog
+#define dlog(...) ((void)0)
 using peer_id=int;
 const int DLT_PEER_LIFECYCLE_ACTIVE=1;
 struct status { int fork_status=0,head_block_id=0,head_block_num=0,lib_block_id=0,lib_block_num=0,dlt_earliest_block=0,dlt_latest_block=0,node_status=0; };
@@ -32,6 +34,7 @@ struct fake_socket { bool closed=false; void close(){closed=true;} };
 struct fake_server { void close() {} };
 struct dlt_p2p_node {
  delegate* _delegate=nullptr; int _fork_status=7; fc::thread* _thread=nullptr; bool _running=true;
+ std::atomic<uint64_t> _chain_status_broadcast_count{0};
  std::map<peer_id,fc::future<void>> _status_send_fibers,_read_fibers;
  std::set<peer_id> _status_sends_inflight,_peer_sending;
  fc::future<void> _accept_fiber,_periodic_fiber;

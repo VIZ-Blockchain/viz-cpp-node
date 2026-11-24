@@ -43,6 +43,8 @@ prefix = r'''
 #include <utility>
 #include <memory>
 #define ilog(...) ((void)0)
+#undef dlog
+#define dlog(...) ((void)0)
 int open_fake_sockets=0;
 bool check_close_order=false;
 namespace fc {
@@ -108,6 +110,7 @@ struct dlt_p2p_node {
     fake_server _tcp_server;
     bool _block_processing_paused=false;
     fc::time_point _last_chain_status_broadcast;
+    std::atomic<uint64_t> _chain_status_broadcast_count{0};
     static constexpr uint32_t CHAIN_STATUS_BROADCAST_INTERVAL_SEC=30;
     std::map<int,state> _peer_states;
     std::vector<int> delivered; std::vector<status> frames;

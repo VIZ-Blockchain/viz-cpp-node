@@ -2838,6 +2838,11 @@ void dlt_p2p_node::broadcast_chain_status() {
             throw;
         }
     }
+    // Одна строка на рассылку (интервал 30 с) — это и есть наблюдаемость на стенде с одним узлом:
+    // ноль активных пиров больше не означает «нечего измерять», видно, что периодика тикает.
+    const uint64_t sent = _chain_status_broadcast_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    dlog("Chain status broadcast #${n}: ${targets} active peer(s), head ${head}",
+         ("n", sent)("targets", targets.size())("head", msg.head_block_num));
 }
 
 void dlt_p2p_node::periodic_chain_status() {
