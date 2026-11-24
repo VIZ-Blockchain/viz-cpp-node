@@ -411,23 +411,34 @@ namespace graphene {
                 // a busy arena. Measured on api.viz.world, 2026-11-24: 403 timer trims returned
                 // memory TWICE (25 and 22 MiB), both 1-2 minutes AFTER a heavy batch ended.
                 //
-                // The trigger watches the RESIDENT SIZE of our own process, not the request count.
-                // Two reasons, both measured on the stand the same evening:
-                //   1. the admission counter counts HTTP requests, and one JSON-RPC batch of 4000
-                //      calls is ONE request - the threshold could never be crossed;
-                //   2. that counter is only maintained when webserver stats or limits are enabled,
-                //      and both are off by default ("webserver stats enabled: false").
-                // RSS is what we want back, so RSS is what we watch: when resident memory grows by
-                // `heap_trim_peak_mb` inside a window of `heap_trim_peak_window` seconds a peak is
-                // underway; when growth in the same window falls to a tenth of that, the work is
-                // over and the arenas have just been released - trim right there.
+                // The trigger watches the RESIDENT SIZE of our own process, not the request count:
+                //   - the admission counter counts HTTP requests (one JSON-RPC batch of 4000 calls
+                //     is ONE request) and is only maintained when webserver stats are enabled,
+                //     which they are not by default - it never moved;
+                //   - RSS is the quantity we want returned anyway.
+                //
+                // The threshold is RELATIVE to a recent floor, not to a fixed growth rate. A fixed
+                // rate looks at the wrong scale on both ends: production grows by at most 42 MiB per
+                // MINUTE (measured over four hours of the api node), so a "200 MiB per 10 s" peak
+                // never happens there and the trigger would never fire; the stand does 870 MiB in
+                // two seconds, where a small fixed threshold would fire on every batch.
+                //
+                // So: remember the lowest resident size of the last `heap_trim_peak_floor` seconds.
+                // When resident memory rises `heap_trim_peak_mb` above that floor a peak is
+                // underway; when growth over the last window falls to a tenth of it, the work is
+                // over and the arenas have just been released - trim right there. At most one
+                // event trim per `heap_trim_peak_min_gap` seconds, so a genuine leak cannot turn
+                // this into a per-second log flood.
                 // 0 disables the event trigger and leaves the timer as the only caller.
-                uint32_t heap_trim_peak_mb = 200;     // resident growth inside the window that marks a peak
-                uint32_t heap_trim_peak_window = 10;  // seconds in the rolling window
-                std::array<uint64_t, 61> rss_kb{};    // resident sizes, one sample per second
+                uint32_t heap_trim_peak_mb = 100;        // resident growth above the floor that marks a peak
+                uint32_t heap_trim_peak_window = 10;     // seconds: growth window and the quiet test
+                uint32_t heap_trim_peak_floor = 600;     // seconds: how far back the floor is taken
+                uint32_t heap_trim_peak_min_gap = 30;    // seconds: minimum distance between event trims
+                std::array<uint64_t, 3601> rss_kb{};     // resident sizes, one sample per second
                 size_t rss_pos = 0;
                 uint64_t rss_filled = 0;
                 bool peak_seen = false;
+                uint64_t since_event_trim_ms = 0;
                 std::string state_path;
                 std::atomic<bool> stats_stop{false};
                 std::thread stats_thread;
@@ -724,29 +735,47 @@ namespace graphene {
                     waited_ms += step_ms;
                     trim_waited_ms += step_ms;
 
-                    // Resident-size ring, one sample per second. Growth across the window is
-                    // the signal: a peak is memory that was just spent, not work that may or may
-                    // not be remembered by a counter.
+                    // Resident-size ring, one sample per second. Two numbers come out of it: the
+                    // floor (lowest resident size of the last `heap_trim_peak_floor` seconds) and
+                    // the growth over the last `heap_trim_peak_window` seconds.
+                    since_event_trim_ms += step_ms;
                     if (heap_trim_peak_mb != 0) {
-                        rss_kb[rss_pos] = webserver::proc_rss_kb();
-                        const size_t win = std::min<size_t>(heap_trim_peak_window, rss_kb.size() - 1);
+                        rss_kb[rss_pos] = proc_rss_kb();
                         const uint64_t now_kb = rss_kb[rss_pos];
+                        const size_t win = std::min<size_t>(heap_trim_peak_window, rss_kb.size() - 1);
                         const uint64_t then_kb = rss_kb[(rss_pos + rss_kb.size() - win) % rss_kb.size()];
+                        // Floor over the last `heap_trim_peak_floor` seconds (ring holds 3601 s).
+                        const size_t floor_len = std::min<size_t>(
+                            std::min<size_t>(heap_trim_peak_floor, rss_kb.size() - 1),
+                            rss_filled > 0 ? static_cast<size_t>(rss_filled - 1) : 0);
+                        uint64_t floor_kb = now_kb;
+                        for (size_t k = 0; k <= floor_len; ++k) {
+                            floor_kb = std::min<uint64_t>(floor_kb,
+                                rss_kb[(rss_pos + rss_kb.size() - k) % rss_kb.size()]);
+                        }
                         rss_pos = (rss_pos + 1) % rss_kb.size();
                         if (rss_filled < rss_kb.size()) ++rss_filled;
 
-                        if (rss_filled > win) {
+                        if (rss_filled > win && floor_len > 0) {
+                            const int64_t above_kb = static_cast<int64_t>(now_kb) - static_cast<int64_t>(floor_kb);
                             const int64_t grow_kb = static_cast<int64_t>(now_kb) - static_cast<int64_t>(then_kb);
                             const int64_t peak_kb = static_cast<int64_t>(heap_trim_peak_mb) * 1024;
-                            if (grow_kb >= peak_kb) {
+                            if (above_kb >= peak_kb) {
                                 peak_seen = true;
-                            } else if (peak_seen && grow_kb <= peak_kb / 10) {
-                                // Growth has stopped: the work is over, so the freed pages have
-                                // just been released and glibc can give them back right now.
+                            } else if (above_kb <= 0) {
+                                peak_seen = false;   // memory already came back; nothing to do
+                            }
+                            const bool quiet = grow_kb <= peak_kb / 10;
+                            if (peak_seen && quiet &&
+                                since_event_trim_ms >= static_cast<uint64_t>(heap_trim_peak_min_gap) * 1000) {
+                                // Work is over and the freed pages have just been released - this is
+                                // the moment glibc can actually give them back.
                                 peak_seen = false;
+                                since_event_trim_ms = 0;
                                 trim_waited_ms = 0;
-                                ilog("heap trim: after peak, resident growth fell to ${g} MiB in ${w} s (peak was >= ${p} MiB)",
-                                     ("g", grow_kb / 1024)("w", heap_trim_peak_window)("p", heap_trim_peak_mb));
+                                ilog("heap trim: after peak, resident ${a} MiB above floor ${fl} MiB, growth ${g} MiB in ${w} s",
+                                     ("a", above_kb / 1024)("fl", static_cast<int64_t>(floor_kb) / 1024)
+                                     ("g", grow_kb / 1024)("w", heap_trim_peak_window));
                                 heap_trim_now();
                             }
                         }
@@ -1324,12 +1353,18 @@ namespace graphene {
                         "How many rotated stats logs to keep. Default: 5.")
                     ("webserver-stats-interval", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between stats log flushes. Default: 60.")
-                    ("webserver-heap-trim-peak-mb", boost::program_options::value<uint32_t>()->default_value(200),
-                        "Resident growth inside the rolling window that marks a memory peak: once growth "
-                        "falls back to a tenth of it, free heap pages are returned immediately instead of "
-                        "waiting for the timer (0 = off). A timer alone almost never finds a free arena end.")
+                    ("webserver-heap-trim-peak-mb", boost::program_options::value<uint32_t>()->default_value(100),
+                        "Resident growth above the recent floor that marks a memory peak: once growth over "
+                        "the window falls back to a tenth of it, free heap pages are returned immediately "
+                        "instead of waiting for the timer (0 = off). A timer alone almost never finds a "
+                        "free arena end. Relative to the floor, not a fixed rate: production grows by at "
+                        "most 42 MiB per minute, the stand by 870 MiB in two seconds.")
                     ("webserver-heap-trim-peak-window", boost::program_options::value<uint32_t>()->default_value(10),
-                        "Seconds in the rolling window used by webserver-heap-trim-peak-mb. Default: 10.")
+                        "Seconds of quiet growth that count as the work being over. Default: 10.")
+                    ("webserver-heap-trim-peak-floor", boost::program_options::value<uint32_t>()->default_value(600),
+                        "How far back, in seconds, the resident-size floor is taken. Default: 600.")
+                    ("webserver-heap-trim-peak-min-gap", boost::program_options::value<uint32_t>()->default_value(30),
+                        "Minimum seconds between event trims, so a genuine leak cannot flood the log. Default: 30.")
                     ("webserver-heap-trim-sec", boost::program_options::value<uint32_t>()->default_value(60),
                         "Seconds between returning free heap pages of ALL malloc arenas to the OS (malloc_trim). "
                         "A JSON-RPC batch is spread over pool threads, each with its own arena, and glibc keeps a "
@@ -1389,8 +1424,15 @@ namespace graphene {
                         my->heap_trim_peak_window = std::max<uint32_t>(2, std::min<uint32_t>(60,
                             options.at("webserver-heap-trim-peak-window").as<uint32_t>()));
                     }
-                    ilog("heap trim after peak: resident growth ${p} MiB in ${w} s (0 = off)",
-                         ("p", my->heap_trim_peak_mb)("w", my->heap_trim_peak_window));
+                    if (options.count("webserver-heap-trim-peak-floor") != 0) {
+                        my->heap_trim_peak_floor = std::max<uint32_t>(60, std::min<uint32_t>(3600,
+                            options.at("webserver-heap-trim-peak-floor").as<uint32_t>()));
+                    }
+                    if (options.count("webserver-heap-trim-peak-min-gap") != 0) {
+                        my->heap_trim_peak_min_gap = options.at("webserver-heap-trim-peak-min-gap").as<uint32_t>();
+                    }
+                    ilog("heap trim after peak: resident ${p} MiB above a ${f} s floor, quiet ${w} s (0 = off)",
+                         ("p", my->heap_trim_peak_mb)("f", my->heap_trim_peak_floor)("w", my->heap_trim_peak_window));
                     const uint32_t trim_sec = options.at("webserver-heap-trim-sec").as<uint32_t>();
 #if defined(__GLIBC__)
                     my->heap_trim_sec = trim_sec == 0 ? 0 : std::min<uint32_t>(86400, trim_sec);
