@@ -36,6 +36,7 @@ prefix = r'''
 #include <map>
 #include <vector>
 #include <cassert>
+#include <atomic>
 #include <iostream>
 #include <cstdint>
 #include <functional>
