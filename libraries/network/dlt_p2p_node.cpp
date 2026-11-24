@@ -1328,6 +1328,25 @@ void dlt_p2p_node::on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_messag
             // fallen behind (missed broadcast blocks) — transition to SYNC
             // and request the missing range.
             uint32_t our_head = _delegate->get_head_block_num();
+            // A same-height peer can have a different reversible head even
+            // though neither side is numerically ahead. Ask once per hello;
+            // do not enter SYNC or claim that the peer's block is preferred.
+            // The common LIB gate avoids using this for unrelated histories.
+            if (_delegate->get_lib_block_num() > 0 &&
+                our_head > _delegate->get_lib_block_num() &&
+                state.peer_head_num == our_head &&
+                state.peer_head_id != _delegate->get_head_block_id() &&
+                state.peer_lib_num == _delegate->get_lib_block_num() &&
+                state.peer_lib_id != block_id_type() &&
+                state.peer_lib_id == _delegate->get_lib_block_id()) {
+                dlt_get_block_range_message req;
+                req.start_block_num = our_head;
+                req.end_block_num = our_head;
+                req.prev_block_id = _delegate->get_head_block_id();
+                send_message(peer, message(req));
+                ilog(DLT_LOG_ORANGE "Equal-height competing head #${h} from ${ep}: requesting one block" DLT_LOG_RESET,
+                     ("h", our_head)("ep", state.endpoint));
+            }
             if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD * slot_scale()) {
                 ilog(DLT_LOG_ORANGE "Falling behind in FORWARD mode: peer ${ep} at #${pn}, our head #${hn} — transitioning to SYNC" DLT_LOG_RESET,
                      ("ep", state.endpoint)("pn", state.peer_head_num)("hn", our_head));
@@ -1507,7 +1526,10 @@ void dlt_p2p_node::on_dlt_range_reply(peer_id peer, const dlt_range_reply_messag
 
 void dlt_p2p_node::on_dlt_get_block_range(peer_id peer, const dlt_get_block_range_message& req) {
     dlt_block_range_reply_message reply;
-    uint32_t our_latest = _delegate->get_dlt_latest_block();
+    // The DLT log normally ends at LIB, but peers also need the applied
+    // reversible suffix through head. read_block_by_num identifies that
+    // suffix by applied block ID and returns empty when it cannot prove it.
+    uint32_t our_latest = _delegate->get_head_block_num();
 
     // Leave 64KB headroom for the reply wrapper fields
     // (last_block_next_available, is_last, vector overhead)
@@ -1518,6 +1540,12 @@ void dlt_p2p_node::on_dlt_get_block_range(peer_id peer, const dlt_get_block_rang
     for (uint32_t n = req.start_block_num; n <= req.end_block_num && n <= our_latest; ++n) {
         auto block = _delegate->read_block_by_num(n);
         if (block.valid()) {
+            // The head may reorganize between reads; never splice branches.
+            if (!reply.blocks.empty() && n == reply.blocks.back().block_num() + 1 &&
+                block->previous != reply.blocks.back().id()) {
+                wlog("Range reply branch changed at #${n}; returning linked prefix", ("n", n));
+                break;
+            }
             // Check if adding this block would exceed the message size budget.
             // pack_size is expensive but we only call it per-block here.
             uint32_t block_size = static_cast<uint32_t>(fc::raw::pack_size(*block));
@@ -2243,6 +2271,13 @@ void dlt_p2p_node::on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_requ
         if (num < our_earliest || num > our_head + GAP_FILL_MAX_BLOCKS) continue;
         auto block = _delegate->read_block_by_num(num);
         if (block.valid()) {
+            // A reorg can occur between separate reads. Never splice two
+            // branches into a consecutive gap-fill response.
+            if (!reply.blocks.empty() && num == reply.blocks.back().block_num() + 1 &&
+                block->previous != reply.blocks.back().id()) {
+                wlog("Gap fill branch changed at #${n}; returning linked prefix", ("n", num));
+                break;
+            }
             reply.blocks.push_back(std::move(*block));
         }
     }
@@ -3031,6 +3066,7 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
     const uint32_t our_lib = _delegate ? _delegate->get_lib_block_num() : 0;
     uint32_t above = 0;
     uint32_t best = 0;
+    uint32_t witnesses = 0;
     for (const auto& entry : _peer_states) {
         const auto& state = entry.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
@@ -3041,14 +3077,18 @@ void dlt_p2p_node::refresh_peer_lib_cache() {
         bool witness = _trusted_peers.count(state.endpoint) > 0;
         for (const auto& sep : _seed_nodes) if (sep == state.endpoint) { witness = true; break; }
         if (!witness) continue;
+        witnesses++;
         if (state.peer_lib_num > best) best = state.peer_lib_num;
         if (state.peer_lib_num > our_lib) above++;
     }
-    // Single writer on the P2P thread; odd means publication is in progress.
+    // Single writer on the P2P thread; odd means publication is in progress. Все поля снимка
+    // публикуются ВНУТРИ секции, иначе читатель получит пару head/LIB от разных обновлений
+    // (witnesses добавлен master-ом, его тоже кладём под секцию).
     _peer_lib_version.fetch_add(1, std::memory_order_seq_cst);
     _cached_our_lib.store(our_lib, std::memory_order_seq_cst);
     _best_peer_lib.store(best, std::memory_order_seq_cst);
     _peers_above_our_lib.store(above, std::memory_order_seq_cst);
+    _lib_witnesses.store(witnesses, std::memory_order_seq_cst);
     _peer_lib_version.fetch_add(1, std::memory_order_seq_cst);
 }
 

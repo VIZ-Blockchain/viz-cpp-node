@@ -1265,7 +1265,8 @@ const char *ui_page() {
       cell(v.on_chain ? 'yes' : 'no', v.on_chain ? 'ok' : 'warn');
       cell(v.enabled ? 'yes' : 'no', v.enabled ? 'ok' : 'warn');
       cell(v.hold ? 'yes' : 'no', v.hold ? 'warn' : '');
-      cell(v.active_authority ? 'yes' : 'no', v.active_authority ? 'ok' : 'warn');
+      cell(v.active_authority ? 'yes' : (v.agent_grant ? 'agent' : 'no'),
+           v.active_authority || v.agent_grant ? 'ok' : 'warn');
       cell(v.scheduled_in == null ? '-' : v.scheduled_in);
       cell(v.signing_key || '-');
       cell(v.configured_key || '-');
@@ -4690,6 +4691,7 @@ fc::variant node_admin_plugin::impl::h_validator_list(const fc::variant &) {
             m("enabled", s.enabled);
             m("hold", s.hold);
             m("active_authority", s.active_authority);
+            m("agent_grant", s.agent_grant);
             m("scheduled_in", s.scheduled_in > 0 ? fc::variant(static_cast<int64_t>(s.scheduled_in))
                                                  : fc::variant());
             m("signing_key", s.signing_key.empty() ? fc::variant() : fc::variant(s.signing_key));

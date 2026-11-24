@@ -160,6 +160,8 @@ int main(int argc, char **argv) {
         assert(r.lines == 3);
         assert(r.accepted == 2);
         assert(r.dropped == 1);
+        // A rejected vote is not an aged one: the two halves of "stale or invalid" are counted apart.
+        assert(r.aged == 0);
         assert(count_lines(path) == 2);
         // Compaction replaces the file atomically and leaves no temporary behind.
         assert(!exists(path + ".tmp"));
@@ -216,6 +218,8 @@ int main(int argc, char **argv) {
         }, 500, error);
         assert(rounds.size() == 2 && rounds[0] == 500 && rounds[1] == 900);
         assert(r.dropped == 1);
+        // The drop is the window's: named as aged, so a restart log can tell it from a rejection.
+        assert(r.aged == 1);
         assert(count_lines(path) == 2);
     }
 

@@ -22,6 +22,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 DB_CPP = ROOT / 'libraries' / 'chain' / 'database.cpp'
 DB_HPP = ROOT / 'libraries' / 'chain' / 'include' / 'graphene' / 'chain' / 'database.hpp'
+PLUGIN_CPP = ROOT / 'plugins' / 'chain' / 'plugin.cpp'
 
 
 def _masked(source):
@@ -87,10 +88,58 @@ def call_pattern(fn, *args):
                                      for idx, a in enumerate(args))
 
 
-def wiring_problems(cpp, hpp):
+
+def _lock_regions(text):
+    """Spans of `{ std::lock_guard<std::mutex> g(_block_votes_mutex); ... }` blocks.
+
+    Only guards that are the FIRST statement of their block are counted: the span must be the lock
+    block itself, otherwise "inside a lock" would be true for everything that follows the guard
+    until the enclosing function ends.
+    """
+    regions = []
+    guard_re = re.compile(r'std::lock_guard\s*<\s*std::mutex\s*>\s*\w+\s*\(\s*_block_votes_mutex\s*\)\s*;')
+    for m in guard_re.finditer(text):
+        brace = text.rfind('{', 0, m.start())
+        if brace < 0 or text[brace + 1:m.start()].strip():
+            continue
+        depth = 0
+        for i in range(brace, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    regions.append((brace, i))
+                    break
+    return regions
+
+
+def _inside_lock_block(text, pos):
+    return any(a <= pos <= b for a, b in _lock_regions(text))
+
+
+def _lambda_named(text, name):
+    """Body of `auto <name> = [...] (...) { ... }` (masked source), or None."""
+    m = re.search(r'auto\s+' + re.escape(name) + r'\s*=\s*\[[^\]]*\]\s*\([^)]*\)\s*\{', text)
+    if not m:
+        return None
+    brace = text.index('{', m.start())
+    depth = 0
+    for i in range(brace, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:i]
+    return None
+
+
+def wiring_problems(cpp, hpp, plugin=''):
     problems = []
     open_body = method(cpp, 'void database::open(')
     snapshot_body = method(cpp, 'void database::open_from_snapshot(')
+    resume_body = method(cpp, 'void database::resume_timeout_vote_journal(')
     # push_timeout_vote / _v2 are fork guards; the body that does the work is the impl.
     push_body = method(cpp, 'bool database::push_timeout_vote_impl(')
     v1_body = method(cpp, 'bool database::push_timeout_vote(')
@@ -102,7 +151,6 @@ def wiring_problems(cpp, hpp):
             or v1_body is None or v2_body is None):
         return ['one of database::open / open_from_snapshot / push_timeout_vote(_v2/_impl) / '
                 'open_timeout_vote_journal not found -- the wiring cannot be judged']
-
     # Regex checks run on comment-blanked copies: a comment that merely mentions a call must not
     # satisfy them (that exact mistake passed a check in PR #221).
     open_m, snapshot_m, push_m, init_m = (_masked(open_body), _masked(snapshot_body),
@@ -172,6 +220,61 @@ def wiring_problems(cpp, hpp):
     elif replay_at >= 0 and guard_at > replay_at:
         problems.append('the genesis guard sits after the replay -- it cannot prevent it')
 
+    # A REINDEX is not a rebuilt chain: the block log is intact, so the reopened state at head 0
+    # is the same chain being rebuilt from its own blocks. The cache must be kept there and
+    # restored once the replay has a head (measured 08.11.2026: a mid-stall restart lost 435
+    # cached votes to "chain is at genesis, discarding" after "Shared memory corrupted").
+    reindex_body = method(cpp, 'void database::reindex(')
+    if reindex_body is None:
+        problems.append('database::reindex() not found -- the reindex path cannot be judged')
+    else:
+        reindex_m = _masked(reindex_body)
+        genesis_branch = init_m[guard_at:replay_at] if guard_at >= 0 and replay_at >= 0 else ''
+        # The CONDITION is what matters: a mention of the block log inside a log string would
+        # satisfy a looser check while the truncate still runs on every reindex.
+        if genesis_branch and not re.search(r'if\s*\(\s*_block_log\.head\(\)\s*&&[^{]*>\s*0\s*\)',
+                                            genesis_branch):
+            problems.append('the genesis guard truncates without checking the block log: a reindex '
+                            'restart would discard a cache that describes this same chain')
+        if not re.search(call_pattern('resume_timeout_vote_journal', 'data_dir'), reindex_m):
+            problems.append('reindex() does not resume the journal kept at head 0 -- the cache '
+                            'would survive the replay on disk but never return to the pool')
+
+    # The SNAPSHOT door is the one a production node actually takes: the image ships
+    # `plugin = snapshot`, `snapshot-every-n-blocks = 2400`, and auto-recovery prefers the newest
+    # snapshot over a block-log replay. So a snapshot import must KEEP the cache (the digest binds
+    # the chain id, and every line is re-verified) and do_snapshot_load() must resume it once the
+    # state is final -- otherwise a restart under a stall loses the votes that pull the chain back.
+    keep_branch = init_m.find('if (!replay_votes)')
+    if keep_branch < 0:
+        problems.append('open_timeout_vote_journal() has no snapshot branch -- cannot judge it')
+    else:
+        next_guard = init_m.find('if (head_block_num() == 0)', keep_branch)
+        branch = init_m[keep_branch:next_guard if next_guard > keep_branch else len(init_m)]
+        if 'truncate' in branch:
+            problems.append('a snapshot import still truncates the cache -- the production recovery '
+                            'path would lose every cached vote')
+        if not re.search(r'_timeout_vote_journal_restore_pending\s*=\s*true\s*;', branch):
+            problems.append('a snapshot import neither truncates nor marks the cache pending -- '
+                            'the file would sit on disk unread')
+
+    resume_m = _masked(resume_body) if resume_body else ''
+    if resume_body is None:
+        problems.append('database::resume_timeout_vote_journal() not found -- a kept cache has no way back')
+    else:
+        if not re.search(r'if\s*\(\s*!_timeout_vote_journal_restore_pending\s*\)\s*return\s*;', resume_m):
+            problems.append('resume_timeout_vote_journal() runs without a pending cache (a duplicate '
+                            'replay on every start)')
+        if not re.search(call_pattern('open_timeout_vote_journal', 'data_dir', 'true'), resume_m):
+            problems.append('resume_timeout_vote_journal() does not replay the cache')
+
+    plugin_m = _masked(plugin) if plugin else ''
+    if not plugin:
+        problems.append('plugins/chain/plugin.cpp was not read -- the snapshot path cannot be judged')
+    elif not re.search(call_pattern('resume_timeout_vote_journal', 'data_dir'), plugin_m):
+        problems.append('do_snapshot_load() never resumes the journal kept by open_from_snapshot() '
+                        '(the production snapshot recovery path would lose the cache)')
+
     # A cache that cannot be read must never become a startup blocker: replay is contained,
     # and a failed replay leaves the journal detached instead of appending to a half-written file.
     flag_on = init_m.find('_timeout_vote_journal_replaying = true;')
@@ -185,13 +288,55 @@ def wiring_problems(cpp, hpp):
         if 'throw;' in guarded:
             problems.append('the replay catch rethrows instead of containing the failure')
     failed_at = init_m.find('if (replay_failed)')
-    attach_at = init_m.rfind('_timeout_vote_journal = std::move(journal);')
+    # The journal can be published either directly or through a small installer lambda (the lock
+    # discipline below needs the swap under the votes mutex, and a lambda keeps that in one place).
+    # Both forms are attachments; a guard that knows only one of them reports "never attached" on
+    # a correct tree -- exactly what happened in PR #292 before this line learned the second form.
+    attach_re = re.compile(r'_timeout_vote_journal\s*=\s*std::move\s*\(\s*journal\s*\)'
+                           r'|install\s*\(\s*std::move\s*\(\s*journal\s*\)\s*\)')
+    attach_hits = [m.start() for m in attach_re.finditer(init_m)]
+    attach_at = attach_hits[-1] if attach_hits else -1
     if failed_at < 0:
         problems.append('a failed replay still attaches the journal (append would hit a half-rewritten file)')
+    elif attach_at < 0:
+        problems.append('cannot judge the failed-replay branch: the journal is never attached at all')
     elif attach_at < failed_at:
         problems.append('cannot judge the failed-replay branch: the journal is never attached at all')
     elif 'return;' not in init_m[failed_at:attach_at]:
         problems.append('the failed-replay branch attaches the journal instead of returning')
+
+    # Lifetime discipline (21.11.2026). The journal has two owners on a live node: this function
+    # (open(), open_from_snapshot() on a stalled-sync hot reload, resume_*) and the P2P thread,
+    # which appends to it from push_timeout_vote_impl() under _block_votes_mutex. Destroying or
+    # replacing it outside that mutex let the writer append into a journal whose destructor was
+    # already fclosing the same FILE -- measured on the 21-validator stand as SIGSEGV in fclose()
+    # with a FILE pointer that was a reused stack address. So: the reset and every publication
+    # must sit under the mutex, and the mutex must NOT be held across replay(), because the replay
+    # callback re-enters push_timeout_vote() and takes the same non-recursive mutex.
+    install_lambda = _lambda_named(init_m, 'install')
+    if install_lambda is not None and not _inside_lock_block('{' + install_lambda + '}', install_lambda.find('=') + 1):
+        problems.append('the installer lambda publishes the journal without _block_votes_mutex '
+                        '(the P2P writer can be inside the object being replaced)')
+    for m in re.finditer(r'_timeout_vote_journal\.reset\s*\(\s*\)', init_m):
+        if not _inside_lock_block(init_m, m.start()):
+            problems.append('_timeout_vote_journal.reset() runs without _block_votes_mutex '
+                            '(the destructor fcloses a FILE the P2P thread may be writing)')
+    if install_lambda is None:
+        for hit in attach_hits:
+            if not _inside_lock_block(init_m, hit):
+                problems.append('the journal is published by direct assignment outside '
+                                '_block_votes_mutex (the writer can hold the old object)')
+    # The flag decides whether a vote reaches the file and is read under the mutex, so writing it
+    # outside was a race of its own -- and the mutex must not span the replay between the writes.
+    for flag_stmt in ('_timeout_vote_journal_replaying = true;', '_timeout_vote_journal_replaying = false;'):
+        at = init_m.find(flag_stmt)
+        if at >= 0 and not _inside_lock_block(init_m, at):
+            problems.append(f'{flag_stmt} is written without _block_votes_mutex')
+    if replay_at := init_m.find('->replay('):
+        if replay_at >= 0 and _inside_lock_block(init_m, replay_at):
+            problems.append('the votes mutex is held across journal->replay() -- the callback '
+                            're-enters push_timeout_vote() and takes the same non-recursive mutex')
+
 
     # The file is a cache, not a second source of trust: replay runs through push_timeout_vote.
     if 'push_timeout_vote(' not in init_m or 'push_timeout_vote_v2(' not in init_m:
@@ -214,6 +359,9 @@ def wiring_problems(cpp, hpp):
         problems.append('database.hpp has no _timeout_vote_journal member')
     if '_timeout_vote_journal_replaying' not in masked_hpp:
         problems.append('database.hpp has no _timeout_vote_journal_replaying flag')
+    if '_timeout_vote_journal_restore_pending' not in masked_hpp:
+        problems.append('database.hpp has no _timeout_vote_journal_restore_pending flag '
+                        '(reindex() could not tell whether a kept cache is waiting)')
     if '#include <graphene/chain/timeout_vote_journal.hpp>' not in hpp:
         problems.append('database.hpp does not include the journal header')
     return problems
@@ -230,28 +378,61 @@ MUTATIONS = {
     'append-during-replay': ('if (_timeout_vote_journal && !_timeout_vote_journal_replaying)',
                              'if (_timeout_vote_journal)'),
     'no-flush-on-cert': ('if (_timeout_vote_journal) _timeout_vote_journal->flush();', '(void)nullptr;'),
-    'flag-never-cleared': ('_timeout_vote_journal_replaying = false;\n\n            if (!error.empty())',
+    'flag-never-cleared': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                           '                _timeout_vote_journal_replaying = false;\n            }\n\n'
+                           '            if (!error.empty())',
                            '\n            if (!error.empty())'),
     'replay-bypasses-checks': ('return push_timeout_vote(round, high_qc_round, account_name_type(validator), signature);',
                                'return true;'),
     'v1-accepted-after-fork': ('if (has_hardfork(CHAIN_HARDFORK_18)) return false;', 'if (false) return false;'),
     'v2-accepted-before-fork': ('if (!has_hardfork(CHAIN_HARDFORK_18)) return false;', 'if (false) return false;'),
     'v2-block-id-not-cached': ('v2 ? std::string(high_qc_block_id) : std::string()', 'std::string()'),
-    'no-genesis-guard': ('if (head_block_num() == 0) {\n                if (!journal->truncate(error))',
-                         'if (head_block_num() < 0) {\n                if (!journal->truncate(error))'),
+    'no-genesis-guard': ('if (head_block_num() == 0) {\n                if (_block_log.head() && _block_log.head()->block_num() > 0) {',
+                         'if (head_block_num() < 0) {\n                if (false) {'),
+    'reindex-truncates-cache': ('if (_block_log.head() && _block_log.head()->block_num() > 0) {',
+                                'if (false) {'),
+    'reindex-never-restores': ('resume_timeout_vote_journal(data_dir);', '(void)data_dir;'),
+    'snapshot-truncates-cache': ('ilog("Timeout vote journal: snapshot import, keeping ${p} for restore after the load", ("p", path));\n'
+                                 '                _timeout_vote_journal_restore_pending = true;',
+                                 'journal->truncate(error);\n'
+                                 '                _timeout_vote_journal_restore_pending = false;'),
+    'snapshot-never-restores': ('if (!_timeout_vote_journal_restore_pending) return;', '(void)0;'),
     'replay-exception-escapes': ('error = "unknown exception";', 'throw;'),
     'failed-replay-attaches': ('elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));\n'
                                '                return;',
                                'elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));'),
+    # Lifetime discipline (PR #292, crash of 20.11.2026). Each of these restores one half of the
+    # use-after-free: the destroyer and the publisher must sit under the votes mutex, and the mutex
+    # must not be held across replay() (the callback re-enters push_timeout_vote -> same mutex).
+    'reset-without-lock': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                           '                _timeout_vote_journal.reset();\n            }',
+                           '            _timeout_vote_journal.reset();'),
+    'install-without-lock': ('            auto install = [this](std::unique_ptr<timeout_vote_journal> j) {\n'
+                             '                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                             '                _timeout_vote_journal = std::move(j);\n            };',
+                             '            auto install = [this](std::unique_ptr<timeout_vote_journal> j) {\n'
+                             '                _timeout_vote_journal = std::move(j);\n            };'),
+    'replay-flag-without-lock': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                                 '                _timeout_vote_journal_replaying = true;\n            }',
+                                 '            _timeout_vote_journal_replaying = true;'),
+    'lock-held-across-replay': ('            {\n                std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                                '                _timeout_vote_journal_replaying = true;\n            }',
+                                '            std::lock_guard<std::mutex> guard(_block_votes_mutex);\n'
+                                '            _timeout_vote_journal_replaying = true;'),
+}
+
+MUTATIONS_PLUGIN = {
+    # Same hole on the production door: the snapshot is loaded, the cache sits on disk and
+    # nothing ever reads it.
+    'snapshot-load-never-resumes': ('my->db.resume_timeout_vote_journal(data_dir);', '(void)data_dir;'),
 }
 
 
 def load():
-    return DB_CPP.read_text(), DB_HPP.read_text()
-
+    return DB_CPP.read_text(), DB_HPP.read_text(), PLUGIN_CPP.read_text()
 
 def selftest():
-    cpp_text, hpp_text = load()
+    cpp_text, hpp_text, plugin_text = load()
     total = 0
     failures = []
     with __import__('tempfile').TemporaryDirectory(prefix='viz-tvj-wire-') as tmp:
@@ -260,7 +441,18 @@ def selftest():
                 failures.append(f'{name}: anchor not found -- mutation did not land')
                 continue
             mutated = cpp_text.replace(old, new, 1)
-            problems = wiring_problems(mutated, hpp_text)
+            problems = wiring_problems(mutated, hpp_text, plugin_text)
+            total += len(problems)
+            if not problems:
+                failures.append(f'{name}: stayed GREEN (the check it targets is vacuous)')
+            else:
+                print(f'RED as expected: {name} ({len(problems)})')
+        for name, (old, new) in MUTATIONS_PLUGIN.items():
+            if old not in plugin_text:
+                failures.append(f'{name}: anchor not found -- mutation did not land')
+                continue
+            mutated = plugin_text.replace(old, new, 1)
+            problems = wiring_problems(cpp_text, hpp_text, mutated)
             total += len(problems)
             if not problems:
                 failures.append(f'{name}: stayed GREEN (the check it targets is vacuous)')
@@ -270,7 +462,7 @@ def selftest():
         for f in failures:
             print(f'BAD: {f}', file=sys.stderr)
         return 1
-    print(f'PASS: {len(MUTATIONS)} mutations, every one red ({total} findings)')
+    print(f'PASS: {len(MUTATIONS) + len(MUTATIONS_PLUGIN)} mutations, every one red ({total} findings)')
     return 0
 
 
@@ -285,8 +477,9 @@ def main():
         for p in problems:
             print(f'FINDING: {p}')
         return 1
-    print('PASS: journal replayed on open, reset on snapshot import, votes cached after acceptance, '
-          'flushed on certificate formation, replay verified through push_timeout_vote')
+    print('PASS: journal replayed on open, kept across reindex and snapshot import and resumed '
+          'once the state has a head, votes cached after acceptance, flushed on certificate '
+          'formation, replay verified through push_timeout_vote')
     return 0
 
 

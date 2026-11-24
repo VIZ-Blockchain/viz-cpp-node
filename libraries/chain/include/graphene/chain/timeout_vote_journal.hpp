@@ -65,6 +65,16 @@ namespace graphene {
                     size_t lines = 0;       ///< lines that parsed as votes
                     size_t accepted = 0;    ///< votes the caller accepted (kept on disk)
                     size_t dropped = 0;     ///< malformed lines + votes the caller rejected/aged out
+                    /**
+                     * Subset of `dropped`: votes skipped by `min_round` before the caller ever saw
+                     * them. Separated because the two cases mean opposite things. A file of mostly
+                     * aged votes is normal -- the journal is compacted only on replay, so it keeps
+                     * hours of history -- while a file of mostly REJECTED votes is a defect (key
+                     * or window mismatch) that otherwise hides behind the same total. Measured
+                     * 09.11.2026: the four production nodes restored 11.5 % of their cached votes
+                     * (215 of 1862) and the single total could not say which case that was.
+                     */
+                    size_t aged = 0;
                 };
 
                 explicit timeout_vote_journal(std::string path) : _path(std::move(path)) {}
@@ -167,6 +177,7 @@ namespace graphene {
                         }
                         if (round < min_round) {
                             ++result.dropped;
+                            ++result.aged;
                             continue;
                         }
                         bool accepted = false;

@@ -9,7 +9,7 @@
 // which database_hardfork.cpp asserts. config.hpp carries the same value for the production
 // config — the two builds differ in chain identity and fork TIMES, not in which forks are
 // registered. (4.2.0 was HF16.)
-#define CHAIN_VERSION                         (version(4, 4, 0))
+#define CHAIN_VERSION                         (version(4, 4, 3))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZTEST"
@@ -35,10 +35,15 @@
 #define CHAIN_BLOCK_INTERVAL_HF16             1 // HF16 (#6737, Q#3103=A): slot after the fork block; database::block_interval()
 #define CHAIN_BLOCK_VALIDATOR_REPEAT            1
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       200 // ~10 min after first missed block for top validator
-#define CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS (5 * CHAIN_MAX_VALIDATORS) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min)
+// A year counted in the LIVE (1 s) blocks. Two named values instead of one obscured by a
+// runtime x3: CHAIN_BLOCKS_PER_YEAR keeps feeding emission (its own open question — see
+// per-block-constant-changes-meaning-when-cadence-changes), while every HF16-era BOUND
+// (epoch limits, penalty limits) uses this one. No multiplication at the call sites.
+#define CHAIN_BLOCKS_PER_YEAR_HF16            (365*24*60*60/CHAIN_BLOCK_INTERVAL_HF16)
+#define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL_HF16) // native blocks of the live chain
+#define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL_HF16) // native blocks of the live chain
+#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       600 // ~10 min in native 1 s blocks (was 200 at 3 s)
+#define CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS (15 * CHAIN_MAX_VALIDATORS) // ~5 min in native 1 s blocks: 5 rounds x 3 s
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
@@ -123,7 +128,7 @@
 #define CHAIN_MAX_BLOCK_SIZE_LIMIT            (2*1024*1024) // 2Mb p2p graphene limit : /libraries/net/include/graphene/net/config.hpp#L39
 #define CHAIN_BLOCK_SIZE                      (CHAIN_MAX_BLOCK_SIZE_LIMIT*CHAIN_BLOCK_INTERVAL) // initial block size, preset to max block size limit
 
-#define CHAIN_MAX_UNDO_HISTORY                10000
+#define CHAIN_MAX_UNDO_HISTORY                30000 // ~8.3 h in native 1 s blocks (was 10000 at 3 s)
 
 /// Emergency consensus mode: activates when no block has been produced for
 /// this many seconds since the last irreversible block.
@@ -172,7 +177,7 @@
 #define CONSENSUS_COMMITTEE_REQUEST_APPROVE_MIN_PERCENT 1000 // default: 10.00%
 #define CONSENSUS_DATA_OPERATIONS_COST_ADDITIONAL_BANDWIDTH 0
 #define CONSENSUS_VALIDATOR_MISS_PENALTY_PERCENT 100 // default: 1.00%
-#define CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION (CHAIN_BLOCKS_PER_DAY*CHAIN_BLOCK_INTERVAL) // default: 1 day
+#define CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION (24*60*60) // default: 1 day, in seconds (was blocks*interval)
 
 #define CONSENSUS_CREATE_INVITE_MIN_BALANCE   10000
 #define CONSENSUS_COMMITTEE_CREATE_REQUEST_FEE 100000
@@ -218,7 +223,9 @@
 #define CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH  CHAIN_BLOCKS_PER_HOUR
 
 /// Minimum epoch length: 1 block in testnet to allow any interval.
-#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(1)
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH        uint32_t(1) // testnet floor: one 3 s block
+// Same wall-clock value as the pre-HF16 floor above (1 x 3 s), expressed in native 1 s blocks.
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16   uint32_t(3) // 3 x 1 s
 
 /// Minimum TOKEN amount per stakeholder payout (1 atomic unit = 0.001 VIZ).
 #define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)

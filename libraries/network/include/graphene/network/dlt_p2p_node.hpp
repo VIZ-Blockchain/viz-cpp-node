@@ -263,6 +263,7 @@ public:
         uint32_t best_peer_lib = 0;        ///< highest LIB claimed by any active seed/trusted peer
         uint32_t our_lib = 0;              ///< our LIB at the last refresh
         bool consistent = true;           ///< false only if a concurrent update prevented a stable read
+        uint32_t witnesses = 0;            ///< active seed/trusted peers that advertised any LIB
     };
     peer_lib_view get_peer_lib_view() const noexcept {
         for (unsigned attempt = 0; attempt < 4; ++attempt) {
@@ -272,10 +273,17 @@ public:
             v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_seq_cst);
             v.best_peer_lib = _best_peer_lib.load(std::memory_order_seq_cst);
             v.our_lib = _cached_our_lib.load(std::memory_order_seq_cst);
+            v.witnesses = _lib_witnesses.load(std::memory_order_seq_cst);
             if (_peer_lib_version.load(std::memory_order_seq_cst) == version) return v;
         }
         peer_lib_view v;
+        // Не удалось взять согласованный снимок за 4 попытки: значения читаем, но помечаем
+        // несогласованность — потребитель обязан считать пару head/LIB недоказанной.
         v.consistent = false;
+        v.peers_above_our_lib = _peers_above_our_lib.load(std::memory_order_acquire);
+        v.best_peer_lib = _best_peer_lib.load(std::memory_order_acquire);
+        v.our_lib = _cached_our_lib.load(std::memory_order_acquire);
+        v.witnesses = _lib_witnesses.load(std::memory_order_acquire);
         return v;
     }
 
@@ -713,6 +721,7 @@ private:
     // value dropped with it in refresh_peer_lib_cache(), so a vanished peer cannot
     // keep blocking production forever.
     std::atomic<uint32_t>           _peers_above_our_lib{0};
+    std::atomic<uint32_t>           _lib_witnesses{0};
     std::atomic<uint32_t>           _best_peer_lib{0};
     std::atomic<uint32_t>           _cached_our_lib{0};
     std::atomic<uint64_t>           _peer_lib_version{0};

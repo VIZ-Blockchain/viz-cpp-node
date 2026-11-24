@@ -1,7 +1,9 @@
 #include <graphene/plugins/validator_guard/validator_guard.hpp>
+#include <graphene/plugins/validator_guard/restore_backoff.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/account_object.hpp>
+#include <graphene/chain/agent_evaluator.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -30,6 +32,11 @@ namespace plugins {
 namespace validator_guard {
 
 namespace bpo = boost::program_options;
+
+// How long auto-restore is paused after the chain has been seen blanking a key we just restored
+// twice in a row. One minute of churn is evidence; an hour of silence is not a disaster (the
+// validator is not producing anyway), and the operator sees a warning with the reason.
+constexpr int64_t k_futile_hold_sec = 3600;
 
 // ─── impl ────────────────────────────────────────────────────────────────────
 
@@ -87,6 +94,13 @@ struct validator_guard_plugin::impl {
 
     // Transaction IDs awaiting block inclusion: tx_id -> (validator_name, expiration)
     std::map<graphene::chain::transaction_id_type, std::pair<std::string, fc::time_point_sec>> _pending_confirmations;
+
+    // Futility tracking. A confirmed restoration whose key is null again within one blanking
+    // threshold means the chain is discarding what we restore: this node either does not produce
+    // blocks for that validator (`validator = [...]` in config.ini) or it is far behind
+    // last_confirmed_block_num. Restoring again only repeats the churn, so count the cycles,
+    // then pause with a single explicit warning instead of a transaction every round.
+    restore_backoff _restore_backoff;
 
     // ── core ──────────────────────────────────────────────────────────────────
 
@@ -207,11 +221,51 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
         // Signing key is present on-chain — nothing to do
         if (itr->signing_key != null_key) {
             _restore_pending.erase(name);
+            // A key that stays on-chain means the futility cycle is over; the cycle counter is
+            // kept (see restore_backoff::on_key_present), the hold is cleared.
+            _restore_backoff.on_key_present(name);
             // If this validator was auto-disabled and the key is now present on-chain,
             // clear the auto-disabled flag (operator must have manually restored)
             _auto_disabled_validators.erase(name);
             _auto_disable_count.erase(name); 
             continue;
+        }
+
+        // Restore backoff: the key was restored, confirmed in a block, and is null again within
+        // one blanking threshold — the chain discarded it (emergency rule `head -
+        // last_confirmed > threshold`). Restoring again just repeats the cycle, so count it and
+        // pause instead of broadcasting every round. The decision itself is pure and lives in
+        // restore_backoff.hpp, where tests drive it.
+        {
+            // The chain blanks a key once `head - last_confirmed` exceeds this many BLOCKS
+            // (database.cpp, emergency offline-validator branch, which inlines the same
+            // expression — keep the two in step). Post-HF16 a block is 1 s, so the effective
+            // threshold is about five minutes; that is the wall-clock window compared here.
+            const int64_t block_sec = db().block_interval();
+            // Native 1 s blocks already (owner 19.11.2026: no multiplication anywhere), so the
+            // threshold is used as is; wall-clock window = blocks x live interval.
+            const int64_t blank_after_blocks = CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS;
+            const int64_t now_sec = now.sec_since_epoch();
+
+            const auto verdict = _restore_backoff.on_null_key(name, now_sec,
+                                                              blank_after_blocks * block_sec,
+                                                              k_futile_hold_sec);
+            if (!verdict.restore) {
+                if (verdict.warn) {
+                    wlog("validator_guard: '${w}' was restored and its key is null again "
+                         "${age}s later (${cy} futile cycles). The chain blanks keys of validators "
+                         "that are more than ${t} blocks behind last_confirmed, so this node either "
+                         "does not produce blocks for '${w}' (check `validator = [...]` against "
+                         "`validator-guard-validator` in config.ini) or the validator is far "
+                         "behind. Auto-restore paused for ${p} s.",
+                         ("w", name)("age", verdict.age)("cy", verdict.cycles)
+                         ("t", blank_after_blocks)("p", k_futile_hold_sec));
+                } else {
+                    dlog("validator_guard: '${w}' restore backoff active for ${left}s",
+                         ("w", name)("left", verdict.held_until - now_sec));
+                }
+                continue;
+            }
         }
 
         // If this validator was auto-disabled by the consecutive-block guard,
@@ -283,6 +337,40 @@ void validator_guard_plugin::impl::send_validator_update(
 
         ilog("validator_guard: broadcasting validator_update [ID: ${id}] for '${w}' — restoring key to ${k}",
              ("id", tx_id)("w", validator_name)("k", signing_pub));
+
+        // Apply to OUR OWN chain as well. `p2p_.broadcast_transaction` only puts the transaction
+        // into the p2p mempool and relays it to peers (dlt_p2p_node.cpp:2741-2748); the chain
+        // applies a peer transaction, never our own, and nothing drains that mempool into a block
+        // (accept_transaction is called only for messages received FROM a peer,
+        // dlt_p2p_node.cpp:2177). Without a local apply a node with no peers cannot restore
+        // anything, while the log still says "sent successfully" on every check cycle.
+        //
+        // The apply is POSTED, not called inline: this runs on the block-apply thread, which holds
+        // the database write lock. `chain::plugin::accept_transaction` posts to the io_service and
+        // waits for the result (plugin.cpp:327-344); io_service is single-threaded (one run(),
+        // appbase application.cpp:222), so calling it from here waits for a task that can only run
+        // after this thread returns — and push_transaction hits its 2 s write-lock timeout. Live
+        // testnet 2026-11-09 17:54:32 showed exactly that:
+        //   local apply of validator_update FAILED: Unable to acquire WRITE lock ... wait_ms=2000
+        // Posting our own task and pushing directly avoids both the inline wait and the deadlock.
+        try {
+            auto& database = db();
+            auto pending_tx = tx;
+            boost::asio::post(appbase::app().get_io_service(),
+                [&database, pending_tx]() {
+                    try {
+                        auto skip = database.validate_transaction(
+                            pending_tx, graphene::chain::database::skip_apply_transaction);
+                        database.push_transaction(pending_tx, skip);
+                    } catch (const fc::exception& e) {
+                        elog("validator_guard: local apply of validator_update FAILED: ${e}",
+                             ("e", e.to_detail_string()));
+                    }
+                });
+        } catch (const fc::exception& e) {
+            elog("validator_guard: could not schedule local apply for '${w}': ${e}",
+                 ("w", validator_name)("e", e.to_detail_string()));
+        }
 
         p2p_.broadcast_transaction(tx);
 
@@ -581,6 +669,19 @@ std::vector<validator_status> validator_guard_plugin::impl::validators_status() 
                 const auto pk = entry.second.active_key.get_public_key();
                 for (const auto& k : auth.active.key_auths) {
                     if (k.first == pk) { st.active_authority = true; break; }
+                }
+                // A key outside active.key_auths may still be a working AGENT key (HF15). Ask the
+                // same hook the chain uses, so the status page does not repeat the startup warning
+                // about a setup that works (measured on testnet 2026-11-09).
+                if (!st.active_authority && st.on_chain) {
+                    try {
+                        graphene::protocol::validator_update_operation probe;
+                        probe.owner = st.name;
+                        st.agent_grant = graphene::chain::agent_operation_allowed(db(), probe, st.name, pk);
+                    } catch (const fc::exception&) {
+                        // Inconclusive probe stays false: the view must not promise authority it
+                        // could not prove (same rule as the startup check).
+                    }
                 }
             } catch (...) {
                 // A validator whose account is gone is reported as on_chain=false above.
@@ -1001,8 +1102,28 @@ void validator_guard_plugin::plugin_startup() {
                 }
             }
             if (!active_key_has_authority) {
-                elog("validator_guard: WARNING: Configured active key for validator '${w}' "
-                     "does NOT have authority on-chain. Restoration will fail.", ("w", name));
+                // The key may legitimately be an AGENT key: HF15 lets a principal delegate
+                // `validator_update` to a key that is not in active.key_auths. Ask the same hook the
+                // chain uses, so the operator is not told "restoration will fail" about a setup that
+                // works (measured on testnet 2026-11-09: the agent-signed update rotated the
+                // validator signing key while this check printed the failure warning).
+                bool delegated = false;
+                try {
+                    graphene::protocol::validator_update_operation probe;
+                    probe.owner = name;
+                    delegated = graphene::chain::agent_operation_allowed(
+                        pimpl->db(), probe, name, active_pub_key);
+                } catch (const fc::exception&) {
+                    // Fall through: an inconclusive probe must not be reported as "allowed".
+                }
+                if (delegated) {
+                    ilog("validator_guard: configured key for validator '${w}' is an AGENT key with "
+                         "delegated 'validator_update' — restoration will use it", ("w", name));
+                } else {
+                    elog("validator_guard: WARNING: Configured active key for validator '${w}' "
+                         "does NOT have authority on-chain and holds no agent grant for "
+                         "'validator_update'. Restoration will fail.", ("w", name));
+                }
             }
             ++it;
         } catch (const fc::exception& e) {
@@ -1080,6 +1201,10 @@ void validator_guard_plugin::plugin_startup() {
                     const auto w_name = it->second.first;
                     pimpl->_restore_pending.erase(w_name);
                     pimpl->_pending_confirmations.erase(it);
+                    // Remember when the key landed: if it is null again soon, the chain blanked
+                    // it and restoring is futile (see the backoff in check_and_restore_internal).
+                    pimpl->_restore_backoff.on_restore_confirmed(
+                        w_name, fc::time_point_sec(graphene::time::now()).sec_since_epoch());
                     ilog("validator_guard: CONFIRMED restoration for '${w}' in block #${n} [TX: ${id}]",
                          ("w", w_name)("n", b.block_num())("id", id));
                 }

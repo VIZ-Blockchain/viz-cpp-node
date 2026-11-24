@@ -74,7 +74,9 @@ namespace graphene {
 
             struct validator_plugin::impl final {
                 uint32_t skip_diag_head = 0;
-                const char *skip_diag_why = nullptr;
+                // Key of the last refusal reason, not its text: one reason now carries counts
+                // that change as votes arrive, and a changing message would defeat the dedup.
+                std::string skip_diag_why;
                 impl():
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
@@ -410,6 +412,20 @@ namespace graphene {
                 uint32_t _master_gate_head = 0;          // head the quorum was first seen on
                 fc::time_point _master_gate_since;       // when that head became stuck
                 bool _master_gate_escalated = false;     // one forced snapshot per stuck head
+                // Startup witness gate. The peer-LIB gate needs peers to say something, so a
+                // master that opens its state and reaches its slot before the first seed has
+                // answered sails through on "nobody objects". 03.11.2026 03:05Z, api.viz.world:
+                // restarted with LIB #84961415 while the network sat thousands of blocks
+                // ahead, produced committee #84961416 four seconds later with zero peers, and
+                // forked. Until a seed/trusted witness has reported a LIB that is NOT above
+                // ours, the master does not sign — at startup one witness is enough to make
+                // it wait (waiting is the safe direction; the quorum of two below guards the
+                // opposite case, a running master told to stop). After the grace period a
+                // genuinely isolated master may produce again, so a dead seed list cannot
+                // halt the chain forever.
+                static constexpr int64_t EMERGENCY_STARTUP_WITNESS_GRACE_SEC = 300;
+                fc::time_point _startup_time;            // set in plugin_startup()
+                bool _startup_cleared = false;           // latched: a witness confirmed we are not behind
 
                 // Operator override (testnet / single-operator fork): when set via
                 // 'disable-minority-fork-detection', both the standard and the DLT
@@ -628,6 +644,7 @@ namespace graphene {
                 try {
                     ilog("validator plugin:  plugin_startup() begin");
                     auto &d = pimpl->database();
+                    pimpl->_startup_time = fc::time_point::now();
                     //Start NTP time client
                     graphene::time::now();
 
@@ -1804,7 +1821,30 @@ namespace graphene {
                             // DISTRESSED NETWORK (participation < 33%, not yet emergency):
                             // Honor manual config overrides -- operator may be trying to
                             // accelerate recovery before the 1-hour timeout.
-                            if (prate < _required_validator_participation) {
+                            //
+                            // HF16: the 128-slot window is the pre-BFT proxy for "is a
+                            // supermajority alive on my branch". A QC we hold for head or its
+                            // parent IS that proof, and the unstick rule (60 s of chain silence)
+                            // was written to produce exactly when the window says no. After any
+                            // stall the window stays below 33% for ~2 min, so without this the
+                            // chain the unstick block just restarted stops on the next slot:
+                            // mainnet 02.11.2026 21:47 -- one unstick block, then 31 min of
+                            // silence until an operator forced stale production, then emergency.
+                            // A minority partition cannot form a QC, so it stays bounded to one
+                            // uncertified block per unstick window.
+                            bool quorum_proven = false;
+                            if (db.has_hardfork(CHAIN_HARDFORK_16)) {
+                                db.with_weak_read_lock([&]() {
+                                    const uint32_t hn = db.head_block_num();
+                                    auto qc_on_branch = [&](uint32_t n) {
+                                        const auto qc = db.get_block_qc(n);
+                                        return qc && qc->block_id == db.find_block_id_for_num(n);
+                                    };
+                                    quorum_proven = qc_on_branch(hn) || (hn > 1 && qc_on_branch(hn - 1)) ||
+                                                    db.emergency_unstick_block(now);
+                                });
+                            }
+                            if (prate < _required_validator_participation && !quorum_proven) {
                                 if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
                                     // enable-stale-production=true: operator override, produce anyway
                                     // to bootstrap/recover a fully stalled network where all nodes
@@ -2302,6 +2342,26 @@ namespace graphene {
                         // unstable. Defer this slot instead of acting on a mixed snapshot.
                         if (!peer_libs.consistent)
                             return block_validation_condition::not_time_yet;
+                        if (!_startup_cleared && peer_libs.witnesses > 0 &&
+                            peer_libs.best_peer_lib <= peer_libs.our_lib) {
+                            _startup_cleared = true;
+                        }
+                        if (!_startup_cleared) {
+                            const int64_t since_start = (fc::time_point::now() - _startup_time).to_seconds();
+                            // The grace frees only a master nobody has answered: a witness that
+                            // reports a LIB above ours keeps it waiting, because with a single
+                            // matching seed the quorum gate below never fires.
+                            if (since_start < EMERGENCY_STARTUP_WITNESS_GRACE_SEC || peer_libs.witnesses > 0) {
+                                wlog("EMERGENCY MASTER: startup ${s}s ago, ${w} witness(es), best peer LIB "
+                                     "#${pl} vs ours #${ol} — not signing a committee block on head #${h} "
+                                     "until a seed/trusted peer confirms we are not behind (grace ${g}s)",
+                                     ("s", since_start)("w", peer_libs.witnesses)("pl", peer_libs.best_peer_lib)
+                                     ("ol", peer_libs.our_lib)("h", db.head_block_num())
+                                     ("g", EMERGENCY_STARTUP_WITNESS_GRACE_SEC));
+                                return block_validation_condition::not_synced;
+                            }
+                            _startup_cleared = true;  // isolated past the grace: fall through
+                        }
                         if (peer_libs.peers_above_our_lib >= EMERGENCY_PEER_LIB_QUORUM &&
                             peer_libs.best_peer_lib > peer_libs.our_lib) {
                             const uint32_t stuck_head = db.head_block_num();
@@ -2742,6 +2802,29 @@ namespace graphene {
                 // Late-QC head: the block to rebuild on is the one its QC certifies.
                 fc::optional<graphene::protocol::block_id_type> rebuild_on;
                 const uint32_t own_round = db.round_of(scheduled_time);
+                // A certified sibling of a QC-less head is taken before any TC is looked for:
+                // a TC rebuild would add one more uncertified sibling nobody votes for.
+                try {
+                    // Read-lock pre-check: the write lock is taken only when a QC at head's
+                    // height names another block, not on every production tick.
+                    const bool sibling_qc = db.with_weak_read_lock([&]() {
+                        if (!db.block_needs_parent_qc(scheduled_validator)) return false;
+                        const auto qc = db.get_block_qc(db.head_block_num());
+                        return qc && qc->block_id != db.head_block_id();
+                    });
+                    if (sibling_qc) db.with_strong_write_lock([&]() { db.switch_head_to_certified_sibling(); });
+                    // No QC at head's height (the 18.11.2026 shape): converge on the sibling the
+                    // network's own votes name, so every producer stops minting a new one. Cheap
+                    // read-lock pre-check; the ranking reads votes and block ids only, so every
+                    // node computes the same answer.
+                    const bool canonical_differs = db.with_weak_read_lock([&]() {
+                        return db.canonical_sibling_id().valid();
+                    });
+                    if (canonical_differs) db.with_strong_write_lock([&]() { db.converge_to_canonical_sibling(); });
+                } catch (const fc::exception &e) {
+                    wlog("Switch to certified sibling failed: ${e}", ("e", e.to_string()));
+                    return block_validation_condition::not_time_yet;
+                }
                 db.with_weak_read_lock([&]() {
                     if (!db.block_needs_parent_qc(scheduled_validator)) return;
                     const bool hf18 = db.has_hardfork(CHAIN_HARDFORK_18);
@@ -2763,7 +2846,7 @@ namespace graphene {
                     // dropped): say once per head why the TC skip is not taken.
                     // Keyed by head AND reason: keyed by head alone, the first refusal
                     // ("no TC yet") hid the real one for the rest of the stall.
-                    const auto skip_refused = [&](const char *why) {
+                    const auto skip_refused = [&](const std::string &why) {
                         if (skip_diag_head == db.head_block_num() && skip_diag_why == why) return;
                         skip_diag_head = db.head_block_num();
                         skip_diag_why = why;
@@ -2805,7 +2888,35 @@ namespace graphene {
                     if (hf18) {
                         skip_tc_v2 = db.get_timeout_cert_between_v2(parent_qc->round, own_round,
                                                                     parent_qc->round, parent_qc->block_id);
-                        if (!skip_tc_v2) { skip_refused("no usable TC between head's QC round and our round"); return; }
+                        if (!skip_tc_v2) {
+                            const std::string why = "no usable TC between head's QC round and our round";
+                            if (skip_diag_head != db.head_block_num() || skip_diag_why != why) {
+                                skip_diag_head = db.head_block_num();
+                                skip_diag_why = why;
+                                // Name the cause, not just the verdict: on 01.11.2026 mainnet sat
+                                // here with 12 usable votes of 13 and the log could not say whether
+                                // votes were missing, claimed a higher QC round, or named another
+                                // block at the parent's round (three voters on a divergent tip).
+                                // Once per head: the walk verifies signatures in the rounds that
+                                // could answer, so it is not something to repeat on every slot.
+                                const auto d = db.diagnose_timeout_cert_window_v2(
+                                        parent_qc->round, own_round, parent_qc->round, parent_qc->block_id);
+                                wlog("TC skip of QC-less head #${h} refused for slot round ${r}: "
+                                     "no usable TC between head's QC round ${a} and our round ${b} — "
+                                     "walked ${n} rounds, signatures checked in ${v}${budget}, "
+                                     "best ${k}/${q} at round ${c} (dropped: "
+                                     "${x} claimed a QC round above the parent's, ${y} named another "
+                                     "block at it, ${z} bad signature)",
+                                     ("h", db.head_block_num())("r", own_round)
+                                     ("a", parent_qc->round)("b", own_round)
+                                     ("n", d.rounds_scanned)("v", d.rounds_verified)
+                                     ("budget", d.sig_budget_spent ? " (budget spent: older rounds counted only)" : "")
+                                     ("k", d.usable)("q", d.quorum)("c", d.best_round)
+                                     ("x", d.above_parent_qc)("y", d.other_block)
+                                     ("z", d.bad_signature));
+                            }
+                            return;
+                        }
                     } else {
                         skip_tc = db.get_timeout_cert_between(parent_qc->round, own_round, parent_qc->round);
                         if (!skip_tc) { skip_refused("no usable TC between head's QC round and our round"); return; }
@@ -2825,6 +2936,23 @@ namespace graphene {
                         }
                         rebuild_on = parent_qc->block_id;
                     }
+                    // Head activated HF18: the block we would rebuild on is pre-fork, so the
+                    // v2 TC cannot ride on it, and no v1 TC exists (everyone signed v2). Popping
+                    // anyway leaves us on the pre-fork parent, where the next tick builds a
+                    // TC-less block that gets no votes and activates HF18 again -- every slot,
+                    // with a fresh head time, so the 60 s unstick never fires. Keep head and
+                    // wait: the unstick builds on it.
+                    // ponytail: timestamp test is exact only when the version quorum held before
+                    // the HF time (mainnet 17/17); a late quorum falls back to the post-pop guard.
+                    if (skip_tc_v2) {
+                        const auto &hfp = db.get_hardfork_property_object();
+                        const auto base = db.fetch_block_by_id(rebuild_on ? *rebuild_on : head->previous);
+                        if (base && hfp.next_hardfork == CHAIN_HARDFORK_18_VERSION &&
+                            base->timestamp < hfp.next_hardfork_time) {
+                            skip_tc_v2.reset();
+                            skip_refused("head activated HF18; its TC cannot ride on the pre-fork parent, waiting for the unstick");
+                        }
+                    }
                 });
                 if (waiting_for_qc && (skip_tc || skip_tc_v2)) {
                     const auto skipped = db.head_block_id();
@@ -2843,8 +2971,9 @@ namespace graphene {
                         wlog("Could not drop head ${id} for the TC: ${e}", ("id", skipped)("e", e.to_string()));
                         return block_validation_condition::not_time_yet;
                     }
-                    // The skipped block may itself have activated HF18. A certificate
-                    // selected on its state cannot be carried on the pre-fork parent.
+                    // The skipped block may itself have activated HF18 (only reachable when the
+                    // check above could not see it). A certificate selected on its state cannot
+                    // be carried on the pre-fork parent.
                     if (skip_tc_v2 && db.with_weak_read_lock([&]() { return !db.has_hardfork(CHAIN_HARDFORK_18); }))
                         return block_validation_condition::not_time_yet;
                     // Our block now sits on the anchor: it needs no parent QC and may
@@ -2895,6 +3024,7 @@ namespace graphene {
                     try {
                         // TODO: the same thread as used in chain-plugin,
                         //       but in the future it should refactored to calling of a chain-plugin function
+                        const auto gen_started = fc::time_point::now();
                         auto block = db.generate_block(
                                 scheduled_time,
                                 scheduled_validator,
@@ -2904,6 +3034,13 @@ namespace graphene {
                                 late_qc,
                                 skip_tc_v2
                         );
+                        // dlog, not ilog: the build cost must be measurable on a testnet without
+                        // flooding production logs. Enabled per node via the `logger` config
+                        // ("validator": "debug"); zero effect on consensus or state layout.
+                        dlog("PROD-TIMING: build of block #${n} took ${us} us (slot ${t})",
+                             ("n", block.block_num())
+                             ("us", (fc::time_point::now() - gen_started).count())
+                             ("t", block.timestamp));
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_validator)("tx", block.transactions.size());
                         p2p().broadcast_block(block);
 

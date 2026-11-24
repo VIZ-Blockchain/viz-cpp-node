@@ -773,6 +773,11 @@ namespace graphene { namespace chain {
                     set_revision(head_block_num());
                 });
 
+                // The state was rebuilt from the block log while the journal was left open but not
+                // replayed (see open_timeout_vote_journal). The chain is the same one and the head
+                // exists now, so the cached votes can be judged exactly as on a normal start.
+                resume_timeout_vote_journal(data_dir);
+
                 if (signal_guard::get_is_interrupted()) {
                     sg.restore();
 
@@ -1447,6 +1452,26 @@ namespace graphene { namespace chain {
             } FC_CAPTURE_AND_RETHROW()
         }
 
+        optional<signed_block> database::fetch_applied_block_by_number(uint32_t block_num) const {
+            if (block_num == 0 || block_num > head_block_num()) return {};
+            // Recent applied blocks have their exact ID in the TAPOS ring. Do not
+            // guess a reversible block from the DLT log or the fork DB ordering.
+            if (block_num > get_dynamic_global_properties().last_irreversible_block_num) {
+                const auto *summary = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+                if (!summary || protocol::block_header::num_from_id(summary->block_id) != block_num) return {};
+                return fetch_block_by_id(summary->block_id);
+            }
+            // At or below LIB the durable logs represent irreversible history.
+            optional<signed_block> block;
+            if (_block_log.is_open()) block = _block_log.read_block_by_num(block_num);
+            if (!block.valid() && _dlt_block_log.is_open()) block = _dlt_block_log.read_block_by_num(block_num);
+            if (block.valid()) return block;
+            // If logs lack this height, use only a known applied ID.
+            const auto *summary = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+            if (!summary || protocol::block_header::num_from_id(summary->block_id) != block_num) return {};
+            return fetch_block_by_id(summary->block_id);
+        }
+
         optional<signed_block> database::fetch_block_by_number(uint32_t block_num) const {
             try {
                 optional<signed_block> b;
@@ -1454,9 +1479,20 @@ namespace graphene { namespace chain {
                 // fetch_block_by_number() skips anchor entries (they carry no
                 // block data), so anything it returns is a real block.
                 auto results = _fork_db.fetch_block_by_number(block_num);
-                if (results.size() == 1) {
+                if (results.size() > 1) {
+                    // Competing blocks at this height. fork_db's head may sit on a
+                    // rival branch (a longer QC-less fork we refused to switch to),
+                    // so walking from it can hand back the rival; callers reading
+                    // head's QC extension or matching a peer's QC certificate need
+                    // the applied chain's block, which the TAPOS buffer names.
+                    const auto *bs = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+                    if (bs && protocol::block_header::num_from_id(bs->block_id) == block_num)
+                        for (const auto &r : results)
+                            if (r->id == bs->block_id) { b = r->data; break; }
+                }
+                if (!b.valid() && results.size() == 1) {
                     b = results[0]->data;
-                } else {
+                } else if (!b.valid()) {
                     // fork_db by-number index returned 0 or >1 results.
                     // Walk the main branch from fork_db head — this
                     // handles the case where set_max_size() pruned the
@@ -1482,6 +1518,47 @@ namespace graphene { namespace chain {
                 }
 
                 return b;
+            } FC_LOG_AND_RETHROW()
+        }
+
+        optional<block_header> database::fetch_block_header_by_number(uint32_t block_num) const {
+            try {
+                /* Same source order as fetch_block_by_number(): fork_db first (recent blocks
+                   that may not be in the block log yet, including a rival branch that the
+                   block_summary disambiguates), and only then the block log. The difference
+                   is the block_log step: it unpacks the header alone instead of the whole
+                   signed_block, because get_block_header() never looks at transactions and
+                   unpacking them is what costs the node ~129 KB per unique block. */
+                optional<block_header> h;
+
+                auto results = _fork_db.fetch_block_by_number(block_num);
+                if (results.size() > 1) {
+                    const auto *bs = find<block_summary_object, by_id>(block_summary_id_type(block_num & 0xFFFF));
+                    if (bs && protocol::block_header::num_from_id(bs->block_id) == block_num)
+                        for (const auto &r : results)
+                            if (r->id == bs->block_id) { h = static_cast<const block_header&>(r->data); break; }
+                }
+                if (!h.valid() && results.size() == 1) {
+                    h = static_cast<const block_header&>(results[0]->data);
+                } else if (!h.valid()) {
+                    if (_fork_db.head()) {
+                        auto fitem = _fork_db.walk_main_branch_to_num(block_num);
+                        if (fitem && !fitem->anchor_only) {
+                            h = static_cast<const block_header&>(fitem->data);
+                        }
+                    }
+                    if (!h.valid()) {
+                        h = _block_log.read_block_header_by_num(block_num);
+                        // DLT rolling block_log fallback keeps the full-block path: the DLT log
+                        // has no header-only read and is bounded to _dlt_block_log_max_blocks.
+                        if (!h.valid()) {
+                            auto full = _dlt_block_log.read_block_by_num(block_num);
+                            if (full.valid()) h = static_cast<const block_header&>(*full);
+                        }
+                    }
+                }
+
+                return h;
             } FC_LOG_AND_RETHROW()
         }
 
@@ -1953,6 +2030,18 @@ namespace graphene { namespace chain {
 
         bool database::_push_block(const signed_block &new_block, uint32_t skip) {
             try {
+                if (!(skip & skip_fork_db)) {
+                    // A retained nonpreferred fork can advance fork_db's head without
+                    // applying a block, so the window last set during LIB update is
+                    // stale. Refresh the same LIB-bounded window before admission,
+                    // including parent seeding, or a valid canonical child can be
+                    // rejected as too old before the linear-extension path runs.
+                    const auto &dpo = get_dynamic_global_properties();
+                    _fork_db.set_max_size(
+                        std::max(dpo.head_block_number,
+                                 _fork_db.head() ? _fork_db.head()->num : uint32_t(0)) -
+                        dpo.last_irreversible_block_num + 1);
+                }
                 // Early rejection: if the block is at or before our head block number
                 // and its ID matches the block on our preferred chain, it's already
                 // applied. This prevents unnecessary fork_db push attempts that would
@@ -2072,7 +2161,9 @@ namespace graphene { namespace chain {
                              ("n", new_block.block_num())("h", head_block_num())("g", gap));
                         return false;
                     }
-                    dlog(DB_LOG_DGRAY "Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})" DB_LOG_RESET,
+                    // Not necessarily unlinkable: the parent may be a known fork_db block
+                    // (a fork extension); only a truly unknown parent lands in _unlinked_index.
+                    dlog(DB_LOG_DGRAY "Block ${n} does not extend head (head=${h}, gap=${g}); deferred to fork_db unlinked index if its parent is unknown" DB_LOG_RESET,
                          ("n", new_block.block_num())("h", head_block_num())("g", gap));
                     expect_unlinkable = true;
                 }
@@ -2144,6 +2235,39 @@ namespace graphene { namespace chain {
                         catch (const fc::exception &) { return 0; }
                     };
 
+                    // An equal TC can certify the same parent for two different
+                    // proposals.  Use the block id as a deterministic final key,
+                    // but only for siblings whose nonzero certificate scores
+                    // have both passed admission.  A QC of the head still wins.
+                    bool equal_tc_tiebreak = false;
+                    if (has_hardfork(CHAIN_HARDFORK_16) &&
+                        !get_dynamic_global_properties().emergency_consensus_active &&
+                        new_head && !new_head->anchor_only &&
+                        new_head->id == head_block_id() &&
+                        new_block.block_num() == new_head->num &&
+                        new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
+                        new_block.previous == new_head->data.previous &&
+                        new_block.id() < new_head->id) {
+                        const auto tc_for_parent = [](const signed_block &b)
+                            -> const protocol::block_header_extensions * {
+                            bool parent_qc = false;
+                            const protocol::block_header_extensions *tc = nullptr;
+                            for (const auto &e : b.extensions)
+                                if (e.which() == 3)
+                                    parent_qc = e.get<protocol::block_qc_certificate>().block_id == b.previous;
+                                else if (e.which() == 4 || e.which() == 6) tc = &e;
+                            return parent_qc ? tc : nullptr;
+                        };
+                        const auto a = admitted_round(new_block);
+                        const auto b = admitted_round(new_head->data);
+                        const auto own = get_block_qc(new_head->num);
+                        const auto *tc_a = tc_for_parent(new_block);
+                        const auto *tc_b = tc_for_parent(new_head->data);
+                        equal_tc_tiebreak = tc_a && tc_b &&
+                            fc::raw::pack(*tc_a) == fc::raw::pack(*tc_b) &&
+                            a != 0 && a == b && !(own && own->block_id == new_head->id);
+                    }
+
                     // HF16: fork_db keeps the first block at a height as its head, so a
                     // same-height sibling never reached the certificate comparison below:
                     // a TC replacement of a QC-less head (Jolteon) was stored and never
@@ -2159,7 +2283,14 @@ namespace graphene { namespace chain {
                         new_head->id != new_block.id() &&
                         new_block.block_num() <= new_head->num &&   // equal, or below a late-QC head
                         new_block.block_num() > get_dynamic_global_properties().last_irreversible_block_num &&
-                        admitted_round(new_block) > block_cert_round(new_head->data)) {
+                        (admitted_round(new_block) > admitted_round(new_head->data) || equal_tc_tiebreak) &&
+                        ![&]() {
+                            // A head certified by its own QC is not given up for a block that
+                            // only carries a later certificate (05.11.2026 stall: TC siblings
+                            // claiming QC r683 displaced a sibling holding QC r688).
+                            const auto own = get_block_qc(new_head->num);
+                            return own && own->block_id == new_head->id;
+                        }()) {
                         auto pushed = _fork_db.fetch_block(new_block.id());
                         if (pushed && !pushed->invalid) {
                             _fork_db.set_head(pushed);
@@ -2208,7 +2339,9 @@ namespace graphene { namespace chain {
                                 cert_cmp = new_r > head_r ? 1 : (new_r < head_r ? -1 : 0);
                             }
                         }
-                        if (cert_cmp != 0) {
+                        if (equal_tc_tiebreak && new_head->id == new_block.id()) {
+                            should_switch = true;
+                        } else if (cert_cmp != 0) {
                             should_switch = cert_cmp > 0;
                         } else if (has_hardfork(CHAIN_HARDFORK_12)) {
                             // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
@@ -2383,6 +2516,11 @@ namespace graphene { namespace chain {
                                     session.push();
                                 }
                                 catch (const wrong_scheduled_validator_exception &e) {
+                                    // Hash order is not evidence of collective producer
+                                    // support. Never weaken slot validation for a tie-break.
+                                    if (equal_tc_tiebreak) {
+                                        except = e;
+                                    } else {
                                     // Schedule mismatch on a branch already chosen
                                     // as heavier by vote-weighted comparison.  The
                                     // branch represents collective consensus of
@@ -2399,6 +2537,7 @@ namespace graphene { namespace chain {
                                         throw; // Recovery must reach the chain/P2P handler with its type intact.
                                     } catch (const fc::exception &e2) {
                                         except = e2;
+                                    }
                                     }
                                 }
                                 catch (const shared_memory_corruption_exception&) {
@@ -3366,8 +3505,8 @@ namespace graphene { namespace chain {
         }
 
         void database::update_bandwidth_reserve_candidates() {
-            // HF16: keep the hourly cadence in wall time (3x more blocks per hour at 1 s).
-            if ((head_block_num() % (CHAIN_BLOCKS_PER_HOUR * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
+            // HF16: CHAIN_BLOCKS_PER_HOUR is already in native 1 s blocks, so no runtime scaling.
+            if ((head_block_num() % CHAIN_BLOCKS_PER_HOUR) != 0) return;
             uint32_t bandwidth_reserve_candidates = 1;
             const auto &gprops = get_dynamic_global_properties();
             const validator_schedule_object &consensus = get_validator_schedule_object();
@@ -3553,8 +3692,8 @@ namespace graphene { namespace chain {
                     }
                 }
             }
-            // HF16: same wall-time cadence as with 3 s slots.
-            if ((head_block_num() % (COMMITTEE_REQUEST_PROCESSING * (CHAIN_BLOCK_INTERVAL / block_interval()))) != 0) return;
+            // HF16: COMMITTEE_REQUEST_PROCESSING is already in native 1 s blocks (10 min cadence).
+            if ((head_block_num() % COMMITTEE_REQUEST_PROCESSING) != 0) return;
             uint32_t committee_payment_request_count = 1;
             const auto &idx4_count = get_index<committee_request_index>().indices().get<by_status>();
             auto itr3 = idx4_count.lower_bound(4);
@@ -6644,11 +6783,11 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
+                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS) {
                                     elog("Emergency consensus: Validator ${w} missed ${missed} blocks since last confirmed ${lc} "
                                          "(threshold=${t}), blanking signing_key",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
-                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())));
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS));
                                     w.signing_key = public_key_type();
                                     push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
@@ -6674,7 +6813,7 @@ namespace graphene { namespace chain {
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * (CHAIN_BLOCK_INTERVAL / block_interval())) {
+                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS) {
                                     elog("Validator ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("k", w.signing_key));
@@ -6744,11 +6883,9 @@ namespace graphene { namespace chain {
                 });
 
                 if (!(skip & skip_undo_history_check)) {
-                    // HF16 (1 s blocks, Q#3108=A): the undo window is counted in blocks, so keep it equal in TIME —
-                    // 3× the blocks, otherwise a LIB stall halts the chain after 2.8 h instead of 8.3 h.
-                    const uint32_t max_undo = has_hardfork(CHAIN_HARDFORK_16)
-                        ? CHAIN_MAX_UNDO_HISTORY * (CHAIN_BLOCK_INTERVAL / CHAIN_BLOCK_INTERVAL_HF16)
-                        : CHAIN_MAX_UNDO_HISTORY;
+                    // HF16 (1 s blocks, Q#3108=A): CHAIN_MAX_UNDO_HISTORY is already in native 1 s blocks
+                    // (same 8.3 h wall-clock window), so no runtime scaling.
+                    const uint32_t max_undo = CHAIN_MAX_UNDO_HISTORY;
                     CHAIN_ASSERT(
                         _dgp.head_block_number - _dgp.last_irreversible_block_num < max_undo,
                         undo_database_exception,
@@ -6784,7 +6921,7 @@ namespace graphene { namespace chain {
                     uint32_t gap_sec = (missed_blocks + 1) * block_interval();
 
                     {
-                        if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
+                        if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC && emergency_entry_allowed()) {
                             // Enter emergency consensus mode
                             //
                             // HF17: remember the schedule that is in force NOW. After this block the
@@ -7587,9 +7724,30 @@ namespace graphene { namespace chain {
         }
 
         void database::open_timeout_vote_journal(const fc::path &data_dir, bool replay_votes) {
-            _timeout_vote_journal.reset();
+            // The cache has TWO owners on a live node: this function (open(), open_from_snapshot()
+            // during a stalled-sync hot reload, resume_*()) and the P2P thread, which appends to it
+            // from push_timeout_vote_impl() while holding _block_votes_mutex. Destroying and
+            // replacing the pointer WITHOUT that mutex let the writer append into a journal whose
+            // destructor was already flushing and fclose()ing the same FILE: a use-after-free of
+            // the object and of its stdio handle. Measured on the 21-validator stand, 20.11.2026:
+            // SIGSEGV inside fclose() from ~timeout_vote_journal, with a FILE pointer that was
+            // already a reused stack address (see knowledge/testnet-node-segfault-20nov.md).
+            //
+            // Lock scope is deliberately narrow. It may NOT cover journal->open()/replay(): the
+            // replay callback re-enters push_timeout_vote(), which takes this same non-recursive
+            // mutex -- holding it across the replay would deadlock the node on every start.
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal.reset();
+            }
             const std::string path = (data_dir / "timeout-votes.log").string();
             std::unique_ptr<timeout_vote_journal> journal(new timeout_vote_journal(path));
+            // Every path below publishes the new journal through this lambda, never by direct
+            // assignment: the same first-use-after-destruction window applies to the swap.
+            auto install = [this](std::unique_ptr<timeout_vote_journal> j) {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal = std::move(j);
+            };
             std::string error;
             if (!journal->open(error)) {
                 // Not fatal: without the cache the node behaves exactly like before this feature.
@@ -7598,11 +7756,18 @@ namespace graphene { namespace chain {
             }
 
             if (!replay_votes) {
-                if (!journal->truncate(error))
-                    elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
-                else
-                    ilog("Timeout vote journal: chain state was wiped, starting with an empty cache ${p}", ("p", path));
-                _timeout_vote_journal = std::move(journal);
+                // A snapshot import wipes the state and rebuilds it -- but from the SAME chain:
+                // the production image ships `plugin = snapshot`, `snapshot-every-n-blocks = 2400`
+                // and auto-recovery takes the latest snapshot first, so THIS is the door a
+                // production node goes through on a restart under a stall (the stand had no
+                // snapshots, hence the reindex door). Nothing in the file is trusted by itself:
+                // the vote digest binds the chain id, and the replay re-checks schedule
+                // membership, the signing key, the signature and the one-hour window, so votes of
+                // another chain are refused. Keep the file and let do_snapshot_load() replay it
+                // once the snapshot (and the dlt replay on top of it) has a head.
+                ilog("Timeout vote journal: snapshot import, keeping ${p} for restore after the load", ("p", path));
+                _timeout_vote_journal_restore_pending = true;
+                install(std::move(journal));
                 return;
             }
 
@@ -7610,12 +7775,28 @@ namespace graphene { namespace chain {
             // file belongs to an instance that used to live in this data dir (genesis rebuild,
             // wiped blockchain/ but kept data dir). Replaying it would seed the pool of a fresh
             // chain with votes its validators never cast here.
+            //
+            // A REINDEX is the exception. The block log is intact and the reopened state is only
+            // being rebuilt from it, so this is the SAME chain: the cached votes describe rounds
+            // inside the same one-hour window and can be judged normally once the replay has a
+            // head. Discarding them here is what made a mid-stall restart lose its cache --
+            // measured 08.11.2026 on the 21-validator stand: "Shared memory corrupted (open
+            // failed)" -> replay -> "chain is at genesis, discarding", 435 cached votes gone.
+            // Keep the file open (no truncate, no replay yet) and let reindex() restore it.
             if (head_block_num() == 0) {
+                if (_block_log.head() && _block_log.head()->block_num() > 0) {
+                    ilog("Timeout vote journal: reindex pending (block log head ${h}), keeping ${p} "
+                         "for restore after the replay", ("h", _block_log.head()->block_num())("p", path));
+                    _timeout_vote_journal_restore_pending = true;
+                    install(std::move(journal));
+                    return;
+                }
                 if (!journal->truncate(error))
                     elog("Timeout vote journal: cannot reset ${p}: ${e}", ("p", path)("e", error));
                 else
                     ilog("Timeout vote journal: chain is at genesis, discarding ${p}", ("p", path));
-                _timeout_vote_journal = std::move(journal);
+                _timeout_vote_journal_restore_pending = false;
+                install(std::move(journal));
                 return;
             }
 
@@ -7627,7 +7808,14 @@ namespace graphene { namespace chain {
 
             timeout_vote_journal::replay_result result;
             bool replay_failed = false;
-            _timeout_vote_journal_replaying = true;
+            // Same mutex as the flag's readers: push_timeout_vote_impl() tests it while appending,
+            // so a plain bool written here was a data race of its own (and the value decides
+            // whether a vote is written to disk). Only the flag moves under the lock -- the replay
+            // below must run without it, see the note at the top of this function.
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal_replaying = true;
+            }
             try {
                 result = journal->replay(
                         [this](uint32_t round, uint32_t high_qc_round, const std::string &validator,
@@ -7657,7 +7845,10 @@ namespace graphene { namespace chain {
                 error = "unknown exception";
                 replay_failed = true;
             }
-            _timeout_vote_journal_replaying = false;
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                _timeout_vote_journal_replaying = false;
+            }
 
             if (!error.empty())
                 wlog("Timeout vote journal: ${e}", ("e", error));
@@ -7667,11 +7858,28 @@ namespace graphene { namespace chain {
                 elog("Timeout vote journal disabled after a failed replay: ${p}", ("p", path));
                 return;
             }
+            // The two halves of "stale or invalid" mean opposite things: aged votes are the
+            // normal compaction of a file that keeps hours of history, while a refusal (key or
+            // window mismatch) and a line cut short by a crash mid-write are both defects.
+            // One total hid that split until 09.11.2026.
             if (result.lines > 0)
-                ilog("Timeout vote journal: restored ${a} of ${l} cached votes from ${p} (${d} stale or invalid)",
-                     ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped));
+                ilog("Timeout vote journal: restored ${a} of ${l} cached votes from ${p} "
+                     "(${d} stale or invalid: ${g} older than the round window, "
+                     "${r} rejected or unparsable)",
+                     ("a", result.accepted)("l", result.lines)("p", path)("d", result.dropped)
+                     ("g", result.aged)("r", result.dropped - result.aged));
 
-            _timeout_vote_journal = std::move(journal);
+            install(std::move(journal));
+        }
+
+        void database::resume_timeout_vote_journal(const fc::path &data_dir) {
+            // Called once a state rebuild has a head: block-log reindex (open() kept the cache
+            // because head was 0 while the block log was intact) or snapshot import
+            // (open_from_snapshot() keeps it for the same reason). Nothing to do on a normal
+            // start -- the journal was already replayed at the end of open().
+            if (!_timeout_vote_journal_restore_pending) return;
+            _timeout_vote_journal_restore_pending = false;
+            open_timeout_vote_journal(data_dir, /*replay_votes=*/true);
         }
 
         void database::apply_equivocation_proofs(const signed_block &b, uint32_t skip) {
@@ -7727,7 +7935,20 @@ namespace graphene { namespace chain {
             // TC carries a newer-round QC; keeping the first (possibly for an equivocating twin) pinned the height.
             auto held = _block_qcs.find(cert.block_num);
             if (held != _block_qcs.end()) {
-                if (held->second.round >= cert.round) return;
+                if (held->second.round > cert.round) return;
+                if (held->second.round == cert.round) {
+                    // Never mix certificates for different blocks in the same round.
+                    // Keep signatures from both sources for this block. Block replay
+                    // may skip signature checks, so do not overwrite an existing vote.
+                    if (held->second.block_id != cert.block_id) return;
+                    for (const auto &sv : cert.signatures) {
+                        auto &sigs = held->second.signatures;
+                        auto existing = std::find_if(sigs.begin(), sigs.end(),
+                            [&](const auto &entry) { return entry.first == sv.first; });
+                        if (existing == sigs.end()) sigs.emplace_back(sv.first, sv.second);
+                    }
+                    return;
+                }
                 _block_qcs.erase(held);
             }
             block_qc qc;
@@ -7844,6 +8065,65 @@ namespace graphene { namespace chain {
             return {};
         }
 
+        database::timeout_cert_window_diagnosis database::diagnose_timeout_cert_window_v2(
+                uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
+                const block_id_type &max_high_qc_block_id, uint32_t max_verified_rounds) const {
+            timeout_cert_window_diagnosis d;
+            const auto &wso = get_validator_schedule_object();
+            d.quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            if (lo_exclusive + 1 >= hi_exclusive) return d;
+            // The round and block-id filters are hash comparisons; only the signature check is
+            // expensive. So walk the WHOLE window counting, and verify signatures only in rounds
+            // that could be the answer, newest first, at most `max_verified_rounds` of them.
+            // Capping the walk itself (the first version did, at 128 rounds) is blind by design:
+            // in the 01.11.2026 stall the surviving votes sat 22 714 rounds below the newest,
+            // because the head had stood still for six hours.
+            bool have_report = false;
+            auto it = _timeout_votes.lower_bound(hi_exclusive);
+            while (it != _timeout_votes.begin()) {
+                --it;
+                if (it->first <= lo_exclusive) break;
+                ++d.rounds_scanned;
+                uint32_t above = 0, other = 0;
+                for (const auto &tv : it->second) {
+                    const auto &entry = tv.second;
+                    if (entry.high_qc_round > max_high_qc_round) ++above;
+                    else if (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id) ++other;
+                }
+                if (it->second.size() <= above + other) continue;  // nothing left to verify here
+                if (d.rounds_verified >= max_verified_rounds) { d.sig_budget_spent = true; continue; }
+                ++d.rounds_verified;
+                uint32_t usable = 0, bad_sig = 0;
+                for (const auto &tv : it->second) {
+                    const auto &entry = tv.second;
+                    if (entry.high_qc_round > max_high_qc_round) continue;
+                    if (entry.high_qc_round == max_high_qc_round && entry.high_qc_block_id != max_high_qc_block_id) continue;
+                    if (!verify_timeout_vote_v2(it->first, entry.high_qc_round, entry.high_qc_block_id, tv.first, entry.signature)) { ++bad_sig; continue; }
+                    ++usable;
+                }
+                if (usable > 0 || !have_report) {
+                    have_report = true;
+                    d.best_round = it->first;
+                    d.usable = usable;
+                    d.above_parent_qc = above;
+                    d.other_block = other;
+                    d.bad_signature = bad_sig;
+                }
+                if (usable > 0) break;   // the search would have taken this round
+            }
+            if (!have_report) {
+                // No round held a vote that could count at all: name the newest round anyway so
+                // the log says where it looked, with zeroed counters.
+                auto newest = _timeout_votes.lower_bound(hi_exclusive);
+                if (newest != _timeout_votes.begin()) {
+                    --newest;
+                    if (newest->first > lo_exclusive) d.best_round = newest->first;
+                }
+            }
+            return d;
+        }
+
         bool database::block_needs_parent_qc(const account_name_type &producer) const {
             if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
             const auto &dgp = get_dynamic_global_properties();
@@ -7865,6 +8145,30 @@ namespace graphene { namespace chain {
             // 21-validator stand, 22.10: head #65 waited for a QC over 100+ slots.
             if (dgp.round_anchor_time != fc::time_point_sec() && dgp.time <= dgp.round_anchor_time) return false;
             return true;
+        }
+
+        bool database::emergency_entry_allowed() const {
+            const uint32_t scheduled = uint32_t(get_validator_schedule_object().num_scheduled_validators
+                                                / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            const uint32_t required = emergency_exit_threshold_effective(scheduled);
+            uint32_t keyed = 0;
+            for (const auto &w : get_index<validator_index>().indices()) {
+                if (w.owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) continue;
+                if (w.signing_key != public_key_type()) ++keyed;
+            }
+            if (keyed >= required) return true;
+            // Said once per height, not once per block: the reason has to be readable, and a
+            // stall applies no blocks anyway, but a quiet refusal is how the 18.11 mode locked
+            // the chain for six hours without anyone naming the arithmetic.
+            const uint32_t head = head_block_num();
+            if (head != _emergency_refusal_head) {
+                _emergency_refusal_head = head;
+                elog("Emergency consensus REFUSED at block #${h}: ${k} validators with a signing key, "
+                     "entry needs ${r} (exit threshold for a schedule of ${s}). Entering would blank every "
+                     "key and leave the chain unable to certify: staying in normal mode.",
+                     ("h", head)("k", keyed)("r", required)("s", scheduled));
+            }
+            return false;
         }
 
         bool database::emergency_unstick_block(const fc::time_point_sec &when) const {
@@ -8314,6 +8618,16 @@ namespace graphene { namespace chain {
             // of #546 in round 649, fork choice took another, then 40+ rebuilds of #546
             // with 15/15 votes each and no QC; chain stuck for 20+ min).
             auto held_qc = _block_qcs.find(block_num);
+            if (held_qc != _block_qcs.end() && held_qc->second.round == round &&
+                held_qc->second.block_id == block_id) {
+                // The certificate may have formed at quorum before later valid
+                // votes arrived. Retain those votes for production-time rechecking.
+                auto &sigs = held_qc->second.signatures;
+                auto existing = std::find_if(sigs.begin(), sigs.end(),
+                    [&](const auto &entry) { return entry.first == validator; });
+                if (existing == sigs.end()) sigs.emplace_back(validator, signature);
+                else existing->second = signature;
+            }
             if (tally.votes.size() >= quorum && (held_qc == _block_qcs.end() || held_qc->second.round < round)) {
                 if (held_qc != _block_qcs.end()) _block_qcs.erase(held_qc);
                 block_qc qc;
@@ -8383,6 +8697,165 @@ namespace graphene { namespace chain {
             auto it = _block_qcs.find(block_num);
             if (it == _block_qcs.end()) return fc::optional<block_qc>();
             return it->second;
+        }
+
+        bool database::switch_head_to_certified_sibling() {
+            // Mainnet 05.11.2026 09:44-10:04Z: two siblings of #85147200 gathered a QC (15 and
+            // 20 votes), but head was a third, QC-less one. Each producer then took the TC path,
+            // dropped head and built one more QC-less #85147200 on the parent; nobody votes for
+            // a block whose TC claims a QC older than one already seen, so the chain stood
+            // until emergency. The certified sibling never became head: the same-height
+            // comparison ranks blocks by the certificate they CARRY, and a TC sibling always
+            // carries a later round than the parent QC of a certified one.
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dpo = get_dynamic_global_properties();
+            if (dpo.emergency_consensus_active) return false;
+            const uint32_t num = dpo.head_block_number;
+            if (num <= dpo.last_irreversible_block_num) return false;
+            const auto qc = get_block_qc(num);
+            if (!qc || qc->block_num != num || qc->block_id == head_block_id()) return false;
+            const auto head_item = _fork_db.fetch_block(head_block_id());
+            const auto sib = _fork_db.fetch_block(qc->block_id);
+            if (!head_item || !sib || sib->invalid || sib->anchor_only) return false;
+            if (sib->num != num || sib->data.previous != head_item->data.previous) return false;
+
+            // Same re-verification as parent_qc_for_next_block: the votes must still pass the
+            // check the next block's consensus validation runs.
+            uint32_t ok = 0;
+            for (const auto &sv : qc->signatures)
+                if (verify_block_vote(qc->block_num, qc->block_id, qc->round, sv.first, sv.second)) ++ok;
+            const auto &wso = get_validator_schedule_object();
+            const uint32_t quorum = block_qc_quorum(uint32_t(wso.num_scheduled_validators) / CHAIN_BLOCK_VALIDATOR_REPEAT);
+            if (ok < quorum) {
+                wlog("Certified sibling ${id} of head #${n} not taken: ${k}/${q} QC signatures re-verified",
+                     ("id", qc->block_id)("n", num)("k", ok)("q", quorum));
+                return false;
+            }
+
+            wlog("Head #${n} ${h} has no QC, sibling ${id} has ${k}/${q} (round ${r}): switching head to it",
+                 ("n", num)("h", head_block_id())("id", qc->block_id)("k", ok)("q", quorum)("r", qc->round));
+            return make_sibling_head(sib, head_item, "Certified sibling");
+        }
+
+        bool database::make_sibling_head(const item_ptr &sib,
+                                         const item_ptr &head_item,
+                                         const char *why) {
+            const uint32_t num = head_item->num;
+            pop_block();
+            if (head_block_id() == head_item->id) {
+                // Same guard as every other pop site: undo() had nothing to revert (committed or
+                // empty undo session, e.g. right after a restart), so the state still holds head
+                // while _fork_db already points at the parent. Applying the sibling on top of
+                // that state fails the header check and the re-apply of head fails the same way,
+                // leaving the two heads apart. Put the fork_db head back and keep waiting.
+                wlog("${w} switch: pop_block() made no progress at head #${n}, keeping head", ("w", why)("n", num));
+                _fork_db.set_head(head_item);
+                return false;
+            }
+            try {
+                auto session = start_undo_session();
+                apply_block(sib->data, skip_nothing);
+                session.push();
+                _fork_db.set_head(sib);
+                return true;
+            } catch (const shared_memory_corruption_exception &) {
+                throw;
+            } catch (const fc::exception &e) {
+                wlog("${w} ${id} failed to apply, restoring head ${h}: ${e}",
+                     ("w", why)("id", sib->id)("h", head_item->id)("e", e.to_string()));
+                _fork_db.remove(sib->id);
+            }
+            auto session = start_undo_session();
+            apply_block(head_item->data, skip_nothing);
+            session.push();
+            _fork_db.set_head(head_item);
+            return false;
+        }
+
+        fc::optional<block_id_type> database::canonical_sibling_id(size_t *out_head_votes,
+                                                                  size_t *out_best_votes) const {
+            const auto &dpo = get_dynamic_global_properties();
+            const uint32_t num = dpo.head_block_number;
+            if (num <= dpo.last_irreversible_block_num) return fc::optional<block_id_type>();
+            const auto head_item = _fork_db.fetch_block(head_block_id());
+            if (!head_item) return fc::optional<block_id_type>();
+            const block_id_type head_id = head_block_id();
+
+            // A certified head is the network's answer, not a candidate. The certified path already
+            // refuses to displace a head that holds its own QC (switch_head_to_certified_sibling,
+            // own-QC guard); without the same guard here a sibling could win the ranking and pull the
+            // node OFF a certified block. That is reachable without any fork: a vote is one per
+            // validator per ROUND, not per height, so a validator may vote for head in one round and
+            // for its sibling in the next, and the sibling then holds more distinct voters than the
+            // block that already has a certificate. Mainnet 18.11.2026 was exactly a storm of rebuilds
+            // at one height, so "more votes than a certified head" is a shape to expect, not a
+            // hypothetical.
+            {
+                const auto own = get_block_qc(num);
+                if (own && own->block_id == head_id) return fc::optional<block_id_type>();
+            }
+
+            // Distinct voters per block at this height, across every round: one validator may
+            // vote at the same height in two rounds (a rebuild), and counting it twice would
+            // rank a block by how often it was retried rather than by how many back it.
+            std::map<block_id_type, std::set<account_name_type>> voters;
+            {
+                std::lock_guard<std::mutex> guard(_block_votes_mutex);
+                for (auto it = _block_vote_tallies.lower_bound(std::make_tuple(num, 0u, block_id_type()));
+                     it != _block_vote_tallies.end() && std::get<0>(it->first) == num; ++it) {
+                    auto &set = voters[std::get<2>(it->first)];
+                    for (const auto &v : it->second.votes) set.insert(v.first);
+                }
+            }
+
+            const auto count_of = [&](const block_id_type &id) -> size_t {
+                const auto it = voters.find(id);
+                return it == voters.end() ? 0 : it->second.size();
+            };
+
+            block_id_type best = head_id;
+            size_t best_count = count_of(head_id);
+            const size_t head_count = best_count;
+            // Only real siblings: same height, same parent. A different parent is a fork
+            // switch, and compare_fork_branches owns that decision.
+            for (const auto &entry : voters) {
+                if (entry.first == head_id) continue;
+                const auto item = _fork_db.fetch_block(entry.first);
+                if (!item || item->invalid || item->anchor_only) continue;
+                if (item->num != num || item->data.previous != head_item->data.previous) continue;
+                const size_t n = entry.second.size();
+                // Strictly more votes than head, or nothing: a move on silence would be a coin
+                // flip between nodes that know different subsets of the siblings.
+                if (n <= head_count) continue;
+                if (best == head_id || n > best_count || (n == best_count && entry.first < best)) {
+                    best = entry.first;
+                    best_count = n;
+                }
+            }
+            if (out_head_votes) *out_head_votes = head_count;
+            if (out_best_votes) *out_best_votes = best_count;
+            if (best == head_id) return fc::optional<block_id_type>();
+            return best;
+        }
+
+        bool database::converge_to_canonical_sibling() {
+            if (!has_hardfork(CHAIN_HARDFORK_16)) return false;
+            const auto &dpo = get_dynamic_global_properties();
+            if (dpo.emergency_consensus_active) return false;
+            size_t head_votes = 0, sib_votes = 0;
+            const auto target = canonical_sibling_id(&head_votes, &sib_votes);
+            if (!target) return false;
+            const uint32_t num = dpo.head_block_number;
+            const auto head_item = _fork_db.fetch_block(head_block_id());
+            const auto sib = _fork_db.fetch_block(*target);
+            if (!head_item || !sib) return false;
+
+            // Say WHY, with numbers: a silent preference is indistinguishable from a bug, and
+            // the 18.11 stall was read for hours as "one vote short" while the real defect was
+            // that no rule moved the heads together.
+            wlog("Head #${n} ${h} is not canonical (${j} votes vs ${k} for ${id}): switching head to it",
+                 ("n", num)("h", head_block_id())("id", *target)("j", head_votes)("k", sib_votes));
+            return make_sibling_head(sib, head_item, "Canonical sibling");
         }
 
         bool database::qc_conflicts_with(const signed_block &b) const {
@@ -8572,10 +9045,19 @@ namespace graphene { namespace chain {
                 // normal LIB computation continues seamlessly.
                 // === END HARDFORK 12 EMERGENCY LIB ===
 
+                // One entry per VALIDATOR, not per slot. The HF12 hybrid schedule hands the
+                // committee every slot nobody holds a key for (13 of 21 on mainnet
+                // 03.11.2026); counted per slot that is 13 of the 21 values this percentile
+                // ranks, so the moment the committee key goes silent LIB freezes at its last
+                // block however many real validators produce, and head walks every node into
+                // the max_undo halt below. The normal schedule has no duplicates, so outside
+                // emergency this is the same list.
                 vector<const validator_object *> wit_objs;
                 wit_objs.reserve(wso.num_scheduled_validators);
                 for (int i = 0; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
-                    wit_objs.push_back(&get_validator(wso.current_shuffled_validators[i]));
+                    const validator_object *w = &get_validator(wso.current_shuffled_validators[i]);
+                    if (std::find(wit_objs.begin(), wit_objs.end(), w) == wit_objs.end())
+                        wit_objs.push_back(w);
                 }
 
                 static_assert(CHAIN_IRREVERSIBLE_THRESHOLD >

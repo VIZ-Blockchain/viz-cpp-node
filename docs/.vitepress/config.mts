@@ -24,6 +24,7 @@ interface SidebarLabels {
   blockProcessing: string;
   forkResolution: string;
   emergencyConsensus: string;
+  qcTcFlow: string;
   hardforks: string;
   p2pNetwork: string;
   overview: string;
@@ -113,6 +114,7 @@ const en: SidebarLabels = {
   blockProcessing: 'Block Processing',
   forkResolution: 'Fork Resolution',
   emergencyConsensus: 'Emergency Consensus',
+  qcTcFlow: 'QC and TC Flow',
   hardforks: 'Hardforks',
   p2pNetwork: 'P2P Network',
   overview: 'Overview',
@@ -202,6 +204,7 @@ const ru: SidebarLabels = {
   blockProcessing: 'Обработка блоков',
   forkResolution: 'Разрешение форков',
   emergencyConsensus: 'Экстренный консенсус',
+  qcTcFlow: 'Поток QC и TC',
   hardforks: 'Хардфорки',
   p2pNetwork: 'Сеть P2P',
   overview: 'Обзор',
@@ -291,6 +294,7 @@ const zhCN: SidebarLabels = {
   blockProcessing: '区块处理',
   forkResolution: '分叉解决',
   emergencyConsensus: '紧急共识',
+  qcTcFlow: 'QC 与 TC 流程',
   hardforks: '硬分叉',
   p2pNetwork: 'P2P 网络',
   overview: '概览',
@@ -410,6 +414,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.blockProcessing, link: p('/consensus/block-processing') },
         { text: t.forkResolution, link: p('/consensus/fork-resolution') },
         { text: t.emergencyConsensus, link: p('/consensus/emergency-consensus') },
+        { text: t.qcTcFlow, link: p('/consensus/qc-tc-flow') },
         { text: t.hardforks, link: p('/consensus/hardforks') },
       ],
     },

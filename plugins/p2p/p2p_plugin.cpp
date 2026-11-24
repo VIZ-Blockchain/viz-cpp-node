@@ -141,31 +141,11 @@ public:
     // ── Block queries ────────────────────────────────────────────
     fc::optional<signed_block> read_block_by_num(uint32_t block_num) const override {
         auto& db = chain.db();
-        // Check dlt_block_log first
-        if (db._dlt_mode) {
-            auto& log = db.get_dlt_block_log();
-            if (log.is_open()) {
-                auto block = log.read_block_by_num(block_num);
-                if (block.valid()) return block;
-            }
-        }
-        // Then check fork_db
-        try {
-            auto& fdb = db.get_fork_db();
-            auto blocks = fdb.fetch_block_by_number(block_num);
-            if (!blocks.empty()) return blocks.front()->data;
-        } catch (...) {}
-        // Non-DLT node (full block_log, e.g. a chain started from genesis): irreversible blocks
-        // leave fork_db and live only in block_log. get_dlt_earliest_block() advertises 0 for
-        // such a node, so peers ask it from #1 - without this fallback it answered with nothing
-        // for #1..LIB and new peers could never link (21-validator QC stand, #6741).
-        if (!db._dlt_mode) {
-            try {
-                auto block = db.get_block_log().read_block_by_num(block_num);
-                if (block.valid()) return block;
-            } catch (...) {}
-        }
-        return {};
+        // Never serve an arbitrary sibling for a reversible height: the next
+        // number may belong to the applied branch, leaving an unlinked batch.
+        return db.with_weak_read_lock([&]() {
+            return db.fetch_applied_block_by_number(block_num);
+        });
     }
 
     bool block_exists_in_log_or_fork_db(uint32_t block_num, block_id_type& id_out) const override {

@@ -56,6 +56,19 @@ namespace graphene {
             optional <signed_block> read_block_by_num(uint32_t block_num) const;
 
             /**
+             * Read only the header of a block, without deserializing its transactions.
+             *
+             * The on-wire layout is positional and the header fields come first
+             * (FC_REFLECT_DERIVED puts base members first), so the stored block can be
+             * unpacked as block_header and the parser stops right after the header. Callers
+             * that only need the header (get_block_header) must use this: unpacking a
+             * whole signed_block costs ~129 KB of heap per unique block, which is not
+             * returned to the OS and is enough to OOM a node that serves block
+             * enumeration.
+             */
+            optional <block_header> read_block_header_by_num(uint32_t block_num) const;
+
+            /**
              * Return offset of block in file, or block_log::npos if it does not exist.
              */
             uint64_t get_block_pos(uint32_t block_num) const;

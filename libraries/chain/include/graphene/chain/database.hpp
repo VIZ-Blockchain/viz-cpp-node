@@ -240,6 +240,15 @@ namespace graphene { namespace chain {
 
             optional<signed_block> fetch_block_by_number(uint32_t num) const;
 
+            /// Same lookup as fetch_block_by_number(), but reads only the header from the
+            /// block log. Serving get_block_header through the full-block path costs
+            /// ~129 KB of heap per unique block (the transactions are unpacked and thrown
+            /// away), which a client enumerating blocks turns into gigabytes of RSS.
+            optional<block_header> fetch_block_header_by_number(uint32_t num) const;
+
+            /// Return only the applied-chain block at this height, or nothing if its identity is unknown.
+            optional<signed_block> fetch_applied_block_by_number(uint32_t num) const;
+
             const signed_transaction get_recent_transaction(const transaction_id_type &trx_id) const;
 
             std::vector<block_id_type> get_block_ids_on_fork(block_id_type head_of_fork) const;
@@ -652,6 +661,16 @@ namespace graphene { namespace chain {
             void open_timeout_vote_journal(const fc::path &data_dir, bool replay_votes);
 
             /**
+             * Replays the timeout-vote journal that a state rebuild (block-log reindex, snapshot
+             * import) kept on disk, once that rebuild has given the node a head to judge the votes
+             * against. A no-op when nothing is pending. Nothing from the file is trusted by itself:
+             * the digest binds the chain id, and every line is re-checked for schedule membership,
+             * key, signature and the one-hour window, so votes of another chain are refused rather
+             * than replayed.
+             */
+            void resume_timeout_vote_journal(const fc::path &data_dir);
+
+            /**
              *  This method validates transactions without adding it to the pending state.
              *  @throw if an error occurs
              *  @return modified skip flags
@@ -750,6 +769,40 @@ namespace graphene { namespace chain {
 
             /// The certificate formed for a height, if any (node-local view).
             fc::optional<block_qc> get_block_qc(uint32_t block_num) const;
+            // A sibling of head at the same height holds a re-verified QC while head holds none:
+            // make the sibling head. Returns true when head changed. Producer-side only.
+            bool switch_head_to_certified_sibling();
+
+            /// Make `sib` (same height as head, same parent) head, restoring head if it fails.
+            ///
+            /// Shared by the certified-sibling rule and the voted-sibling rule on purpose: the
+            /// no-progress guard after pop_block() and the re-apply of the previous head are the
+            /// two places where a copy would drift, and drift there leaves state and _fork_db
+            /// pointing at different blocks. `why` names the rule in the log lines.
+            bool make_sibling_head(const item_ptr &sib,
+                                   const item_ptr &head_item,
+                                   const char *why);
+
+            /// The sibling of head that the network's own votes name as canonical, or empty.
+            ///
+            /// Ranking is (distinct votes across every round at head's height, then the smaller
+            /// block id). Every input is a property of the block or of a signed vote we received,
+            /// so every node computes the same answer without talking to anyone: that is what
+            /// makes it a convergence rule and not a preference. Head itself is a candidate and
+            /// wins ties by its smaller id, so the rule never moves back and forth.
+            fc::optional<block_id_type> canonical_sibling_id(size_t *out_head_votes = nullptr,
+                                                             size_t *out_best_votes = nullptr) const;
+
+            /// Make canonical_sibling_id() head. Returns true when head changed.
+            ///
+            /// Mainnet 18.11.2026: a QC-less head at #86227200 was dropped by the TC path and
+            /// rebuilt on its parent, and every producer did that to ITS OWN head, so each slot
+            /// minted one more sibling (27 of them in 95 s). Nothing then moved the heads
+            /// together: switch_head_to_certified_sibling() needs a QC that can no longer form
+            /// (votes are keyed by round and the round window is an hour), and the same-height
+            /// comparison returns "tie" for equal length. This rule closes that hole without
+            /// needing a vote it cannot get. Producer-side only.
+            bool converge_to_canonical_sibling();
 
             /// True when a QC we hold certifies a block at b's parent height other than
             /// b's parent, at b's height other than b, or at any height above b (a
@@ -880,6 +933,38 @@ namespace graphene { namespace chain {
                     uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
                     const block_id_type &max_high_qc_block_id) const;
 
+            /// Why the search above came back empty. `get_timeout_cert_between_v2` answers only
+            /// "none", so a producer that then refuses to drop a QC-less head cannot say whether
+            /// the votes were missing, claimed a higher high-QC round, or named another block at
+            /// the parent's round. Mainnet 01.11.2026 paid for that: 12 usable votes of 13
+            /// needed, three voters on a divergent tip, and the log said only "no usable TC".
+            struct timeout_cert_window_diagnosis {
+                uint32_t rounds_scanned = 0;    ///< rounds walked inside (lo, hi), newest first
+                uint32_t rounds_verified = 0;   ///< of those, how many had signatures checked
+                uint32_t best_round = 0;        ///< round the counts below belong to
+                uint32_t usable = 0;            ///< votes that passed every check
+                uint32_t quorum = 0;            ///< votes a TC needs
+                uint32_t above_parent_qc = 0;   ///< dropped: high_qc_round > the parent's round
+                uint32_t other_block = 0;       ///< dropped: same round, another block id
+                uint32_t bad_signature = 0;     ///< dropped: signature does not verify
+                bool sig_budget_spent = false;  ///< older rounds were counted but not verified
+            };
+            /// Read-only twin of the search: reports the NEWEST round that had any usable vote
+            /// (that is the one the search would have taken), or the newest round that could
+            /// have counted when no vote is usable anywhere. Never builds a certificate.
+            ///
+            /// Cost model: the round and block-id filters are hash comparisons, the signature
+            /// check is the expensive part. So the WHOLE window is walked for counters and only
+            /// rounds that could answer are signature-checked, newest first, at most
+            /// `max_verified_rounds` of them (`sig_budget_spent` says when that ran out).
+            /// Capping the WALK instead — the first version did, at 128 rounds — silently missed
+            /// the case this exists for: in the 01.11.2026 stall the votes that survived sat
+            /// 22 714 rounds below the newest, because the head had stood still for six hours,
+            /// so a capped walk reported "0 usable, scanned 128 of 22 716" and named nothing.
+            timeout_cert_window_diagnosis diagnose_timeout_cert_window_v2(
+                    uint32_t lo_exclusive, uint32_t hi_exclusive, uint32_t max_high_qc_round,
+                    const block_id_type &max_high_qc_block_id, uint32_t max_verified_rounds = 8) const;
+
             /// HF16: does a block by `producer` on top of head need the parent's QC?
             bool block_needs_parent_qc(const account_name_type &producer) const;
 
@@ -899,6 +984,22 @@ namespace graphene { namespace chain {
             /// of silence, and the pre-unstick build of the node has no such rule at all --
             /// every validator must run the same build (flag day).
             bool emergency_unstick_block(const fc::time_point_sec &when) const;
+
+            /// May this block switch emergency consensus on?
+            ///
+            /// Mainnet 18.11.2026: the chain entered emergency with ten signing keys on the
+            /// schedule. Entry blanks EVERY real validator's key and pads the schedule with
+            /// `committee`, whose key nobody holds, while the quorum for a certificate in
+            /// emergency is measured against the padded 21 slots (15 votes) although at most
+            /// eleven identities exist. The exit threshold is the quorum of the schedule size
+            /// measured on entry, floored at half the maximum (10 of 21), and the keys are
+            /// blanked — so with fewer keys than that, entering is a one-way door: the chain
+            /// can never certify another block, by committee (no key) or by validators (no key).
+            ///
+            /// Refusing keeps the node in the normal mode it can actually leave: QC of seven of
+            /// ten is reachable, emergency's fifteen of eleven is not. The count reads chain
+            /// data only, so every node reaches the same verdict in the same block.
+            bool emergency_entry_allowed() const;
 
             /// HF16: the parent certificate `producer` would put into its next
             /// block, built from the node-local QC of head and re-verified against
@@ -1016,7 +1117,14 @@ namespace graphene { namespace chain {
             /// True while re-feeding the journal through push_timeout_vote: those votes are already
             /// on disk and must not be appended again.
             bool _timeout_vote_journal_replaying = false;
+            /// Set when the journal was opened before a reindex (head 0, block log intact) and its
+            /// votes could not be judged yet: the state is being rebuilt from the same chain, so the
+            /// cache is kept on disk and restored once reindex() has a head to judge it against.
+            bool _timeout_vote_journal_restore_pending = false;
             mutable std::mutex _block_votes_mutex;
+
+            /// Last height at which emergency entry was refused (log once per height).
+            mutable uint32_t _emergency_refusal_head = 0;
             std::atomic<uint32_t> _head_reject_logged{0};
             // Diagnostics: (validator, height) / (validator, claimed QC round) already named
             // in the log, so a fork or a QC we do not hold is reported once, not per vote.

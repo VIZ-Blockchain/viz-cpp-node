@@ -38,6 +38,12 @@ jobs:
       - name: P2P corruption recovery regression (offline)
         run: python3 tests/p2p/test_corruption_recovery.py -v
 
+      - name: P2P reversible range regression (offline)
+        run: python3 tests/p2p/test_reversible_range.py
+
+      - name: P2P equal-height competing head regression (offline)
+        run: python3 tests/p2p/test_equal_height_hello.py
+
       # Every field in FC_REFLECT travels to the snapshot file, but the importer is written
       # by hand; a field added to a struct and forgotten there is dropped silently on
       # restore. Runs first because it takes a second and needs no submodules.
@@ -77,16 +83,29 @@ jobs:
           python3 tests/chain/test_windows_macro_identifiers.py --selftest
           python3 tests/chain/test_qc_gossip_wiring.py
           python3 tests/chain/test_qc_gossip_wiring.py --selftest
+          python3 tests/chain/test_qc_vote_refresh.py
           python3 tests/chain/test_emergency_unstick_wiring.py
           python3 tests/chain/test_emergency_unstick_wiring.py --selftest
+          python3 tests/chain/test_stall_recovery_wiring.py
+          python3 tests/chain/test_stall_recovery_wiring.py --selftest
+          python3 tests/chain/test_hf18_activation_skip_wiring.py
+          python3 tests/chain/test_hf18_activation_skip_wiring.py --selftest
+          python3 tests/chain/test_certified_sibling_wiring.py
+          python3 tests/chain/test_certified_sibling_wiring.py --selftest
           python3 tests/chain/test_emergency_exit_wiring.py
           python3 tests/chain/test_emergency_exit_wiring.py --selftest
           python3 tests/chain/test_state_integrity_wiring.py
           python3 tests/chain/test_state_integrity_wiring.py --selftest
           python3 tests/chain/test_emergency_master_lib_gate.py
           python3 tests/chain/test_emergency_master_lib_gate.py --selftest
+          python3 tests/chain/test_tc_skip_diagnosis_wiring.py
+          python3 tests/chain/test_tc_skip_diagnosis_wiring.py --selftest
           # Guards the registry itself: a Python test in tests/ that no workflow invokes does not
           # run anywhere (CMake knows only the C++ suites) and fails nothing.
+          # The image itself must answer "which commit am I": the label in the Dockerfiles
+          # and the build-arg that feeds it are two halves that both fail silently alone.
+          python3 tests/docker/test_image_lineage_labels.py
+          python3 tests/docker/test_image_lineage_labels.py --selftest
           python3 scripts/check_offline_tests_registered.py
           python3 scripts/check_offline_tests_registered.py --selftest
           python3 tests/consensus_sim/production_safety_offline.py
@@ -98,17 +117,26 @@ jobs:
         # and when that mirror goes quiet apt retries it until the job's 180-minute timeout
         # instead of failing (seen 2026-08-19; the guarded form had been added everywhere
         # except here, the one job that runs on every code PR and every master push).
-        timeout-minutes: 15
+        # 2026-11-19: same fix as the testnet arms below — ForceIPv4 (stalled attempts on a
+        # dead IPv6 route showed up as `Ign:` lines 20-40 s apart) and only the Boost
+        # components the build requests instead of the 154-package meta-package.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
-          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           $apt update
           $apt install -y --no-install-recommends \
-            build-essential ccache cmake libboost-all-dev libssl-dev \
+            build-essential ccache cmake libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
+          $apt install -y --no-install-recommends \
+            libboost-thread-dev libboost-date-time-dev libboost-filesystem-dev \
+            libboost-program-options-dev libboost-serialization-dev libboost-chrono-dev \
+            libboost-test-dev libboost-context-dev libboost-locale-dev libboost-coroutine-dev \
+            libboost-iostreams-dev libboost-regex-dev \
+            || $apt install -y --no-install-recommends libboost-all-dev
 
       # ccache >= 4 keeps its cache in ~/.cache/ccache, not ~/.ccache, so the old path
       # never existed and nothing was ever saved ("Path Validation Error"). Pin the
@@ -178,7 +206,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        validators: [1, 2]
+        validators: [1, 2, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -194,17 +222,32 @@ jobs:
         # Runners fetch packages from azure.archive.ubuntu.com; when that mirror goes quiet
         # apt keeps retrying it and the job hangs for hours instead of failing (seen
         # 2026-08-19). Pin the canonical mirror, bound the wait, and cap the step.
-        timeout-minutes: 15
+        # 2026-11-19: the 15-minute cap was hit three times in a row on the same signature —
+        # a stream of `Ign:` lines 20-40 s apart where the retry then succeeded. Two causes
+        # are addressed here: stalled attempts usually mean a dead IPv6 route (ForceIPv4),
+        # and `libboost-all-dev` pulls 154 packages / 94 MB, most of it OpenCL/HIP/MPI that
+        # this build never links. Only the components CMakeLists actually requests are
+        # installed, with the meta-package kept as a fallback if a component is ever renamed.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list 2>/dev/null || true
-          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           $apt update
           $apt install -y --no-install-recommends \
-            build-essential ccache cmake libboost-all-dev libssl-dev \
+            build-essential ccache cmake libssl-dev \
             libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
             libtool ncurses-dev pkg-config zlib1g-dev
+          # Mirrors the components the build actually requests: BOOST_COMPONENTS in CMakeLists.txt
+          # (thread date_time filesystem program_options serialization chrono unit_test_framework
+          # context locale coroutine), plus iostreams (thirdparty/fc) and regex (cli_wallet).
+          $apt install -y --no-install-recommends \
+            libboost-thread-dev libboost-date-time-dev libboost-filesystem-dev \
+            libboost-program-options-dev libboost-serialization-dev libboost-chrono-dev \
+            libboost-test-dev libboost-context-dev libboost-locale-dev libboost-coroutine-dev \
+            libboost-iostreams-dev libboost-regex-dev \
+            || $apt install -y --no-install-recommends libboost-all-dev
 
       # One cache per matrix arm: CHAIN_TESTNET_VALIDATORS changes compile flags.
       - name: Restore ccache
@@ -219,8 +262,8 @@ jobs:
           set -euo pipefail
           mkdir -p build && cd build
           multi=()
-          if [ "${{ matrix.validators }}" = "2" ]; then
-            multi=(-DCHAIN_TESTNET_VALIDATORS=2)
+          if [ "${{ matrix.validators }}" != "1" ]; then
+            multi=(-DCHAIN_TESTNET_VALIDATORS=${{ matrix.validators }})
           fi
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -250,9 +293,14 @@ jobs:
           set -euo pipefail
           cd build/tests/consensus_sim
           # --min-cases: floor of enabled cases in a testnet build (checked before --filter).
-          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 175)
+          run=(python3 ../../../tests/consensus_sim/run_parallel.py ./consensus_sim_tests -j"$(nproc)" --min-cases 176)
           if [ "${{ matrix.validators }}" = "2" ]; then
-            "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite
+            "${run[@]}" --filter hf16_boundary_suite,hf16_production_safety_suite,validator_committed_state_suite,canonical_progress_suite,canonical_cache_lifecycle_suite
+          elif [ "${{ matrix.validators }}" = "4" ]; then
+            # legal_tc_progress_suite exists only in this arm; certified_sibling_switch_suite is built
+            # in both the 4- and 21-validator arms, but this arm runs only named suites, so it must be
+            # listed here or it would be built and never executed (the 21-validator arm runs all).
+            "${run[@]}" --filter legal_tc_progress_suite,certified_sibling_switch_suite
           else
             "${run[@]}"
           fi

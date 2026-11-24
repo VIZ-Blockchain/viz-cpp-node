@@ -125,9 +125,19 @@ BOOST_AUTO_TEST_CASE(slot_and_round_switch_at_fork_block) {
     BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_HOUR"].as_uint64(), 3600u);
     BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_DAY"].as_uint64(), 86400u);
     BOOST_CHECK_EQUAL(live_config["CHAIN_BLOCKS_PER_YEAR"].as_uint64(), CHAIN_SECONDS_PER_YEAR);
-    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"].as_uint64(), CHAIN_MAX_VALIDATOR_MISSED_BLOCKS * 3);
-    BOOST_CHECK_EQUAL(live_config["CHAIN_DEFAULT_CHAIN_PROPERTIES"].get_object()["inflation_recalc_period"].as_uint64(),
-                      uint64_t(CHAIN_CONSENSUS_INFLATION_RECALC_PERIOD) * 3);
+    // Owner 19.11.2026: nothing is multiplied anywhere — compile-time constants are native 1 s
+    // blocks, so config reports them verbatim (this equals 600 blocks = 10 min at 1 s).
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_VALIDATOR_MISSED_BLOCKS"].as_uint64(), (uint64_t)CHAIN_MAX_VALIDATOR_MISSED_BLOCKS);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH"].as_uint64(), (uint64_t)CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH);
+    BOOST_CHECK_EQUAL(live_config["CHAIN_MAX_UNDO_HISTORY"].as_uint64(), (uint64_t)CHAIN_MAX_UNDO_HISTORY);
+    // The default the operation would store equals what config reports: no hidden x3.
+    const auto live_defaults = live_config["CHAIN_DEFAULT_CHAIN_PROPERTIES"].get_object();
+    BOOST_CHECK_EQUAL(live_defaults["inflation_recalc_period"].as_uint64(),
+                      uint64_t(CHAIN_CONSENSUS_INFLATION_RECALC_PERIOD));
+    BOOST_CHECK_EQUAL(live_defaults["distribution_epoch_length"].as_uint64(),
+                      uint64_t(CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH));
+    BOOST_CHECK_EQUAL(live_defaults["pm_batch_epoch_blocks"].as_uint64(), 60u);
+    BOOST_CHECK_EQUAL(live_defaults["pm_reveal_window_blocks"].as_uint64(), 600u);
 
     // The fork block is the anchor: same round as before the switch, next slot is +1 s.
     const auto& dgp = db.get_dynamic_global_properties();
@@ -275,10 +285,16 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     db.set_hardfork(CHAIN_HARDFORK_16, true);
     // Other block-denominated settings have been migrated too: start from those props.
     props = db.get_validator(gp.initiator_name).props;
-    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3 - 1;
+    // The floor is a wall-clock promise. Both configs keep it as one named value per block
+    // scale, so the invariant to assert is SECONDS, not a macro expression: mainnet
+    // 1200 x 3 s == 3600 x 1 s, testnet 1 x 3 s == 3 x 1 s. A regression that drops or
+    // duplicates the factor breaks this line whatever the config is.
+    BOOST_CHECK_EQUAL(uint64_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH) * CHAIN_BLOCK_INTERVAL,
+                      uint64_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16) * CHAIN_BLOCK_INTERVAL_HF16);
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16 - 1;
     op.props = props;
     BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node)), std::exception);
-    props.distribution_epoch_length += 1;
+    props.distribution_epoch_length = CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16;
     auto overflowing = props;
     overflowing.pm_batch_epoch_blocks = 0x80000000u;
     overflowing.pm_reveal_window_blocks = 0x80000000u;
@@ -293,7 +309,11 @@ BOOST_AUTO_TEST_CASE(minimum_epoch_duration_survives_slot_change) {
     node.push_pending_transaction(sign_ops({op}, gp.initiator_key, node));
     produce(node, gp, when);
     BOOST_CHECK_EQUAL(db.get_validator(gp.initiator_name).props.distribution_epoch_length,
-                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH * 3);
+                      CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16);
+    // Same wall-clock floor as before the fork, now counted in 1 s blocks.
+    BOOST_CHECK_EQUAL(uint64_t(db.get_validator(gp.initiator_name).props.distribution_epoch_length)
+                          * db.block_interval(),
+                      uint64_t(CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH) * CHAIN_BLOCK_INTERVAL);
 }
 
 // Every CI run now exercises real signatures, QC/LIB, timeout votes, late-QC and
@@ -351,6 +371,31 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
         follower.receive_block(*b);
         BOOST_REQUIRE(follower.head_block_id() == b->id());
     };
+#ifdef CHAIN_TESTNET_VALIDATORS
+    // Real database regression: form a one-vote QC, expand the fixture's
+    // schedule, then add another valid vote for the same block and round.
+    // The cached QC must grow even though it already exists. Restore the real
+    // schedule before continuing the rest of this scenario.
+    produce(node, gp, when); relay();
+    auto head_for_refresh = db.fetch_block_by_id(db.head_block_id());
+    BOOST_REQUIRE(head_for_refresh.valid());
+    const auto &schedule_for_refresh = db.get_validator_schedule_object();
+    const auto full_schedule_size = schedule_for_refresh.num_scheduled_validators;
+    const auto first_voter = schedule_for_refresh.current_shuffled_validators[0];
+    const auto second_voter = schedule_for_refresh.current_shuffled_validators[CHAIN_BLOCK_VALIDATOR_REPEAT];
+    BOOST_REQUIRE(first_voter != second_voter);
+    const auto vote_round = db.round_of(head_for_refresh->timestamp);
+    const auto vote_digest = block_vote_digest(db.get_chain_id(), head_for_refresh->block_num(), head_for_refresh->id(), vote_round);
+    db.modify(schedule_for_refresh, [&](validator_schedule_object &s) { s.num_scheduled_validators = CHAIN_BLOCK_VALIDATOR_REPEAT; });
+    BOOST_REQUIRE(db.push_block_vote(head_for_refresh->block_num(), head_for_refresh->id(), vote_round, first_voter,
+                                    key_for(gp, first_voter).sign_compact(vote_digest)));
+    BOOST_REQUIRE(db.get_block_qc(head_for_refresh->block_num()).valid());
+    BOOST_CHECK_EQUAL(db.get_block_qc(head_for_refresh->block_num())->signatures.size(), 1u);
+    db.modify(schedule_for_refresh, [&](validator_schedule_object &s) { s.num_scheduled_validators = full_schedule_size; });
+    BOOST_REQUIRE(db.push_block_vote(head_for_refresh->block_num(), head_for_refresh->id(), vote_round, second_voter,
+                                    key_for(gp, second_voter).sign_compact(vote_digest)));
+    BOOST_CHECK_EQUAL(db.get_block_qc(head_for_refresh->block_num())->signatures.size(), 2u);
+#endif
     for (int i = 0; i < 8; ++i) { produce(node, gp, when); relay(); }
     vote_for_head(node, gp);
     BOOST_REQUIRE(db.get_block_qc(db.head_block_num()).valid());
@@ -391,16 +436,23 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     auto &recovery_db = follower.db();
     vote_for_head(follower, gp);
     const auto &wso = recovery_db.get_validator_schedule_object();
+    const bool hf18 = recovery_db.has_hardfork(CHAIN_HARDFORK_18);
     for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
         const auto v = wso.current_shuffled_validators[i];
-        const auto d = block_timeout_digest(recovery_db.get_chain_id(), timeout_round, high->round);
-        BOOST_CHECK(recovery_db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
+        if (hf18) {
+            const auto d = block_timeout_digest_v2(recovery_db.get_chain_id(), timeout_round, high->round, high->block_id);
+            BOOST_CHECK(recovery_db.push_timeout_vote_v2(timeout_round, high->round, high->block_id, v, key_for(gp, v).sign_compact(d)));
+        } else {
+            const auto d = block_timeout_digest(recovery_db.get_chain_id(), timeout_round, high->round);
+            BOOST_CHECK(recovery_db.push_timeout_vote(timeout_round, high->round, v, key_for(gp, v).sign_compact(d)));
+        }
     }
     const auto tc = recovery_db.get_timeout_cert(timeout_round);
-    BOOST_REQUIRE(tc.valid());
+    const auto tc_v2 = recovery_db.get_timeout_cert_v2(timeout_round);
+    BOOST_REQUIRE(hf18 ? tc_v2.valid() : tc.valid());
     when += fc::seconds(recovery_db.block_interval());
     const auto v = recovery_db.get_scheduled_validator(recovery_db.get_slot_at_time(when));
-    const auto recovered = recovery_db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc);
+    const auto recovered = recovery_db.generate_block(when, v, key_for(gp, v), database::skip_nothing, tc, {}, tc_v2);
     db.push_block(recovered, database::skip_nothing);
     BOOST_REQUIRE(node.head_block_id() == recovered.id());
     BOOST_REQUIRE(follower.head_block_id() == recovered.id());
@@ -413,11 +465,19 @@ BOOST_AUTO_TEST_CASE(qc_tc_late_qc_and_equivocation) {
     const auto missed = db.get_validator(voter).total_missed;
     // Preserve the old one-hour wall-time vote window after changing slot length.
     const uint32_t historical = round - 2000;
-    const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
-    BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
     const uint32_t expired = round - 3601;
-    const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
-    BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
+    if (db.has_hardfork(CHAIN_HARDFORK_18)) {
+        const block_id_type no_qc;
+        const auto historic_digest = block_timeout_digest_v2(db.get_chain_id(), historical, 0, no_qc);
+        BOOST_CHECK(db.push_timeout_vote_v2(historical, 0, no_qc, voter, key_for(gp, voter).sign_compact(historic_digest)));
+        const auto expired_digest = block_timeout_digest_v2(db.get_chain_id(), expired, 0, no_qc);
+        BOOST_CHECK(!db.push_timeout_vote_v2(expired, 0, no_qc, voter, key_for(gp, voter).sign_compact(expired_digest)));
+    } else {
+        const auto historic_digest = block_timeout_digest(db.get_chain_id(), historical, 0);
+        BOOST_CHECK(db.push_timeout_vote(historical, 0, voter, key_for(gp, voter).sign_compact(historic_digest)));
+        const auto expired_digest = block_timeout_digest(db.get_chain_id(), expired, 0);
+        BOOST_CHECK(!db.push_timeout_vote(expired, 0, voter, key_for(gp, voter).sign_compact(expired_digest)));
+    }
 
     signed_block twin = head;
     twin.timestamp += fc::seconds(1);
@@ -487,7 +547,8 @@ void tc_window_scenario() {
     // that stops at the first (or the exact) certificate still stalls: the window search
     // must skip it and carry the newest usable one.
     auto gp = make_genesis_params(0x7C3E7u, 1);
-    fc::time_point_sec start(fc::time_point::now());
+    // This scenario tests the pre-HF18 wire form explicitly; do not let wall-clock activation skip it.
+    fc::time_point_sec start(CHAIN_HARDFORK_18_TIME - 86400);
     if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
     start += fc::seconds(CHAIN_BLOCK_INTERVAL);
     virtual_clock clk(start);
@@ -628,7 +689,8 @@ BOOST_AUTO_TEST_CASE(stalled_chain_takes_the_newest_usable_tc_in_the_window) {
 BOOST_AUTO_TEST_CASE(hf18_timeout_vote_names_its_block) {
     try {
         auto gp = make_genesis_params(0xBF718u, 1);
-        fc::time_point_sec start(fc::time_point::now());
+        // This scenario tests the pre-HF18 wire form explicitly; do not let wall-clock activation skip it.
+        fc::time_point_sec start(CHAIN_HARDFORK_18_TIME - 86400);
         if (fc::time_point_sec(CHAIN_HARDFORK_14_TIME) > start) start = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
         start += fc::seconds(CHAIN_BLOCK_INTERVAL);
         virtual_clock clk(start);
@@ -863,16 +925,49 @@ BOOST_AUTO_TEST_CASE(certified_head_is_not_left_for_uncertified_branch) {
     BOOST_REQUIRE_EQUAL(follower.db().get_fork_db().head()->num, base + 2);      // rival branch is fork_db's longest
     BOOST_CHECK_EQUAL(follower.head_block_num(), base + 1);
     BOOST_CHECK(follower.head_block_id() == certified_head.id());
+    // By number too: with the rival at base+1 in fork_db and fork_db's head on the rival
+    // branch, the lookup must still answer with the applied block (QC cert matching,
+    // head extension reads in the validator all go through it).
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 1)->id() == certified_head.id());
+
+    // The callers that read "head" through that lookup:
+    // 1. grandparent_qc_for_next_block() reads head's parent-QC extension. The rival at
+    //    base+1 carries none, so the old lookup made the next block go out without one.
+    const auto gp_qc = follower.db().grandparent_qc_for_next_block(
+        next_validator(follower), follower.db().round_of(certified_head.timestamp) + 1);
+    BOOST_CHECK(gp_qc.valid());
+    if (gp_qc) {
+        BOOST_CHECK(gp_qc->block_id == certified_head.previous);
+        BOOST_CHECK_EQUAL(gp_qc->block_num, base);
+    }
+
+    // 2. accept_block_qc_certificate() matches the peer's certificate against the block at
+    //    that height: with the rival returned, QC(base+1) for our own head was refused.
+    produce(source, gp, when);                                        // base+2 carries QC(base+1)
+    const auto next_certified = source.canonical_blocks_from(base + 2).front();
+    const graphene::protocol::block_qc_certificate* peer_qc = nullptr;
+    for (const auto& e : next_certified.extensions)
+        if (e.which() == 3) peer_qc = &e.get<graphene::protocol::block_qc_certificate>();
+    BOOST_REQUIRE(peer_qc && peer_qc->block_id == certified_head.id());
+    BOOST_CHECK(!follower.db().get_block_qc(base + 1));
+    BOOST_CHECK(follower.db().accept_block_qc_certificate(*peer_qc));
+    BOOST_REQUIRE(follower.db().get_block_qc(base + 1));
+    BOOST_CHECK(follower.db().get_block_qc(base + 1)->block_id == certified_head.id());
 
     // Vote rule: once the follower holds QC(base+1) for the certified head, both unstick
     // blocks conflict with it; the certified chain's own next block does not.
-    vote_for_head(follower, gp);
-    BOOST_REQUIRE(follower.db().get_block_qc(base + 1));
+    vote_for_head(follower, gp);                                       // no-op: QC already held
     BOOST_CHECK(follower.db().qc_conflicts_with(unstick[0]));   // sibling of the certified block
     BOOST_CHECK(follower.db().qc_conflicts_with(unstick[1]));   // parent is that sibling
-    produce(source, gp, when);
-    const auto next_certified = source.canonical_blocks_from(base + 2).front();
     BOOST_CHECK(!follower.db().qc_conflicts_with(next_certified));
+
+    // Applying base+2 moves fork_db's head onto our branch. The rival at base+1 is still
+    // below head, and the lookup there must keep answering with the applied block.
+    BOOST_REQUIRE(follower.receive_block(next_certified) == block_outcome::accepted_extends_head);
+    BOOST_REQUIRE_EQUAL(follower.head_block_num(), base + 2);
+    BOOST_CHECK(follower.db().get_fork_db().is_known_block(unstick[0].id()));
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 1)->id() == certified_head.id());
+    BOOST_CHECK(follower.db().fetch_block_by_number(base + 2)->id() == next_certified.id());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

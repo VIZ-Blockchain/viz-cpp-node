@@ -466,7 +466,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(inflation_ratio_committee_vs_reward_fund <= CHAIN_100_PERCENT);
                 FC_ASSERT(inflation_recalc_period >= 0);
                 // HF16 (#6737): one year is 3x more blocks at 1 s; the pre-HF16 bound is kept by the evaluator.
-                FC_ASSERT(inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR * 3);
+                FC_ASSERT(inflation_recalc_period <= CHAIN_BLOCKS_PER_YEAR_HF16);
             }
 
             chain_properties_hf4& operator=(const chain_properties_init& src) {
@@ -499,7 +499,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(validator_miss_penalty_percent >= 0);
                 FC_ASSERT(validator_miss_penalty_percent <= CHAIN_100_PERCENT);
                 FC_ASSERT(validator_miss_penalty_duration >= 0);
-                FC_ASSERT(validator_miss_penalty_duration <= (CHAIN_BLOCKS_PER_YEAR * CHAIN_BLOCK_INTERVAL));
+                FC_ASSERT(validator_miss_penalty_duration <= CHAIN_SECONDS_PER_YEAR);
             }
 
             chain_properties_hf6& operator=(const chain_properties_init& src) {
@@ -591,7 +591,11 @@ namespace graphene { namespace protocol {
              *  Consensus - Period in blocks between delegator reward distributions.
              *  Each validator accumulates block rewards during this epoch and
              *  distributes the delegator share proportionally at epoch end.
-             *  Allowed range: [CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, CHAIN_BLOCKS_PER_YEAR].
+             *  Allowed range: upper bound CHAIN_BLOCKS_PER_YEAR_HF16 (one year in live 1 s blocks,
+             *  the same number as the pre-HF16 year in 3 s blocks). Lower bound is TWO named values
+             *  because it is a wall-clock promise: this validate() enforces the pre-fork value
+             *  CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, and the post-fork check in the evaluator
+             *  enforces CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH_HF16 (same time, live blocks).
              */
             uint32_t distribution_epoch_length = CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH;
 
@@ -600,7 +604,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH,
                     "distribution_epoch_length must be at least ${min} blocks",
                     ("min", CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH));
-                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR * 3), // HF16: see evaluator
+                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR_HF16),
                     "distribution_epoch_length must not exceed one year in blocks");
             }
 
@@ -661,8 +665,8 @@ namespace graphene { namespace protocol {
             uint16_t pm_no_contest_penalty_percent = 5000;   ///< bp of dispute fee (50%)
             uint32_t pm_dispute_reward_multiplier = 30000;   ///< bp multiplier (10000=1x; default 3x)
             // Batch / commit-reveal
-            uint32_t pm_batch_epoch_blocks        = 20;      ///< ~60 s
-            uint32_t pm_reveal_window_blocks      = 200;     ///< ~10 min liveness
+            uint32_t pm_batch_epoch_blocks        = 60;      ///< ~60 s in native 1 s blocks (was 20 at 3 s)
+            uint32_t pm_reveal_window_blocks      = 600;     ///< ~10 min liveness in native 1 s blocks (was 200 at 3 s)
             uint16_t pm_commit_no_reveal_penalty_percent = 2000; ///< bp (20%) → winners' pool
             asset    pm_min_batch_bet             = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
             bool     pm_commit_reveal_enabled     = true;    ///< kill-switch (median-voted)

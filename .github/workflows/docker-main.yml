@@ -73,12 +73,29 @@ jobs:
       # build_testnet via needs:) can reuse the ccache populated by the
       # testnet build. The two images differ only in CMake flags so most
       # compiled object files have identical ccache hashes.
+      # Release version for the image label, read from the single source of truth. An empty value
+      # fails the job here rather than baking an empty (and therefore lying) label.
+      - name: Read vizd version
+        id: vizdver
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^#define CHAIN_VERSION *(version(\(.*\))).*/\1/p' \
+                libraries/protocol/include/graphene/protocol/config.hpp | tr -d ' ' | tr ',' '.')
+          test -n "$v" || { echo "cannot read CHAIN_VERSION"; exit 1; }
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet
           push: true
           tags: vizblockchain/vizd:testnet
+          # Lineage, readable from the image itself: `docker inspect` answers "which commit is
+          # this" instead of leaving it to be inferred from tags, digests or strings in the binary.
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
+            VIZD_VERSION=${{ steps.vizdver.outputs.value }}
           cache-from: type=gha,scope=main
           cache-to:   type=gha,scope=main,mode=max
 
@@ -133,11 +150,26 @@ jobs:
             }
           skip-extraction: ${{ steps.cache-mounts.outputs.cache-hit }}
 
+      # Release version for the image label, read from the single source of truth. An empty value
+      # fails the job here rather than baking an empty (and therefore lying) label.
+      - name: Read vizd version
+        id: vizdver
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^#define CHAIN_VERSION *(version(\(.*\))).*/\1/p' \
+                libraries/protocol/include/graphene/protocol/config.hpp | tr -d ' ' | tr ',' '.')
+          test -n "$v" || { echo "cannot read CHAIN_VERSION"; exit 1; }
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-production
           push: true
           tags: vizblockchain/vizd:latest
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
+            VIZD_VERSION=${{ steps.vizdver.outputs.value }}
           cache-from: type=gha,scope=main
           cache-to:   type=gha,scope=main,mode=max
