@@ -19,10 +19,11 @@ struct hooked_atomic {
  void store(uint32_t v,std::memory_order order){value.store(v,order);}
 };
 struct dlt_p2p_node {
- struct peer_lib_view {uint32_t peers_above_our_lib=0,best_peer_lib=0,our_lib=0;bool consistent=true;};
+ struct peer_lib_view {uint32_t peers_above_our_lib=0,best_peer_lib=0,our_lib=0;bool consistent=true;uint32_t witnesses=0;};
  delegate* _delegate=nullptr;
  std::map<int,state> _peer_states;std::set<std::string> _trusted_peers;std::vector<std::string> _seed_nodes;
  std::atomic<uint32_t> _cached_our_lib{0},_best_peer_lib{0};hooked_atomic _peers_above_our_lib;
+ std::atomic<uint32_t> _lib_witnesses{0};
  std::atomic<uint64_t> _peer_lib_version{0};
  peer_lib_view get_peer_lib_view()const noexcept;
  void refresh_peer_lib_cache();
