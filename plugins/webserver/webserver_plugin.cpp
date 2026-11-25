@@ -803,11 +803,25 @@ namespace graphene {
                                          ("g", grow_kb / 1024)("w", heap_trim_peak_window)
                                          ("r", static_cast<int64_t>(before_kb - after_kb) / 1024));
                                 }
-                                // Empty events are NOT logged. A trigger that fires right after the
-                                // timer has already returned everything has nothing to report, and the
-                                // silence is the report: the timer line is three seconds above this one.
-                                // Measured on the stand 2026-11-24: of two idle events in seven minutes
-                                // one was exactly this case, and it read as noise in the operator's log.
+                                else {
+                                    // AUDIT LINE FOR EMPTY EVENTS. Until now an empty event was pure
+                                    // silence, and silence is ambiguous: "the trigger never fired" and
+                                    // "it fired and glibc gave nothing back" looked identical from
+                                    // outside. Measured on production 2026-11-25: a 105 MiB rise at
+                                    // 03:49Z produced no event and no release in the series, and
+                                    // neither the log nor the series could say which of the two it was.
+                                    // Kept at debug level on purpose: an armed trigger that cannot
+                                    // return anything would otherwise write a line every min_gap
+                                    // seconds, which is the very noise the silence was avoiding.
+                                    // Enabled by config.ini key `logger.default.level = debug` (there is no CLI flag for it:
+                                    // node_admin exposes the same key as logger.default); put it at the TOP of
+                                    // config.ini, since a key appended after the last section belongs to that
+                                    // section instead.
+                                    dlog("heap trim: after peak attempt returned nothing: resident ${a} MiB above floor ${fl} MiB, growth ${g} MiB in ${w} s, returned ${r} MiB",
+                                         ("a", above_kb / 1024)("fl", static_cast<int64_t>(floor_kb) / 1024)
+                                         ("g", grow_kb / 1024)("w", heap_trim_peak_window)
+                                         ("r", static_cast<int64_t>(before_kb - after_kb) / 1024));
+                                }
                                 // The floor still moves either way - that part is not optional.
                             }
                         }
