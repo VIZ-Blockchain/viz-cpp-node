@@ -7959,6 +7959,20 @@ namespace graphene { namespace chain {
             _block_qcs.emplace(cert.block_num, std::move(qc));
         }
 
+        void database::prune_block_qc_cache(uint32_t lib) {
+            // Same window as the vote path (push_block_vote): a certificate just
+            // below LIB may still be the parent QC a new header carries, older ones
+            // can never raise LIB again. During a DLT replay no votes arrive, so
+            // without this the cache grows by one entry per applied block and
+            // highest_qc_on_main_branch() walks it for every block (80 000 blocks:
+            // 199 s, versus seconds once the cache is trimmed).
+            static constexpr uint32_t KEEP_BELOW_LIB = 64;
+            std::lock_guard<std::mutex> guard(_block_votes_mutex);
+            for (auto it = _block_qcs.begin();
+                 it != _block_qcs.end() && it->first + KEEP_BELOW_LIB <= lib; )
+                it = _block_qcs.erase(it);
+        }
+
         bool database::accept_block_qc_certificate(const protocol::block_qc_certificate &cert,
                                                    protocol::block_qc_certificate *verified_out) {
             // No HF16, no parent QCs at all: a peer must not be able to plant one.
@@ -8645,36 +8659,60 @@ namespace graphene { namespace chain {
         }
 
         uint32_t database::highest_qc_on_main_branch(uint32_t max_num) const {
-            std::vector<std::pair<uint32_t, block_id_type>> certified;
-            {
+            // Candidates are taken one height at a time from the top of the cache.
+            // Copying the whole cache first made every applied block cost O(cache):
+            // replaying 80 000 blocks took 199 s with 91% of the CPU in the copy's
+            // Rb-tree walk. The answer, if any, is the first pair that passes below.
+            const auto take_next = [this](uint64_t exclusive_upper) -> fc::optional<std::pair<uint32_t, block_id_type>> {
                 std::lock_guard<std::mutex> guard(_block_votes_mutex);
-                for (auto it = _block_qcs.rbegin(); it != _block_qcs.rend(); ++it) {
-                    if (it->first <= max_num) certified.emplace_back(it->first, it->second.block_id);
-                }
-            }
+                auto it = _block_qcs.lower_bound(uint32_t(exclusive_upper));
+                if (it == _block_qcs.begin()) return fc::optional<std::pair<uint32_t, block_id_type>>();
+                --it;
+                return fc::optional<std::pair<uint32_t, block_id_type>>(std::make_pair(it->first, it->second.block_id));
+            };
+            fc::optional<std::pair<uint32_t, block_id_type>> child;
             // 2-chain rule: a certified block is final only when its child at the
             // next height is certified too, both on our branch. One QC is not
             // enough once voting has rounds: a validator that voted for X need
             // not see X's QC, may vote for Y in a later round, and a second QC
             // at the same height becomes possible. Requiring a certified child
             // (whose header carries X's QC) closes that window. Highest first.
-            for (size_t i = 0; i + 1 < certified.size(); ++i) {
-                const auto &child = certified[i];
-                const auto &parent = certified[i + 1];
-                if (child.first != parent.first + 1) continue;
-                if (find_block_id_for_num(child.first) != child.second ||
-                    find_block_id_for_num(parent.first) != parent.second) continue;
+            uint64_t cursor = uint64_t(max_num) + 1;
+            while (true) {
+                const auto next = take_next(cursor);
+                if (!next.valid()) return 0;
+                cursor = next->first;
+                if (!child.valid()) {
+                    child = next;
+                    continue;
+                }
+                const auto &parent = *next;
+                if (child->first != parent.first + 1) {
+                    child = next;
+                    continue;
+                }
+                if (find_block_id_for_num(child->first) != child->second ||
+                    find_block_id_for_num(parent.first) != parent.second) {
+                    child = next;
+                    continue;
+                }
                 // Jolteon commit rule: the two certified blocks must also be in
                 // consecutive ROUNDS (round = slot). A child after skipped slots
                 // was built on a timeout certificate, and a parent certified
                 // before that timeout is not yet safe to commit.
                 const auto pb = fetch_block_by_id(parent.second);
-                const auto cb = fetch_block_by_id(child.second);
-                if (!pb || !cb) continue;
+                const auto cb = fetch_block_by_id(child->second);
+                if (!pb || !cb) {
+                    child = next;
+                    continue;
+                }
                 // Compare rounds, not timestamps: the slot is 1 s after HF16, and a
                 // compile-time 3 s step never matched there, so QC-LIB was always 0
                 // and LIB fell back to post-validation (stand: lag exactly 14 blocks).
-                if (round_of(cb->timestamp) != round_of(pb->timestamp) + 1) continue;
+                if (round_of(cb->timestamp) != round_of(pb->timestamp) + 1) {
+                    child = next;
+                    continue;
+                }
                 // The late-QC exception permits a child justified by its grandparent.
                 // A locally collected QC for the parent does not prove that the
                 // child's quorum learned it before voting. Require that causal link
@@ -8686,10 +8724,12 @@ namespace graphene { namespace chain {
                     if (qc.block_num == parent.first && qc.block_id == parent.second &&
                         qc.round == round_of(pb->timestamp)) carries_parent_qc = true;
                 }
-                if (!carries_parent_qc) continue;
+                if (!carries_parent_qc) {
+                    child = next;
+                    continue;
+                }
                 return parent.first;
             }
-            return 0;
         }
 
         fc::optional<database::block_qc> database::get_block_qc(uint32_t block_num) const {
@@ -9131,6 +9171,11 @@ namespace graphene { namespace chain {
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: committing LIB=${lib}", ("lib", dpo.last_irreversible_block_num));
                 commit(dpo.last_irreversible_block_num);
+
+                // Replay applies a block log without live votes, so the vote path
+                // never trims the QC cache; keeping every replayed height made each
+                // subsequent block pay for the whole cache (quadratic replay).
+                prune_block_qc_cache(dpo.last_irreversible_block_num);
 
                 if (!(skip & skip_block_log) && !_dlt_mode) {
                     // output to block log based on new last irreverisible block num
