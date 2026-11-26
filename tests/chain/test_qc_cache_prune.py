@@ -5,36 +5,46 @@ Replay applies blocks without live votes, so push_block_vote() never trims
 _block_qcs. Without a prune the cache grows by one entry per replayed block and
 highest_qc_on_main_branch() walks all of it for every block: an 80 000-block
 replay took 198.7 s instead of 4.5 s (issue #13846, perf: 91% CPU there).
+
+Plain run checks the tree in this repository. --selftest feeds mutated copies of
+the same checks and requires every mutation to be reported.
 """
-from pathlib import Path
 import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
-root = Path(__file__).resolve().parents[2]
-source = (root / 'libraries/chain/database.cpp').read_text()
-header = (root / 'libraries/chain/include/graphene/chain/database.hpp').read_text()
+ROOT = Path(__file__).resolve().parents[2]
+CALL = 'prune_block_qc_cache(dpo.last_irreversible_block_num);'
+DECL = 'void prune_block_qc_cache(uint32_t lib);'
 
-# 1. The prune is declared and wired into LIB advancement, after commit().
-assert 'void prune_block_qc_cache(uint32_t lib);' in header, \
-    'prune_block_qc_cache is not declared in database.hpp'
-lib_block = source[source.index('void database::update_last_irreversible_block'):]
-call = 'prune_block_qc_cache(dpo.last_irreversible_block_num);'
-assert call in lib_block, 'update_last_irreversible_block does not prune the QC cache'
-before_call = lib_block[:lib_block.index(call)]
-assert before_call.rindex('commit(dpo.last_irreversible_block_num)') < len(before_call), \
-    'the cache must be pruned after LIB is committed'
 
-# 2. highest_qc_on_main_branch must not copy the whole cache up front.
-start = source.index('uint32_t database::highest_qc_on_main_branch')
-body = source[start:source.index('\n        }', start)]
-assert '_block_qcs.rbegin()' not in body, \
-    'full reverse copy of _block_qcs is back (O(cache) per applied block)'
+def wiring_problems(source, header):
+    problems = []
+    if DECL not in header:
+        problems.append('prune_block_qc_cache is not declared in database.hpp')
+    lib_block = source[source.index('void database::update_last_irreversible_block'):]
+    if CALL not in lib_block:
+        problems.append('update_last_irreversible_block does not prune the QC cache')
+    else:
+        before = lib_block[:lib_block.index(CALL)]
+        if 'commit(dpo.last_irreversible_block_num)' not in before:
+            problems.append('the cache must be pruned after LIB is committed')
+    start = source.index('uint32_t database::highest_qc_on_main_branch')
+    body = source[start:source.index('\n        }', start)]
+    if '_block_qcs.rbegin()' in body:
+        problems.append('full reverse copy of _block_qcs is back (O(cache) per applied block)')
+    return problems
 
-# 3. Behaviour of the prune itself, executed from the real source text.
-pstart = source.index('void database::prune_block_qc_cache')
-pend = source.index('\n        }', pstart)
-prune_body = source[source.index('{', pstart) + 1:pend]
-fixture = r'''
+
+def prune_body(source):
+    pstart = source.index('void database::prune_block_qc_cache')
+    pend = source.index('\n        }', pstart)
+    return source[source.index('{', pstart) + 1:pend]
+
+
+def behaviour_problems(body):
+    fixture = r'''
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -60,12 +70,69 @@ int main() {
     assert(d._block_qcs.empty());
     return 0;
 }
-'''
-fixture = fixture.replace('// @BODY@', prune_body)
-with tempfile.TemporaryDirectory() as td:
-    src = Path(td) / 'prune_fixture.cpp'
-    exe = Path(td) / 'prune_fixture'
-    src.write_text(fixture)
-    subprocess.run(['g++', '-std=c++17', '-O1', '-o', str(exe), str(src)], check=True)
-    subprocess.run([str(exe)], check=True)
-print('ok: QC-cache prune wiring and behaviour')
+'''.replace('// @BODY@', body)
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / 'prune_fixture.cpp'
+        exe = Path(td) / 'prune_fixture'
+        src.write_text(fixture)
+        try:
+            subprocess.run(['g++', '-std=c++17', '-O1', '-o', str(exe), str(src)],
+                           check=True, capture_output=True)
+            subprocess.run([str(exe)], check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or b'').decode(errors='replace').strip().splitlines()
+            return ['prune window/behaviour fixture failed: ' +
+                    (detail[-1] if detail else 'exit %d' % exc.returncode)]
+    return []
+
+
+def check(source, header):
+    problems = wiring_problems(source, header)
+    if not problems:
+        problems = behaviour_problems(prune_body(source))
+    return problems
+
+
+def selftest():
+    source = (ROOT / 'libraries/chain/database.cpp').read_text()
+    header = (ROOT / 'libraries/chain/include/graphene/chain/database.hpp').read_text()
+    arms = {
+        'baseline is clean': ([source, header], False),
+        'prune call removed': ([source.replace('                ' + CALL + '\n', '', 1), header], True),
+        'declaration removed': ([source, header.replace(DECL, '', 1)], True),
+        'prune window widened to 0': ([source.replace('KEEP_BELOW_LIB = 64', 'KEEP_BELOW_LIB = 0', 1), header], True),
+        'full reverse copy restored': ([source.replace(
+            'uint32_t database::highest_qc_on_main_branch(uint32_t max_num) const {',
+            'uint32_t database::highest_qc_on_main_branch(uint32_t max_num) const {\n'
+            '            for (auto it = _block_qcs.rbegin(); it != _block_qcs.rend(); ++it) { (void)it; }', 1), header], True),
+    }
+    bad = 0
+    for name, ((src, hdr), expect_red) in arms.items():
+        try:
+            red = bool(check(src, hdr))
+        except Exception:
+            red = True
+        if red != expect_red:
+            print('SELFTEST FAIL: %s -> %s (expected %s)' %
+                  (name, 'red' if red else 'green', 'red' if expect_red else 'green'))
+            bad += 1
+    if bad:
+        raise SystemExit(1)
+    print('selftest: %d arms pass' % len(arms))
+
+
+def main():
+    if '--selftest' in sys.argv[1:]:
+        selftest()
+        return
+    problems = check((ROOT / 'libraries/chain/database.cpp').read_text(),
+                     (ROOT / 'libraries/chain/include/graphene/chain/database.hpp').read_text())
+    if problems:
+        for p in problems:
+            print('FAIL:', p)
+        raise SystemExit(1)
+    print('ok: QC-cache prune wiring and behaviour')
+
+
+if __name__ == '__main__':
+    main()
