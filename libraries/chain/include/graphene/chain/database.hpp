@@ -889,6 +889,12 @@ namespace graphene { namespace chain {
             /// (LIB, and a producer building past a QC-less child of it).
             void remember_block_qc(const protocol::block_qc_certificate &cert);
 
+            /// Drop cached block QCs that can no longer raise LIB nor serve as the
+            /// parent QC of a future header (same window the vote path keeps).
+            /// Replay applies blocks without live votes, so nothing else trims the
+            /// cache and LIB advancement would cost O(cache) per block.
+            void prune_block_qc_cache(uint32_t lib);
+
             /// Accept a QC that came over P2P from another node instead of from our own
             /// tally. Everything is re-checked locally: the certified block must be on our
             /// chain, the round must be that block's slot, and every signature must verify

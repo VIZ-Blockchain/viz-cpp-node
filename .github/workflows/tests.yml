@@ -67,6 +67,8 @@ jobs:
           python3 tests/chain/test_snapshot_restore.py
           python3 tests/chain/test_hf9_schedule_guard.py
           python3 tests/chain/test_hf9_schedule_guard.py --selftest
+          python3 tests/chain/test_qc_cache_prune.py
+          python3 tests/chain/test_qc_cache_prune.py --selftest
           python3 tests/chain/test_snapshot_floor.py --selftest
           python3 tests/chain/test_snapshot_import_cause.py
           python3 tests/chain/test_snapshot_import_cause.py --selftest
