@@ -37,6 +37,10 @@
 
 #include <graphene/utilities/git_revision.hpp>
 
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 
@@ -115,6 +119,12 @@ void logo(){
 
 int main( int argc, char** argv ) {
     try {
+#ifdef __linux__
+        // THP=always на хосте раздувает почти пустые фибер-стеки fc и кучу: 174 стека по 2 МБ
+        // с ~1,5 КБ кадров занимали 338 МБ RSS (knowledge/anon-thp-fiber-stacks.md).
+        // Процессу huge-страницы не нужны — отключаем их для всех будущих анонимных маппингов.
+        prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+#endif
 
         graphene::plugins::register_plugins();
         appbase::app().set_version_string(version_string());
