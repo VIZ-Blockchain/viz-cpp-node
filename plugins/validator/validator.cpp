@@ -509,7 +509,15 @@ namespace graphene {
                     boost::program_options::options_description &config_file_options) {
                     string validator_id_example = "initvalidator";
 
-                command_line_options.add_options()
+                // Register ONLY in the config description. appbase parses argv against
+                // all_options = _cli_options + _cfg_options, so a config-registered option is
+                // still accepted on the command line (--validator, --private-key, the env
+                // shims in vizd.sh). Adding the same names to the command-line description
+                // as well puts two descriptions of one long name into all_options and boost
+                // then refuses every start with "option '--disable-minority-fork-detection'
+                // is ambiguous and matches different versions of ...". Same trap and same fix
+                // as testnet_plugin::set_program_options (issue #301).
+                config_file_options.add_options()
                         ("enable-stale-production", bpo::value<bool>()->implicit_value(true) , "Enable block production, even if the chain is stale.")
                         ("disable-minority-fork-detection", bpo::value<bool>()->implicit_value(true) , "Disable minority-fork detection (testnet / single-operator fork where this node controls all validators). Never auto-cleared by healthy participation.")
                         ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of validators (0-99) that must be participating in order to produce blocks")
@@ -544,7 +552,7 @@ namespace graphene {
                          "Enable verbose debug logging for block production and chain internals. Default: false.")
                         ;
 
-                config_file_options.add(command_line_options);
+                (void)command_line_options; // config-registered options are also accepted on argv
             }
 
             using std::vector;

@@ -3838,6 +3838,28 @@ namespace graphene { namespace chain {
                 reset_virtual_schedule_time();
             }
 
+            // HF12 excludes the committee validator from the normal top/support selection:
+            // it is supposed to fill gaps through the emergency hybrid schedule. On a fresh
+            // committee-only chain (vizd:testnet) that has just crossed HF12 while NOT in
+            // emergency mode, that leaves every slot empty: the normal build stores an empty name,
+            // and the update_median_validator_props() below then calls get_validator("") on
+            // the apply path, so block 13 can never be applied (issue #301). Fall back to
+            // the committee validator when no other validator holds a signing key so the
+            // genesis schedule stays non-empty. Non-emergency only on purpose: during
+            // emergency the hybrid override pads the schedule, and counting committee as a
+            // real validator here would break the exit-quorum rule (real_validator_slots).
+            if (has_hardfork(CHAIN_HARDFORK_12) &&
+                !get_dynamic_global_properties().emergency_consensus_active &&
+                active_validators.empty() && support_validators.empty()) {
+                const auto& committee_idx = get_index<validator_index>().indices().get<by_name>();
+                auto committee_itr = committee_idx.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT);
+                if (committee_itr != committee_idx.end() &&
+                    committee_itr->signing_key != public_key_type()) {
+                    active_validators.push_back(committee_itr->owner);
+                    modify(*committee_itr, [&](validator_object& wo) { wo.schedule = validator_object::top; });
+                }
+            }
+
             FC_ASSERT( ( active_validators.size() + support_validators.size() ) <= CHAIN_MAX_VALIDATORS, "Number of active validators cannot be more than CHAIN_MAX_VALIDATORS",
                     ("active_validators.size()", active_validators.size())("support_validators.size()", support_validators.size())("CHAIN_MAX_VALIDATORS", CHAIN_MAX_VALIDATORS));
 
@@ -4173,6 +4195,13 @@ namespace graphene { namespace chain {
             active.reserve(wso.num_scheduled_validators);
             for (int i = 0; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
                 const auto &wname = wso.current_shuffled_validators[i];
+                // An empty slot has no validator object; get_validator("") throws on the
+                // apply path. Skip it (the same guard as the missed-slot loop in
+                // update_global_dynamic_data). If every slot is empty, active stays empty
+                // and the median is left unchanged just below.
+                if (wname == account_name_type()) {
+                    continue;
+                }
                 // During emergency mode, exclude committee validator from median computation.
                 // Committee has default chain_properties (zero fees, zero sizes) and
                 // occupies multiple schedule slots, which would skew the median.
